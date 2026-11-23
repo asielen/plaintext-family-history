@@ -13,6 +13,7 @@ Run: python -m pytest tests/test_gedcom_import.py -q   (from the repo root)
 import contextlib
 import hashlib
 import io
+import re
 import shutil
 import sqlite3
 import sys
@@ -663,6 +664,175 @@ class AdminTagTestCase(_ArchiveCase):
             '0 @I1@ INDI\n1 NAME Pat /Example/\n1 CREA\n2 DATE 2 FEB 2021\n')
         self.assertEqual(plan.claims, [])
         self.assertIn('CREA', dict(plan.unread_top))
+
+
+class DuplicateBirthTestCase(_ArchiveCase):
+    """#449: a tree that holds two birth facts for one person (Ancestry
+    exports an alternate fact after the preferred one) must keep the dated
+    birth on the new record, and so the right living guess. A later fact
+    with no date, or a vaguer one, never wipes or overrides a dated one; two
+    dates that disagree are both named in the plan."""
+
+    def _plan(self, indi_body: str):
+        ged = Path(self._tmp.name) / 'twobirths.ged'
+        ged.write_text('0 HEAD\n1 SOUR App\n1 CHAR UTF-8\n'
+                       '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n'
+                       + indi_body + '0 TRLR\n', encoding='utf-8')
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    @staticmethod
+    def _text(plan) -> str:
+        return '\n'.join(gedcom_import._plan_lines(plan, applied=False, capped=False))
+
+    def test_second_undated_birth_keeps_the_first_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+                          '1 BIRT\n2 PLAC Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')
+        self.assertEqual(stub.living, 'false')
+        births = [c for c in plan.claims if c.claim_type == 'birth']
+        self.assertEqual(len(births), 2)                 # both facts still filed
+
+    def test_first_undated_birth_then_a_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 PLAC Kansas\n'
+                          '1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')
+        self.assertEqual(stub.living, 'false')
+
+    def test_a_vaguer_later_birth_does_not_override_a_precise_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n1 BIRT\n2 DATE 1878\n')
+        self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+        # 1878 and 12 Jan 1878 agree, so the plan raises no disagreement.
+        self.assertNotIn('disagree', self._text(plan))
+
+    def test_a_more_precise_later_birth_is_preferred(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE ABT 1878\n1 BIRT\n2 DATE 12 JAN 1878\n')
+        self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+
+    def test_two_dated_births_that_disagree_are_both_in_the_plan(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+                          '1 BIRT\n2 DATE ABT 1990\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.birth, '1878-01-12')       # the most exact date
+        # One of the tree's own dates says she may be young, so she stays
+        # `unknown` (treated as living) until he settles which is right.
+        self.assertEqual(stub.living, 'unknown')
+        text = self._text(plan)
+        self.assertIn('@I1@ Rose Hartley', text)
+        self.assertIn('1878-01-12', text)
+        self.assertIn('1990~', text)
+        self.assertIn('disagree', text)
+        self.assertIn('keeps living: unknown', text)     # says why she is hidden
+        # The on-screen plan says it too, not only --plan-out.
+        screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('1990~', screen)
+
+    def test_full_plan_lists_both_birth_and_death_disagreements(self) -> None:
+        # One person can disagree twice; --plan-out must not drop the second.
+        plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n'
+                          '1 DEAT\n2 DATE 1950\n1 DEAT\n2 DATE 1960\n')
+        self.assertEqual(len(plan.date_conflicts), 2)
+        text = self._text(plan)
+        self.assertIn('1960', text)
+        self.assertNotIn('more (use --plan-out', text)
+
+    def test_two_equally_precise_births_that_disagree_keep_the_first(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n')
+        self.assertEqual(plan.stubs[0].birth, '1878')
+        self.assertIn('disagree', self._text(plan))
+
+    def test_birth_with_only_a_place(self) -> None:
+        plan = self._plan('1 BIRT\n2 PLAC Fairview, Kansas\n')
+        (stub,) = plan.stubs
+        self.assertIsNone(stub.birth)
+        self.assertEqual(stub.living, 'unknown')
+        (birth,) = plan.claims
+        self.assertEqual(birth.place_text, 'Fairview, Kansas')
+        self.assertIsNone(birth.date)
+
+    def test_second_undated_death_keeps_the_dated_one(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE 1878\n'
+                          '1 DEAT\n2 DATE 1950\n1 DEAT\n2 PLAC Kansas\n')
+        (stub,) = plan.stubs
+        self.assertEqual(stub.death, '1950')
+        self.assertEqual(stub.living, 'false')
+
+    def test_an_unreadable_second_birth_date_keeps_living_unknown(self) -> None:
+        # A typed 05/06/1995 could be her real birth: a date nobody could read
+        # is doubt, so she is not shown as dead, and the plan says why.
+        for raw in ('05/06/1995', 'INT 1995 (per cousin)', '5/6/95', 'Jun 95',
+                    '19950506'):
+            with self.subTest(raw=raw):
+                plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n'
+                                  f'1 BIRT\n2 DATE {raw}\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1878-01-12')
+                self.assertEqual(stub.living, 'unknown')
+                text = self._text(plan)
+                self.assertIn('keeps living: unknown', text)
+                self.assertIn('line 9', text)
+
+    def test_an_unreadable_old_or_yearless_birth_does_not_hide_him(self) -> None:
+        # A colonial ancestor's dual-dated or Julian alternate (or a plain
+        # "Unknown") cannot make him young, so he is not hidden as living.
+        for raw in ('12 FEB 1750/51', '@#DJULIAN@ 1 FEB 1750',
+                    'INT 1750 (family bible)', 'Unknown'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n'
+                                  '1 BIRT\n2 DATE 12 FEB 1751\n')
+                (stub,) = plan.stubs
+                self.assertEqual(stub.birth, '1751-02-12')
+                self.assertEqual(stub.living, 'false')
+                self.assertNotIn('keeps living: unknown', self._text(plan))
+
+    def test_a_hebrew_calendar_alternate_birth_is_read_as_its_year(self) -> None:
+        # 5600 is 1840; 5755 is 1995 and may be her real, recent birth.
+        for raw, living in (('@#DHEBREW@ 5600', 'false'),
+                            ('@#DHEBREW@ 5755', 'unknown')):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n1 BIRT\n2 DATE 1840\n')
+                self.assertEqual(plan.stubs[0].living, living)
+
+    def test_an_open_ended_birth_that_agrees_does_not_hide_her(self) -> None:
+        # AFT 1850 and BEF 1990 both fit 12 Jan 1878: nothing disagrees, so
+        # she is not hidden as possibly living.
+        for alt in ('AFT 1850', 'BEF 1990'):
+            for order in ('first', 'last'):
+                with self.subTest(alt=alt, order=order):
+                    exact, other = '1 BIRT\n2 DATE 12 JAN 1878\n', f'1 BIRT\n2 DATE {alt}\n'
+                    body = exact + other if order == 'last' else other + exact
+                    (stub,) = self._plan(body).stubs
+                    self.assertEqual(stub.birth, '1878-01-12')
+                    self.assertEqual(stub.living, 'false')
+
+    def test_a_far_fetched_date_does_not_stop_the_import(self) -> None:
+        # One typo-like year on one person must not crash the whole import.
+        for raw in ('ABT 9999', 'ABT 001', 'ABT JAN 0001'):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE 12 JAN 1878\n1 BIRT\n2 DATE {raw}\n'
+                                  f'1 DEAT\n2 DATE {raw}\n')
+                self.assertEqual(plan.stubs[0].birth, '1878-01-12')
+
+    def test_an_about_day_does_not_beat_an_exact_day(self) -> None:
+        plan = self._plan('1 BIRT\n2 DATE ABT 12 JAN 1850\n1 BIRT\n2 DATE 14 JAN 1850\n')
+        self.assertEqual(plan.stubs[0].birth, '1850-01-14')
+
+    def test_single_birth_file_is_unchanged(self) -> None:
+        plan = gedcom_import.build_plan(self.archive, self.config, SMALL)
+        self.assertEqual(
+            [(s.xref, s.birth, s.death, s.living) for s in plan.stubs],
+            [('@I1@', '1878-01-12', '1950~', 'false'),
+             ('@I2@', '[..1880]', None, 'false'),
+             ('@I3@', '[1900..]', None, 'unknown'),
+             ('@I4@', None, None, 'unknown'),
+             ('@I5@', '1850-01', None, 'false'),
+             ('@I6@', '1848~', None, 'false'),
+             ('@I7@', '1878', None, 'false'),
+             ('@I8@', '1990', None, 'unknown'),
+             ('@I9@', None, None, 'unknown'),
+             ('@I10@', None, None, 'unknown')])
+        self.assertNotIn('disagree', self._text(plan))
 
 
 class NameSubtagTestCase(_ArchiveCase):
@@ -1530,6 +1700,559 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
         self.assertEqual(lines[3:6], ['  persons:', '    - "[[p-aaaaaaaaaa|Ann]]"',
                                       '    - "[[p-bbbbbbbbbb|Bo]]"'])
         self.assertIn('    child: p-aaaaaaaaaa', lines)
+
+
+
+# ── Photos the old program linked ──────────────────────────────────────────────
+
+import photoindex
+from _lib import photoindex_status, shell_quote
+
+PHOTO_LINKS = FIXTURES / 'photo-links.ged'
+
+
+class PhotoLinksTestCase(_ArchiveCase):
+    """For him: the plan says which linked photos are already in his folders and
+    offers each to `tag-person`; nothing is written to a photo or its keywords."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+        self.photos = self.archive / 'photos'
+        for rel in ('1950/rose_wedding.jpg', '1902/thomas.jpg', '1910/thomas.jpg'):
+            f = self.photos / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'not really a jpeg: ' + rel.encode())
+        self.ged_dir = Path(self._tmp.name) / 'download'
+        self.ged_dir.mkdir()
+        self.ged = self.ged_dir / 'photo-links.ged'
+        shutil.copyfile(PHOTO_LINKS, self.ged)
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_exiftool
+        super().tearDown()
+
+    def _scan(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            photoindex.run_scan(self.archive, self.config)
+
+    def _catalog(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+
+    def _record_text(self) -> str:
+        return next((self.archive / 'sources' / 'other').glob('*.md')).read_text(encoding='utf-8')
+
+    def test_found_by_name(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertIn('Photos your old program linked: 9 (9 people)', out)
+        self.assertRegex(out, r'Rose Hartley\s+photos/1950/rose_wedding\.jpg')
+
+    def test_ambiguous_lists_both(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertRegex(out, r'Thomas Hartley\s+thomas\.jpg could be photos/1902/thomas\.jpg '
+                              r'or photos/1910/thomas\.jpg')
+
+    def test_web_link_host_only(self) -> None:
+        self._scan()
+        plan_out = Path(self._tmp.name) / 'plan.txt'
+        _, out, err = self._run(self.ged, apply=True, plan_out=plan_out)
+        self.assertIn('ancestry.com', out)
+        for text in (out, err, plan_out.read_text(encoding='utf-8'), self._record_text()):
+            self.assertNotIn('token=abc', text)
+            self.assertNotIn('mediaui-viewer', text)
+
+    def test_folder_hint(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertIn('"Hartley Media"', out)
+        self.assertNotIn('Users', out)
+        self.assertNotIn('someone', out)
+
+    def test_catalog_absent_says_how(self) -> None:
+        _, out, _ = self._run(self.ged)
+        self.assertIn('Run fha photoindex', out)
+        self.assertNotIn('already in your photo folders', out)
+
+    def test_apply_lists_in_notes_and_prints_command(self) -> None:
+        self._scan()
+        _, dry_out, _ = self._run(self.ged)
+        self.assertNotIn('fha photoindex tag-person', dry_out)
+        _, out, _ = self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertRegex(record, r'- \[\[p-[0-9a-z]+\|Rose Hartley\]\]: photos/1950/rose_wedding\.jpg')
+        self.assertRegex(record, r'Thomas Hartley\]\]: thomas\.jpg .*photos/1902/thomas\.jpg')
+        self.assertNotIn('Users', record)
+        m = re.search(r'fha photoindex tag-person (\S+) --paths (.+)', out)
+        self.assertIsNotNone(m, out)
+        self.assertEqual(m.group(2).strip(), shell_quote('photos/1950/rose_wedding.jpg'))
+        self.assertTrue(m.group(1).strip('\'"').startswith('p-'))
+
+    def test_no_photo_or_keyword_written(self) -> None:
+        self._scan()
+        files = sorted(p for p in self.photos.rglob('*') if p.is_file())
+        before = [(p, hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+                  for p in files]
+        conn = self._catalog()
+        kw_before = conn.execute('SELECT COUNT(*) FROM photo_keywords').fetchone()[0]
+        conn.close()
+        self._run(self.ged, apply=True)
+        after = [(p, hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+                 for p in files]
+        self.assertEqual(before, after)
+        conn = self._catalog()
+        self.assertEqual(kw_before, conn.execute('SELECT COUNT(*) FROM photo_keywords').fetchone()[0])
+        conn.close()
+
+    def test_obje_no_longer_unread(self) -> None:
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertNotIn('OBJE', dict(plan.unread_top))
+        self.assertNotIn('FILE', dict(plan.unread_top))
+
+    def test_already_tagged_counted(self) -> None:
+        self._scan()
+        fixed = [f'P-{c * 10}' for c in 'abcdefghi']
+        conn = self._catalog()
+        conn.execute('INSERT INTO photo_keywords(path, keyword) VALUES (?, ?)',
+                     ('photos/1950/rose_wedding.jpg', fixed[0]))
+        conn.commit()
+        conn.close()
+
+        def fake_mint(prefix, n, root):
+            return fixed[:n] if prefix == 'P' else [f'{prefix}-{i:010d}' for i in range(n)]
+
+        with mock.patch.object(gedcom_import, 'mint_ids', side_effect=fake_mint):
+            plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        out = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('already carry that person', out)
+        self.assertNotIn('rose_wedding', out)
+        self.assertEqual(
+            [lk.status for lk in plan.photo_links if lk.basename == 'rose_wedding.jpg'],
+            ['already tagged'])
+        self.assertNotIn('rose_wedding', gedcom_import._photo_handoff_text(plan))
+
+    def test_exact_path_and_separators(self) -> None:
+        """A path written with backslashes and another letter case still finds the
+        photo; a name that exists nowhere is reported not found, never guessed."""
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8').replace(
+            'C:\\Users\\someone\\Hartley Media\\rose_wedding.jpg', 'ROSE_Wedding.JPG')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual((rose.status, rose.alias), ('matched', 'photos/1950/rose_wedding.jpg'))
+        ben = next(lk for lk in plan.photo_links if lk.person_xref == '@I4@')
+        self.assertEqual(ben.status, 'not found')
+
+    def test_exact_path_beside_the_ged_file(self) -> None:
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8').replace(
+            'C:\\Users\\someone\\Hartley Media\\rose_wedding.jpg', '../archive/photos/1950/rose_wedding.jpg')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual((rose.status, rose.how), ('matched', 'same file'))
+
+    def test_non_image_and_file_url(self) -> None:
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Hal /Hartley/\n'
+                 '1 OBJE\n2 FILE C:\\docs\\letter.pdf\n'
+                 '1 OBJE\n2 FILE file:///C:/Old%20Pics/rose_wedding.jpg\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        hal = [lk for lk in plan.photo_links if lk.person_xref == '@I10@']
+        self.assertEqual([lk.basename for lk in hal], ['rose_wedding.jpg'])   # the PDF is not a photo
+        self.assertEqual(hal[0].folder, 'Old Pics')
+
+    def test_catalog_absent_keeps_the_list_in_notes(self) -> None:
+        """Importing before the photo catalog exists still records which photos
+        the old tree linked (a re-import is refused, so this is the only copy)."""
+        _, out, _ = self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertRegex(record, r'Rose Hartley\]\]: rose_wedding\.jpg .*not looked for')
+        self.assertRegex(record, r'Thomas Hartley\]\]: thomas\.jpg .*not looked for')
+        self.assertNotIn('Users', record)
+        self.assertNotIn('fha photoindex tag-person', out)
+
+    def test_handoff_refreshes_the_catalog_before_tagging(self) -> None:
+        """The import adds people, which makes the photo catalog read stale, and
+        tag-person refuses a stale catalog: the command list refreshes it first."""
+        self._scan()
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertEqual(photoindex_status(self.archive, self.config)[0], 'stale')
+        self.assertRegex(out, r'\n  fha photoindex\n  fha photoindex tag-person ')
+
+    def test_citation_media_is_not_a_person_photo(self) -> None:
+        """A census scan attached to a citation is not a photo of the person."""
+        census = self.photos / '1900' / 'census.jpg'
+        census.parent.mkdir(parents=True)
+        census.write_bytes(b'scan')
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Hal /Hartley/\n'
+                 '1 SOUR @S1@\n2 OBJE\n3 FILE census.jpg\n'
+                 '1 RESI\n2 SOUR @S1@\n3 OBJE\n4 FILE census.jpg\n'
+                 '0 @S1@ SOUR\n1 TITL 1900 census\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual([lk for lk in plan.photo_links if lk.person_xref == '@I10@'], [])
+
+    def test_obsidian_links_name_the_new_person_file(self) -> None:
+        """With Obsidian links, a name in the photo list opens the person's file."""
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\nlinks: obsidian\n',
+            encoding='utf-8')
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self._scan()
+        self._run(self.ged, apply=True)
+        m = re.search(r'- \[\[([^|\]]+)\|Rose Hartley\]\]: photos/1950/', self._record_text())
+        self.assertIsNotNone(m)
+        self.assertTrue(list(self.archive.glob(f'people/**/{m.group(1)}.md')), m.group(1))
+
+    def test_catalog_read_only_in_a_folder_with_a_hash(self) -> None:
+        """An archive in a folder like "Family #2" is matched, and the read-only
+        catalog open creates nothing beside it."""
+        parent = Path(self._tmp.name) / 'Family #2 100%'
+        parent.mkdir()
+        shutil.move(str(self.archive), str(parent / 'archive'))
+        self.archive = parent / 'archive'
+        self.photos = self.archive / 'photos'
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self._scan()
+        before = sorted(p.name for p in Path(self._tmp.name).iterdir())
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual(plan.photo_catalog, 'ready')
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual(rose.status, 'matched')
+        self.assertEqual(before, sorted(p.name for p in Path(self._tmp.name).iterdir()))
+
+
+    def test_unreadable_catalog_notes_say_so(self) -> None:
+        (self.archive / '.cache').mkdir()
+        (self.archive / '.cache' / 'photos.sqlite').write_bytes(b'not a database at all')
+        self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertIn('rose_wedding.jpg "Wedding" (not looked for: the photo catalog could not be read', record)
+        self.assertNotIn('was not built', record)
+
+    def test_heif_and_raw_photos_in_the_catalog_are_matched(self) -> None:
+        """A HEIF or camera-raw photo the catalog holds is offered like a JPEG."""
+        for rel in ('1960/ada.heif', '1961/ben.dng'):
+            f = self.photos / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'photo ' + rel.encode())
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8')
+        text = text.replace('https://www.ancestry.com/mediaui-viewer/x?token=abc', 'ada.heif')
+        text = text.replace('Hartley Media/missing.png', 'Hartley Media/ben.dng')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        got = {lk.person_xref: (lk.status, lk.alias) for lk in plan.photo_links}
+        self.assertEqual(got['@I3@'], ('matched', 'photos/1960/ada.heif'))
+        self.assertEqual(got['@I4@'], ('matched', 'photos/1961/ben.dng'))
+
+    def test_every_same_name_photo_is_listed(self) -> None:
+        """When a name matches five photos, his choice is among all five, never
+        a silent first three."""
+        for year in range(1901, 1906):
+            f = self.photos / str(year) / 'scan.jpg'
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'scan ' + str(year).encode())
+        self._scan()
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace(
+            'Hartley Media/missing.png', 'Hartley Media/scan.jpg'), encoding='utf-8')
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertIn('(or 2 more, listed in the full plan', out)
+        self.assertIn('photos/1905/scan.jpg', self._record_text())
+
+    def test_document_media_is_not_offered(self) -> None:
+        """A census image the old program typed as a document is not his photo."""
+        doc = self.photos / 'docs' / 'rose_census_1900.jpg'
+        doc.parent.mkdir(parents=True)
+        doc.write_bytes(b'census')
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Ann /Hartley/\n'
+                 '1 OBJE\n2 FILE rose_census_1900.jpg\n3 FORM jpg\n4 TYPE document\n'
+                 '1 OBJE @O2@\n'
+                 '0 @O2@ OBJE\n1 FILE rose_census_1900.jpg\n1 _TYPE DOCUMENT\n'
+                 '0 @I11@ INDI\n1 NAME Al /Hartley/\n'
+                 '1 OBJE\n2 FILE rose_census_1900.jpg\n3 FORM jpg\n4 MEDI photo\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertEqual([lk for lk in plan.photo_links if lk.person_xref == '@I10@'], [])
+        self.assertEqual([lk.status for lk in plan.photo_links if lk.person_xref == '@I11@'],
+                         ['matched'])
+        self.assertNotIn('TYPE', dict(plan.unread_top))
+
+    def test_name_only_match_says_look_first(self) -> None:
+        """The printed example warns when only the file name matched."""
+        self._scan()
+        _, out, _ = self._run(self.ged, apply=True)
+        self.assertIn('matched by its file name only: look at it before you say yes', out)
+        self.assertIn('1 is already in your photo folders:', out)
+
+    def test_folder_hint_never_names_a_home_folder(self) -> None:
+        """Photos kept straight in C:\\Users\\<name> never print that name."""
+        self._scan()
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace(
+            'someone\\Hartley Media\\', 'someone\\'), encoding='utf-8')
+        _, out, _ = self._run(self.ged)
+        self.assertNotIn('someone', out)
+        self.assertNotIn('folder called', out)
+
+
+class SqliteReadonlyUriTestCase(unittest.TestCase):
+    """For him: an archive in a folder like "Family #2", or on a network share,
+    can read its caches without a read-only look ever creating a file."""
+
+    def test_special_characters_are_encoded(self) -> None:
+        from _lib import sqlite_readonly_uri
+        uri = sqlite_readonly_uri(Path('/x/Family #2 100%/.cache/photos.sqlite').absolute())
+        self.assertTrue(uri.endswith('/x/Family%20%232%20100%25/.cache/photos.sqlite?mode=ro'), uri)
+        self.assertTrue(uri.startswith('file:///'), uri)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows drive and share paths')
+    def test_windows_drive_and_share(self) -> None:
+        from _lib import sqlite_readonly_uri
+        self.assertEqual(sqlite_readonly_uri(Path('D:/Family Archive/.cache/photos.sqlite')),
+                         'file:///D:/Family%20Archive/.cache/photos.sqlite?mode=ro')
+        share = Path(chr(92) * 2 + 'nas' + chr(92) + 'family' + chr(92) + 'photos.sqlite')
+        self.assertEqual(sqlite_readonly_uri(share), 'file:////nas/family/photos.sqlite?mode=ro')
+
+# ── Odd files from other programs ─────────────────────────────────────────────
+
+ADVERSARIAL = FIXTURES / 'adversarial'
+
+_CRLF_SOURCE = (
+    '0 HEAD\n1 SOUR Test\n1 CHAR UTF-8\n'
+    '0 @I1@ INDI\n1 NAME Rose /Hartley/\n1 SEX F\n'
+    '1 BIRT\n2 DATE 12 JAN 1878\n2 PLAC Fairview, Kansas\n'
+    '1 NOTE Kept the family bible\n2 CONT in a cedar box\n'
+    '0 TRLR\n')
+
+
+class AdversarialFixtureTestCase(_ArchiveCase):
+    """Files from other programs arrive without surprises. The four files in
+    adversarial/ are copied from another project (MIT; see its README); the
+    expected answers below come from TOOLING §13a2 and the importer's rules,
+    not from whatever the code printed. The rest are built from bytes here so
+    no editor or git newline setting can change them."""
+
+    def _plan(self, ged: Path):
+        return gedcom_import.build_plan(self.archive, self.config, ged)
+
+    def _bytes(self, name: str, raw: bytes) -> Path:
+        p = Path(self._tmp.name) / name
+        p.write_bytes(raw)
+        return p
+
+    def _applied_lints_clean(self, ged: Path):
+        import lint as lint_mod
+        result, _out, err = self._run(ged, apply=True)
+        self.assertTrue(result.data['applied'], err)
+        n_errors, _w, _e = lint_mod.run_lint_silent(self.archive, self.config)
+        self.assertEqual(n_errors, 0, 'imported records must lint with no E-codes')
+        return result
+
+    @staticmethod
+    def _of(plan, claim_type: str):
+        return [c for c in plan.claims if c.claim_type == claim_type]
+
+    # -- the four copied files ------------------------------------------------
+
+    def test_minimal_551_one_person_one_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        self.assertEqual(plan.stubs[0].name, 'Briar Fiction')
+        self.assertEqual(plan.stubs[0].living, 'unknown')
+        self.assertEqual([c.claim_type for c in plan.claims], ['note'])
+        self.assertEqual(plan.warnings, [])
+        result = self._applied_lints_clean(ADVERSARIAL / 'minimal-551.ged')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+
+    def test_minimal_555_leading_zero_date_and_place(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'minimal-555.ged')
+        (birth,) = plan.claims
+        self.assertEqual(birth.claim_type, 'birth')
+        self.assertEqual(birth.date, '1900-01-01')
+        self.assertEqual(birth.place_text, 'Example County')
+        self.assertEqual(plan.warnings, [])
+        self._applied_lints_clean(ADVERSARIAL / 'minimal-555.ged')
+
+    def test_preserve_extensions_person_and_variant(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertEqual(len(plan.stubs), 1)
+        stub = plan.stubs[0]
+        self.assertEqual(stub.name, 'Zoë Fiction')
+        self.assertEqual(stub.variants, ['Zed Alternative'])
+        # A DEAT is present, so he is not guessed to be living.
+        self.assertEqual(stub.living, 'false')
+
+    def test_preserve_extensions_two_births_dated_one_sets_stub(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        births = self._of(plan, 'birth')
+        self.assertEqual(len(births), 2)
+        self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
+        # Both BIRTs become claims. The stub's provisional `birth:` is the most
+        # exact readable one (#449); the unreadable first BIRT cannot blank it.
+        self.assertEqual(plan.stubs[0].birth, '2000-01-01')
+        self.assertEqual(plan.stubs[0].living, 'false')     # a DEAT is present
+        self.assertEqual(len(plan.date_downgrades), 1)
+
+    def test_preserve_extensions_open_ended_deaths(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        deaths = self._of(plan, 'death')
+        self.assertEqual(sorted(d.date for d in deaths), ['[..2099]', '[2099..]'])
+
+    def test_preserve_extensions_empty_even_type_uses_tag_name(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (even,) = self._of(plan, 'event')
+        self.assertEqual(even.subtype, 'even')
+
+    def test_preserve_extensions_conc_cont_note(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        (note,) = self._of(plan, 'note')
+        self.assertIn('first-joined', note.value)
+        self.assertEqual(note.notes, 'next line')
+
+    def test_preserve_extensions_dangling_references_warn(self) -> None:
+        result, _out, _err = self._run(ADVERSARIAL / 'preserve-extensions.ged')
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        self.assertTrue(any('@I404@' in w for w in plan.warnings), plan.warnings)
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)
+
+    def test_preserve_extensions_vendor_and_media_counted_unread(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
+        tags = dict(plan.unread_top)
+        self.assertIn('_VENDOR', tags)
+        self.assertIn('OBJE', tags)
+        # A person-level SOUR is counted, not read (issue #450 asks to read it).
+        self.assertIn('SOUR', tags)
+        self._applied_lints_clean(ADVERSARIAL / 'preserve-extensions.ged')
+
+    def test_xref_source_a_dangling_child_warns_and_text_is_not_a_link(self) -> None:
+        plan = self._plan(ADVERSARIAL / 'xref-source-a.ged')
+        self.assertTrue(any('@I99@' in w for w in plan.warnings), plan.warnings)
+        # The missing child makes no relationship, and the `_TEXT literal @I1@
+        # and @I99@` line is never followed as a link: it is counted unread.
+        self.assertEqual(plan.claims, [])
+        self.assertEqual(dict(plan.unread_top).get('_TEXT'), 1)
+        self._applied_lints_clean(ADVERSARIAL / 'xref-source-a.ged')
+
+    # -- files built from bytes ----------------------------------------------
+
+    def test_crlf_imports_same_as_lf(self) -> None:
+        lf = self._plan(self._bytes('lf.ged', _CRLF_SOURCE.encode('utf-8')))
+        crlf = self._plan(self._bytes(
+            'crlf.ged', _CRLF_SOURCE.replace('\n', '\r\n').encode('utf-8')))
+
+        def shape(p):
+            return [(c.claim_type, c.anchor, c.date, c.value) for c in p.claims]
+        self.assertEqual(shape(crlf), shape(lf))
+        self.assertEqual(crlf.warnings, lf.warnings)
+
+    def test_utf8_bom_imports(self) -> None:
+        plan = self._plan(self._bytes('bom.ged', b'\xef\xbb\xbf' + _CRLF_SOURCE.encode('utf-8')))
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+        self.assertEqual(plan.warnings, [])
+
+    def test_utf16_both_byte_orders_refused(self) -> None:
+        for name, raw in (('le.ged', b'\xff\xfe' + _CRLF_SOURCE.encode('utf-16-le')),
+                          ('be.ged', b'\xfe\xff' + _CRLF_SOURCE.encode('utf-16-be'))):
+            result, _out, err = self._run(self._bytes(name, raw), apply=True)
+            self.assertEqual(result.exit_code, EXIT_ERRORS, name)
+            self.assertIn('UTF-16', err)
+            self.assertFalse((self.archive / 'people').exists())
+
+    def test_partial_bom_refused_as_not_utf8(self) -> None:
+        raw = b'\xef\xbb' + _CRLF_SOURCE.encode('utf-8')
+        result, _out, err = self._run(self._bytes('partial.ged', raw), apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('not UTF-8', err)
+
+    def test_skipped_level_warns(self) -> None:
+        raw = b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n2 DATE 1900\n0 TRLR\n'
+        plan = self._plan(self._bytes('skip.ged', raw))
+        self.assertTrue(any('level jumps to 2' in w for w in plan.warnings), plan.warnings)
+
+    # A `0 @I1@ INDI` defined twice is refused: covered by the dup-xref.ged
+    # test above, not repeated here.
+
+    def test_bare_level_stays_malformed_not_joined(self) -> None:
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n1\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('bare.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+
+    def test_negative_level_stays_malformed_not_joined(self) -> None:
+        # A '-1 NAME x' line is a broken GEDCOM line, not note prose: it is
+        # reported, so his name does not quietly become "Rose Hartley -1 NAME x".
+        raw = (b'0 HEAD\n1 CHAR UTF-8\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n-1 NAME x\n'
+               b'1 NOTE Kept the bible\n0 TRLR\n')
+        plan = self._plan(self._bytes('neg.ged', raw))
+        self.assertTrue(any('did not parse' in w and 'line 5' in w for w in plan.warnings),
+                        plan.warnings)
+        self.assertEqual(plan.stubs[0].name, 'Rose Hartley')
+
+    def test_every_broken_level_shape_is_reported_or_read(self) -> None:
+        # Each of these is an attempt at a GEDCOM line. None may be folded into
+        # the name above it: it is either read as a line or reported.
+        reported = ['-1 NAME x', '-1 SEX F', '-1 @I2@ INDI', '-2 _MYTAG x', '+1 NAME x', '−1 NAME x', '–1 NAME x',
+                    '\xa01 NAME x', '　1 NAME x', '\t1 NAME x', '  1 NAME x',
+                    '100 NAME x', '1NAME x', '\xb2 NAME x']
+        read = ['01 NAME x', '١ NAME x', '１ NAME x']
+        for line in reported + read:
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(joined, [])
+                self.assertEqual(records[1].children[0].value, 'Rose /Hartley/')
+                if line in reported:
+                    self.assertTrue(any(m.startswith('line 4') for m in malformed), malformed)
+                else:
+                    self.assertEqual(malformed, [])
+                    self.assertEqual(records[1].children[1].value, 'x')
+
+    def test_note_prose_starting_with_a_sign_or_number_still_joins(self) -> None:
+        # A MyHeritage note line that opens with a dash, a sign or a no-break
+        # space is still prose: it joins the note above it, words kept.
+        for line in ('- and her sister', '-30 degrees, the well froze',
+                     '–1940 they stayed on the farm', '—1918 was the year of the flu',
+                     '\xa01937 the farm was sold', '+2 more cousins in Topeka',
+                     '-1920 I started school in Fairview', '+2 US Army cousins came home',
+                     '\xa01918 A hard year for the family',
+                     '-1942 WWII took both brothers',
+                     '–1920 MOVED TO KANSAS WITH HER PARENTS',
+                     '+2 USA trips after the war', '\xa01945 FDR died that spring'):
+            with self.subTest(line=line):
+                text = '0 HEAD\n0 @I1@ INDI\n1 NOTE Rose kept the bible\n' + line + '\n0 TRLR\n'
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                self.assertEqual(malformed, [])
+                self.assertEqual(joined, [4])
+                self.assertEqual(records[1].children[0].value,
+                                 'Rose kept the bible ' + line.strip())
+
+    def test_sign_prose_keeps_the_numbered_prose_rule_on(self) -> None:
+        # A "-5 below zero" line may be the file's only level-less line. It
+        # must still mark the file as having broken lines, so "2 brothers
+        # nearby" under the note joins too instead of becoming an unknown
+        # BROTHERS tag whose words appear in no warning.
+        for first in ('-5 below zero that January', '-1920 I started school',
+                      '-1 NAME x'):
+            with self.subTest(first=first):
+                text = ('0 HEAD\n0 @I1@ INDI\n1 NAME Rose /Hartley/\n'
+                        '1 NOTE She remembered the winter of 1936\n' + first + '\n'
+                        '2 brothers nearby helped with the cattle\n0 TRLR\n')
+                records, malformed, joined = gedcom_import.parse_gedcom(text)
+                note = records[1].children[1]
+                self.assertEqual(note.children, [])
+                self.assertTrue(note.value.endswith('helped with the cattle'), note.value)
+                self.assertIn(6, joined)
 
 
 if __name__ == '__main__':

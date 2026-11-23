@@ -319,6 +319,7 @@ from _lib import (
     carried_living_message,
     living_carried_to_survivors,
     restricted_with_survivors,
+    merge_pointer,
     merge_survivor,
     normalize_id,
     open_index_db,
@@ -3671,10 +3672,10 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
         if render.get(slot // 2, ('', None))[0] != 'person':
             continue
         lab = labels.get(slot)
-        # A private card (a living adult in a shared site) holds its place
-        # like a named card, so the dead ancestors behind it still draw.
-        shown = lab and (lab.get('name') or lab.get('private'))
-        render[slot] = ('person', lab) if shown else ('empty', None)
+        # A private card (shared home tree, D16/D20) is a real person whose
+        # parents still draw, though it carries no name.
+        render[slot] = (('person', lab) if (lab and (lab.get('name') or lab.get('private')))
+                        else ('empty', None))
     # Deepest generation actually PLACED in `render` - the depth research (or
     # its still-unresearched 'Unknown' placeholders) actually reached, which
     # may be far shallower than `max_ancestor_gen` (the full CONFIGURED depth
@@ -3845,10 +3846,12 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                             'data-wb-fill="relation_type=parent" '
                             'title="Create a stub for this ancestor" role="button" tabindex="0"')
         elif lab.get('private'):
-            # A living adult in a shared site: the word "Private" and nothing
-            # that could name or reach them (no link, dates, tooltip or line
-            # colour; chart plan 13-2).
-            cls, inner = 'ped-node tree-card-private', '<span class="ped-name">Private</span>'
+            # The shared home tree's private card (owner decisions D16/D20):
+            # a living adult relative is shown only as being there. The word
+            # "Private" and nothing else - no name, dates, link, tooltip,
+            # data attribute or branch tint - same size as any other card.
+            cls = 'ped-node' + cls_extra + ' tree-card-private'
+            inner = '<span class="ped-name">Private</span>'
         else:
             cls = 'ped-node' + cls_extra
             if branch:
@@ -6316,7 +6319,8 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir)
+        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir,
+                                                            private_cards=True)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
@@ -8608,6 +8612,97 @@ class _SiteBuilder:
                 vitals[r['type']] = r['date_edtf'] or None
         return vitals
 
+    def _tree_card_kind(self, pid: str) -> str:
+        """How the shared site's home family tree draws one person: 'shown'
+        (name, dates, link, as always), 'private' (a blank card reading
+        "Private"), or 'omit' (left out, as if not recorded). Owner decisions
+        D16 and D20 (2026-11-22, build doc 13-1); the one place the rule lives.
+
+        - dead and publishable: 'shown';
+        - restricted or by-request, alive or dead (anyone on the `merged_into`
+          chain, or an unreadable record): 'omit', and the ancestor walk does
+          not pass through them;
+        - living or unknown and known to be an adult (`_lib.is_known_adult`:
+          a recorded child, or born 18+ years before the build date):
+          'private', and their ancestors still draw;
+        - living or unknown and not known to be an adult: 'omit'.
+
+        An id the index does not hold is 'omit' too. `--linked` (the local
+        preview and workbench) always answers 'shown'. Person pages, the fan,
+        the explorers, timelines and search keep their own rules; this is a
+        home-tree rule only. The answer depends on the build date (`_today`):
+        a child who turns 18 appears on the next rebuild."""
+        if self.linked:
+            return 'shown'
+        meta = self.person_meta.get(pid)
+        if meta is None:
+            return 'omit'
+        chain = self._merge_chain(meta)
+        survivor = merge_survivor(chain)
+        # A broken merge chain has nobody to read: left out, not guessed at.
+        if survivor is None or any(r['id'] in self.restricted_persons for r in chain):
+            return 'omit'
+        if not self._person_is_redacted(meta):
+            return 'shown'
+        # The survivor speaks for every finished tombstone (their claims and
+        # `birth:` estimates count for it). A record on the chain whose merge
+        # was left half done by hand (`merged_into:` without `status: merged`,
+        # lint W140) still holds its own evidence, so it is asked too: a
+        # "born 2015" there must keep the person out (review of PR #436).
+        today = datetime.date.fromisoformat(_today())
+        asked = [survivor['id']] + [
+            r['id'] for r in chain[:-1]
+            if merge_pointer(r['status'], r['merged_into']) is None]
+        # A recorded child on any of them makes an adult (D20, owner), but
+        # only a child link the site may show: a tie the owner kept private
+        # (a restricted record, a by-request child) must not be what earns
+        # the card, or the card itself tells a relative it exists.
+        adult = (any(self._has_public_child(rid) for rid in asked)
+                 or all(is_known_adult(self.conn, rid, today, count_children=False)
+                        for rid in asked))
+        return 'private' if adult else 'omit'
+
+    def _has_public_child(self, pid: str) -> bool:
+        """Whether `pid` has a recorded child the shared site may show: the
+        claim behind THAT child link is publishable (`_claim_row_is_publishable`,
+        never pair-wide: a shared public census or address must not vouch for
+        a parent-child tie the owner kept private), and the child is not
+        restricted or by-request (anyone on their merge chain). A link with
+        no claim row behind it is judged as the site's other walks judge one."""
+        for r in self.conn.execute(
+                "SELECT r.other_id, r.claim_id, c.id, c.source_id, c.status "
+                "FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+                "WHERE r.person_id = ? AND r.rel = 'child'",
+                (pid,)):
+            child = r[0]
+            if r[2] is None:
+                if not self._has_public_claim(pid, child):
+                    continue
+            elif not self._claim_row_is_publishable(r[2], r[3], r[4]):
+                continue
+            meta = self.person_meta.get(child)
+            chain = self._merge_chain(meta) if meta is not None else []
+            if merge_survivor(chain) is None or any(
+                    c['id'] in self.restricted_persons for c in chain):
+                continue
+            return True
+        return False
+
+    def _tree_card_entry(self, pid: str, page_dir: Path) -> dict:
+        """A home-tree card for `pid`, per `_tree_card_kind`. A private card
+        carries nothing about the person (no name, dates, link or id): the
+        renderer prints the word "Private" and nothing else. An omitted
+        person returns the same blank, unnamed entry `_chart_entry` gives a
+        redacted one; callers drop them before they reach a chart."""
+        kind = self._tree_card_kind(pid)
+        if kind == 'shown':
+            return self._chart_entry(pid, page_dir)
+        blank = {'name': '', 'url': None, 'redacted': True,
+                 'dates': {'birth': None, 'death': None}}
+        if kind == 'private':
+            blank['private'] = True
+        return blank
+
     def _apex_ancestor(self, root_pid: str) -> str | None:
         """Walk `parent` edges up from `root_pid` and return the CLOSEST
         non-living, non-redacted ancestor reached - the standalone home
@@ -8677,6 +8772,17 @@ class _SiteBuilder:
                         continue
                     if not self.linked and not self._has_public_claim(cur, other):
                         continue
+                    # A restricted or by-request ancestor is left out of the
+                    # home tree, and the search does not climb past them
+                    # either: opening the page on their parent would show
+                    # their line (review of PR #436, D16). Only them: a
+                    # living parent too young to show is passed through to
+                    # the dead ancestors behind, as before.
+                    if not self.linked:
+                        meta = self.person_meta.get(other)
+                        chain = self._merge_chain(meta) if meta is not None else []
+                        if any(r['id'] in self.restricted_persons for r in chain):
+                            continue
                     seen.add(other)
                     level.append(other)
             for pid in sorted(level):
@@ -8822,43 +8928,6 @@ class _SiteBuilder:
                 'redacted': False, 'surname': meta['surname'],
                 'dates': self._person_vitals(pid)}
 
-    def _tree_card_kind(self, pid: str) -> str:
-        """How a shared site's family trees draw one person: 'shown',
-        'private' or 'omit' (chart plan 13, decision D20).
-
-        A relative opening the shared site sees every dead ancestor, and a
-        living adult relative as a card reading "Private" with nothing else on
-        it, so the tree keeps its shape and the ancestors behind them still
-        show. A living person not known to be an adult (`is_known_adult`) is
-        left out: no card, no place. A restricted or by-request person, alive
-        or dead, is left out too, and so is anyone whose merge chain cannot be
-        read. The workbench and linked preview show everyone.
-
-        TODO: PR 13-1 defines this same method for the home tree and its
-        family row; reconcile the two at merge so the rule lives once."""
-        if self.linked:
-            return 'shown'
-        meta = self.person_meta.get(pid)
-        if meta is None:
-            return 'omit'
-        chain = self._merge_chain(meta)
-        survivor = merge_survivor(chain)
-        # A broken merge chain has nobody to read: left out, not guessed at.
-        if survivor is None or any(r['id'] in self.restricted_persons for r in chain):
-            return 'omit'
-        if not self._person_is_redacted(meta):
-            return 'shown'
-        adult = is_known_adult(self.conn, survivor['id'], self._build_date())
-        return 'private' if adult else 'omit'
-
-    def _build_date(self) -> datetime.date:
-        """The day this build is made, which decides who is an adult: a child
-        who turns 18 appears as a private card from the next rebuild on."""
-        try:
-            return datetime.date.fromisoformat(_today())
-        except ValueError:
-            return datetime.date.today()
-
     def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
         """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
         `parents_married` flag (#115 reopened again - P1 post-merge Codex
@@ -8917,7 +8986,8 @@ class _SiteBuilder:
                     return 'hypothesis'
         return None
 
-    def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path) -> tuple[dict, dict]:
+    def _build_ahnentafel(self, seed: str, max_gen: int, page_dir: Path, *,
+                          private_cards: bool = False) -> tuple[dict, dict]:
         """Ahnentafel map {number: {'name','url','redacted', 'sex_derived'}} for
         the fan chart, walking `parent` edges from the seed, plus a second map
         {number: pid} of each EMPTY ancestor slot's known child (workbench mode
@@ -8925,11 +8995,7 @@ class _SiteBuilder:
         family' scoped to that child - the slot that is actually missing a
         parent, not a fixed subject). Father (a parent recorded M) takes the
         even slot, mother (F) the odd one; unknown-sex parents fill whatever
-        slot is free. In a shared site each person is drawn by
-        `_tree_card_kind`: a living adult fills the slot as a private card
-        (`private: True`, no name, dates, link or id) and the walk continues
-        behind them; a living child or a restricted person is left out, slot
-        and all, and the walk stops there.
+        slot is free.
 
         GENETIC LINE ONLY (#152 review fix, P2, SPEC §12.2). The Ahnentafel
         numbering - and the branch coloring it drives - means "the genetic
@@ -8976,8 +9042,22 @@ class _SiteBuilder:
         `_render_pedigree_svg` reads it to decide whether that pair's two
         parent slots earn the shared-vertex couple bracket or fall back to
         the plain two-elbow rendering - two known co-parents are evidence of
-        PARENTAGE, never of marriage, by themselves."""
-        labels: dict[int, dict] = {1: self._chart_entry(seed, page_dir)}
+        PARENTAGE, never of marriage, by themselves.
+
+        PRIVATE CARDS (`private_cards`: the shared home tree, and the person
+        page's fan and family chart (chart plan 13-2); owner
+        decisions D16 and D20, 2026-11-22). A relative opening the shared
+        site sees the tree behind a living adult instead of a gap: every
+        person is sorted by `_tree_card_kind`. A living adult fills their
+        slot as a blank "Private" card and the walk carries on to their
+        parents (D16: a tie may pass through a person the page does not
+        name). Someone left out (a possible child, or anyone restricted or
+        by-request) is skipped exactly like today's redacted parent: the slot
+        draws as an unresearched 'Unknown' and nothing behind them is
+        reached. A private card's `sex_derived` is False, so its slot never
+        tints a branch paternal or maternal. Off, the walk is unchanged."""
+        entry_for = self._tree_card_entry if private_cards else self._chart_entry
+        labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
         seen = {seed}
@@ -8990,7 +9070,6 @@ class _SiteBuilder:
             # SELECT means DISTINCT no longer collapses multiple claims about
             # the same pair into one row the way the old sex-only query did.
             parent_rows: dict[str, dict] = {}
-            private_parents: set[str] = set()
             for r in self.conn.execute(
                 '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
                           c.source_id, c.status
@@ -9000,19 +9079,16 @@ class _SiteBuilder:
                    ORDER BY r.other_id, r.claim_id''', (pid,)):
                 other = r['other_id']
                 # A deceased ancestor without a page (stub) still fills its slot as a
-                # name (unlinked). In a shared site a living adult fills it as a
-                # private card and the walk goes on through them to the dead
-                # ancestors behind; a living child, a restricted person and a
-                # no-public-claim edge are left out (`_tree_card_kind`).
-                if not self.linked:
-                    if (self.person_meta.get(other) is None
+                # name (unlinked); only a living/unknown/restricted ancestor stays a
+                # blank redaction, and a no-public-claim edge is skipped.
+                ometa = self.person_meta.get(other)
+                if not self.linked and private_cards:
+                    if (self._tree_card_kind(other) == 'omit'
                             or not self._has_public_claim(pid, other)):
                         continue
-                    kind = self._tree_card_kind(other)
-                    if kind == 'omit':
-                        continue
-                    if kind == 'private':
-                        private_parents.add(other)
+                elif not self.linked and (ometa is None or self._person_is_redacted(ometa)
+                                          or not self._has_public_claim(pid, other)):
+                    continue
                 subtype = (r['subtype'] or '').strip().lower() or None
                 entry = parent_rows.setdefault(
                     other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
@@ -9065,16 +9141,11 @@ class _SiteBuilder:
                 if not ppid:
                     missing_parent_of[slot_num] = pid
                     continue
-                if ppid in private_parents:
-                    # Nothing about the person but their place: no name,
-                    # dates, link or id. Their sex still picks the slot, but
-                    # it is not shown as evidence (no line colour).
-                    labels[slot_num] = {'name': '', 'url': None, 'redacted': True,
-                                        'private': True, 'sex_derived': False,
-                                        'dates': {'birth': None, 'death': None}}
-                else:
-                    labels[slot_num] = self._chart_entry(ppid, page_dir)
-                    labels[slot_num]['sex_derived'] = sex_derived
+                labels[slot_num] = entry_for(ppid, page_dir)
+                # A private card shows no sex, so its slot is no evidence of
+                # which line is paternal (`_render_pedigree_svg`'s tint rule).
+                labels[slot_num]['sex_derived'] = (
+                    sex_derived and not labels[slot_num].get('private'))
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
@@ -9097,7 +9168,8 @@ class _SiteBuilder:
         return labels, missing_parent_of
 
     def _build_family_wings(self, pid: str, page_dir: Path, *,
-                            include_siblings: bool = False) -> dict:
+                            include_siblings: bool = False,
+                            private_cards: bool = False) -> dict:
         """Spouse(s) and children for the person-page family chart (the win-1
         extension of the ancestor pedigree), as two lists of `_chart_entry`
         dicts, keyed 'spouses' / 'children'.
@@ -9142,10 +9214,25 @@ class _SiteBuilder:
         outright, no placeholder" rule applies to the SUBJECT side too: when
         `pid` is itself redacted (standalone only), every wing (including
         `_hub_siblings`, which this short-circuit also skips calling) comes
-        back empty rather than naming who a living person's family is."""
+        back empty rather than naming who a living person's family is.
+
+        PRIVATE CARDS (`private_cards`, the shared home tree only; owner
+        decisions D16 and D20, 2026-11-22). A relative opening the shared
+        site sees the owner's own family row: a living adult spouse, child or
+        sibling is a blank "Private" card that names nobody, a living person
+        not known to be an adult is left out with no gap in the row, and the
+        dead are shown in full. Every person, the subject included, is sorted
+        by `_tree_card_kind`. That replaces PR #152's "withhold all three
+        lists when the subject is redacted" for this caller: a private card
+        names nobody, and possible children are now left out by age. The
+        lists still come back empty when the subject is themself left out."""
         if not self.linked:
             pid_meta = self.person_meta.get(pid)
-            if pid_meta is None or self._person_is_redacted(pid_meta):
+            if private_cards:
+                subject_hidden = self._tree_card_kind(pid) == 'omit'
+            else:
+                subject_hidden = pid_meta is None or self._person_is_redacted(pid_meta)
+            if subject_hidden:
                 return ({'spouses': [], 'children': [], 'siblings': []} if include_siblings
                         else {'spouses': [], 'children': []})
 
@@ -9170,12 +9257,19 @@ class _SiteBuilder:
                 other = r['other_id']
                 if other == pid:
                     continue
-                if not self.linked:
+                if not self.linked and private_cards:
+                    if (self._tree_card_kind(other) == 'omit'
+                            or not self._has_public_claim(pid, other)):
+                        continue
+                elif not self.linked:
                     ometa = self.person_meta.get(other)
                     if (ometa is None or self._person_is_redacted(ometa)
                             or not self._has_public_claim(pid, other)):
                         continue
-                entry = self._chart_entry(other, page_dir)
+                entry = (self._tree_card_entry(other, page_dir) if private_cards
+                         else self._chart_entry(other, page_dir))
+                # Internal only (lanes and co-parents); the renderer never
+                # prints a wing entry's id.
                 entry['id'] = other
                 out.append(entry)
             return out
@@ -9240,10 +9334,11 @@ class _SiteBuilder:
             ]
         result = {'spouses': spouses, 'children': children}
         if include_siblings:
-            result['siblings'] = self._hub_siblings(pid, page_dir)
+            result['siblings'] = self._hub_siblings(pid, page_dir, private_cards=private_cards)
         return result
 
-    def _hub_siblings(self, pid: str, page_dir: Path) -> list[dict]:
+    def _hub_siblings(self, pid: str, page_dir: Path, *,
+                      private_cards: bool = False) -> list[dict]:
         """The home pedigree hub's own siblings (#115 lost-relatives
         mitigation): everyone else who shares at least one of the hub's own
         recorded parents, found by re-querying the same `relationships` rows
@@ -9306,6 +9401,10 @@ class _SiteBuilder:
             # `_has_public_parent_edge` asks the narrower, correct question:
             # is the parent-child relationship itself publicly backed.
             parent_ids = [p for p in parent_ids if self._has_public_parent_edge(pid, p)]
+            if private_cards:
+                # A by-request or restricted parent is left out of the home
+                # tree, and so is every sibling reached only through them.
+                parent_ids = [p for p in parent_ids if self._tree_card_kind(p) != 'omit']
         # other_id -> every shared parent_id tying them to the hub, in
         # first-discovered order (a plain dict preserves insertion order) -
         # collected in full before any candidate is gated, so a later
@@ -9325,11 +9424,17 @@ class _SiteBuilder:
         for other, via_parents in ties.items():
             if not self.linked:
                 ometa = self.person_meta.get(other)
-                if ometa is None or self._person_is_redacted(ometa):
+                if private_cards:
+                    # The shared home tree (D16/D20): a living adult sibling
+                    # is a private card, a possible child is left out.
+                    if self._tree_card_kind(other) == 'omit':
+                        continue
+                elif ometa is None or self._person_is_redacted(ometa):
                     continue
                 if not any(self._has_public_claim(par, other) for par in via_parents):
                     continue
-            entry = self._chart_entry(other, page_dir)
+            entry = (self._tree_card_entry(other, page_dir) if private_cards
+                     else self._chart_entry(other, page_dir))
             entry['id'] = other
             out.append(entry)
         return out
@@ -9512,14 +9617,25 @@ class _SiteBuilder:
         preview always seeds on the real configured person, and never hits
         this branch's redaction checks at all.
 
+        THE HUB STAYS THE HOME PERSON (owner decisions D16 and D20,
+        2026-11-22, build doc 13-1). A relative opening the shared site now
+        sees the tree start where the archive is centred, with both sides of
+        the family behind it, instead of whichever dead ancestor the walk
+        reached first. When `_tree_card_kind(seed)` is 'shown' or 'private'
+        the seed is the hub: a living adult hub is a blank "Private" card,
+        and the chart, its family row and the ancestors behind it are built
+        with private cards (`_build_ahnentafel`/`_build_family_wings`'s
+        `private_cards`). `_apex_ancestor` above is now only the fallback for
+        a seed that is left out ('omit': restricted, by-request, or living
+        and not known to be an adult).
+
         Returns the index.html template context: {'svg', 'caption', 'note'}.
         `note` is None on every ordinary build; it is set only in that last,
         rare case."""
         hub = seed
         note: str | None = None
         if not self.linked:
-            meta = self.person_meta.get(seed)
-            if meta is None or self._person_is_redacted(meta):
+            if self._tree_card_kind(seed) == 'omit':
                 found = self._apex_ancestor(seed)
                 if found is not None:
                     hub = found
@@ -9531,6 +9647,7 @@ class _SiteBuilder:
                             "home page.")
 
         hub_meta = self.person_meta.get(hub)
+        hub_private = self._tree_card_kind(hub) == 'private'
         if not self.linked and hub_meta and self._person_is_redacted(hub_meta):
             hub_name = _LIVING_LABEL
         elif hub_meta and self._shown_row(hub_meta)['name']:
@@ -9539,14 +9656,21 @@ class _SiteBuilder:
             hub_name = fmt_id_display(hub)
 
         depth = 0 if note else self._home_pedigree_depth(site_cfg)
-        ahnen, missing_parent_of = self._build_ahnentafel(hub, depth, page_dir)
-        wings = self._build_family_wings(hub, page_dir, include_siblings=True)
+        ahnen, missing_parent_of = self._build_ahnentafel(hub, depth, page_dir,
+                                                          private_cards=True)
+        wings = self._build_family_wings(hub, page_dir, include_siblings=True,
+                                         private_cards=True)
         # hub_name is always the blank _LIVING_LABEL here (`note` is only set
         # when `seed`/`hub` is itself redacted), so a caption built from it
         # ("Living Person's recorded family") would name nothing real - the
-        # explanatory `note` below already carries the actual message.
-        caption = ('No public pedigree is available for the home page.' if note else
-                  f"{hub_name}'s family, tracing back through the generations →")
+        # explanatory `note` below already carries the actual message. A
+        # private hub's caption names nobody either.
+        if note:
+            caption = 'No public pedigree is available for the home page.'
+        elif hub_private:
+            caption = 'The family, tracing back through the generations →'
+        else:
+            caption = f"{hub_name}'s family, tracing back through the generations →"
         axis_label = 'ancestors →' if depth else None
         svg = _render_pedigree_svg(
             ahnen, wings['spouses'], wings['children'], missing_parent_of=missing_parent_of,

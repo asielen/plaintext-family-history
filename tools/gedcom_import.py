@@ -46,6 +46,11 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _clean_vendor_markup      - MyHeritage/double-encoded HTML entities and <br> → plain text
 #    _Node                     - one GEDCOM line + its children (+ source line no.)
 #
+#  Photo links (listed, never written)
+#    _collect_photo_links      - OBJE/FILE under each person → _PhotoLink (web links by host only)
+#    _match_photo_links        - read-only match against .cache/photos.sqlite (path, then file name)
+#    _photo_plan_lines / _photo_notes_lines / _photo_handoff_text - plan, source Notes, after-apply hint
+#
 #  Field derivation
 #    gedcom_date_to_edtf       - GEDCOM date phrase → valid EDTF, or None
 #    _translate_gedcom_date    - strict grammar first, then the free-form fallback
@@ -90,14 +95,17 @@ import html.entities
 import io
 import re
 import shutil
+import sqlite3
 import sys
 from collections import Counter
 from dataclasses import dataclass, field
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    PHOTO_EXTENSIONS,
     render_person_body_scaffold,  # the full §16 profile body every new person record gets
     link_list_lines,
     normalize_id,
@@ -119,16 +127,22 @@ from _lib import (
     is_template_file,
     is_valid_edtf,
     is_working_copy,
+    LinkWriter,
+    link_entry,
+    link_writer,
     load_fha_yaml,
     mint_ids,
     normalize_date,
     parse_filename,
     path_to_alias,
+    photoindex_status,
     read_record,
     resolve_path,
     resolve_root_arg,
     strip_generational_suffix,
     safe_load_yaml,
+    shell_quote,
+    sqlite_readonly_uri,
     yaml_inline,
 )
 
@@ -283,6 +297,53 @@ _GEDCOM_LINE_RE = re.compile(
 _NOTE_CHILD_TAGS = frozenset({'CONC', 'CONT', 'SOUR', 'REFN', 'RIN', 'CHAN',
                               'LANG', 'MIME', 'TRAN'})
 
+# Signs a broken level number can carry ("-1 NAME", "+1 NAME", a typographic
+# minus or dash pasted from a word processor).
+_LEVEL_SIGNS = '-+−‐‑‒–—﹣＋－'
+
+
+# After a sign or an odd space: digits, then a GEDCOM tag ("NAME", "@I1@ INDI").
+# The tag must be a real GEDCOM 5.5.1/7.0 tag or start with "_", so note prose
+# such as "-1920 I started school" or "-1942 WWII took both brothers" is prose,
+# not a broken level.
+_BROKEN_LEVEL_RE = re.compile(
+    r'\d+\s+(?:@[^@\s]+@\s+)?(_[A-Z0-9_]+|[A-Z][A-Z0-9]{1,5})(?:\s|$)')
+_GEDCOM_TAGS = frozenset('''
+    ABBR ADDR ADOP ADR1 ADR2 ADR3 AFN AGE AGNC ALIA ANCE ANCI ANUL ASSO AUTH
+    BAPL BAPM BARM BASM BIRT BLES BURI CALN CAST CAUS CENS CHAN CHAR CHIL CHR
+    CHRA CITY CONC CONF CONL CONT COPR CORP CREM CROP CTRY DATA DATE DEAT DESC
+    DESI DEST DIV DIVF DSCR EDUC EMAIL EMIG ENDL ENGA EVEN EXID FACT FAM FAMC
+    FAMS FAX FCOM FILE FONE FORM GEDC GIVN GRAD HEAD HEIGHT HUSB IDNO IMMI INDI
+    LANG LATI LEFT LONG MAP MARB MARC MARL MARR MARS MEDI MIME NAME NATI NATU
+    NCHI NICK NMR NO NOTE NPFX NSFX OBJE OCCU ORDI ORDN PAGE PEDI PHON PHRASE
+    PLAC POST PROB PROP PUBL QUAY REFN RELA RELI REPO RESI RESN RETI RFN RIN
+    ROLE ROMN SCHMA SDATE SEX SLGC SLGS SNOTE SOUR SPFX SSN STAE STAT SUBM SUBN
+    SURN TEMP TEXT TIME TITL TRAN TRLR TYPE UID VERS WIDTH WIFE WILL WWW
+'''.split())
+
+
+def _looks_like_level(line: str) -> bool:
+    """True when a line that failed the grammar still looks like an attempt at
+    a GEDCOM line, so it is reported as unreadable instead of being joined into
+    the value above it, where a "-1 NAME x" line would quietly become part of
+    his name.
+
+    A line starting with a digit (after spaces, tabs or a BOM) always counts.
+    One that starts with a sign or dash, or with another kind of space (a
+    no-break space), counts only when a capitalised tag follows the number:
+    "-1 NAME x" is reported, while note prose such as "-5 below zero that
+    January" or "+2 more cousins" still joins the note, words kept."""
+    s = line.lstrip(' \t﻿')
+    if s[:1].isdigit():
+        return True
+    rest = s.lstrip()
+    if rest[:1] and rest[0] in _LEVEL_SIGNS:
+        rest = rest[1:]
+    elif rest == s:
+        return False
+    m = _BROKEN_LEVEL_RE.match(rest)
+    return bool(m) and (m.group(1).startswith('_') or m.group(1) in _GEDCOM_TAGS)
+
 
 def _decode_gedcom_bytes(raw: bytes, path: Path) -> str:
     """Decode a GEDCOM file as UTF-8, refusing anything else with a plain fix.
@@ -320,7 +381,8 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     words are kept; node line numbers stay true because no node is made).
     Returns (records, malformed, joined). `malformed` describes lines that fit
     no grammar (reported as warnings, never fatal - the filed copy keeps them);
-    a line that starts with a digit, or text before any node, still lands there
+    a line that starts with a digit (or a sign and a number before a tag, so
+    "-1 NAME x" counts; see _looks_like_level), or text before any node, still lands there
     because it looks like an attempt at a GEDCOM line (except, in a file that
     has level-less lines, a line nested under a NOTE/TEXT with a tag a note
     cannot have, such as "2 brothers nearby"). `joined` holds the line
@@ -336,8 +398,11 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
     malformed: list[str] = []
     joined: list[int] = []
     lines = text.splitlines()
+    # Whether the file has level-less lines at all. This keeps the plain
+    # "starts with a digit" test on purpose: a line reported by the stricter
+    # _looks_like_level must never switch the prose rule off for the file.
     broken = any(ln.strip() and not _GEDCOM_LINE_RE.match(ln.strip('﻿'))
-                 and not ln.lstrip(' \t\ufeff')[:1].isdigit() for ln in lines)
+                 and not ln.lstrip(' 	﻿')[:1].isdigit() for ln in lines)
 
     for lineno, rawline in enumerate(lines, start=1):
         if not rawline.strip():
@@ -355,7 +420,7 @@ def parse_gedcom(text: str) -> tuple[list[_Node], list[str], list[int]]:
                  and not m.group(3).startswith('_')
                  and m.group(3).upper() not in _NOTE_CHILD_TAGS)
         if not m or prose:
-            if last is not None and (prose or not rawline.lstrip(' \t\ufeff')[:1].isdigit()):
+            if last is not None and (prose or not _looks_like_level(rawline)):
                 last.value += ' ' + rawline.strip()
                 joined.append(lineno)
             else:
@@ -794,6 +859,86 @@ def living_flag_for_import(has_death: bool, birth_edtf: str | None,
     return 'unknown'
 
 
+# ── Several birth or death facts for one person (#449) ────────────────────────
+
+def _date_span_days(edtf: str) -> int:
+    """How many days an EDTF value could mean: 0 for an exact day, about 365
+    for a bare year, more for `about`, ranges and open forms. The smaller the
+    span, the more exact the date. An unreadable value counts as vaguest."""
+    if not is_valid_edtf(edtf):
+        return 10 ** 7
+    lo, hi = edtf_bounds(edtf)
+    try:
+        return (datetime.date.fromisoformat(hi) - datetime.date.fromisoformat(lo)).days
+    except ValueError:
+        # `about 9999` or `about 1` reach past what a calendar date can hold:
+        # rank it vaguest rather than stop the whole import on one typo.
+        return 10 ** 7
+
+
+def _best_event_date(dated: list[tuple[str, int]]) -> str | None:
+    """The date the new record shows when a tree has several facts for one
+    event: the most exact one, and on a tie the first in the file (exporters
+    put the preferred fact first). `dated` is (EDTF, line) for the facts that
+    carry a readable date, in file order; a fact with no date is never in it,
+    so it can never wipe a dated one."""
+    if not dated:
+        return None
+    # An `about` or `maybe` day spans no wider than an exact day once read,
+    # so the hedge breaks the tie: `14 Jan 1850` beats `about 12 Jan 1850`.
+    return min(dated, key=lambda d: (_date_span_days(d[0]),
+                                     any(ch in d[0] for ch in '~?%')))[0]
+
+
+def _unread_date_may_be_recent(raw: str | None) -> bool:
+    """True when a birth date the importer could not read holds a year within
+    the living cutoff (`05/06/1995`, `INT 1995 (per cousin)`): it might be her
+    real birth, so it keeps `living: unknown`. A dual-dated `1750/51`, a
+    Julian `1750` or a bare `Unknown` cannot make anyone young, so it is
+    treated like a fact with no date."""
+    if not raw:
+        return False
+    runs = re.findall(r'\d+', raw)
+    if not runs:
+        return False                    # `Unknown`: no year at all
+    years = [int(r) for r in runs if 3 <= len(r) <= 4]
+    if '@#DHEBREW@' in raw.upper():
+        # Hebrew years run 3,760 ahead (5600 is 1840), so compare the real year.
+        years = [y - 3760 for y in years]
+    if not years or any(len(r) > 4 for r in runs):
+        # `5/6/95`, `Jun 95`, `19950506`: a year is there but can't be told
+        # apart, so it may be recent.
+        return True
+    this_year = datetime.date.today().year
+    return any(this_year - y <= _LIVING_CUTOFF_YEARS for y in years)
+
+
+def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
+    """The birth date the living guess reads when a tree has several: the one
+    that could make the person youngest. One of the tree's own facts saying
+    she may be young is doubt, and doubt keeps `living: unknown` (SPEC §19),
+    so she is marked not living only when every dated fact says she was born
+    more than 110 years ago. An open-ended date (no latest year) wins outright."""
+    best: tuple[int, str] | None = None
+    for edtf, _line in dated:
+        year = _birth_year_upper(edtf)
+        if year is None:
+            return edtf
+        if best is None or year > best[0]:
+            best = (year, edtf)
+    return best[1] if best else None
+
+
+def _dates_disagree(dated: list[tuple[str, int]]) -> bool:
+    """True when two of the dates cannot both be right (their possible spans
+    do not overlap). `1878` and `12 Jan 1878` agree: one only adds detail."""
+    spans = [edtf_bounds(e) for e, _ in dated if is_valid_edtf(e)]
+    if len(spans) < len(dated):
+        return len({e for e, _ in dated}) > 1
+    return any(a[1] < b[0] or b[1] < a[0]
+               for i, a in enumerate(spans) for b in spans[i + 1:])
+
+
 # ── Plan data model ───────────────────────────────────────────────────────────
 
 @dataclass
@@ -877,8 +1022,11 @@ class ImportPlan:
     loose_dates: int = 0                   # dates read by the free-form fallback (#293)
     loose_date_reads: list[str] = field(default_factory=list)   # every one, uncapped
     date_downgrades: list[str] = field(default_factory=list)    # unreadable, uncapped
+    date_conflicts: list[str] = field(default_factory=list)     # disagreeing births/deaths
     joined_lines: int = 0                  # level-less lines folded into the line above
     markup_cleaned: int = 0                # values that had web-page codes cleaned
+    photo_links: list['_PhotoLink'] = field(default_factory=list)  # photos the old program linked
+    photo_catalog: str = 'ready'           # 'ready' or why the photo catalog could not be used
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -929,12 +1077,15 @@ def _map_individual(
     indi: _Node, pid: str, cid_pool: list[str],
     sour_titles: dict[str, str], sour_use: Counter,
     consumed: set[int], date_downgrades: list[str], date_loose: list[str],
+    date_conflicts: list[str] | None = None,
 ) -> tuple[_PersonStub, list[_Claim], dict[str, str]]:
     """One INDI record → its person stub, its claims, and its FAMC pedigree map.
 
     Returns (stub, claims, {fam_xref: PEDI value}) - the pedigree map lets the
     FAM pass stamp `subtype: adoptive`/`foster` on the right parent-child claim.
-    Claims take ids from `cid_pool` in order (pre-minted in one batch)."""
+    Claims take ids from `cid_pool` in order (pre-minted in one batch).
+    A person whose tree gives two birth (or death) dates that cannot both be
+    right gets one line in `date_conflicts`, for the plan to show."""
     consumed.add(id(indi))
     names = indi.children_tagged('NAME')
     for n in names:
@@ -964,8 +1115,10 @@ def _map_individual(
         sex = ''
 
     claims: list[_Claim] = []
-    birth_edtf: str | None = None
-    death_edtf: str | None = None
+    # Every dated birth and death fact, (EDTF, line) in file order (#449).
+    births: list[tuple[str, int]] = []
+    deaths: list[tuple[str, int]] = []
+    unread_births: list[tuple[str, int]] = []   # a DATE nobody could read
     has_death = False
     pedi_map: dict[str, str] = {}
 
@@ -1033,11 +1186,17 @@ def _map_individual(
         if tag in _EVENT_MAP:
             claim_type, verb = _EVENT_MAP[tag]
             claim = _event_claim(node, claim_type, verb)
-            if tag == 'BIRT':
-                birth_edtf = claim.date
+            # A second birth fact with no date (Ancestry's alternate facts)
+            # must not blank the dated one on the new record: collect the
+            # dated ones and choose after the loop.
+            if tag == 'BIRT' and claim.date:
+                births.append((claim.date, node.line))
+            elif tag == 'BIRT' and _unread_date_may_be_recent(node.child_value('DATE')):
+                unread_births.append((node.child_value('DATE'), node.line))
             elif tag == 'DEAT':
                 has_death = True
-                death_edtf = claim.date
+                if claim.date:
+                    deaths.append((claim.date, node.line))
             claims.append(claim)
             continue
         if tag in _ADMIN_TAGS:
@@ -1053,10 +1212,41 @@ def _map_individual(
             continue
         # anything else: unread; the filed copy preserves it.
 
+    birth_edtf = _best_event_date(births)
+    death_edtf = _best_event_date(deaths)
+    # The living guess: when the dated births agree, the most exact one
+    # stands for them all (`AFT 1850` adds nothing to `12 Jan 1878`). When
+    # they disagree, or a birth date could not be read, one of the tree's own
+    # facts may say she is young, and doubt keeps `unknown` (SPEC §19).
+    if unread_births:
+        living = living_flag_for_import(has_death, None)
+    elif _dates_disagree(births):
+        living = living_flag_for_import(has_death, _latest_birth_reading(births))
+    else:
+        living = living_flag_for_import(has_death, birth_edtf)
+    # Say why someone born in 1878 is still hidden as living.
+    hidden_by_doubt = (living == 'unknown'
+                       and living_flag_for_import(has_death, birth_edtf) == 'false')
+    if date_conflicts is not None:
+        who = f'{indi.xref} {display or "(no name)"}'
+        for label, dated, chosen in (('birth', births, birth_edtf),
+                                     ('death', deaths, death_edtf)):
+            if _dates_disagree(dated):
+                listed = ', '.join(f'{e} (line {ln})' for e, ln in dated)
+                line = f'{who} {label}: {listed}; the record shows {chosen}'
+                if label == 'birth' and hidden_by_doubt and not unread_births:
+                    line += (', and keeps living: unknown because another of '
+                             'these dates could make the person living')
+                date_conflicts.append(line)
+        if hidden_by_doubt and unread_births:
+            unread = ', '.join(f'{raw!r} (line {ln})' for raw, ln in unread_births)
+            date_conflicts.append(
+                f'{who} birth: the record shows {birth_edtf}, but {unread} could '
+                'not be read, so it keeps living: unknown in case that date '
+                'makes the person living')
     stub = _PersonStub(
         xref=indi.xref, pid=pid, name=display, given=given, surname=surname,
-        variants=variants, sex=sex,
-        living=living_flag_for_import(has_death, birth_edtf),
+        variants=variants, sex=sex, living=living,
         birth=birth_edtf, death=death_edtf,
         recorded_surname=_explicit_surname(
             names[0].value if names else '', display, surname),
@@ -1329,6 +1519,389 @@ def _count_unread(records: list[_Node], consumed: set[int]) -> tuple[int, list[t
     return total, tally.most_common(5)
 
 
+# ── Photo links (what his old program linked to each person) ──────────────────
+#
+# For him: a tree from another program often knows which photo is whose. This
+# reads those links, looks for the same photos in his photo folders, and only
+# LISTS them (plan + source record). Putting a name on a photo stays with
+# `fha photoindex tag-person`, one photo at a time, with his yes. Nothing here
+# opens a photo file for writing; the catalog is opened read-only.
+
+_PHOTO_EXTS = PHOTO_EXTENSIONS   # the catalog's own list: a HEIF or raw photo it holds is matched too
+_MISSING_PREFIX = 'MISSING:'     # photoindex's key for a vanished file (own copy: tools never import tools)
+_SCHEME_RE = re.compile(r'^([A-Za-z][A-Za-z0-9+.\-]+):')   # 2+ letters: `C:` is a drive, not a scheme
+_FOLDER_HINT_MIN = 5
+
+
+@dataclass
+class _PhotoLink:
+    person_xref: str
+    pid: str
+    name: str
+    raw_file: str            # as the GEDCOM wrote it (never printed whole: it can carry a home folder)
+    title: str
+    primary: bool
+    line: int
+    kind: str = 'local'      # 'local' | 'web'
+    host: str = ''           # web links: host only (the rest can carry account tokens)
+    basename: str = ''
+    folder: str = ''         # last folder name of the old path
+    status: str = ''         # 'matched' | 'ambiguous' | 'not found' | 'already tagged'
+    how: str = ''            # 'same file' | 'same file name'
+    alias: str = ''          # catalog alias path when matched
+    candidates: list[str] = field(default_factory=list)
+
+
+def _split_photo_value(raw: str) -> tuple[str, str, str, str] | None:
+    """FILE value -> (kind, path, host, basename), or None to ignore it.
+
+    Windows and POSIX separators both read as '/'; a `file://` URL is decoded to
+    the path it names; any other `scheme:` is a web link, reduced to its host."""
+    value = raw.strip().strip('"')
+    if not value:
+        return None
+    m = _SCHEME_RE.match(value)
+    if m and m.group(1).lower() != 'file':
+        host = (urlsplit(value).hostname or '').lower().removeprefix('www.')
+        return 'web', '', host or m.group(1).lower(), ''
+    if m:                                    # file:///C:/x.jpg, file:///home/x.jpg
+        path = unquote(urlsplit(value).path)
+        if re.match(r'^/[A-Za-z]:', path):
+            path = path[1:]
+    else:
+        path = value
+    path = path.replace('\\', '/')
+    base = path.rstrip('/').rsplit('/', 1)[-1]
+    if Path(base).suffix.lower() not in _PHOTO_EXTS:
+        return None                          # a document, a video, a bare id: not a photo link
+    return 'local', path, '', base
+
+
+def _collect_photo_links(records: list[_Node], xref_pid: dict[str, str],
+                         names: dict[str, str], consumed: set[int]) -> list[_PhotoLink]:
+    """Every image link under each person (and under their events), in file order.
+
+    Inline `OBJE` carries `FILE` children; a pointer `OBJE @O1@` names a level-0
+    record that does. The OBJE/FILE/FORM/TITL/_PRIM lines read are marked
+    consumed so the plan stops calling them unread. Media under a source
+    citation (on the person or on one of their events) or a family is not
+    read."""
+    objects = {r.xref: r for r in records if r.tag == 'OBJE' and r.xref}
+    links: list[_PhotoLink] = []
+    seen: set[tuple[str, str]] = set()
+
+    def eat(node: _Node) -> None:
+        consumed.add(id(node))
+        for c in node.children:
+            if c.tag in ('FILE', 'FORM', 'TITL', '_PRIM', 'MEDI', '_TYPE', 'TYPE'):
+                eat(c)
+
+    for indi in (r for r in records if r.tag == 'INDI'):
+        pid = xref_pid.get(indi.xref)
+        if not pid:
+            continue
+        photo_ptr = indi.child('_PHOTO')
+        primary_target = photo_ptr.value.strip() if photo_ptr else ''
+        if photo_ptr is not None:
+            consumed.add(id(photo_ptr))
+        # The person and their events/attributes. A source citation's media
+        # (`1 SOUR` / `2 OBJE`) is a scan of the record that supports them,
+        # not a photo of them, so it is never offered for tagging.
+        holders = [indi] + [c for c in indi.children if c.tag not in ('OBJE', 'SOUR')]
+        for holder in holders:
+            for obje in holder.children_tagged('OBJE'):
+                ref = obje.value.strip()
+                pointer = bool(re.fullmatch(r'@[^@\s]+@', ref))
+                body = objects.get(ref) if pointer else obje
+                if body is None:
+                    continue
+                eat(obje)
+                if body is not obje:
+                    eat(body)
+                prim = (pointer and ref == primary_target) or any(
+                    n.value.strip().upper() == 'Y'
+                    for n in body.children_tagged('_PRIM') + obje.children_tagged('_PRIM'))
+                for f in body.children_tagged('FILE'):
+                    parsed = _split_photo_value(f.value)
+                    if parsed is None:
+                        continue
+                    kind, path, host, base = parsed
+                    if _media_type(f, body, obje) in _NOT_A_PORTRAIT:
+                        continue                 # a scanned document or gravestone, not their photo
+                    key = (pid, f.value.strip().replace('\\', '/').casefold())
+                    if key in seen:
+                        continue
+                    seen.add(key)
+                    title = (f.child_value('TITL') or body.child_value('TITL')
+                             or obje.child_value('TITL')).strip()
+                    prim_f = prim or any(n.value.strip().upper() == 'Y'
+                                         for n in f.children_tagged('_PRIM'))
+                    links.append(_PhotoLink(
+                        person_xref=indi.xref, pid=pid, name=names.get(indi.xref, ''),
+                        raw_file=path, title=title, primary=prim_f, line=f.line,
+                        kind=kind, host=host, basename=base,
+                        folder=_old_folder_name(path)))
+    return links
+
+
+# A media type the old program gave that says "not a photo of the person"
+# (GEDCOM MEDI values, and the words Ancestry / Family Tree Maker use).
+# No type, or `photo` / `electronic` / `image`, is still read as a photo.
+_NOT_A_PORTRAIT = frozenset({
+    'document', 'census', 'certificate', 'record', 'book', 'card', 'fiche',
+    'film', 'magazine', 'manuscript', 'map', 'newspaper', 'obituary', 'story',
+    'tombstone', 'headstone', 'gravestone', 'audio', 'video',
+})
+
+
+def _media_type(*nodes: _Node) -> str:
+    """The media type the old program gave a FILE/OBJE (`FORM`/`TYPE`,
+    `FORM`/`MEDI`, `MEDI`, `_TYPE`), lowercased; '' when none."""
+    for node in nodes:
+        for c in node.children:
+            if c.tag == 'FORM':
+                for cc in c.children:
+                    if cc.tag in ('TYPE', 'MEDI') and cc.value.strip():
+                        return cc.value.strip().casefold()
+            elif c.tag in ('MEDI', '_TYPE', 'TYPE') and c.value.strip():
+                return c.value.strip().casefold()
+    return ''
+
+
+def _old_folder_name(path: str) -> str:
+    """The last folder name of an old photo path, for the plan's "most were
+    in a folder called ..." hint. Never a home folder: under `Users/` or
+    `home/` that name is his account name."""
+    parts = [p for p in path.rstrip('/').split('/')[:-1] if p]
+    if not parts:
+        return ''
+    if len(parts) >= 2 and parts[-2].casefold() in ('users', 'home', 'documents and settings'):
+        return ''
+    return parts[-1]
+
+
+def _exact_photo_alias(archive_root: Path, fha_config: dict, raw: str, ged_dir: Path,
+                       by_alias: dict[str, str]) -> str:
+    """The catalog alias of the file the GEDCOM names, when that very path exists
+    here (absolute, or beside the .ged); else ''. Only existence is checked."""
+    try:
+        cand = Path(raw)
+        if not cand.is_absolute():
+            cand = ged_dir / raw
+        if not cand.is_file():
+            return ''
+        alias = path_to_alias(cand, 'photos', fha_config, archive_root)
+    except (OSError, ValueError, RuntimeError):
+        return ''
+    return by_alias.get(alias.casefold(), '')
+
+
+def _match_photo_links(archive_root: Path, fha_config: dict, links: list[_PhotoLink],
+                       ged_dir: Path) -> str:
+    """Fill each local link's match, read-only. Returns the catalog state.
+
+    'ready' when the catalog was used, else the `photoindex_status` word
+    ('absent', 'unreadable', 'old-schema') so the plan can say how to fix it.
+    A stale catalog is still used: this only suggests, and `tag-person`
+    re-checks freshness itself before it writes anything."""
+    local = [lk for lk in links if lk.kind == 'local']
+    if not local:
+        return 'ready'
+    state, _lag = photoindex_status(archive_root, fha_config)
+    if state in ('absent', 'unreadable', 'old-schema'):
+        return state
+    db = archive_root / '.cache' / 'photos.sqlite'
+    try:
+        conn = sqlite3.connect(sqlite_readonly_uri(db), uri=True)
+    except (sqlite3.Error, OSError, ValueError):
+        return 'unreadable'
+    try:
+        rows = conn.execute(
+            'SELECT path, group_id, is_primary FROM photos WHERE path NOT LIKE ?',
+            (f'{_MISSING_PREFIX}%',)).fetchall()
+        tagged = {(p, (k or '').lower()) for p, k in conn.execute(
+            "SELECT path, keyword FROM photo_keywords WHERE LOWER(keyword) LIKE 'p-%'")}
+    except sqlite3.Error:
+        return 'unreadable'
+    finally:
+        conn.close()
+
+    by_alias = {r[0].casefold(): r[0] for r in rows}
+    group_of = {r[0]: (r[1] or f'#{r[0]}') for r in rows}
+    groups: dict[str, list[tuple[str, int]]] = {}
+    for path, _gid, prim in rows:
+        groups.setdefault(group_of[path], []).append((path, int(prim or 0)))
+    by_name: dict[str, set[str]] = {}
+    for path, gid in group_of.items():
+        by_name.setdefault(path.rsplit('/', 1)[-1].casefold(), set()).add(gid)
+
+    def group_rep(gid: str) -> str:
+        """One photo per group: the chosen primary, so fronts/backs/copies count once."""
+        return sorted(groups[gid], key=lambda m: (-m[1], m[0]))[0][0]
+
+    for lk in local:
+        alias = _exact_photo_alias(archive_root, fha_config, lk.raw_file, ged_dir, by_alias)
+        if alias:
+            lk.how, lk.alias = 'same file', alias
+            gid = group_of[alias]
+        else:
+            gids = sorted(by_name.get(lk.basename.casefold(), ()))
+            if not gids:
+                lk.status = 'not found'
+                continue
+            if len(gids) > 1:
+                lk.status = 'ambiguous'
+                lk.candidates = sorted(group_rep(g) for g in gids)   # every one: his photo may be the 5th
+                continue
+            gid = gids[0]
+            lk.how, lk.alias = 'same file name', group_rep(gid)
+        lk.status = 'matched'
+        want = lk.pid.lower()
+        if any((p, want) in tagged for p, _ in groups[gid]):
+            lk.status = 'already tagged'
+    return 'ready'
+
+
+def _photo_folder_hint(links: list[_PhotoLink]) -> str:
+    """The old photo folder's name when many missing photos came from one folder
+    (the name only: the full path carries his Windows user name)."""
+    folders = Counter(lk.folder for lk in links
+                      if lk.kind == 'local' and lk.status == 'not found' and lk.folder)
+    if not folders:
+        return ''
+    name, n = folders.most_common(1)[0]
+    return name if n >= _FOLDER_HINT_MIN else ''
+
+
+def _photo_web_lines(links: list[_PhotoLink]) -> list[str]:
+    hosts = Counter(lk.host for lk in links if lk.kind == 'web')
+    if not hosts:
+        return []
+    total = sum(hosts.values())
+    return [f'    {total:,} {"is a web link" if total == 1 else "are web links"} '
+            f'({", ".join(sorted(hosts))}), not photos on this computer.']
+
+
+def _photo_plan_lines(plan: 'ImportPlan', *, capped: bool) -> list[str]:
+    """The 'Photos your old program linked' plan section ([] when there are none)."""
+    links = plan.photo_links
+    if not links:
+        return []
+    cap = _PLAN_DETAIL_CAP if capped else len(links)
+    people = len({lk.person_xref for lk in links})
+    lines = ['']
+    if plan.photo_catalog != 'ready':
+        fix = ("Your photo catalog isn't built yet, so they can't be looked for."
+               if plan.photo_catalog == 'absent' else
+               "Your photo catalog can't be read, so they can't be looked for.")
+        lines.append(f'  Photos your old program linked: {len(links):,}. {fix} '
+                     'Run fha photoindex, then run this plan again.')
+        return lines + _photo_web_lines(links)
+    lines.append(f'  Photos your old program linked: {len(links):,} '
+                 f'({people:,} {"person" if people == 1 else "people"})')
+    by = {s: [lk for lk in links if lk.kind == 'local' and lk.status == s]
+          for s in ('matched', 'ambiguous', 'not found', 'already tagged')}
+    if by['matched']:
+        n = len(by['matched'])
+        lines.append(f'    {n:,} {"is" if n == 1 else "are"} already in your photo folders:')
+        for lk in by['matched'][:cap]:
+            lines.append(f'      {lk.name or lk.person_xref}   {lk.alias} ({lk.how})')
+        if len(by['matched']) > cap:
+            lines.append(f'      ... and {len(by["matched"]) - cap:,} more '
+                         '(use --plan-out FILE to write the full plan)')
+    if by['already tagged']:
+        lines.append(f'    {len(by["already tagged"]):,} already carry that person\'s '
+                     'name in your photo folders (nothing to do).')
+    if by['ambiguous']:
+        n = len(by['ambiguous'])
+        lines.append(f'    {n:,} {"matches" if n == 1 else "match"} more than one photo by name - '
+                     'pick the right one when you tag:')
+        for lk in by['ambiguous'][:cap]:
+            shown = lk.candidates[:3] if capped else lk.candidates
+            more = len(lk.candidates) - len(shown)
+            lines.append(f'      {lk.name or lk.person_xref}   {lk.basename} could be '
+                         + ' or '.join(shown)
+                         + (f' (or {more:,} more, listed in the full plan and the '
+                            "source's Notes)" if more else ''))
+        if len(by['ambiguous']) > cap:
+            lines.append(f'      ... and {len(by["ambiguous"]) - cap:,} more')
+    if by['not found']:
+        hint = _photo_folder_hint(links)
+        tail = (f' Most were in a folder called "{hint}"; if you still have it, copy '
+                'it into your photo folders, run fha photoindex, then run this plan '
+                'again.') if hint else ''
+        lines.append(f'    {len(by["not found"]):,} were not found in your photo '
+                     f'folders.{tail}')
+    return lines + _photo_web_lines(links)
+
+
+def _photo_notes_lines(plan: 'ImportPlan', links_writer) -> list[str]:
+    """The source record's durable photo list: the find-photos skill's work queue.
+
+    Matched photos are named by alias path; ambiguous and not-found ones by file
+    name only; web links are counted, never listed. It survives a cache wipe and
+    reads without any tool."""
+    unchecked = plan.photo_catalog != 'ready'
+    pending = [lk for lk in plan.photo_links
+               if lk.kind == 'local' and (unchecked or lk.status in (
+                   'matched', 'ambiguous', 'not found'))]
+    web = sum(1 for lk in plan.photo_links if lk.kind == 'web')
+    if not pending and not web:
+        return []
+    lines = ['', 'Photos the old program linked to people. Each is a question for '
+                 'someone who knows the faces, answered one photo at a time with '
+                 '`fha photoindex tag-person`. Nothing was written to any photo.']
+    for lk in pending:
+        who = link_entry(lk.pid, lk.name, links_writer)
+        title = f' "{lk.title}"' if lk.title else ''
+        if lk.status == 'matched':
+            lines.append(f'- {who}: {lk.alias}{title} (found by its '
+                         f'{lk.how.removeprefix("same ")})')
+        elif lk.status == 'ambiguous':
+            lines.append(f'- {who}: {lk.basename}{title} (matches more than one '
+                         'photo: ' + ', '.join(lk.candidates) + ')')
+        elif unchecked:
+            why = ('was not built' if plan.photo_catalog == 'absent'
+                   else 'could not be read')
+            lines.append(f'- {who}: {lk.basename}{title} (not looked for: the photo '
+                         f'catalog {why} when imported)')
+        else:
+            lines.append(f'- {who}: {lk.basename}{title} (not in the photo folders '
+                         'when imported)')
+    if web:
+        lines.append(f'- {web:,} more {"was a web link" if web == 1 else "were web links"}'
+                     ', not photos on this computer.')
+    return lines
+
+
+_PHOTO_HANDOFF = """\
+{n:,} {photos} your old program linked {are} already in your photo folders. To put each
+person's name on their photo (one photo at a time, each with your yes):
+  "go through the photos my old tree linked"
+or run, for example (the first line brings the photo catalog up to date
+with the people just added; tag-person needs that):
+  fha photoindex
+  {command}{caution}
+The full list is in the new source's Notes."""
+
+
+def _photo_handoff_text(plan: 'ImportPlan') -> str:
+    """The after-apply hand-off ('' when no photo matched). Printed only after
+    apply: a dry-run p-id is minted but not reserved, so a re-plan mints others."""
+    matched = [lk for lk in plan.photo_links if lk.status == 'matched']
+    if not matched:
+        return ''
+    first = matched[0]
+    command = ('fha photoindex tag-person ' + shell_quote(fmt_id_display(first.pid))
+               + ' --paths ' + shell_quote(first.alias))
+    n = len(matched)
+    caution = ('\n(That photo matched by its file name only: look at it before you say yes.)'
+               if first.how == 'same file name' else '')
+    return _PHOTO_HANDOFF.format(caution=caution,
+        n=n, photos='photo' if n == 1 else 'photos', are='is' if n == 1 else 'are',
+        command=command)
+
+
 def _read_audit_header(audit_path: Path) -> dict[str, str]:
     """Parse the `# key: value` header lines of an existing audit CSV."""
     out: dict[str, str] = {}
@@ -1495,6 +2068,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     cid_pool = _DeferredPool()
     date_downgrades: list[str] = []
     date_loose: list[str] = []      # read by the free-form fallback (#293)
+    date_conflicts: list[str] = []  # two birth/death dates that disagree (#449)
     sour_use: Counter = Counter()
 
     stubs: list[_PersonStub] = []
@@ -1503,7 +2077,7 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     for indi in indis:
         stub, indi_claims, pedi_map = _map_individual(
             indi, xref_pid[indi.xref], cid_pool, sour_titles, sour_use,
-            consumed, date_downgrades, date_loose)
+            consumed, date_downgrades, date_loose, date_conflicts)
         stubs.append(stub)
         claims.extend(indi_claims)
         for fam_xref, pedi_value in pedi_map.items():
@@ -1547,6 +2121,10 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     title = f'GEDCOM export: {ged_path.name} ({len(indis)} people'
     title += f', exported {export_date_raw})' if export_date_raw else ')'
 
+    photo_links = _collect_photo_links(records, xref_pid, display_names, consumed)
+    photo_catalog = _match_photo_links(archive_root, fha_config, photo_links,
+                                       ged_path.parent)
+
     unread_lines, unread_top = _count_unread(records, consumed)
 
     return ImportPlan(
@@ -1562,7 +2140,9 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
         loose_dates=len(date_loose), loose_date_reads=list(date_loose),
         date_downgrades=list(date_downgrades),
+        date_conflicts=list(date_conflicts),
         joined_lines=len(joined), markup_cleaned=markup_cleaned,
+        photo_links=photo_links, photo_catalog=photo_catalog,
     )
 
 
@@ -1699,8 +2279,21 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         for title, count in plan.cited_sources:
             plural = 's' if count != 1 else ''
             lines.append(f'- {title} (cited by {count} event{plural})')
+    lines.extend(_photo_notes_lines(plan, _planned_link_writer(plan)))
     lines.append('')
     return '\n'.join(lines)
+
+
+def _planned_link_writer(plan: ImportPlan) -> LinkWriter:
+    """The link writer for the source record, which is rendered before any
+    person file exists: in Obsidian mode a `[[stem|Name]]` link has to name
+    the file this import is about to write, so the planned stems are given
+    rather than scanned. Every person the record links is one of these stubs."""
+    links = link_writer(plan.archive_root)
+    if not links.obsidian:
+        return links
+    return LinkWriter(plan.archive_root, links.mode,
+                      stems={s.pid: _planned_stub_path(plan, s).stem for s in plan.stubs})
 
 
 def _render_audit_csv(plan: ImportPlan, today: str) -> str:
@@ -1746,7 +2339,9 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
     Headline counts first, then capped detail - a 2,000-person plan must be
     skimmable in a terminal. The living-heuristic counts are printed because
     that default is the one privacy-relevant thing this import decides."""
-    cap = _PLAN_DETAIL_CAP if capped else len(plan.stubs)
+    # Uncapped means every line: one person can add several date conflicts,
+    # and one new person can match several existing ones.
+    cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
     head = ('Applied GEDCOM import' if applied
             else 'GEDCOM import plan (dry-run - use --apply to write)')
     living_false = sum(1 for s in plan.stubs if s.living == 'false')
@@ -1792,6 +2387,20 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      f'rather than GEDCOM\'s date form ({shown}{more}) and were read '
                      'the way `fha claim --date` reads a typed date. The wording '
                      'stays in each claim\'s text, to check when you review it.')
+    if plan.date_conflicts:
+        # Shown even on screen: the record shows one date and the living
+        # guess may hang on it, so he should see that the tree disagrees.
+        shown = plan.date_conflicts[:cap]
+        lines.append('')
+        lines.append(f'  {len(plan.date_conflicts):,} person(s) have birth or death '
+                     'dates in your tree that disagree or could not be read. The new '
+                     'record shows the most exact one, and every date is still filed '
+                     'as a suggested claim, '
+                     'to settle when you review them:')
+        lines.extend(f'    {c}' for c in shown)
+        if len(plan.date_conflicts) > len(shown):
+            lines.append(f'    ... and {len(plan.date_conflicts) - len(shown):,} more '
+                         '(use --plan-out FILE to write the full plan)')
     if plan.joined_lines:
         lines.append('')
         lines.append(f'  {plan.joined_lines:,} line(s) had no level number (a MyHeritage '
@@ -1800,6 +2409,7 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         lines.append('')
         lines.append(f'  {plan.markup_cleaned:,} value(s) carried web-page codes (like '
                      '<br>) and were cleaned; the original file is kept as it was.')
+    lines.extend(_photo_plan_lines(plan, capped=capped))
     if plan.date_downgrades and not capped:
         # The warning names three; the full plan names every date left out.
         lines.append('')
@@ -2155,6 +2765,10 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
         first = next((s.name for s in plan.stubs if s.name), 'your closest ancestor')
         print()
         print(_CLOSING_POSTURE.format(claims=len(plan.claims), first_person=first))
+        handoff = _photo_handoff_text(plan)
+        if handoff:
+            print()
+            print(handoff)
 
     exit_code = EXIT_WARNINGS if (plan.warnings or plan_out_warning) else EXIT_CLEAN
     result = Result(
@@ -2207,7 +2821,8 @@ _CLI_DESCRIPTION = """Bring a tree from Ancestry (or any genealogy program) into
 Download your tree as a GEDCOM (.ged) file, then run this. The file itself is
 filed as one source (your original untouched); every person becomes a record
 with their dates; every statement becomes a suggested fact for you to review
-later, family by family. Nothing imported is treated as proven. Re-importing
+later, family by family. Nothing imported is treated as proven. Photos your
+old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
   --plan-out FILE    Also write the full, uncut plan text to FILE."""
