@@ -728,6 +728,15 @@ class DuplicateBirthTestCase(_ArchiveCase):
         screen = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
         self.assertIn('1990~', screen)
 
+    def test_full_plan_lists_both_birth_and_death_disagreements(self) -> None:
+        # One person can disagree twice; --plan-out must not drop the second.
+        plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n'
+                          '1 DEAT\n2 DATE 1950\n1 DEAT\n2 DATE 1960\n')
+        self.assertEqual(len(plan.date_conflicts), 2)
+        text = self._text(plan)
+        self.assertIn('1960', text)
+        self.assertNotIn('more (use --plan-out', text)
+
     def test_two_equally_precise_births_that_disagree_keep_the_first(self) -> None:
         plan = self._plan('1 BIRT\n2 DATE 1878\n1 BIRT\n2 DATE 1880\n')
         self.assertEqual(plan.stubs[0].birth, '1878')
@@ -752,7 +761,8 @@ class DuplicateBirthTestCase(_ArchiveCase):
     def test_an_unreadable_second_birth_date_keeps_living_unknown(self) -> None:
         # A typed 05/06/1995 could be her real birth: a date nobody could read
         # is doubt, so she is not shown as dead, and the plan says why.
-        for raw in ('05/06/1995', 'INT 1995 (per cousin)'):
+        for raw in ('05/06/1995', 'INT 1995 (per cousin)', '5/6/95', 'Jun 95',
+                    '19950506'):
             with self.subTest(raw=raw):
                 plan = self._plan('1 BIRT\n2 DATE 12 JAN 1878\n'
                                   f'1 BIRT\n2 DATE {raw}\n')

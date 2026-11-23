@@ -898,9 +898,16 @@ def _unread_date_may_be_recent(raw: str | None) -> bool:
     treated like a fact with no date."""
     if not raw:
         return False
+    runs = re.findall(r'\d+', raw)
+    if not runs:
+        return False                    # `Unknown`: no year at all
+    years = [int(r) for r in runs if 3 <= len(r) <= 4]
+    if not years or any(len(r) > 4 for r in runs):
+        # `5/6/95`, `Jun 95`, `19950506`: a year is there but can't be told
+        # apart, so it may be recent.
+        return True
     this_year = datetime.date.today().year
-    return any(this_year - int(y) <= _LIVING_CUTOFF_YEARS
-               for y in re.findall(r'(?<!\d)\d{3,4}(?!\d)', raw))
+    return any(this_year - y <= _LIVING_CUTOFF_YEARS for y in years)
 
 
 def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
@@ -2329,7 +2336,9 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
     Headline counts first, then capped detail - a 2,000-person plan must be
     skimmable in a terminal. The living-heuristic counts are printed because
     that default is the one privacy-relevant thing this import decides."""
-    cap = _PLAN_DETAIL_CAP if capped else len(plan.stubs)
+    # Uncapped means every line: one person can add several date conflicts,
+    # and one new person can match several existing ones.
+    cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
     head = ('Applied GEDCOM import' if applied
             else 'GEDCOM import plan (dry-run - use --apply to write)')
     living_false = sum(1 for s in plan.stubs if s.living == 'false')
