@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.19, 2026-11-20 · companion to SPEC.md v2.19 (versions track the SPEC)**
+**Version 2.21, 2026-11-22 · companion to SPEC.md v2.21 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
