@@ -629,7 +629,7 @@ def _unique_stub_stem(inbox: Path, slug: str, asset_suffix: str | None = None) -
 
 _SEARCH_LOG_DDL = '''CREATE TABLE IF NOT EXISTS search_log(
   date TEXT, person_id TEXT, question TEXT, repository TEXT, collection TEXT,
-  terms TEXT, result TEXT, source_id TEXT, path TEXT
+  years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT
 )'''
 
 

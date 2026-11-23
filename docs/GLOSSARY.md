@@ -33,6 +33,9 @@
 **Gender and sex:** two optional fields on a person. `sex` is what records usually state (`M`, `F`, `intersex` or `unknown`); `gender` is a person's identity, in plain words. Use either, both or neither. Drafted biographies take pronouns from `gender` when it's set, otherwise from `sex`. `sex` also decides which side of a couple a parent is numbered on when only one parent is known.
 *Example: you note `sex: F` from a birth certificate and, where you know it, `gender: woman`, or you leave both blank.*
 
+**Half (relationship):** two people who share one parent instead of two are half-siblings, and their children are half first cousins. `fha relate` says *half* only when both of the other parents are recorded and are different people, or when a source says so; with a parent missing it says the tie may be half.
+*Example: Calvin's two children by different wives are half-siblings; a son of his with no mother recorded is their "brother", with a line saying he may be their half-brother.*
+
 **Index:** a SQLite file the tools build from your records to make search, trees and reports fast. It is never the record of anything: delete it and `fha index` makes it again.
 *Example: delete `.cache/index.sqlite` and rebuild it any time with `fha index`; nothing is lost.*
 
@@ -64,7 +67,7 @@
 **Relationship subtype:** the *nature* of a tie between two people. A father can be a *biological* father or an *adoptive* one; both are real, and recording which keeps the archive from treating two true things as a contradiction. The same idea covers step, foster and guardian ties, surrogacy and donor conception, and ties that aren't family at all: an employer, a fellow member of a unit or lodge, or an enslaver and the person they enslaved.
 *Example: a child has two "parent" entries, `subtype: biological` for the father a DNA test confirms and `subtype: adoptive` for the father who raised him, and the tools count both as valid.*
 
-**Research log:** `notes/research-log.md`, the list of searches you've already run, including the ones that found nothing, so neither you nor the assistant repeats them.
+**Research log:** `notes/research-log.md`, the list of searches you've already run, including the ones that found nothing, so neither you nor the assistant repeats them. It also notes the years each search covered, and the searches you couldn't run.
 
 **Restricted:** a private flag you can put on almost anything: a whole person, a single sensitive fact, a source, or a name someone no longer uses. Restricted material stays in your archive but never leaves in anything you share publicly, and it's left out of family packets unless you choose to include it. Two kinds are always kept out: DNA, and anyone who asked to be left out entirely.
 *Example: a relative asks not to appear in anything you share. You mark them `restricted: by-request`, and no export includes them, while their place in the tree is kept.*

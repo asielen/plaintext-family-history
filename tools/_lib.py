@@ -454,10 +454,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    KinshipGraph              - who is whose genetic parent, other parent kinds,
 #                                 spouses with dates, every edge for the path;
 #                                 from_edges builds one by hand for tests
-#    kin_graph                 - the index's relationships table -> KinshipGraph,
-#                                 with an optional per-row edge filter (edge_ok)
-#    kinship_word              - (gens_a, gens_b, sex) -> "second cousin", "grandmother"
-#    blood_answer              - lowest common ancestor over genetic parents, named
+#    kin_graph                 - the index's relationships table (and half-sibling
+#                                 claims) -> KinshipGraph, with an optional
+#                                 per-row edge filter (edge_ok)
+#    kinship_word              - (gens_a, gens_b, sex, half=, double=) -> "great-aunt",
+#                                 "half-brother", "second cousin"
+#    blood_routes              - every separate blood route, nearest first, each
+#                                 with its half state (full, half, or may be half)
+#    blood_answer              - the nearest route, plus the "may be half" note
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
@@ -486,6 +490,16 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    generated_marker_date, generated_text_differs - the date in a GENERATED marker
 #                                 means "last changed": a rewrite differing only there is skipped
 #    notes_fts_rowids_by_path, delete_notes_fts_path - drop one file's search rows by rowid
+#
+#  Export privacy (shared by exporters that are not the site: gedcom, printed reports)
+#    ExportPrivacy, export_privacy - what the record files withhold, read once:
+#                                 restricted people/sources/claims + unreadable files
+#    public_source_sql         - the index's own source filter (restricted, DNA,
+#                                 publication_ok: false) as an SQL predicate
+#    person_withheld           - living, unknown or restricted, merges followed
+#    person_restricted         - restricted only: the narrower test a family walk asks
+#    export_tie_ok             - may a walk use this tie (through the living, never
+#                                 the restricted, never on withheld evidence)
 #
 #  Walking a tree that might not open
 #    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
@@ -2586,7 +2600,9 @@ GENERATED_COMPANION_KINDS: frozenset[str] = frozenset({'timeline', 'sources-inde
 # index has neither the columns nor the table, so bump to force the rebuild.
 # 15 (plan 19, S3): source_files.is_primary flags each source's main file
 # (SPEC §14), so the site no longer reads the retired `role: primary` mark.
-INDEX_SCHEMA_VERSION = 15
+# 16: search_log.years, the years a research-log search covered (SPEC §17c).
+# A v15 index has no column, so bump to force the rebuild.
+INDEX_SCHEMA_VERSION = 16
 # 2 (#49): photos.fingerprint, a content identity for re-tying moved photos.
 # A schema-1 catalog is upgraded in place, not rebuilt (photoindex
 # `_migrate_v1_catalog`).
@@ -7003,14 +7019,23 @@ def replace_section_content(
 
 def append_paragraph_to_section(
     lines: list[str], body_start: int, heading_text: str, paragraph: str, cr: str,
+    is_placeholder: Callable[[str, str], bool] | None = None,
 ) -> tuple[list[str], bool, str]:
     """Append `paragraph` to a `## {heading_text}` section; the shared engine.
 
+    For him: a first note in a section that still shows the scaffold's
+    "what goes here" instructions replaces them, so they are not published
+    above his words. `is_placeholder(heading, on_disk_content)` is how a
+    caller says what counts as that scaffold text (`fha person note` passes
+    `person_section_is_unfilled`); text that is not exactly the placeholder
+    is never removed.
+
     Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
     blank-line-separated paragraph at the END of the section, never touching
-    what was already there (the nothing-ever-lost contract `fha person note`
+    what he wrote there (the nothing-ever-lost contract `fha person note`
     and `fha source note` both depend on). A section holding only a
-    `*(none yet)*` / `(none yet)` placeholder is treated as empty - the
+    `*(none yet)*` / `(none yet)` placeholder, or only text the caller's
+    `is_placeholder` recognizes, is treated as empty - the
     placeholder is replaced outright rather than kept alongside real prose,
     since it means exactly "nothing here yet" and leaving it in would read as
     a second, contradictory sentence. When the heading is absent it is created
@@ -7032,11 +7057,13 @@ def append_paragraph_to_section(
     trimmed = list(old_content_lines)
     while trimmed and trimmed[-1].strip() == '':
         trimmed.pop()
-    is_placeholder = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    is_empty = len(trimmed) == 1 and trimmed[0].strip() in ('*(none yet)*', '(none yet)')
+    if not is_empty and is_placeholder is not None:
+        is_empty = is_placeholder(heading_text, old_content)
     has_next = content_end < len(lines)
 
     new_lines = list(lines[:content_start])
-    if trimmed and not is_placeholder:
+    if trimmed and not is_empty:
         new_lines.extend(trimmed)
         new_lines.append(cr)
     new_lines.extend(f'{ln}{cr}' for ln in body_text.split('\n'))
@@ -14142,6 +14169,314 @@ def extract_wikilinks(text: str) -> list[tuple[str, str | None, str | None, tupl
     return out
 
 
+# ── Export privacy (shared by exporters that are not the site) ────────────────
+# A GEDCOM file and a printed report for a relative must agree about who is
+# private, so they ask this one reader the same question the same way. It
+# lived in gedcom.py until a second exporter needed it, and tools never import
+# tools. The site keeps its own reader (`_SiteBuilder._load_restriction_markers`,
+# which also gathers restricted names); both rest on `read_restriction_marker`,
+# so no exporter can read a damaged record as public where another withholds it.
+
+def _export_marker_withholds(value) -> bool:
+    """True when a `restricted:` value withholds the record from public output.
+
+    The marker is open (SPEC §19): the plain boolean `true` or any free-text
+    type all mean restricted; only absent/false is not. (`read_record` coerces
+    booleans to `'true'`/`'false'`.) For a public path there is no opt-in - even
+    `restricted: by-request` is honored - so a single truthiness test suffices."""
+    return value not in (None, False, '', 'false')
+
+
+def _export_marker(archive_root: Path, rel_path: str) -> tuple[object, bool]:
+    """One record's own `restricted:` value, and whether it could be read.
+
+    Returns (value, unreadable). `read_restriction_marker` is the rule, shared
+    with `fha wikitree`, `fha site` and `fha packet` (#267 review): a file that
+    will not open or decode, has no frontmatter block, carries frontmatter that
+    is not valid YAML, or frontmatter that is not a block of fields cannot say
+    whether it is private, and every caller here treats it as restricted
+    (AGENTS.md privacy rule, fail closed). `read_record` reports none of those
+    by raising, and two of them not at all, which is how a `restricted:
+    by-request` relative used to export by surname (#267).
+
+    A file that is ABSENT is index staleness, not damage, and reads as carrying
+    no marker - the rule `fha wikitree` keeps too. `fha index` drops the row on
+    its next run; a damaged file, by contrast, keeps its row (and its surname)
+    there indefinitely.
+
+    A claims-block failure is not this function's business: the record's own
+    marker sits in the frontmatter, so the record is judged on that alone and
+    `_export_restricted_claim_ids` withholds the claims whose markers it cannot
+    see."""
+    value, trouble = read_restriction_marker(archive_root / rel_path, missing_ok=True)
+    return value, trouble is not None
+
+
+class ExportPrivacy(NamedTuple):
+    """What an export must withhold, read from the record files once per run.
+
+    `restricted_persons`: people whose record carries a `restricted` marker
+    (any value), or could not be read to check, plus every survivor a
+    restricted merged record speaks through. `restricted_sources`: sources
+    restricted by a free-text type the index stores as 0, or unreadable (the
+    index's own `restricted=1`, DNA and `publication_ok: false` are
+    `public_source_sql`'s job). `restricted_claims`: claims marked `restricted`
+    in their source's claims block, or whose block could not be read.
+    `unreadable_persons` (paths) and `unreadable_sources` ((id, path)) are the
+    files withheld only because they would not read, so the export can name
+    them and the fix."""
+    restricted_persons: set[str]
+    restricted_sources: set[str]
+    restricted_claims: set[str]
+    unreadable_persons: list[str]
+    unreadable_sources: list[tuple[str, str]]
+
+
+def _export_restricted_person_ids(archive_root: Path, person_paths: dict[str, str],
+                                  unreadable: list[str]) -> set[str]:
+    """Person ids whose record carries a `restricted` marker (any value), or
+    whose record could not be read to check (fail closed, #267).
+
+    Read from the person `.md` because the index does not carry a person-level
+    `restricted` column. A restricted person's name is withheld (`/Restricted/`)
+    while their structural family links stay, mirroring living redaction.
+
+    `unreadable` collects the path of every person file withheld only because
+    it could not be read, so the export can say so and name the fix. `fha
+    index` keeps such a person's row (name `unknown`, `living: unknown`, the
+    surname from the filename), so `--include-living` alone would otherwise
+    publish that surname and every fact the index still holds."""
+    out: set[str] = set()
+    for pid, path in person_paths.items():
+        if not path:
+            continue
+        value, bad = _export_marker(archive_root, path)
+        if bad:
+            out.add(pid)
+            unreadable.append(path)
+            continue
+        if _export_marker_withholds(value):
+            out.add(pid)
+    return out
+
+
+def _export_restricted_source_ids(conn: sqlite3.Connection, archive_root: Path,
+                                  unreadable: list[tuple[str, str]]) -> set[str]:
+    """Source ids that are restricted by a free-text type the index missed, or
+    whose record could not be read to check (fail closed, #267).
+
+    `public_source_sql` already excludes index `restricted=1`, DNA, and
+    `publication_ok=0`. A source carrying a free-text `restricted: by-request`
+    stores `restricted=0` in the index, so it is read from the record file here
+    and added to the not-eligible set the caller unions into its source filter.
+
+    A source record whose own marker will not read is withheld whole, and its
+    (id, path) goes into `unreadable`. Its claims can only be in the index from
+    an earlier read (a full build drops a source whose frontmatter fails), so
+    the index's `restricted=0` for it is a guess about a file nobody can read
+    now."""
+    out: set[str] = set()
+    for sid, path, restricted in conn.execute(
+            'SELECT id, path, restricted FROM sources').fetchall():
+        if restricted:
+            continue   # already caught by the SQL filter
+        if not path:
+            continue
+        value, bad = _export_marker(archive_root, path)
+        if bad:
+            out.add(sid)
+            unreadable.append((sid, path))
+            continue
+        if _export_marker_withholds(value):
+            out.add(sid)
+    return out
+
+
+def _export_restricted_claim_ids(conn: sqlite3.Connection, archive_root: Path) -> set[str]:
+    """Claim ids that carry a per-claim `restricted:` marker in their source record.
+
+    The claims table stores no claim-level `restricted` column; the flag lives
+    in the source record file.  This function reads every source record whose
+    source is otherwise public (index-restricted sources are already excluded by
+    `public_source_sql`) to collect per-claim ids that are withheld.
+
+    A record whose claims cannot all be read hides which of them were marked,
+    so every claim the index attributes to it is withheld (the same rule as
+    `fha wikitree`'s `_restricted_claim_ids`): a claims block that will not
+    parse, a file that will not decode, or a frontmatter the marker reader
+    refuses. A broken claims block alone withholds only the claims - the
+    source's own frontmatter marker was read and stands (#267 review)."""
+    out: set[str] = set()
+    for sid, path, restricted in conn.execute(
+            'SELECT id, path, restricted FROM sources').fetchall():
+        if restricted or not path:
+            continue
+        record_path = archive_root / path
+        if not record_path.exists():
+            continue   # index staleness, as in `_export_marker`
+        _value, bad = _export_marker(archive_root, path)
+        try:
+            rec = read_record(record_path, on_decode_error=lambda _p: None)
+        except Exception:   # noqa: BLE001 - any failure to read is the same failure here
+            rec, bad = None, True
+        if rec is not None and (rec.get('undecodable') or rec['parse_errors']):
+            bad = True
+        if bad:
+            for (claim_id,) in conn.execute(
+                    'SELECT id FROM claims WHERE source_id = ?', (sid,)).fetchall():
+                cid = normalize_id(str(claim_id).strip())
+                if cid:
+                    out.add(cid)
+            continue
+        for claim in rec.get('claims') or []:
+            if not isinstance(claim, dict):
+                continue
+            cid = normalize_id(str(claim.get('id', '')).strip())
+            if cid and _export_marker_withholds(claim.get('restricted')):
+                out.add(cid)
+    return out
+
+
+def export_privacy(conn: sqlite3.Connection, archive_root: str | Path) -> ExportPrivacy:
+    """Read, once, everything an export must withhold that the index cannot say.
+
+    Restricted persons (any value, by-request included) and sources restricted
+    by a free-text type are read from the record files: the index carries no
+    person-level `restricted`, and stores a free-text source type as 0.
+    `public_source_sql` covers the index's own restricted=1 / DNA /
+    publication_ok=0; this catches what it cannot see.
+
+    Person files are read for every record that is not merged, then for every
+    merged record whose claims now count for a survivor: a restricted record
+    merged into someone still governs, because the index gave its claims to
+    the survivor (SPEC §9), so the survivor's name and facts are withheld too
+    (#304 review)."""
+    archive_root = Path(archive_root)
+    unreadable_persons: list[str] = []
+    unreadable_sources: list[tuple[str, str]] = []
+    person_paths = {pid: path for pid, path in conn.execute(
+        "SELECT id, path FROM persons WHERE status != 'merged'").fetchall()}
+    restricted_persons = _export_restricted_person_ids(
+        archive_root, person_paths, unreadable_persons)
+    survivors = index_merge_survivors(conn)
+    tombstones = {
+        pid: path for pid, path in conn.execute(
+            'SELECT id, path FROM persons WHERE id IN (%s)' % ','.join('?' * len(survivors)),
+            sorted(survivors)).fetchall()
+    } if survivors else {}
+    restricted_persons = restricted_with_survivors(
+        restricted_persons | _export_restricted_person_ids(
+            archive_root, tombstones, unreadable_persons),
+        survivors)
+    restricted_sources = _export_restricted_source_ids(conn, archive_root, unreadable_sources)
+    restricted_claims = _export_restricted_claim_ids(conn, archive_root)
+    return ExportPrivacy(restricted_persons, restricted_sources, restricted_claims,
+                         unreadable_persons, unreadable_sources)
+
+
+def public_source_sql(alias: str = 's') -> str:
+    """SQL predicate for public/export-safe sources, on the `sources` table
+    joined as `alias`.
+
+    SPEC §21 excludes restricted, DNA, and publication_ok=false sources from
+    public output. A source the query's LEFT JOIN finds no row for passes, as
+    it always has in `fha gedcom`. Sources restricted by a free-text type the
+    index stores as 0 are `ExportPrivacy.restricted_sources`, which the caller
+    checks as well."""
+    if not re.fullmatch(r'[A-Za-z_][A-Za-z0-9_]*', alias):
+        raise ValueError(f'not an SQL table alias: {alias!r}')
+    a = alias
+    return (f"(COALESCE({a}.restricted, 0) = 0 AND COALESCE({a}.source_type, '') != 'dna' "
+            f"AND COALESCE({a}.publication_ok, 1) != 0)")
+
+
+def person_restricted(row, privacy: ExportPrivacy, lookup) -> bool:
+    """Whether a person asked to be left out: anyone on their `merge_chain`
+    is in `privacy.restricted_persons` (any `restricted:` value, by-request
+    included, or a file that would not read).
+
+    Narrower than `person_withheld`: a living or unknown relative is not
+    restricted. A walk over the family (a relationship line, an Ahnentafel
+    number) may pass through a living person, never named, but not through
+    a restricted one (`export_tie_ok`). `row` and `lookup` are as for
+    `merge_chain`."""
+    return any(r['id'] in privacy.restricted_persons for r in merge_chain(row, lookup))
+
+
+def person_withheld(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup) -> bool:
+    """Whether an export keeps this person out: living or unknown (unknown is
+    treated as living, AGENTS.md) or restricted (any value, SPEC §21), merges
+    followed both ways.
+
+    The rule `_SiteBuilder._person_is_redacted` states, written once for the
+    exporters that are not the site. A merged duplicate is the person it was
+    merged into, so the whole `merged_into` chain is checked and the person is
+    withheld if anyone on it is; a chain that loops or names nobody ends in a
+    stand-in that reads as `living: unknown` (`merge_chain`). And the other
+    way: a record merged INTO the survivor that says `living: true` hands him
+    its claims, so it keeps him out too (`living_carried_to_survivors`).
+    `row` is an index `persons` row or a mapping with `id`, `living` and
+    `merged_into`; `lookup(id)` returns the next record or None."""
+    chain = merge_chain(row, lookup)
+    if any(r['id'] in privacy.restricted_persons
+           or (r['living'] or '') in ('true', 'unknown') for r in chain):
+        return True
+    survivor = merge_survivor(chain)
+    if survivor is None:
+        return False
+    return survivor['id'] in living_carried_to_survivors(conn)
+
+
+def export_tie_ok(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup, *,
+                  unclaimed_ok: bool = True) -> bool:
+    """Whether a walk over the family may use this one tie (owner decision D16).
+
+    A relationship line or an Ahnentafel number may be worked out through a
+    tie to a living or unknown relative, who is still never named. It may not
+    pass through someone who asked to be left out: a tie with a restricted
+    person at either end is cut (`person_restricted`, merges followed). And
+    it may not rest on evidence an export withholds: the tie's own claim must
+    be accepted and not negated, not marked restricted, and on a source that
+    is public (`public_source_sql`, not in `privacy.restricted_sources`) and
+    names no restricted person (the site's hard-restricted rule). So a parent
+    known only from a DNA match never puts a number on a printed report.
+
+    `row` is a `relationships` row, or any mapping with `person_id`,
+    `other_id` and `claim_id`. A tie with no claim behind it (a hand-written
+    `relationships:` entry, or a claim id naming no claim) passes when
+    `unclaimed_ok`: GEDCOM and the site keep such a tie, while a printed
+    report, which cites every fact, passes False."""
+    for pid in (row['person_id'], row['other_id']):
+        prow = lookup(pid)
+        if prow is not None and person_restricted(prow, privacy, lookup):
+            return False
+    claim_id = row['claim_id']
+    claim = conn.execute(
+        f"SELECT c.status, COALESCE(c.negated, 0), c.source_id, {public_source_sql()} "
+        "FROM claims c LEFT JOIN sources s ON s.id = c.source_id WHERE c.id = ?",
+        (claim_id,)).fetchone() if claim_id else None
+    if claim is None:
+        return unclaimed_ok
+    status, negated, source_id, source_public = claim
+    if status != 'accepted' or negated:
+        return False
+    if normalize_id(str(claim_id)) in privacy.restricted_claims:
+        return False
+    if not source_public or (source_id and source_id in privacy.restricted_sources):
+        return False
+    named = {r[0] for r in conn.execute(
+        'SELECT person_id FROM claim_persons WHERE claim_id = ? '
+        'UNION SELECT person_id FROM source_people WHERE source_id = ? '
+        'UNION SELECT cp.person_id FROM claim_persons cp '
+        'JOIN claims c ON c.id = cp.claim_id WHERE c.source_id = ?',
+        (claim_id, source_id, source_id))}
+    for pid in sorted(p for p in named if p):
+        prow = lookup(pid)
+        if prow is not None and person_restricted(prow, privacy, lookup):
+            return False
+    return True
+
+
 # ── AI-draft prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
 # THE one implementation for every publication path (fha site, fha wikitree;
 # fha packet is a planned consumer - round-2 finding S1). The marker grammar
@@ -17256,6 +17591,19 @@ PERSON_SOURCES_PLACEHOLDER = (
     '*(none yet - regenerate with `fha views sources-index`.)*'
 )
 
+# What `fha process` writes under a new source's `## Notes` until a note
+# lands there. His first note (or a tool's own note) replaces it, so the
+# record does not say "none yet" above the note that is there (#393).
+SOURCE_NOTES_PLACEHOLDER = '*(none yet - drafted in the AI pass)*'
+
+
+def source_notes_is_unfilled(heading: str, content: str) -> bool:
+    """True when a source record's `## Notes` holds nothing but the
+    placeholder `fha process` scaffolded. The `is_placeholder` test the
+    source-note writers hand `append_paragraph_to_section`; exact on the
+    words (`_normalized_section_text`), so anything he typed is kept."""
+    return heading == 'Notes' and _normalized_section_text(content) == SOURCE_NOTES_PLACEHOLDER
+
 # The four hand-written sections' opening text, VERBATIM from
 # `_TEMPLATE.person.md` (`## Biography` through EOF) - adapted only where the
 # template's OWN wording assumed a human was hand-copying the file (e.g.
@@ -17850,9 +18198,14 @@ def couple_folder_prefix(pos: int) -> int:
 #
 # The graph is read once from the index's `relationships` table (accepted,
 # non-negated claims only), joined to `claims` for each edge's nature, source
-# and status. Blood answers follow genetic parent edges only (SPEC §12.2); the
-# shortest path walks every edge, plus sibling edges derived from any shared
-# parent.
+# and status, plus the accepted claims that call two people half-siblings.
+# Blood answers follow genetic parent edges only (SPEC §12.2); the shortest
+# path walks every edge, plus sibling edges derived from any shared parent.
+#
+# Two people who share one parent are not told they are brother and sister:
+# a blood route through one ancestor is "half" when a source says so or both
+# other parents are recorded and differ, and when a parent is missing the
+# answer keeps the plain word and says it may be half (`blood_routes`).
 
 @dataclasses.dataclass
 class KinshipGraph:
@@ -17870,7 +18223,8 @@ class KinshipGraph:
                         recorded marriage row for the pair
       adjacency         pid -> [(other, rel, subtype)] in index row order,
                         plus derived 'sibling' edges (subtype None)
-      half_sibling_pairs  pairs a source calls half-siblings (empty for now)
+      half_sibling_pairs  pairs an accepted `subtype: half` sibling claim
+                        names (SPEC §8.2), so "half" can rest on a source
 
     Read-only once built: `ancestors` and `genetic_children` remember their
     answers, so an edge added afterwards would not be seen. Build a new graph
@@ -17923,12 +18277,13 @@ class KinshipGraph:
 
     @classmethod
     def from_edges(cls, people: dict[str, dict], parent_edges=(), spouse_edges=(),
-                   social_edges=()) -> 'KinshipGraph':
+                   social_edges=(), half_sibling_pairs=()) -> 'KinshipGraph':
         """A graph built by hand, for tests that need no index.
 
         parent_edges: (child, parent, subtype); spouse_edges: (a, b, start, end);
-        social_edges: (a, b, rel). Each edge is entered in both directions, as
-        the index stores it, and read by the same rules as `kin_graph`."""
+        social_edges: (a, b, rel); half_sibling_pairs: pairs a source calls
+        half-siblings. Each edge is entered in both directions, as the index
+        stores it, and read by the same rules as `kin_graph`."""
         rows: list[dict] = []
         for child, parent, subtype in parent_edges:
             rows.append({'person_id': child, 'rel': 'parent', 'other_id': parent,
@@ -17945,7 +18300,9 @@ class KinshipGraph:
             rows.append({'person_id': b, 'rel': rel, 'other_id': a})
         people_copy = {pid: {'name': p.get('name') or pid, 'sex': (p.get('sex') or '').strip()}
                        for pid, p in people.items()}
-        return _kinship_graph_from_rows(people_copy, rows)
+        graph = _kinship_graph_from_rows(people_copy, rows)
+        graph.half_sibling_pairs = {frozenset(pair) for pair in half_sibling_pairs}
+        return graph
 
 
 def _kinship_graph_from_rows(people: dict[str, dict], rows: Iterable[dict]) -> KinshipGraph:
@@ -18007,8 +18364,9 @@ def kin_graph(conn: sqlite3.Connection,
     and a False row is left out entirely (the site's privacy filter). `row` is
     a dict with person_id, rel, other_id, claim_id, date_start, date_end,
     subtype, source_id and status (the last three from the backing claim; None
-    when the claim is not in the index). Works whatever the connection's
-    row_factory is."""
+    when the claim is not in the index). Each pair from a half-sibling claim
+    is asked too, as a row with rel 'sibling'. Works whatever the
+    connection's row_factory is."""
     def _dicts(cur) -> list[dict]:
         cols = [d[0] for d in cur.description]
         # A dict-like row (a caller's own row_factory) gives its keys when
@@ -18034,7 +18392,34 @@ def kin_graph(conn: sqlite3.Connection,
     # every answer the same from run to run and machine to machine.
     if edge_ok is not None:
         rows = [r for r in rows if edge_ok(r)]
-    return _kinship_graph_from_rows(people, rows)
+    graph = _kinship_graph_from_rows(people, rows)
+
+    # "Half" may rest on a source that says so: an accepted `subtype: half`
+    # claim naming two people under `sibling:` (SPEC §8.2). The index derives
+    # no edge from it, so it is read from the claim itself. Each pair passes
+    # through `edge_ok` as a 'sibling' row, so the site's filter can leave a
+    # restricted source's word out like any other tie.
+    half_claims = _dicts(conn.execute(
+        '''SELECT c.id AS claim_id, c.source_id AS source_id, c.status AS status,
+                  c.subtype AS subtype
+           FROM claims c
+           WHERE c.type = 'relationship' AND c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0
+             AND LOWER(TRIM(c.subtype)) IN ('half', 'half-sibling')
+           ORDER BY c.id'''))
+    for claim in half_claims:
+        pairs = claim_role_pairs(
+            (r['person_id'], r['role']) for r in _dicts(conn.execute(
+                'SELECT person_id, role FROM claim_persons WHERE claim_id=? ORDER BY position',
+                (claim['claim_id'],))))
+        sibs = sorted({pid for pid, role in pairs if pid and role_meaning(role) == 'sibling'})
+        for i, p1 in enumerate(sibs):
+            for p2 in sibs[i + 1:]:
+                row = dict(claim, person_id=p1, rel='sibling', other_id=p2,
+                           date_start=None, date_end=None)
+                if edge_ok is None or edge_ok(row):
+                    graph.half_sibling_pairs.add(frozenset({p1, p2}))
+    return graph
 
 
 _KIN_ORDINALS = ['zeroth', 'first', 'second', 'third', 'fourth', 'fifth', 'sixth',
@@ -18075,29 +18460,37 @@ def _kin_lineal(gens: int, sex: str, *, up: bool) -> str:
     return _kin_greats(gens - 2) + grand
 
 
-def _kin_collateral(near: int, far: int, sex: str, *, up: bool) -> str:
-    """Aunt/uncle (up) or niece/nephew (down) with grand-/great- prefixes.
+def _kin_collateral(n_greats: int, sex: str, *, up: bool, half: bool) -> str:
+    """Aunt or uncle (up) and niece or nephew (down), in the words a family
+    uses and the Shared cM Project chart prints: great-aunt, great-great-aunt
+    (not grandaunt). Someone whose sex is not recorded as M or F gets both
+    words, "great-aunt or great-uncle", so no reader meets a slash.
 
-    `near` is the LCA distance of the person at the shallower side (always 1
-    here), `far` the deeper side. The number of greats follows the genealogical
-    convention: grand-aunt at far==3, great-grand-aunt at far==4, ..."""
-    s = (sex or '').upper()
-    if up:
-        base = {'M': 'uncle', 'F': 'aunt'}.get(s, 'aunt/uncle')
-    else:
-        base = {'M': 'nephew', 'F': 'niece'}.get(s, 'niece/nephew')
-    extra = far - 2          # far==2 -> plain aunt/uncle; 3 -> grand-; 4 -> great-grand-
-    if extra <= 0:
-        return base
-    if extra == 1:
-        return 'grand' + base
-    return _kin_greats(extra - 1) + 'grand' + base
+    `n_greats` is how many great- come first (0 for a plain aunt). Half reads
+    "half-aunt" with no greats and "half great-aunt" with them, the way the
+    Shared cM Project writes it."""
+    words = {'M': ['uncle'], 'F': ['aunt']} if up else {'M': ['nephew'], 'F': ['niece']}
+    neutral = ['aunt', 'uncle'] if up else ['niece', 'nephew']
+    out = []
+    for word in words.get((sex or '').upper(), neutral):
+        word = _kin_greats(n_greats) + word
+        if half:
+            word = ('half ' if n_greats else 'half-') + word
+        out.append(word)
+    return ' or '.join(out)
 
 
-def kinship_word(gens_a: int, gens_b: int, sex: str) -> str:
+def kinship_word(gens_a: int, gens_b: int, sex: str, *, half: bool = False,
+                 double: bool = False) -> str:
     """Name A's blood relationship to B, given each one's generation distance to
-    their lowest common ancestor. Phrased from A's side (so `sex` is A's): A is
-    B's <returned phrase>."""
+    their common ancestor. Phrased from A's side (so `sex` is A's): A is B's
+    <returned phrase>.
+
+    `half` gives the half word (half-brother, half-aunt, half first cousin)
+    and `double` the double one (double first cousin); a lineal tie is never
+    half, and only cousins are double. A sex other than M or F (unknown,
+    intersex, blank) takes the neutral word: sibling, aunt or uncle."""
+    s = (sex or '').upper()
     if gens_a == 0 and gens_b == 0:
         return 'the same person'
     if gens_a == 0:                      # A is the common ancestor: A is B's ancestor
@@ -18105,47 +18498,147 @@ def kinship_word(gens_a: int, gens_b: int, sex: str) -> str:
     if gens_b == 0:                      # B is the common ancestor: A is B's descendant
         return _kin_lineal(gens_a, sex, up=False)
     if gens_a == 1 and gens_b == 1:
-        return {'M': 'brother', 'F': 'sister'}.get((sex or '').upper(), 'sibling')
-    if gens_a == 1:                      # A is a child of the LCA, B deeper -> A is aunt/uncle
-        return _kin_collateral(gens_a, gens_b, sex, up=True)
-    if gens_b == 1:                      # B is a child of the LCA, A deeper -> A is niece/nephew
-        return _kin_collateral(gens_b, gens_a, sex, up=False)
+        word = {'M': 'brother', 'F': 'sister'}.get(s, 'sibling')
+        return 'half-' + word if half else word
+    if gens_a == 1:                      # A is a child of the ancestor, B deeper: aunt or uncle
+        return _kin_collateral(gens_b - 2, sex, up=True, half=half)
+    if gens_b == 1:                      # B is a child of the ancestor, A deeper: niece or nephew
+        return _kin_collateral(gens_a - 2, sex, up=False, half=half)
     degree = min(gens_a, gens_b) - 1
     removal = abs(gens_a - gens_b)
     name = f'{_kin_ordinal(degree)} cousin'
     if removal:
         name += ' ' + _kin_times_removed(removal)
+    if half:
+        return 'half ' + name
+    if double:
+        return 'double ' + name
     return name
 
 
-def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
-    """A's blood relationship to B via the lowest common ancestor, or None if
-    the recorded tree joins them by no genetic line.
+def _kin_line_children(graph: KinshipGraph, c: str, anc: dict[str, int]) -> set[str]:
+    """The genetic children of ancestor `c` one generation nearer the person
+    whose ancestor map is `anc`: the child the line runs down through."""
+    return {k for k in graph.genetic_children(c) if anc.get(k) == anc[c] - 1}
 
-    Returns {relationship, common_ancestors, gens_a, gens_b}. The lowest common
-    ancestor minimises max(distance) then total distance; ties (a common
-    ancestral couple) are all reported, sorted by ID."""
+
+def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int],
+                    anc_b: dict[str, int]) -> bool | None:
+    """Whether a blood route is half: False (full), True (certainly half) or
+    None (a parent on the connecting line is not recorded, so it may be half).
+
+    He is told "half" only on a firm basis: a source that calls the two
+    connecting children half-siblings, or both of their other parents
+    recorded and different people. A route through a couple, and a lineal
+    route, is never half."""
+    if len(group) > 1:
+        return False
+    c = group[0]
+    if anc_a[c] == 0 or anc_b[c] == 0:
+        return False
+    ca = min(_kin_line_children(graph, c, anc_a))
+    cb = min(_kin_line_children(graph, c, anc_b))
+    if frozenset({ca, cb}) in graph.half_sibling_pairs:
+        return True
+    other_a = graph.genetic_parents.get(ca, set()) - {c}
+    other_b = graph.genetic_parents.get(cb, set()) - {c}
+    if other_a and other_b:
+        # A shared other parent would have joined the route as a couple, so
+        # an overlap here means the two lines meet again higher up: not half.
+        return not (other_a & other_b)
+    return None
+
+
+def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
+    """Every separate way A and B are related by blood, nearest first, as A
+    is B's <relationship>. Empty when no genetic line joins them.
+
+    A route is one common ancestor, or a couple who share a child on both
+    lines. A common ancestor who is only the way up to a nearer common
+    ancestor (the grandparents' own parents) is not a route of its own.
+    Each route is {relationship, common_ancestors, gens_a, gens_b, half,
+    half_relationship}: `half` is False, True or None (may be half; then
+    `relationship` keeps the full word and `half_relationship` carries the
+    half one). Sorted by (furthest generation, total generations, ancestor
+    IDs), so every run lists them in the same order."""
     anc_a = graph.ancestors(a)
     anc_b = graph.ancestors(b)
     # A person is their own ancestor at distance 0, so a direct ancestor or
-    # descendant pair shares the ancestor at (0, k), handled by kinship_word's
-    # 0-distance cases. The intersection covers lineal ties as well as cousins.
+    # descendant pair shares the ancestor at (0, k); the intersection covers
+    # lineal ties as well as cousins.
     common = set(anc_a) & set(anc_b)
     if not common:
+        return []
+    covered: set[str] = set()
+    for d in common:
+        covered.update(up for up in graph.ancestors(d) if up != d)
+    minimal = sorted(common - covered)
+
+    # Group the minimal ancestors into couples: the same generations from
+    # both people and a shared child on each line. Union-find keeps a
+    # three-parent record (two fathers recorded) in one route too.
+    root = {c: c for c in minimal}
+
+    def find(c: str) -> str:
+        while root[c] != c:
+            c = root[c]
+        return c
+
+    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
+             for c in minimal}
+    for i, c1 in enumerate(minimal):
+        for c2 in minimal[i + 1:]:
+            if ((anc_a[c1], anc_b[c1]) == (anc_a[c2], anc_b[c2])
+                    and lines[c1][0] & lines[c2][0] and lines[c1][1] & lines[c2][1]):
+                r1, r2 = find(c1), find(c2)
+                if r1 != r2:
+                    root[max(r1, r2)] = min(r1, r2)
+    groups: dict[str, list[str]] = {}
+    for c in minimal:
+        groups.setdefault(find(c), []).append(c)
+
+    sex = graph.people.get(a, {}).get('sex', '')
+    routes = []
+    for group in groups.values():
+        ga, gb = anc_a[group[0]], anc_b[group[0]]
+        half = _kin_half_state(graph, group, anc_a, anc_b)
+        routes.append({
+            'relationship': kinship_word(ga, gb, sex, half=half is True),
+            'common_ancestors': sorted(group),
+            'gens_a': ga,
+            'gens_b': gb,
+            'half': half,
+            'half_relationship': kinship_word(ga, gb, sex, half=True) if half is None else None,
+        })
+    routes.sort(key=lambda r: (max(r['gens_a'], r['gens_b']), r['gens_a'] + r['gens_b'],
+                               r['common_ancestors']))
+    return routes
+
+
+def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
+    """A's nearest blood relationship to B, or None if the recorded tree
+    joins them by no genetic line.
+
+    Returns the nearest route from `blood_routes` ({relationship,
+    common_ancestors, gens_a, gens_b, half, half_relationship}) plus `note`:
+    when the route may be half, one plain sentence naming both people that
+    says so ("... so Ethel Hartley may be Frances Hartley's half-sister."),
+    else None."""
+    routes = blood_routes(graph, a, b)
+    if not routes:
         return None
-    best_key = min((max(anc_a[c], anc_b[c]), anc_a[c] + anc_b[c]) for c in common)
-    lcas = sorted(
-        c for c in common
-        if (max(anc_a[c], anc_b[c]), anc_a[c] + anc_b[c]) == best_key
-    )
-    c0 = lcas[0]
-    gens_a, gens_b = anc_a[c0], anc_b[c0]
-    return {
-        'relationship': kinship_word(gens_a, gens_b, graph.people.get(a, {}).get('sex', '')),
-        'common_ancestors': lcas,
-        'gens_a': gens_a,
-        'gens_b': gens_b,
-    }
+    answer = dict(routes[0])
+    answer['note'] = None
+    if answer['half'] is None:
+        a_name = graph.people.get(a, {}).get('name') or a
+        b_name = graph.people.get(b, {}).get('name') or b
+        if (answer['gens_a'], answer['gens_b']) == (1, 1):
+            why = 'Only one parent is recorded for at least one of them'
+        else:
+            why = "A parent on the line that connects them isn't recorded"
+        answer['note'] = (f"{why}, so {a_name} may be {b_name}'s "
+                          f"{answer['half_relationship']}.")
+    return answer
 
 
 _KIN_HOP_WORDS = {
@@ -18223,7 +18716,10 @@ def kin_relationship(graph: KinshipGraph, anchor_pid: str, pid: str, *,
     if not blood:
         return none
     path = "'s ".join(_kin_blood_line(graph, anchor_pid, pid, blood['common_ancestors'][0]))
-    return {'words': blood['relationship'], 'note': None, 'kind': 'blood', 'path': path}
+    # An open half tie keeps the plain word ("brother"); the caveat is the
+    # note, which a page may print or leave out.
+    note = 'other parent not recorded' if blood['half'] is None else None
+    return {'words': blood['relationship'], 'note': note, 'kind': 'blood', 'path': path}
 
 
 def _kin_blood_line(graph: KinshipGraph, anchor: str, pid: str, apex: str) -> list[str]:

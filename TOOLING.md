@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.21, 2026-11-22 · companion to SPEC.md v2.21 (versions track the SPEC)**
+**Version 2.22, 2026-11-22 · companion to SPEC.md v2.22 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -89,6 +89,7 @@ CLAIMS_RE = re.compile(r'^## Claims.*?```yaml\r?\n(.*?)```', re.S | re.M)
 - Enforced by ID in `site`, `wikitree`, `packet`, `gedcom`: the person's record, page, tree position, facts and `[[p-id]]` links (shown as the redaction label). Names in free text are not matched.
 - **Privacy carries through a merge** (`_lib.carry_to_survivors`). A tombstone's `restricted:` or explicit `living: true` (`living_carried_to_survivors`) keeps its survivor out of `site`, `packet`, `gedcom` and `wikitree` too: the claims `fha index` hands the survivor are about the same human. A tombstone's `unknown` or missing `living:` carries nothing; the survivor's own `living: false` wins. A refusal names the tombstone file whose `living: true` holds the survivor back (`living_tombstones_of`), since `fha person set-living` on a merged record acts on the survivor.
 - An unreadable `restricted:` marker means restricted (`read_restriction_marker`): non-UTF-8, no or invalid frontmatter, or frontmatter that is not a mapping. `fha index` still keeps such a person's row from the filename's p-id (name `unknown`, `living: unknown`).
+- **A shared privacy reader for GEDCOM and new exporters** (`_lib.export_privacy`): `gedcom`, and any new exporter that is not the site, reads what the record files withhold through it, once per run (`packet` and `wikitree` still keep their own readers): restricted people, sources and claims, the files that would not read, and the survivors a restricted tombstone speaks through. Beside it, `public_source_sql` is the index's own source filter, `person_withheld` is the site's redaction rule (living, unknown or restricted, merges followed), and `export_tie_ok` is the family-walk rule: a relationship line or tree number may pass through a living or unknown relative, never named, but not through a restricted one or on withheld evidence.
 
 ---
 
@@ -156,7 +157,7 @@ CREATE TABLE places(id TEXT PRIMARY KEY, name TEXT, hierarchy TEXT, within TEXT,
 CREATE TABLE place_names(place_id TEXT, alt_name TEXT);
 CREATE TABLE place_history(place_id TEXT, period_edtf TEXT, date_min TEXT, date_max TEXT, hierarchy TEXT);
 CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT, repository TEXT,
-  collection TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
+  collection TEXT, years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, question TEXT, guess TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, path TEXT);
 CREATE TABLE hypothesis_persons(hypothesis_id TEXT, person_id TEXT);  -- the people in refs:
@@ -1038,10 +1039,10 @@ HTML views re-render the finished `.md` lines, so formats cannot drift. They are
 Either person may be a full name instead of an ID, resolved as `fha metrics` resolves one (§7a): exactly one person carrying it, or a refusal (exit `3`, as for a bad ID) listing everyone who shares it, or pointing to `fha find` when nobody does.
 
 Walks accepted `relationship` edges (genetic/social by `subtype`, directed by `roles:`). Reports separately:
-- **Blood**: genetic edges only; lowest common ancestor(s); named by generation/removal (Nth cousin M-removed, great-…-grandparent).
+- **Blood**: genetic edges only. Common ancestors that are not themselves ancestors of another common ancestor, grouped into routes (one ancestor, or a couple who share a child on both lines), nearest first. Named by generation and removal in everyday words (great-aunt, great-great-nephew, first cousin once removed, great-…-grandparent); a sex other than `M` or `F` takes both words ("aunt or uncle"). A route through one ancestor is *half* when the two connecting children's other parents are both recorded and differ, or an accepted `subtype: half` sibling claim names them; with an other parent unrecorded the answer keeps the full word and a second line says it may be half.
 - **Social path**: BFS over all edges, rendered as role hops ("your brother's friend's sister's father").
 
-Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b}, any: {path, rendered}}`; the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Half/step/in-law labels come from an extensible table. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
+Result `{a, b, blood: {relationship, common_ancestors, gens_a, gens_b, half, half_relationship, note}, any: {path, rendered}}` (`half` is `true`, `false` or `null` for may be half; `note` is the may-be-half sentence or `null`); the text formatter renders sentences, `--json` serves a UI. Read-only; a missing index is a hard error, never a silent wrong answer. Only accepted edges are walked. The engine is `_lib`'s kinship section (`kin_graph`, `blood_answer`, `kinship_path`, `kin_relationship`), shared with `fha site`, so a page and the command name a relationship with the same word.
 
 ## 7a. `fha metrics`: person completeness
 
@@ -1679,7 +1680,7 @@ The session start screen, narrated by the `today` skill.
 | 2 | `new-since-last` | Sources, claims, people added or changed. |
 | 3 | `vitals-gaps` | Curated people first, then people touched since last report (W101). Computed fresh each run; never written as questions (SPEC §17b). |
 | 4 | `contradictions` | `contradicts:` pairs lacking an open question (E009). |
-| 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)"; a nil older than 18 months is "worth re-running". Then captures from the last 30 days not yet linked to a person. |
+| 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)", with the years searched when the entry gives them; a nil older than 18 months is "worth re-running". An `unavailable` entry reads "could not be searched (date)" and a `requested` one "asked (date), waiting for a reply"; both are still to do. Then captures from the last 30 days not yet linked to a person. |
 | 5b | `answerable-questions` | Open questions whose referenced gap now has an accepted claim, or whose referenced claims changed status, proposed for `answered [[s-...]]`. The human closes. |
 | 6 | `photo-triage` | Top N (§15b). Prefixed by the scan's note: unreadable files, and when any are new or changed, that the catalog stays out of date until they read (§9). A `MISSING:` group points at `reconcile`. |
 | 6b | `place-candidates` | `fha places candidates` clusters, with elevate-or-dismiss prompts, led by the commands that settle them all at once: `fha places link` when a cluster fits a registered place, `fha places candidates --register` when one fits none. |

@@ -126,6 +126,8 @@
     // Find a Grave asked us to slow down, say) fetches only the rest.
     fagRecord: false,
     fagPhotos: {},
+    // A West Virginia Archives view page: Capture saves its image and citation.
+    wvImage: false,
     // Newspapers.com: the newspapersInfo result for the page in the tab (page
     // id, size, image pass, YOUR clippings on it) and which of them to save.
     // On Capture the panel rebuilds the page from tiles (lib/newspapers.js).
@@ -778,13 +780,14 @@
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
     'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImagePage', 'familysearchImageId', 'findagraveMemorial',
-    'newspapers', 'iiif'];
+    'wvcultureImagePage', 'newspapers', 'iiif'];
 
   // Pages whose record file is fetched without her: there the "File address
   // on the page" box has no job, and is hidden (the drop zone stays).
   function autoFilePage(prefill) {
     return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.ancestryPhoto || prefill.familysearchRecord ||
-      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers);
+      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.wvcultureImagePage || prefill.iiif ||
+      prefill.newspapers);
   }
 
   // `keepNp`: { pageId, selected } - Re-read file on the same Newspapers.com
@@ -825,6 +828,7 @@
     state.fsImage = !!prefill.familysearchImageViewer;
     state.fsImagePage = !!prefill.familysearchImagePage && state.fsImage;
     state.fagRecord = !!prefill.findagraveMemorial;
+    state.wvImage = !!prefill.wvcultureImagePage;
     // Pre-fill the evidence url box with the best-guess image/PDF the page
     // exposed - EXCEPT where the visible image is a downsized derivative and an
     // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
@@ -2256,6 +2260,94 @@
     };
   }
 
+  // ── West Virginia Archives view pages ──────────────────────────────────────
+  // One image of the Vital Research Records site (its film and image number
+  // from the address). Bundle: record.{gif|jpg} (role record, mode wvculture),
+  // record-data.json (the numbers and both addresses, role site-data), and the
+  // page copy when she ticked it. The content script says which image the page
+  // shows; this side downloads it with no login (lib/wvculture.js), because the
+  // image host refuses a fetch made from the page. A picture that cannot be
+  // read stops the capture, and the message ends with what to do: drop the
+  // image in and press Capture again. A dropped image needs only the address's
+  // numbers, so it is saved even on a page whose image this does not recognise.
+  const WV_DROP_IN = 'Save the image from the page, drop it into the panel and press Capture again';
+  async function captureWvcultureImage(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+    const accessed = captureJson.accessedDate();
+    const info = await autoFetch('West Virginia Archives image details',
+      { action: 'wvcultureImageInfo', today: accessed }, { recordUrl });
+    if (!info || !info.ok) {
+      throw new Error((info && info.error) || 'could not read the West Virginia Archives page');
+    }
+    const rec = info.record;
+    let image = null;
+    if (!dropped) {
+      if (!rec.imageUrl) throw new Error('the page shows no image the panel can save. ' + WV_DROP_IN);
+      setStageResult('Fetching the image from West Virginia Archives…', '');
+      image = await FHA.wvculture.fetchImage(rec.imageUrl, (u, init) => window.fetch(u, init));
+      if (!image.ok) throw new Error(image.error + '. ' + WV_DROP_IN);
+    }
+    notQueued(opts, 'wv:' + rec.filmNumber + ':' + rec.imageNumber,
+      'West Virginia Archives film ' + rec.filmNumber + ', image ' + rec.imageNumber);
+    await checkTabStillOn(recordUrl);
+    const assets = [];
+    if (dropped) {
+      assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
+    } else {
+      assets.push({ filename: 'record.' + image.ext, blob: image.blob, role: 'record', mode: 'wvculture' });
+    }
+    const pageCopy = await recordPageCopy('early', !!wantPageCopy, recordUrl, []);
+    if (pageCopy) {
+      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+    }
+    const data = {
+      note: 'Captured from the West Virginia Archives’ Vital Research Records site by the archive capture ' +
+        'extension. The image is the site’s own picture of the record; the film and image number are the ' +
+        'ones to cite.',
+      filmNumber: rec.filmNumber,
+      imageNumber: rec.imageNumber,
+      pageUrl: rec.pageUrl,
+      imageUrl: rec.imageUrl,
+    };
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'wvculture-data',
+    });
+    const title = (form.edited.has('f-title') && form.title) ||
+      'West Virginia Vital Research Records, film ' + rec.filmNumber + ', image ' + rec.imageNumber;
+    const notes = [
+      gatherNotes(provisional, form.notes),
+      info.citation ? 'West Virginia Archives citation: ' + info.citation : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: rec.pageUrl,
+      title,
+      accessed,
+      sourceDate: form.date || '',
+      sourceType: form.type || '',
+      repository: form.edited.has('f-repo') && form.repo ? form.repo : 'West Virginia Archives and History',
+      people: form.people,
+      notes,
+      // The capture-day citation, so filing the bundle on a later day keeps
+      // the day he looked at the page.
+      citation: info.citation || '',
+      recipeHint: 'wvculture',
+      assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
+    reportStaged(st.where, st.viaHost, null, st.hostWarning || null);
+    return {
+      key: 'wv:' + rec.filmNumber + ':' + rec.imageNumber,
+      record: { filmNumber: rec.filmNumber, imageNumber: rec.imageNumber },
+      bundle: st.bundle, where: st.where,
+      partial: false, slowDown: false, note: null,
+    };
+  }
+
   // ── Find a Grave memorials ──────────────────────────────────────────────────
   // A memorial (/memorial/{id}/{slug}) is one bundle: page.html, the page
   // copy, record-data.json (what the memorial says, with Find a Grave's own
@@ -2582,7 +2674,7 @@
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
     if (state.ancestryViewer || state.ancRecord || state.ancPhoto || state.fsRecord || state.fsImage || state.fagRecord ||
-        state.iiif) return true;
+        state.wvImage || state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -2635,6 +2727,8 @@
           : '. The add-on couldn’t find this ' + what + '’s Details on the page (they may be closed, or Ancestry shows ' +
             'them in a way it doesn’t recognise yet). The ' + what + ' and its address are saved; its date, place and ' +
             'description can be read on Ancestry from that address'));
+      } else if (state.wvImage) {
+        parts.push('Record file: the image on this page (West Virginia Archives, auto)');
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
       } else if (state.fsRecord || state.fsImage) {
@@ -3049,7 +3143,7 @@
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.ancRecord && !state.ancPhoto && !state.fsRecord && !state.fsImage
-        && !state.fagRecord && !state.iiif && !npActive()) {
+        && !state.fagRecord && !state.wvImage && !state.iiif && !npActive()) {
       if (state.npPage) {
         return refuse('Newspapers.com: ' + npUnavailableReason(), null, npUnavailableCause());
       }
@@ -3059,7 +3153,7 @@
     // The record this capture is of: the one the form was filled for.
     const recordUrl = state.prefilledUrl;
     const recordCapture = wantEvidence && !evidenceUrl() &&
-      ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord);
+      ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord || state.wvImage);
     // A batch saves a record page's own files only, never a file dropped
     // into the panel meanwhile or a page that is not a record.
     if (opts.batch && state.droppedAsset) {
@@ -3159,6 +3253,14 @@
         const got = await captureFamilySearchImage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
         outcome = Object.assign({ ok: true, site: 'familysearch' }, got);
+        return outcome;
+      }
+
+      // A West Virginia Archives view page: its image, with its film and image numbers.
+      if (wantEvidence && state.wvImage && !evidenceUrl()) {
+        const got = await captureWvcultureImage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        resetForNext();
+        outcome = Object.assign({ ok: true, site: 'wvculture' }, got);
         return outcome;
       }
 

@@ -468,6 +468,7 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   new Function('window', read('lib/capture-json.js'))(window);
   new Function('window', read('lib/findagrave.js'))(window);
   window.FHA.findagrave.pauseMs = () => 0;
+  new Function('window', read('lib/wvculture.js'))(window);
   new Function('window', 'OffscreenCanvas', read('lib/newspapers.js'))(window, FakeCanvas);
   window.FHA.newspapers.fullPage = async (info) => {
     // `fullPage` may also say how many "slow down" answers the download
