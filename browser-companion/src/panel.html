@@ -143,6 +143,18 @@
                   <span id="np-text"></span>
                   <span id="np-clips" class="np-clips"></span>
                 </span>
+                <span id="ia-note" class="ancestry-note" style="display:none">
+                  <strong>Internet Archive: this page of the book.</strong>
+                  Saves the page image, its text (unchecked OCR), the book’s details
+                  and a citation with the link to this page. No login.
+                  <label class="mini" for="ia-leaves">Pages to save</label>
+                  <select id="ia-leaves">
+                    <option value="1" selected>This page</option>
+                    <option value="2">This page and the next</option>
+                    <option value="3">This page and the next 2</option>
+                    <option value="4">This page and the next 3</option>
+                  </select>
+                </span>
                 <!-- Hidden on pages whose file is fetched automatically (Ancestry,
                      FamilySearch, Newspapers.com, IIIF archives); the drop zone
                      stays as the fallback for a file the site will not hand over. -->
@@ -235,6 +247,7 @@
     <script src="lib/native-host.js"></script>
     <script src="lib/newspapers.js"></script>
     <script src="lib/findagrave.js"></script>
+    <script src="lib/archiveorg-record.js"></script>
     <script src="lib/capture-batch.js"></script>
     <script src="batch.js"></script>
     <script src="panel.js"></script>

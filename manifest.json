@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f5ddcb3fd4089c85701cf6bc94c77950388885adb538f14e2f372a1883700e4e",
+      "sha256": "5dc8fd9c71c7ddeae4b4641992ec5cabffc5afb027403774470b04794011f78c",
       "spec_version": "2.19",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "1bfb44b3e41d4f9041cc17031a29c8a77977e344e9588c395d2116e2d6a6dfbb",
+      "sha256": "38e80695f6fbbb6930c184eee833590058f0bdf8d7c5944ffd5e26e7b1d960af",
       "spec_version": "2.19",
       "src": "browser-companion/src/content.js"
     },
@@ -397,6 +397,13 @@
       "sha256": "a2ce1248e28d78c19b01e8325cc68be148bb3dffc6e4cbe3018b2d236631c585",
       "spec_version": "2.19",
       "src": "browser-companion/src/lib/ancestry-record.js"
+    },
+    {
+      "path": ".fha/browser-companion/src/lib/archiveorg-record.js",
+      "category": "operating",
+      "sha256": "f2189a8cee82c60687b4b71c7d0e53e43d0548dbc9da3d494596d06ea60c93bd",
+      "spec_version": "2.19",
+      "src": "browser-companion/src/lib/archiveorg-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/batch-sources.js",
@@ -520,14 +527,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "826fb2ab8017959b4af16f990cc600679bd69e887853595d7ffc5519677af5db",
+      "sha256": "83d855d44205cf22da4a644d1ee6c753f01d5bc9a80164d48f445b2dedb1e7bd",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "715f20266009072ea2e3d3d40ddf70d6540fee49782b9da4ff1153d14fdb5e82",
+      "sha256": "ec7a1d202120d31ce155fd95bd897c8f56322bced87be4156bcdfaf4032d4f39",
       "spec_version": "2.19",
       "src": "browser-companion/src/panel.js"
     },
@@ -691,6 +698,13 @@
       "sha256": "bcdb899da26f38957cd01e7db279ff3ae622648247bc8ac8e930f2b4695ffd86",
       "spec_version": "2.19",
       "src": "tools/capture_recipes/ancestry.py"
+    },
+    {
+      "path": ".fha/tools/capture_recipes/archiveorg.py",
+      "category": "operating",
+      "sha256": "2033ded9ce6d5c952963fba76e7841a4f18cf5d1b85940f9137256b8ab20f4a3",
+      "spec_version": "2.19",
+      "src": "tools/capture_recipes/archiveorg.py"
     },
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",

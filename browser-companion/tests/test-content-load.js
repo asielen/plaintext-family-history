@@ -270,6 +270,21 @@ test('prefill on a memorial starts from what the memorial says; its gallery page
   assert.strictEqual(r.prefill.title, 'A page');
 });
 
+test('prefill on an Internet Archive book page: the book\'s own title, a book, and a hint for the recipe', async () => {
+  const url = 'https://archive.org/details/historyofamadorc00maso/page/n20/mode/2up';
+  let r = await loadPage({ url, title: 'History of Amador County, California : [Mason, Jesse D] [from old catalog] : ' +
+    'Free Download, Borrow, and Streaming : Internet Archive' }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.archiveorgPage, true);
+  assert.strictEqual(r.prefill.recipeHint, 'archiveorg');
+  assert.strictEqual(r.prefill.title, 'History of Amador County, California');
+  assert.strictEqual(r.prefill.sourceType, 'book');
+  assert.strictEqual(r.prefill.repository, 'Internet Archive');
+  // a search or a collection page is not a book page
+  r = await loadPage({ url: 'https://archive.org/search?query=hartley' }).ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.archiveorgPage, false);
+  assert.notStrictEqual(r.prefill.recipeHint, 'archiveorg');
+});
+
 test('a memorial with Seen It running starts the form with clean names, never its badges (#357)', async () => {
   const tree = parse(SAMPLE('findagrave-memorial-seen-it'));
   const r = await loadPage({ url: MEMORIAL, tree, fetch: findagrave() }).ask({ action: 'prefill' });

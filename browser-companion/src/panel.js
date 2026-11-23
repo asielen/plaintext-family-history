@@ -125,6 +125,9 @@
     // Find a Grave asked us to slow down, say) fetches only the rest.
     fagRecord: false,
     fagPhotos: {},
+    // Internet Archive: a page of a book (Capture saves the page image, its
+    // OCR text, the book's details and a citation).
+    iaPage: false,
     // Newspapers.com: the newspapersInfo result for the page in the tab (page
     // id, size, image pass, YOUR clippings on it) and which of them to save.
     // On Capture the panel rebuilds the page from tiles (lib/newspapers.js).
@@ -293,6 +296,7 @@
       return 'the full image' + (id ? ' ' + id : '') + ' (FamilySearch)';
     }
     if (state.fagRecord) return 'the memorial’s facts and citation, and its photos (Find a Grave)';
+    if (state.iaPage) return 'the page image, its text and the book’s details (Internet Archive)';
     if (state.iiif) return 'the full image (IIIF archive)';
     if (npActive()) return 'the whole page and your clippings (Newspapers.com)';
     return null;
@@ -777,13 +781,14 @@
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
     'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImageId', 'findagraveMemorial',
-    'newspapers', 'iiif'];
+    'archiveorgPage', 'newspapers', 'iiif'];
 
   // Pages whose record file is fetched without her: there the "File address
   // on the page" box has no job, and is hidden (the drop zone stays).
   function autoFilePage(prefill) {
     return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.ancestryPhoto || prefill.familysearchRecord ||
-      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.iiif || prefill.newspapers);
+      prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.archiveorgPage || prefill.iiif ||
+      prefill.newspapers);
   }
 
   // `keepNp`: { pageId, selected } - Re-read file on the same Newspapers.com
@@ -823,6 +828,8 @@
     state.fsRecord = !!prefill.familysearchRecord;
     state.fsImage = !!prefill.familysearchImageViewer;
     state.fagRecord = !!prefill.findagraveMemorial;
+    state.iaPage = !!prefill.archiveorgPage;
+    if ($('ia-note')) $('ia-note').style.display = state.iaPage ? 'block' : 'none';
     // Pre-fill the evidence url box with the best-guess image/PDF the page
     // exposed - EXCEPT where the visible image is a downsized derivative and an
     // auto path can fetch the real file: an Ancestry image-viewer page (the EX7
@@ -2397,6 +2404,249 @@
     };
   }
 
+  // ── Internet Archive book pages ─────────────────────────────────────────────
+  // A page of a book in the Internet Archive's reader is one bundle: the page
+  // image at full size (`page-1.jpg`, role page-1; the next pages follow as
+  // page-2, …), the page's own OCR text as transcript.md (role transcript,
+  // marked an unchecked machine reading, naming the site), record-data.json
+  // (the book's details and, for each page, the scan number and printed page;
+  // role site-data) and a citation with the link to the page as she was
+  // looking at it. No login: the panel asks archive.org's own hosts, without
+  // cookies, for the book's description, its page-number list, and a small
+  // range of the OCR file (never the whole book). lib/archiveorg-record.js.
+
+
+  // `opts` (a batch download only): see captureNewspapers. Returns what was
+  // staged: { key, record, bundle, where, slowDown, note }.
+  async function captureArchiveOrgPage(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+    const IA = FHA.archiveorg;
+    const at = IA.iaParsePage(recordUrl);
+    if (!at) throw new Error('this is not a page of an Internet Archive book');
+    const d = { fetch: (u, init) => window.fetch(u, init) };
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+    const accessed = captureJson.accessedDate();
+
+    // The book.
+    let row = autoRow('Internet Archive book details');
+    const meta = await IA.iaFetchMetadata(at.itemId, d);
+    if (!meta.ok) {
+      row(false, meta.error);
+      noteSlowDown(meta, 'archiveorg');
+      throw new Error(meta.error.charAt(0).toUpperCase() + meta.error.slice(1));
+    }
+    row(true, meta.item.title || at.itemId);
+    const item = meta.item;
+
+    // Which printed page each scan is. A book with no list still saves, and the
+    // citation says the printed page is not known.
+    row = autoRow('Internet Archive page numbers');
+    const nums = await IA.iaFetchPageNumbers(at.itemId, meta.files, d);
+    const pages = nums.ok ? nums.pages : null;
+    if (!nums.ok) row(false, nums.error);
+    else row(true, pages ? '' : 'none for this book');
+
+    // Which scan she is looking at: the address's scan number (n20 is the 21st
+    // scan), or - when BookReader wrote a printed page - the scan that
+    // carries it.
+    let leafNum = null;
+    if (at.leaf != null) leafNum = at.leaf + 1;
+    else if (at.printedPage) {
+      leafNum = IA.iaLeafForPrinted(pages, at.printedPage);
+      if (leafNum == null) {
+        throw new Error('could not tell which scan is page ' + at.printedPage + ' of this book, because the ' +
+          'Internet Archive has no page-number list for it. Open the page in the reader and press Capture again, ' +
+          'or use the "n…" address the reader shows when you turn to the page');
+      }
+    } else {
+      throw new Error('this address names no page of the book. Turn to the page you want in the reader, ' +
+        'then press Capture again');
+    }
+    if (item.imageCount && leafNum > item.imageCount) {
+      throw new Error('this book has ' + item.imageCount + ' pages, and the address asks for page ' + leafNum);
+    }
+    const last = item.imageCount || leafNum + IA.IA_MAX_LEAVES - 1;
+    const count = Math.max(1, Math.min(IA.IA_MAX_LEAVES, form.iaLeaves || 1, last - leafNum + 1));
+    const leaves = [];
+    for (let i = 0; i < count; i++) {
+      const num = leafNum + i;
+      const printed = IA.iaPrintedFor(pages, num);
+      // The link keeps the form she was looking at: n20 stays n20, and a
+      // printed page stays a printed page (the next page's, when it is known).
+      const segment = i === 0 ? at.segment : at.leaf != null || !printed ? 'n' + (num - 1) : printed;
+      leaves.push({ leafNum: num, leaf: num - 1, printed, segment, url: IA.iaPageUrl(at.itemId, segment),
+        file: null, text: null, textError: null, error: null });
+    }
+    const pageUrl = leaves[0].url;
+
+    // The OCR: one small range of the book's OCR file per page.
+    row = autoRow('Internet Archive text index');
+    const index = await IA.iaFetchPageIndex(at.itemId, meta.files, d);
+    if (!index.ok) row(false, index.error);
+    else row(true, index.index ? '' : 'none for this book');
+    noteSlowDown(index, 'archiveorg');
+    let slowDown = !!index.slowDown;
+
+    let pageCopy = await recordPageCopy('early', wantPageCopy, recordUrl);
+
+    const assets = [];
+    const failed = [];
+    for (let i = 0; i < leaves.length; i++) {
+      const lf = leaves[i];
+      const label = lf.printed ? 'page ' + lf.printed : 'scan n' + lf.leaf;
+      if (slowDown) {
+        lf.error = 'not tried: the Internet Archive asked us to slow down';
+        failed.push(lf);
+        continue;
+      }
+      if (i) await sleep(IA.pauseMs());
+      setStageResult('Downloading ' + label + ' from the Internet Archive…', '');
+      row = autoRow('Internet Archive ' + label + ' (image)');
+      const got = await IA.iaFetchImage(at.itemId, lf.leafNum, d);
+      if (got.ok) {
+        lf.file = 'page-' + (i + 1) + '.' + got.ext;
+        assets.push({ filename: lf.file, blob: got.blob, role: 'page-' + (i + 1), mode: 'internet-archive-image' });
+        row(true, Math.max(1, Math.round(got.blob.size / 1024)) + ' KB');
+      } else {
+        lf.error = got.error;
+        lf.transient = !!got.transient;
+        failed.push(lf);
+        row(false, got.error);
+        if (got.slowDown) slowDown = true;
+        noteSlowDown(got, 'archiveorg');
+        // A lending-library book refuses every page the same way: not once more.
+        if (/without borrowing/.test(got.error || '')) {
+          for (const rest of leaves.slice(i + 1)) {
+            rest.error = 'not tried: ' + got.error;
+            failed.push(rest);
+          }
+          break;
+        }
+        continue;
+      }
+      if (index.ok && index.index && !slowDown) {
+        row = autoRow('Internet Archive ' + label + ' (text)');
+        const t = await IA.iaFetchLeafText(at.itemId, index.index, lf.leafNum, d);
+        if (t.ok) {
+          lf.text = t.text;
+          row(true, t.text ? '' : 'no text on this page');
+        } else {
+          lf.textError = t.error;
+          row(false, t.error);
+          if (t.slowDown) slowDown = true;
+          noteSlowDown(t, 'archiveorg');
+        }
+      }
+    }
+
+    if (dropped) {
+      assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
+    }
+    // The OCR text, marked what it is: a machine's unchecked reading, from the
+    // Internet Archive. A page with no text says so in its own line.
+    const withText = leaves.filter((lf) => lf.text != null);
+    if (withText.length) {
+      const names = (lf) => (lf.printed ? 'Page ' + lf.printed : 'Scan n' + lf.leaf) + ' (scan n' + lf.leaf + ')';
+      const body = withText.map((lf) => (withText.length > 1 ? '## ' + names(lf) + '\n\n' : '') +
+        (lf.text.trim() || '(the OCR found no text on this page)')).join('\n\n');
+      const text = '<!-- AI-DRAFT Internet Archive OCR, unchecked, captured ' + accessed + ' -->\n\n' + body + '\n';
+      assets.push({ filename: 'transcript.md', blob: new Blob([text], { type: 'text/markdown' }),
+        role: 'transcript', mode: 'internet-archive-ocr' });
+    }
+
+    // No image and no file of hers: the page copy comes too, so the book's
+    // details are not filed as a source with no file at all.
+    const hasFile = assets.some((a) => a.role !== 'transcript');
+    if (!pageCopy && !hasFile) pageCopy = await recordPageCopy('late', true, recordUrl);
+    let forcedCopy = false;
+    if (pageCopy && (wantPageCopy || !hasFile)) {
+      assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+      forcedCopy = !wantPageCopy;
+    }
+
+    const citation = IA.iaCitation(item, leaves.map((lf) => ({ leaf: lf.leaf, printed: lf.printed })), pageUrl, accessed);
+    const hints = IA.iaHints(item);
+    const saved = leaves.filter((lf) => lf.file);
+    const data = {
+      note: 'Captured from the Internet Archive by the archive capture extension. "item" is the book as the Internet ' +
+        'Archive describes it. "pages" lists the pages this capture asked for: "leaf" is the scan\'s place in the ' +
+        'reader\'s address (n20 is leaf 20, counting from 0), "printed" the page number printed on it (null when ' +
+        'the Internet Archive does not know it), "file" the image this capture saved (null when it could not be), ' +
+        'and "ocr" whether its text is in transcript.md. The text is the Internet Archive\'s own OCR and has not ' +
+        'been checked against the image.',
+      item,
+      pageUrl,
+      citation,
+      pages: leaves.map((lf) => ({
+        leaf: lf.leaf, printed: lf.printed, url: lf.url, file: lf.file, ocr: lf.text != null,
+        error: lf.error || null, textError: lf.textError || null,
+      })),
+    };
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'internet-archive-record-data',
+    });
+
+    const lines = [];
+    if (failed.length) {
+      lines.push(failed.length + (failed.length === 1 ? ' page was' : ' pages were') + ' not saved (' +
+        failed.map((lf) => (lf.printed ? 'page ' + lf.printed : 'scan n' + lf.leaf) + ': ' + lf.error).join('; ') + '). ' +
+        (slowDown ? 'Wait a few minutes, then press Capture again.' : ''));
+    }
+    const noText = leaves.filter((lf) => lf.file && lf.text == null);
+    if (noText.length) {
+      lines.push('The page’s text was not saved' + (noText[0].textError ? ' (' + noText[0].textError + ')' : ': this book has no ' +
+        'page-by-page text index') + '. The image is saved: read the page from it.');
+    }
+    const warning = lines.join('\n').trim() || null;
+    const title = (form.edited.has('f-title') && form.title) ||
+      IA.iaTitle(item) + (leaves[0].printed ? ', p. ' + leaves[0].printed : ', scan n' + leaves[0].leaf);
+    const notes = [
+      gatherNotes(provisional, form.notes),
+      'Internet Archive page: ' + pageUrl,
+      leaves.some((lf) => !lf.printed) ? 'The printed page number is not known for ' +
+        leaves.filter((lf) => !lf.printed).map((lf) => 'scan n' + lf.leaf).join(', ') +
+        ': the Internet Archive has no page-number list for it here.' : '',
+      saved.length ? saved.length + (saved.length === 1 ? ' page image' : ' page images') +
+        ' saved (' + saved.map((lf) => lf.file).join(', ') + ').' : '',
+      warning ? 'Not saved: ' + warning : '',
+    ].filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: pageUrl,
+      title,
+      accessed,
+      // What she typed wins; else the book's publication year, when it names one.
+      sourceDate: form.date || hints.sourceDate || '',
+      sourceType: form.type || hints.sourceType || '',
+      sourceClass: hints.sourceClass || '',
+      repository: form.edited.has('f-repo') && form.repo ? form.repo : 'Internet Archive',
+      people: form.people,
+      citation,
+      notes,
+      recipeHint: 'archiveorg',
+      assets: assets.map((a) => ({
+        file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional, primary: !!a.primary,
+      })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
+    const copyNote = forcedCopy
+      ? 'A copy of the web page was kept too: with no page image saved, it is what the book’s details are filed with.'
+      : null;
+    reportStaged(st.where, st.viaHost, null,
+      [warning, st.hostWarning, copyNote].filter(Boolean).join('\n') || null);
+    return {
+      key: 'ia:' + at.itemId + ':' + leaves[0].leafNum,
+      record: { itemId: at.itemId, leaf: leaves[0].leaf, printed: leaves[0].printed },
+      bundle: st.bundle, where: st.where,
+      partial: failed.some((lf) => lf.transient || /not tried|slow down/i.test(lf.error || '')),
+      slowDown,
+      note: saved.length + (saved.length === 1 ? ' page' : ' pages') + ' saved' + (failed.length ? ', ' + failed.length + ' not saved' : ''),
+    };
+  }
+
   // Stage one bundle: straight into the archive when the native host answers,
   // else the staging-folder download. Returns { viaHost, where, hostWarning,
   // bundle }. `opts.forceDownload` (the owner's batch downloads) always takes
@@ -2478,7 +2728,7 @@
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
     if (state.ancestryViewer || state.ancRecord || state.ancPhoto || state.fsRecord || state.fsImage || state.fagRecord ||
-        state.iiif) return true;
+        state.iaPage || state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -2498,7 +2748,8 @@
           (state.ancRecord ? ', with the record’s index and citation (Ancestry)'
             : state.ancPhoto ? ', as the ' + ancItemWord() + ', with its details (Ancestry)'
             : state.fsRecord ? ', with the record’s data and citation (FamilySearch)'
-              : state.fagRecord ? ', with the memorial’s facts, citation and photos (Find a Grave)' : ''));
+              : state.fagRecord ? ', with the memorial’s facts, citation and photos (Find a Grave)'
+                : state.iaPage ? ', with the book’s details, citation and page text (Internet Archive)' : ''));
       } else if (state.npPage && state.npLoading) {
         parts.push('Record files: reading your Newspapers.com clippings…');
       } else if (npActive()) {
@@ -2533,6 +2784,8 @@
             'description can be read on Ancestry from that address'));
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
+      } else if (state.iaPage) {
+        parts.push('Record files: the page image + its text, the book’s details and citation (Internet Archive, auto)');
       } else if (state.fsRecord || state.fsImage) {
         const fst = fsStatus();
         parts.push(fst.text);
@@ -2892,6 +3145,8 @@
       people: checkedPeople(),
       provisional: $('f-provisional').checked,
       dropped: state.droppedAsset,
+      // How many book pages to save from the current one (Internet Archive).
+      iaLeaves: $('ia-leaves') ? Number($('ia-leaves').value) || 1 : 1,
       edited: new Set(state.userEdited),
       fsNoteLine: state.fsNoteLine,
     };
@@ -2945,7 +3200,7 @@
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.ancRecord && !state.ancPhoto && !state.fsRecord && !state.fsImage
-        && !state.fagRecord && !state.iiif && !npActive()) {
+        && !state.fagRecord && !state.iaPage && !state.iiif && !npActive()) {
       if (state.npPage) {
         return refuse('Newspapers.com: ' + npUnavailableReason(), null, npUnavailableCause());
       }
@@ -2955,7 +3210,8 @@
     // The record this capture is of: the one the form was filled for.
     const recordUrl = state.prefilledUrl;
     const recordCapture = wantEvidence && !evidenceUrl() &&
-      ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord);
+      ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord ||
+        state.iaPage);
     // A batch saves a record page's own files only, never a file dropped
     // into the panel meanwhile or a page that is not a record.
     if (opts.batch && state.droppedAsset) {
@@ -3046,6 +3302,15 @@
         const got = await captureFamilySearchRecord(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
         outcome = Object.assign({ ok: true, site: 'familysearch' }, got);
+        return outcome;
+      }
+
+      // Internet Archive book page: the page image, its OCR text, the book's
+      // details and a citation, no login.
+      if (wantEvidence && state.iaPage && !evidenceUrl()) {
+        const got = await captureArchiveOrgPage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        resetForNext();
+        outcome = Object.assign({ ok: true, site: 'archiveorg' }, got);
         return outcome;
       }
 

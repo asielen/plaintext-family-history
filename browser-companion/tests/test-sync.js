@@ -277,6 +277,18 @@ test('content.js Find a Grave readers are a verbatim copy of lib/findagrave-reco
   assert.strictEqual(copy, canon);
 });
 
+test('content.js Internet Archive page reader is a verbatim copy of lib/archiveorg-record.js', () => {
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'archiveorg-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN archiveorg\n';
+  const end = '// FHA-SYNC-END archiveorg';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 1000 && canon.includes('function iaParsePage'), 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN archiveorg\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
 test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagrave-record.js allows', () => {
   // The panel downloads the photos; the page lists them. One rule, two
   // copies (the panel is a classic script), so drive both through one battery.

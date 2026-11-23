@@ -156,6 +156,20 @@ On a memorial (`/memorial/{id}/{slug}`, not its gallery or flower pages) no logi
 - **Hints** (the shared `recordHints` rule, collection "Find a Grave"): `source_type: website`, `source_class: derivative`, and no `source_date`. A memorial is a volunteer's compilation rather than a vital record, and SPEC §8.5 would otherwise default its claims to high confidence. It was made long after the death, on a day the page does not give, so neither the death nor the birth dates it (SPEC §14: the date of the source itself).
 - Each photo in `record-data.json` carries `file` (or null with `same_image_as`, `error` or `skipped`); a photo already saved in the sitting or reported by the Seen It add-on (`fagphoto:{photoId}`, from a saved file only) is not downloaded again. Typed title/date/type/repository win.
 
+### Internet Archive
+
+On a page of a book in the Internet Archive's reader (`archive.org/details/{id}`, with `/page/n20` for the scan at position 20 counting from 0, or `/page/11` for a printed page) no login is used. The panel loads `lib/archiveorg-record.js` (the same file is the canonical reader that `content.js` copies for the address) and asks archive.org's own hosts, without cookies or a referrer, for:
+
+- **The book.** `/metadata/{id}`: title, author (the catalogue's "[Mason, Jesse D] [from old catalog]" is written "Jesse D. Mason"), publisher, date, volume and page count. An item that is not a text, or is gone, stops the capture with the reason.
+- **The printed page.** `{id}_page_numbers.json` says which printed page each scan carries. BookReader rewrites `n20` to `11` as the page loads, so a bare number in the address is placed through the same list. A book without the list still saves, and the citation says "scan n20 (printed page not known)".
+- **The page image.** `iiif.archive.org/iiif/{id}${leaf}/full/full/0/default.jpg`, saved as `page-1.jpg` (role `page-1`; `page-2` and on for the next pages). Leaf numbers count from 1, so the scan at `/page/n20` is leaf 21. A lending-library book refuses its images: the panel says to borrow it, and saves the details and a page copy.
+- **The page's text.** `{id}_hocr_pageindex.json.gz` gives the byte range of each leaf in `{id}_hocr.html`, so one page's text is one small range request and never the whole book (an answer that is not a 206 is not read). It is saved as `transcript.md` (role `transcript`) under one `<!-- AI-DRAFT Internet Archive OCR, unchecked, captured … -->` marker. A book without the index saves the image alone and says so.
+- **More than one page.** The "Pages to save" box offers this page, or this page and the next one, two or three (at most four), one image after another with a short pause.
+- **Citation and hints.** `{author}, {title} ({publisher}, {date}), p. {printed}; digital images, Internet Archive ({link} : accessed {date}).` The link keeps the form of the address she was looking at. `source_type: book`, `source_class: derivative`, and `source_date` the publication year when the date is one single year.
+- `record-data.json` (role `site-data`) holds the book's details and, for each page, its scan number, printed page, address, file and whether its text was saved.
+
+The whole book's text or PDF is not saved yet; that waits for a new file role.
+
 ### Newspapers.com
 
 Opening the panel on a clipping or a page reads the page's own embedded data (each clipping's rectangle, the page size, a day-long page pass) and the page's list of clippings, using the same request its viewer makes, at most a few pages of 25 (`lib/newspapers-page-data.js`). It offers the opened clipping whoever made it, plus your own clippings on the page, never one that marks no area to cut out.
@@ -191,6 +205,7 @@ src/
     findagrave-record.js  a Find a Grave memorial: its facts, family, citation, photo list, photo-host rule, hints (canonical; ditto)
     newspapers.js      rebuilds a Newspapers.com page from tiles; clipping, annotated view, citations
     findagrave.js      downloads a memorial's photos from Find a Grave's image host (panel side)
+    archiveorg-record.js  a page of an Internet Archive book: address, details, printed page, image and text requests, citation (canonical for the address block; the panel loads the whole file)
 test-bundle/           example bundles in the exact output shape (round-trip tests): a "both"
                        census capture, and a shared Ancestry photo the panel tests stage byte for byte
 ```
@@ -224,7 +239,7 @@ An MV3 extension cannot write to an arbitrary path. Its only way to write a file
 
 There is no browser-driven test harness in this repo (it would need a real DOM). Two suites cover everything that *can* be checked without one.
 
-**The pure JS helpers** run under `node --test` (Node ≥18, no dependencies): srcset parsing, the snapshot's URL anchoring, the JSON-LD person harvest, IIIF rewriting, `capture.json` building, the Newspapers.com page-data parsers and tile/report logic, the Ancestry record readers (run over the same scrubbed fixture pages the Python recipe tests read, through the small HTML reader in `tests/mini-dom.js`), and the content.js ↔ `src/lib/` sync guards. `tests/test-panel-newspapers.js`, `tests/test-panel-ancestry.js`, `tests/test-panel-familysearch.js`, `tests/test-panel-findagrave.js` and `tests/test-panel-ux.js` (the Re-read buttons, tab binding and the fetch log) also drive `panel.js` itself against a stand-in for the panel page and a scripted content script (`tests/panel-harness.js`), so those capture flows (and the panel opening at all) are checked without a browser. `tests/test-content-load.js` loads the whole of `content.js` in a sandbox page and drives its message listener. The pixels and the live sites still need a hand test in a loaded extension.
+**The pure JS helpers** run under `node --test` (Node ≥18, no dependencies): srcset parsing, the snapshot's URL anchoring, the JSON-LD person harvest, IIIF rewriting, `capture.json` building, the Newspapers.com page-data parsers and tile/report logic, the Ancestry record readers (run over the same scrubbed fixture pages the Python recipe tests read, through the small HTML reader in `tests/mini-dom.js`), and the content.js ↔ `src/lib/` sync guards. `tests/test-panel-newspapers.js`, `tests/test-panel-ancestry.js`, `tests/test-panel-familysearch.js`, `tests/test-panel-findagrave.js`, `tests/test-panel-archiveorg.js` and `tests/test-panel-ux.js` (the Re-read buttons, tab binding and the fetch log) also drive `panel.js` itself against a stand-in for the panel page and a scripted content script (`tests/panel-harness.js`), so those capture flows (and the panel opening at all) are checked without a browser. `tests/test-content-load.js` loads the whole of `content.js` in a sandbox page and drives its message listener. The pixels and the live sites still need a hand test in a loaded extension.
 
 ```sh
 npm --prefix browser-companion test
