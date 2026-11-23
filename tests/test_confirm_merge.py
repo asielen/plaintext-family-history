@@ -9,7 +9,10 @@ mutation plus a rename), so the coverage here is deliberately thorough:
   `aliases:` reduced to the bare P-id;
 - folds: name variants including the `{value:, restricted: true}` mapping form
   (round-tripped as a real boolean, and its value kept OUT of the survivor's
-  plain aliases: list), external-id folding with the same-key conflict kept on
+  plain aliases: list), the birth, married and other names folded by kind
+  (an empty survivor field filled, a taken one sending the name to
+  name_variants with a preview line, also_known_as appended in order),
+  external-id folding with the same-key conflict kept on
   the survivor + warned + exit 1, relationship entries deduped by
   to+type+subtype with survivor-self edges skipped;
 - claim relink across EVERY status and every taught person form (bare id,
@@ -54,7 +57,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 import confirm
-from _lib import EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, normalize_id, read_record
+from _lib import (EXIT_CLEAN, EXIT_FAILURE, EXIT_WARNINGS, normalize_id, person_alias_mirror,
+                  person_restricted_names, read_record)
 
 EXAMPLE = ROOT / 'example-archive'
 
@@ -625,8 +629,8 @@ class MergeArchiveTests(unittest.TestCase):
 
     def test_restricted_nickname_on_the_merged_record_never_joins_the_survivor(self) -> None:
         # A hand edit had copied a private nickname into the merged record's
-        # aliases:; its marker sits in also_known_as:, which the merge does
-        # not fold, so the survivor would carry it as plain text.
+        # aliases:; its marker sits in also_known_as:. The survivor gets the
+        # nickname with its marker, never as plain text in aliases:.
         text = self.merged_path.read_text(encoding='utf-8')
         text = text.replace('aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy]',
                             'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy, Quenby]\n'
@@ -637,6 +641,9 @@ class MergeArchiveTests(unittest.TestCase):
         aliases = [str(a) for a in read_record(self.survivor_path)['meta']['aliases']]
         self.assertIn('Tommy', aliases)
         self.assertNotIn('Quenby', aliases)
+        aka = read_record(self.survivor_path)['meta']['also_known_as']
+        self.assertEqual(aka[0]['value'], 'Quenby')
+        self.assertEqual(str(aka[0]['restricted']), 'true')
 
     # Full round trip -----------------------------------------------------------
 
@@ -1077,6 +1084,372 @@ class MergeArchiveTests(unittest.TestCase):
         with self.assertRaises(SystemExit):     # --reason is argparse-required
             confirm._standalone_main([
                 'merge', MERGED, '--into', SURVIVOR, '--root', str(self.root)])
+
+
+# ── Birth, married and other names (SPEC §9 single and list name fields) ─────────
+
+def _add_fm_lines(text: str, lines: list[str], after: str = 'name:') -> str:
+    """Insert frontmatter lines right after the first line starting `after`."""
+    out = []
+    done = False
+    for line in text.split('\n'):
+        out.append(line)
+        if not done and line.startswith(after):
+            out.extend(lines)
+            done = True
+    assert done, after
+    return '\n'.join(out)
+
+
+class MergeNameFieldTests(unittest.TestCase):
+    """After a merge the survivor still says which name was the birth name,
+    which the married name and which the nicknames: the merged record's
+    `name_at_birth`, `married_name` and `also_known_as` land in the same
+    fields, and a single field the survivor already fills differently sends
+    the merged one to `name_variants`, said in the preview."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = build_archive(Path(self._tmp.name))
+        self.survivor_path = self.root / 'people' / '040 Thomas' / 'hartley__thomas_edward_P-aaaaaaaaaa.md'
+        self.merged_path = self.root / 'people' / 'stubs' / 'hartley__thos_P-bbbbbbbbbb.md'
+        self.tombstone_path = self.root / 'people' / 'stubs' / \
+            'MERGED-INTO-p-aaaaaaaaaa__hartley__thos_P-bbbbbbbbbb.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _edit(self, path: Path, lines: list[str], after: str = 'name:') -> None:
+        path.write_text(_add_fm_lines(path.read_text(encoding='utf-8'), lines, after),
+                        encoding='utf-8')
+
+    def _survivor(self) -> dict:
+        return read_record(self.survivor_path)['meta']
+
+    def _infos(self, result) -> str:
+        return '\n'.join(m.text for m in result.messages if m.level == 'info')
+
+    # Single fields: every row of the rule, for both fields -----------------------
+
+    def test_an_empty_survivor_field_takes_the_merged_name(self) -> None:
+        for field in ('name_at_birth', 'married_name'):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.merged_path, [f'{field}: Thomas E. Hartlee'])
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertEqual(smeta[field], 'Thomas E. Hartlee')
+                self.assertNotIn('Thomas E. Hartlee',
+                                 [str(v) for v in smeta['name_variants']])
+                # The public name joins the survivor's aliases mirror.
+                self.assertIn('Thomas E. Hartlee', [str(a) for a in smeta['aliases']])
+                self.assertEqual(result['folded'][field], 1)
+                self.assertIn(f'{field}: Thomas E. Hartlee (from p-bbbbbbbbbb)',
+                              self._infos(result))
+
+    def test_the_same_name_already_there_changes_nothing(self) -> None:
+        for field in ('name_at_birth', 'married_name'):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.survivor_path, [f'{field}: Thomas E. Hartlee'])
+                self._edit(self.merged_path, [f'{field}: thomas e. HARTLEE'])
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertEqual(smeta[field], 'Thomas E. Hartlee')
+                variants = [str(v).lower() for v in smeta['name_variants']]
+                self.assertNotIn('thomas e. hartlee', variants)
+                self.assertEqual(result['folded'][field], 0)
+
+    def test_a_different_name_already_there_goes_to_name_variants(self) -> None:
+        for field in ('name_at_birth', 'married_name'):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.survivor_path, [f'{field}: Thomas Edward Hartlee'])
+                self._edit(self.merged_path, [f'{field}: Tom Hartlee'])
+                result = run_merge(self.root, dry_run=True)
+                infos = self._infos(result)
+                self.assertIn('name_variants: Tom Hartlee (from p-bbbbbbbbbb', infos)
+                self.assertIn(f'{field} is already Thomas Edward Hartlee', infos)
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertEqual(smeta[field], 'Thomas Edward Hartlee')
+                self.assertIn('Tom Hartlee', [str(v) for v in smeta['name_variants']])
+                self.assertEqual(result['folded'][field], 0)
+                self.assertIn(f'{field} is already Thomas Edward Hartlee',
+                              self._infos(result))
+
+    def test_an_empty_key_on_the_survivor_is_filled_in_place(self) -> None:
+        self._edit(self.survivor_path, ['married_name:'], after='name_variants:')
+        self._edit(self.merged_path, ['married_name: Tom Hartlee'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        lines = self.survivor_path.read_text(encoding='utf-8').split('\n')
+        i = lines.index('married_name: Tom Hartlee')
+        self.assertTrue(lines[i - 1].startswith('name_variants:'))
+        self.assertEqual(sum(1 for ln in lines if ln.startswith('married_name')), 1)
+
+    def test_a_new_single_field_lands_in_person_key_order(self) -> None:
+        self._edit(self.merged_path, ['married_name: Tom Hartlee',
+                                      'name_at_birth: Thomas Hartlee'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        keys = [ln.split(':', 1)[0] for ln in
+                self.survivor_path.read_text(encoding='utf-8').split('\n')
+                if ln and not ln.startswith((' ', '-', '#'))]
+        nv = keys.index('name_variants')
+        self.assertEqual(keys[nv + 1:nv + 3], ['name_at_birth', 'married_name'])
+
+    # also_known_as: the list field ------------------------------------------------
+
+    def test_also_known_as_appends_new_names_after_the_survivors_own(self) -> None:
+        self._edit(self.survivor_path, ['also_known_as: [Ned, Teddy]'],
+                   after='name_variants:')
+        self._edit(self.merged_path, ['also_known_as: [Tad, teddy, Edd, T. E. Hartley]'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        # The survivor's two stay first, in his order; the new ones follow in
+        # the merged record's order; the repeat and the name the survivor
+        # already shows as a variant are skipped.
+        self.assertEqual(self._survivor()['also_known_as'], ['Ned', 'Teddy', 'Tad', 'Edd'])
+        self.assertEqual(result['folded']['also_known_as'], 2)
+        aliases = [str(a) for a in self._survivor()['aliases']]
+        self.assertIn('Tad', aliases)
+
+    def test_also_known_as_block_list_keeps_its_form(self) -> None:
+        self._edit(self.survivor_path, ['also_known_as:', '  - Ned'],
+                   after='name_variants:')
+        self._edit(self.merged_path, ['also_known_as:', '  - Tad'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        text = self.survivor_path.read_text(encoding='utf-8')
+        self.assertIn('also_known_as:\n  - Ned\n  - Tad\n', text)
+
+    def test_a_survivor_without_also_known_as_gets_it_in_key_order(self) -> None:
+        self._edit(self.survivor_path, ['married_name: Tom Hartley'],
+                   after='name_variants:')
+        self._edit(self.merged_path, ['also_known_as: [Tad]'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        lines = self.survivor_path.read_text(encoding='utf-8').split('\n')
+        i = lines.index('also_known_as: [Tad]')
+        self.assertEqual(lines[i - 1], 'married_name: Tom Hartley')
+
+    def test_a_typed_name_keeps_its_kind_over_the_plain_name(self) -> None:
+        # The merged record's own name is also its married name: it arrives
+        # as the survivor's married_name, not as a bare variant as well.
+        self._edit(self.merged_path, ['married_name: Thos. Hartley'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = self._survivor()
+        self.assertEqual(smeta['married_name'], 'Thos. Hartley')
+        self.assertNotIn('Thos. Hartley', [str(v) for v in smeta['name_variants']])
+
+    def test_a_name_shown_in_another_survivor_field_is_skipped(self) -> None:
+        self._edit(self.merged_path, ['name_at_birth: "[[T. E. Hartley]]"',
+                                      'also_known_as: [Thomas Edward Hartley]'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = self._survivor()
+        self.assertNotIn('name_at_birth', smeta)
+        self.assertNotIn('also_known_as', smeta)
+
+    def test_the_merged_name_is_not_repeated_when_the_survivor_has_it_as_married_name(self) -> None:
+        self._edit(self.survivor_path, ['married_name: thos. hartley'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        variants = [str(v).lower() for v in self._survivor()['name_variants']]
+        self.assertNotIn('thos. hartley', variants)
+
+    def test_the_tombstone_keeps_its_own_name_fields_as_written(self) -> None:
+        lines = ['name_at_birth: Tom Hartlee', 'married_name: Thomas Hartley-Webb',
+                 'also_known_as: [Tad]']
+        self._edit(self.merged_path, lines)
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        text = self.tombstone_path.read_text(encoding='utf-8')
+        for line in lines:
+            self.assertIn(line + '\n', text)
+
+    # Restricted names (SPEC §9, §19) ------------------------------------------------
+
+    def test_restricted_names_travel_as_mappings_and_stay_out_of_aliases(self) -> None:
+        self._edit(self.merged_path, [
+            'name_at_birth: {value: Thomas Quenby, restricted: true}',
+            'married_name: {value: Tom Quenby, restricted: true}',
+            'also_known_as:', '  - {value: Quen, restricted: true}'])
+        # Also mirrored by hand into the merged record's aliases:.
+        text = self.merged_path.read_text(encoding='utf-8').replace(
+            'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy]',
+            'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy, Thomas Quenby, Tom Quenby, Quen]')
+        self.merged_path.write_text(text, encoding='utf-8')
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = self._survivor()
+        for field, value in (('name_at_birth', 'Thomas Quenby'),
+                             ('married_name', 'Tom Quenby')):
+            self.assertEqual(smeta[field]['value'], value)
+            self.assertEqual(str(smeta[field]['restricted']), 'true')
+        self.assertEqual(smeta['also_known_as'][0]['value'], 'Quen')
+        self.assertEqual(str(smeta['also_known_as'][0]['restricted']), 'true')
+        aliases = {str(a).lower() for a in smeta['aliases']}
+        for value in ('thomas quenby', 'tom quenby', 'quen'):
+            self.assertNotIn(value, aliases)
+        self.assertIn('{value: Thomas Quenby, restricted: true}',
+                      self.survivor_path.read_text(encoding='utf-8'))
+
+    def test_a_restricted_name_moved_to_name_variants_keeps_its_marker(self) -> None:
+        self._edit(self.survivor_path, ['name_at_birth: Thomas Edward Hartlee'])
+        self._edit(self.merged_path, ['name_at_birth: {value: Tom Quenby, restricted: true}'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = self._survivor()
+        moved = [v for v in smeta['name_variants']
+                 if isinstance(v, dict) and v.get('value') == 'Tom Quenby']
+        self.assertEqual(len(moved), 1)
+        self.assertEqual(str(moved[0]['restricted']), 'true')
+        self.assertNotIn('tom quenby', {str(a).lower() for a in smeta['aliases']})
+
+    def test_a_name_private_in_one_field_stays_private_when_another_lists_it_plain(self) -> None:
+        # The merged record marks "Tommy Hartley" private in name_variants
+        # (the fixture) and also lists it as a plain nickname. On the merged
+        # record that keeps it private everywhere; the merge must not hand
+        # the survivor a plain copy that its aliases and exports read as
+        # public.
+        for field, line in (('also_known_as', 'also_known_as: [Tommy Hartley]'),
+                            ('name_at_birth', 'name_at_birth: Tommy Hartley'),
+                            ('married_name', 'married_name: Tommy Hartley')):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.merged_path, [line])
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertIn('tommy hartley', person_restricted_names(smeta))
+                self.assertNotIn('tommy hartley',
+                                 {str(a).lower() for a in smeta['aliases']})
+                self.assertNotIn('tommy hartley',
+                                 {v.lower() for v in person_alias_mirror(smeta)})
+                self.assertIn('Tommy Hartley (from p-bbbbbbbbbb, restricted)',
+                              self._infos(result))
+
+    def test_a_name_the_survivor_shows_plain_keeps_the_merged_records_marker(self) -> None:
+        # The survivor lists "Tommy Hartley" as a plain nickname; the merged
+        # record marks it private (the fixture's name_variants). The merge
+        # strips the tombstone's name_variants, so without a private entry on
+        # the survivor the marker would be gone from both records.
+        for field, line in (('also_known_as', 'also_known_as: [Tommy Hartley]'),
+                            ('married_name', 'married_name: Tommy Hartley')):
+            with self.subTest(field=field):
+                self.tearDown()
+                self.setUp()
+                self._edit(self.survivor_path, [line])
+                result = run_merge(self.root, dry_run=True)
+                self.assertIn('name_variants: Tommy Hartley (from p-bbbbbbbbbb, '
+                              'restricted; the survivor lists it without the marker',
+                              self._infos(result))
+                result = run_merge(self.root)
+                self.assertEqual(result['status'], 'ok')
+                smeta = self._survivor()
+                self.assertIn('tommy hartley', person_restricted_names(smeta))
+                self.assertNotIn('tommy hartley',
+                                 {v.lower() for v in person_alias_mirror(smeta)})
+                self.assertNotIn('tommy hartley',
+                                 {str(a).lower() for a in smeta['aliases']})
+
+    def test_a_one_name_also_known_as_says_how_to_write_it_as_a_list(self) -> None:
+        # `also_known_as: Ned` typed by hand cannot be extended in place; the
+        # merge stops with nothing written and tells him the exact line to
+        # write so it can run.
+        self._edit(self.survivor_path, ['also_known_as: Ned'])
+        self._edit(self.merged_path, ['also_known_as: [Tad]'])
+        before = self.survivor_path.read_bytes()
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'refused')
+        errors = '\n'.join(m.text for m in result.messages)
+        self.assertIn('also_known_as: [Ned]', errors)
+        self.assertIn('run the merge again', errors)
+        self.assertEqual(self.survivor_path.read_bytes(), before)
+        self.assertTrue(self.merged_path.exists())
+
+    # Aliases: a mirrored name is not a hand-typed stem -------------------------------
+
+    def test_a_mirrored_married_name_does_not_create_aliases_on_the_survivor(self) -> None:
+        no_alias = SURVIVOR_FILE.replace(
+            'aliases: [P-aaaaaaaaaa, Thomas Edward Hartley, T. E. Hartley]\n', '')
+        self.survivor_path.write_text(no_alias, encoding='utf-8')
+        text = self.merged_path.read_text(encoding='utf-8').replace(
+            'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tommy]',
+            'aliases: [P-bbbbbbbbbb, Thos. Hartley, Tom Hartlee]')
+        self.merged_path.write_text(text, encoding='utf-8')
+        self._edit(self.merged_path, ['married_name: Tom Hartlee'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        smeta = self._survivor()
+        self.assertEqual(smeta['married_name'], 'Tom Hartlee')
+        self.assertNotIn('aliases', smeta)
+
+    # Preview, CRLF, undo ---------------------------------------------------------------
+
+    def test_dry_run_lists_every_name_and_writes_nothing(self) -> None:
+        self._edit(self.survivor_path, ['name_at_birth: Thomas Edward Hartlee'])
+        self._edit(self.merged_path, ['name_at_birth: Tom Hartlee',
+                                      'married_name: Thomas Hartley-Webb',
+                                      'also_known_as: [Tad]'])
+        before = tree_state(self.root)
+        result = run_merge(self.root, dry_run=True)
+        self.assertEqual(tree_state(self.root), before)
+        infos = self._infos(result)
+        self.assertIn('[dry-run] Would add these names to', infos)
+        self.assertIn('married_name: Thomas Hartley-Webb (from p-bbbbbbbbbb)', infos)
+        self.assertIn('also_known_as: Tad (from p-bbbbbbbbbb)', infos)
+        self.assertIn("name_variants: Tom Hartlee (from p-bbbbbbbbbb's name_at_birth", infos)
+        self.assertIn('name_variants: Thos. Hartley (from p-bbbbbbbbbb)', infos)
+
+    def test_a_crlf_survivor_keeps_crlf(self) -> None:
+        crlf = SURVIVOR_FILE.replace('\n', '\r\n')
+        self.survivor_path.write_bytes(crlf.encode('utf-8'))
+        self._edit(self.merged_path, ['married_name: Tom Hartlee', 'also_known_as: [Tad]'])
+        result = run_merge(self.root)
+        self.assertEqual(result['status'], 'ok')
+        raw = self.survivor_path.read_bytes()
+        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''))
+        self.assertIn(b'married_name: Tom Hartlee\r\n', raw)
+        self.assertIn(b'also_known_as: [Tad]\r\n', raw)
+
+    def test_a_failure_after_the_survivor_write_puts_it_back_byte_for_byte(self) -> None:
+        self._edit(self.merged_path, ['married_name: Tom Hartlee', 'also_known_as: [Tad]'])
+        survivor_bytes = self.survivor_path.read_bytes()
+        before = tree_state(self.root)
+        real_write = confirm.write_text_exact_atomic
+        written: list[Path] = []
+
+        def flaky(path, text):
+            written.append(Path(path))
+            if len(written) == 2:   # the survivor is written first; fail on the next file
+                raise OSError('simulated disk full')
+            return real_write(path, text)
+
+        with mock.patch.object(confirm, 'write_text_exact_atomic', flaky):
+            r = run_merge(self.root)
+        self.assertEqual(written[0], self.survivor_path)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertEqual(self.survivor_path.read_bytes(), survivor_bytes)
+        self.assertEqual(tree_state(self.root), before)
+
+    def test_the_summary_line_counts_the_name_fields(self) -> None:
+        self._edit(self.merged_path, ['name_at_birth: Thomas Hartlee',
+                                      'married_name: Tom Hartlee',
+                                      'also_known_as: [Tad, Edd]'])
+        result = run_merge(self.root)
+        self.assertEqual(result['folded']['also_known_as'], 2)
+        self.assertIn('1 birth name, 1 married name, 2 other name(s)', self._infos(result))
 
 
 # ── End-to-end against the example archive ───────────────────────────────────────
