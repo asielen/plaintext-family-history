@@ -70,6 +70,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     SOURCE_FRONTMATTER_KEY_ORDER,
+    sqlite_readonly_uri,
     record_collection_group,
     record_collection_index,
     site_data_reader,
@@ -5197,9 +5198,7 @@ def _w137_keyworded_photos(registry: Registry) -> set[str]:
     if not db.is_file():
         return set()
     try:
-        # as_uri() percent-encodes the path: a '#' or '%' in a folder name
-        # written raw would cut the URI, drop `mode=ro` and create a file.
-        conn = sqlite3.connect(f'{db.resolve().as_uri()}?mode=ro', uri=True)
+        conn = sqlite3.connect(sqlite_readonly_uri(db), uri=True)
         try:
             rows = conn.execute(
                 "SELECT path FROM photos WHERE source_id IS NOT NULL AND source_id != ''"

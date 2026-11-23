@@ -1761,5 +1761,33 @@ class PhotoLinksTestCase(_ArchiveCase):
         self.assertEqual(before, sorted(p.name for p in Path(self._tmp.name).iterdir()))
 
 
+    def test_unreadable_catalog_notes_say_so(self) -> None:
+        (self.archive / '.cache').mkdir()
+        (self.archive / '.cache' / 'photos.sqlite').write_bytes(b'not a database at all')
+        self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertIn('rose_wedding.jpg "Wedding" (not looked for: the photo catalog could not be read', record)
+        self.assertNotIn('was not built', record)
+
+
+class SqliteReadonlyUriTestCase(unittest.TestCase):
+    """For him: an archive in a folder like "Family #2", or on a network share,
+    can read its caches without a read-only look ever creating a file."""
+
+    def test_special_characters_are_encoded(self) -> None:
+        from _lib import sqlite_readonly_uri
+        uri = sqlite_readonly_uri(Path('/x/Family #2 100%/.cache/photos.sqlite').absolute())
+        self.assertTrue(uri.endswith('/x/Family%20%232%20100%25/.cache/photos.sqlite?mode=ro'), uri)
+        self.assertTrue(uri.startswith('file:///'), uri)
+
+    @unittest.skipUnless(sys.platform == 'win32', 'Windows drive and share paths')
+    def test_windows_drive_and_share(self) -> None:
+        from _lib import sqlite_readonly_uri
+        self.assertEqual(sqlite_readonly_uri(Path('D:/Family Archive/.cache/photos.sqlite')),
+                         'file:///D:/Family%20Archive/.cache/photos.sqlite?mode=ro')
+        share = Path(chr(92) * 2 + 'nas' + chr(92) + 'family' + chr(92) + 'photos.sqlite')
+        self.assertEqual(sqlite_readonly_uri(share), 'file:////nas/family/photos.sqlite?mode=ro')
+
+
 if __name__ == '__main__':
     unittest.main()

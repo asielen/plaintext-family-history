@@ -141,6 +141,7 @@ from _lib import (
     strip_generational_suffix,
     safe_load_yaml,
     shell_quote,
+    sqlite_readonly_uri,
     yaml_inline,
 )
 
@@ -1499,9 +1500,7 @@ def _match_photo_links(archive_root: Path, fha_config: dict, links: list[_PhotoL
         return state
     db = archive_root / '.cache' / 'photos.sqlite'
     try:
-        # as_uri() percent-encodes the path: a '#' or '%' in a folder name
-        # written raw would cut the URI, drop `mode=ro` and create a file.
-        conn = sqlite3.connect(f'{db.resolve().as_uri()}?mode=ro', uri=True)
+        conn = sqlite3.connect(sqlite_readonly_uri(db), uri=True)
     except (sqlite3.Error, OSError, ValueError):
         return 'unreadable'
     try:
@@ -1644,8 +1643,10 @@ def _photo_notes_lines(plan: 'ImportPlan', links_writer) -> list[str]:
             lines.append(f'- {who}: {lk.basename}{title} (matches more than one '
                          'photo: ' + ', '.join(lk.candidates) + ')')
         elif unchecked:
+            why = ('was not built' if plan.photo_catalog == 'absent'
+                   else 'could not be read')
             lines.append(f'- {who}: {lk.basename}{title} (not looked for: the photo '
-                         'catalog was not built when imported)')
+                         f'catalog {why} when imported)')
         else:
             lines.append(f'- {who}: {lk.basename}{title} (not in the photo folders '
                          'when imported)')
