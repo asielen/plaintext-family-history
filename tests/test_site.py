@@ -10062,8 +10062,44 @@ class FanChartGeometryTests(unittest.TestCase):
             _fan_full_labels(1, dates={'birth': None, 'death': '1941'}), 5))
         self.assertEqual([t for _, t in items['Anc2 Hartley, d. 1941']['years']], ['d. 1941'])
 
+    def test_years_say_before_after_about_decade_and_range(self):
+        # Owner decision: a qualified date keeps its meaning on the chart.
+        cases = [('1840', '1840'), ('1840-03-02', '1840'), ('1840?', '1840'),
+                 ('[..1920]', 'bef. 1920'), ('[..1920-05]', 'bef. 1920'),
+                 ('[1880-09-30..]', 'aft. 1880'), ('1850~', 'abt. 1850'),
+                 ('1850%', 'abt. 1850'), ('1850-05-20~', 'abt. 1850'),
+                 ('185X', '1850s'), ('18XX', '1800s'),
+                 ('1918/1920', '1918–1920'), ('1871-02/1871-03', '1871'),
+                 ('', ''), (None, '')]
+        for edtf, want in cases:
+            with self.subTest(edtf=edtf):
+                self.assertEqual(site._chart_year(edtf), want)
+        svg = site._render_fan_svg(_fan_full_labels(
+            1, dates={'birth': '185X', 'death': '[..1920]'}), 5)
+        items = _fan_items(svg)
+        self.assertEqual([t for _, t in items['Anc2 Hartley, 1850s-bef. 1920']['years']],
+                         ['1850s-bef. 1920'])
+        self.assertIn('<title>Anc3 Hartley, 1850s-bef. 1920</title>', svg)
+
+    def test_a_long_years_line_shrinks_before_it_is_dropped(self):
+        svg = site._render_fan_svg(_fan_full_labels(
+            1, dates={'birth': '[..1840]', 'death': '[1941-01-02..]'}), 5)
+        item = _fan_items(svg)['Anc2 Hartley, bef. 1840-aft. 1941']
+        self.assertEqual([t for _, t in item['years']], ['bef. 1840-aft. 1941'])
+        self.assertGreaterEqual(item["fy"], 8.0)
+
+    def test_the_family_chart_uses_the_same_short_forms(self):
+        self.assertEqual(site._pedigree_years({'birth': '1850~', 'death': '[1920..]'}),
+                         'abt. 1850–aft. 1920')
+        self.assertEqual(site._pedigree_years({'birth': '185X', 'death': None}), 'b. 1850s')
+
     def test_every_line_fits_its_cell(self):
-        dates = {'birth': '1840', 'death': '1941'}
+        for dates in ({'birth': '1840', 'death': '1941'},
+                      {'birth': '[..1840]', 'death': '[1941-01-02..]'},
+                      {'birth': '1838/1841', 'death': '194X'}):
+            self._every_line_fits(dates)
+
+    def _every_line_fits(self, dates):
         for depth in (5, 6):
             rings = _fan_rings_by_formula(depth)
             for name in (lambda n: f'Anc{n} Hartley',

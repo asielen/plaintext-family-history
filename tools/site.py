@@ -3075,16 +3075,62 @@ def _real_path(path: str | Path) -> Path:
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
 def _chart_year(edtf) -> str:
-    """The year a chart prints for a date: the first four-digit run of its EDTF
-    text ('1840-03-02' and '1840?' are both '1840'), or '' when there is none.
-    Charts show years only; the person's page carries the full date."""
-    m = re.search(r'\d{4}', str(edtf)) if edtf else None
+    """The year a chart prints for a date, keeping what the date means: a
+    death recorded "before 1920" must not read as a death in 1920. Charts show
+    years only; the person's page carries the full date. Owner decision
+    (2026-11-22) on the short forms:
+
+    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
+      '1840?' are both '1840');
+    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
+    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
+    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
+    - an interval `1918/1920`: '1918–1920', or the one year when both ends
+      fall in it.
+
+    Anything else falls back to the first four-digit run, or '' when there is
+    none. Used by the fan and the family chart alike."""
+    if not edtf:
+        return ''
+    s = str(edtf).strip()
+    if '/' in s:
+        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
+        if ends[0] and ends[1]:
+            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
+        return ends[0] or ends[1]
+    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
+    if m:
+        return f'bef. {m.group(1)}'
+    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
+    if m:
+        return f'aft. {m.group(1)}'
+    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
+    if m:
+        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
+    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
+    if m:
+        return f'abt. {m.group(1) or m.group(2)}'
+    return _chart_bare_year(s)
+
+
+def _chart_bare_year(s: str) -> str:
+    """The first four-digit run of a date's text, or ''."""
+    m = re.search(r'\d{4}', s)
     return m.group(0) if m else ''
 
 
+def _pedigree_years(dates: dict | None) -> str:
+    """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
+    dates = dates or {}
+    b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
+    return f'{b}–{d}' if (b and d) else (f'b. {b}' if b else (f'd. {d}' if d else ''))
+
+
 def _fan_years(dates: dict | None) -> str:
-    """The years line under a fan name: '1840-1941', 'b. 1840', 'd. 1941' or ''.
-    A hyphen, never an en dash (the house rule allows a hyphen in a range)."""
+    """The years line under a fan name: '1840-1941', 'b. 1840', 'd. 1941' or '',
+    each year in `_chart_year`'s short form ('abt. 1850-bef. 1920'). Birth and
+    death are joined by a hyphen; an en dash appears only inside one date's
+    own range ('1838–1841-1920'), so the two never read alike."""
     dates = dates or {}
     b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
     if b and d:
@@ -3134,6 +3180,17 @@ def _fan_shorten(text: str, room: float) -> str:
     return text if len(text) <= budget else text[:budget - 1].rstrip() + '…'
 
 
+def _fan_years_size(fs: float, years: str, room: float) -> float:
+    """The years line's size: _FAN_YEARS_SCALE of the name's, made smaller
+    (never below the floor) when a long one such as 'bef. 1840-aft. 1941'
+    would not fit its room, so it shrinks before it is dropped. Rounded down,
+    like every fan size (#116)."""
+    fy = fs * _FAN_YEARS_SCALE
+    if years:
+        fy = min(fy, room / (len(years) * _FAN_CW))
+    return max(_FAN_FS_MIN, math.floor(fy * 10) / 10)
+
+
 def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
                  seg: float) -> dict:
     """Lay out one curved-ring label: which lines, at what size, at what radii.
@@ -3148,8 +3205,9 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
     each line is measured at the shorter of its radius at the cap and at the
     floor: whatever size is chosen, the line then fits. Below the floor the
     size stays at the floor and each line too long is shortened. The years
-    line, smaller, is dropped when it does not fit; the name is then laid out
-    again without it.
+    line, smaller, shrinks toward the floor to fit (`_fan_years_size`) and is
+    dropped only when it still does not; the name is then laid out again
+    without it.
 
     Returns {'fs', 'lines', 'fy', 'years', 'radii'}: radii has one entry per
     line, name lines first, then the years line when it is kept."""
@@ -3171,7 +3229,7 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
         if fs < _FAN_FS_MIN:
             fs = _FAN_FS_MIN
             shown = [_fan_shorten(t, room(i)) for i, t in enumerate(lines)]
-        fy = max(_FAN_FS_MIN, math.floor(fs * _FAN_YEARS_SCALE * 10) / 10)
+        fy = _fan_years_size(fs, years, room(count - 1))
         fits = with_years and len(years) * _FAN_CW * fy <= room(count - 1)
         return {'fs': fs, 'lines': shown, 'fy': fy, 'years': years if fits else '',
                 'radii': [radius(i, fs) for i in range(count)], 'fits': fits}
@@ -3211,7 +3269,7 @@ def _fan_fit_radial(name: str, years: str, g: int, r_in: float, t: float,
     if fs < _FAN_FS_MIN:
         fs = _FAN_FS_MIN
         shown = _fan_shorten(name, avail)
-    fy = max(_FAN_FS_MIN, math.floor(fs * _FAN_YEARS_SCALE * 10) / 10)
+    fy = _fan_years_size(fs, years, avail)
     if with_years and len(years) * _FAN_CW * fy > avail:
         with_years = False
     return {'fs': fs, 'lines': [shown], 'fy': fy, 'years': years if with_years else ''}
@@ -3810,8 +3868,7 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             name_el = (f'<a class="ped-name" href="{html.escape(url, quote=True)}">{name}</a>'
                        if url else f'<span class="ped-name">{name}</span>')
             d = lab.get('dates') or {}
-            b, dd = _chart_year(d.get('birth')), _chart_year(d.get('death'))
-            span = f'{b}–{dd}' if (b and dd) else (f'b. {b}' if b else (f'd. {dd}' if dd else ''))
+            span = _pedigree_years(d)
             inner = name_el + (f'<span class="ped-dates">{span}</span>' if span else '')
         return (f'<foreignObject x="{x:.0f}" y="{yc - CH / 2:.0f}" width="{CW}" height="{CH}">'
                 f'<div xmlns="http://www.w3.org/1999/xhtml" class="{cls}"{div_attrs}>{inner}</div>'

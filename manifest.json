@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.22",
-  "generated": "2026-11-22",
+  "generated": "2026-11-23",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -646,7 +646,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "890074628dee282a744c61d02de0e27d15dfcacb24006fa5c4af0801388ab9a1",
+      "sha256": "e0d0b8bd6f46c89570733790845030026445d8d8af75186b70e56058117804a1",
       "spec_version": "2.22",
       "src": "docs/DESIGN.md"
     },
@@ -933,7 +933,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "9f22b55f539e804d22942ea2f82fd860c4a6b220fa7ff0bf26afcb06250e2eaa",
+      "sha256": "a4d463e9eaa26dc7255c2fcc80a8602a8c1e5cd07064fe937bc89bcb2000bd0b",
       "spec_version": "2.22",
       "src": "tools/site.py"
     },
