@@ -13,6 +13,7 @@ Run: python -m pytest tests/test_gedcom_import.py -q   (from the repo root)
 import contextlib
 import hashlib
 import io
+import re
 import shutil
 import sqlite3
 import sys
@@ -1534,3 +1535,168 @@ class PersonsWrittenWithNamesTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+# ── Photos the old program linked ──────────────────────────────────────────────
+
+import photoindex
+from _lib import shell_quote
+
+PHOTO_LINKS = FIXTURES / 'photo-links.ged'
+
+
+class PhotoLinksTestCase(_ArchiveCase):
+    """For him: the plan says which linked photos are already in his folders and
+    offers each to `tag-person`; nothing is written to a photo or its keywords."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._orig_exiftool = photoindex._run_exiftool
+        photoindex._run_exiftool = lambda paths: [{'SourceFile': str(p)} for p in paths]
+        self.photos = self.archive / 'photos'
+        for rel in ('1950/rose_wedding.jpg', '1902/thomas.jpg', '1910/thomas.jpg'):
+            f = self.photos / rel
+            f.parent.mkdir(parents=True, exist_ok=True)
+            f.write_bytes(b'not really a jpeg: ' + rel.encode())
+        self.ged_dir = Path(self._tmp.name) / 'download'
+        self.ged_dir.mkdir()
+        self.ged = self.ged_dir / 'photo-links.ged'
+        shutil.copyfile(PHOTO_LINKS, self.ged)
+
+    def tearDown(self) -> None:
+        photoindex._run_exiftool = self._orig_exiftool
+        super().tearDown()
+
+    def _scan(self) -> None:
+        with contextlib.redirect_stdout(io.StringIO()):
+            photoindex.run_scan(self.archive, self.config)
+
+    def _catalog(self) -> sqlite3.Connection:
+        return sqlite3.connect(self.archive / '.cache' / 'photos.sqlite')
+
+    def _record_text(self) -> str:
+        return next((self.archive / 'sources' / 'other').glob('*.md')).read_text(encoding='utf-8')
+
+    def test_found_by_name(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertIn('Photos your old program linked: 9 (9 people)', out)
+        self.assertRegex(out, r'Rose Hartley\s+photos/1950/rose_wedding\.jpg')
+
+    def test_ambiguous_lists_both(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertRegex(out, r'Thomas Hartley\s+thomas\.jpg could be photos/1902/thomas\.jpg '
+                              r'or photos/1910/thomas\.jpg')
+
+    def test_web_link_host_only(self) -> None:
+        self._scan()
+        plan_out = Path(self._tmp.name) / 'plan.txt'
+        _, out, err = self._run(self.ged, apply=True, plan_out=plan_out)
+        self.assertIn('ancestry.com', out)
+        for text in (out, err, plan_out.read_text(encoding='utf-8'), self._record_text()):
+            self.assertNotIn('token=abc', text)
+            self.assertNotIn('mediaui-viewer', text)
+
+    def test_folder_hint(self) -> None:
+        self._scan()
+        _, out, _ = self._run(self.ged)
+        self.assertIn('"Hartley Media"', out)
+        self.assertNotIn('Users', out)
+        self.assertNotIn('someone', out)
+
+    def test_catalog_absent_says_how(self) -> None:
+        _, out, _ = self._run(self.ged)
+        self.assertIn('Run fha photoindex', out)
+        self.assertNotIn('already in your photo folders', out)
+
+    def test_apply_lists_in_notes_and_prints_command(self) -> None:
+        self._scan()
+        _, dry_out, _ = self._run(self.ged)
+        self.assertNotIn('fha photoindex tag-person', dry_out)
+        _, out, _ = self._run(self.ged, apply=True)
+        record = self._record_text()
+        self.assertRegex(record, r'- \[\[p-[0-9a-z]+\|Rose Hartley\]\]: photos/1950/rose_wedding\.jpg')
+        self.assertRegex(record, r'Thomas Hartley\]\]: thomas\.jpg .*photos/1902/thomas\.jpg')
+        self.assertNotIn('Users', record)
+        m = re.search(r'fha photoindex tag-person (\S+) --paths (.+)', out)
+        self.assertIsNotNone(m, out)
+        self.assertEqual(m.group(2).strip(), shell_quote('photos/1950/rose_wedding.jpg'))
+        self.assertTrue(m.group(1).strip('\'"').startswith('p-'))
+
+    def test_no_photo_or_keyword_written(self) -> None:
+        self._scan()
+        files = sorted(p for p in self.photos.rglob('*') if p.is_file())
+        before = [(p, hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+                  for p in files]
+        conn = self._catalog()
+        kw_before = conn.execute('SELECT COUNT(*) FROM photo_keywords').fetchone()[0]
+        conn.close()
+        self._run(self.ged, apply=True)
+        after = [(p, hashlib.sha256(p.read_bytes()).hexdigest(), p.stat().st_mtime_ns)
+                 for p in files]
+        self.assertEqual(before, after)
+        conn = self._catalog()
+        self.assertEqual(kw_before, conn.execute('SELECT COUNT(*) FROM photo_keywords').fetchone()[0])
+        conn.close()
+
+    def test_obje_no_longer_unread(self) -> None:
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        self.assertNotIn('OBJE', dict(plan.unread_top))
+        self.assertNotIn('FILE', dict(plan.unread_top))
+
+    def test_already_tagged_counted(self) -> None:
+        self._scan()
+        fixed = [f'P-{c * 10}' for c in 'abcdefghi']
+        conn = self._catalog()
+        conn.execute('INSERT INTO photo_keywords(path, keyword) VALUES (?, ?)',
+                     ('photos/1950/rose_wedding.jpg', fixed[0]))
+        conn.commit()
+        conn.close()
+
+        def fake_mint(prefix, n, root):
+            return fixed[:n] if prefix == 'P' else [f'{prefix}-{i:010d}' for i in range(n)]
+
+        with mock.patch.object(gedcom_import, 'mint_ids', side_effect=fake_mint):
+            plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        out = '\n'.join(gedcom_import._plan_lines(plan, applied=False))
+        self.assertIn('already carry that person', out)
+        self.assertNotIn('rose_wedding', out)
+        self.assertEqual(
+            [lk.status for lk in plan.photo_links if lk.basename == 'rose_wedding.jpg'],
+            ['already tagged'])
+        self.assertNotIn('rose_wedding', gedcom_import._photo_handoff_text(plan))
+
+    def test_exact_path_and_separators(self) -> None:
+        """A path written with backslashes and another letter case still finds the
+        photo; a name that exists nowhere is reported not found, never guessed."""
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8').replace(
+            'C:\\Users\\someone\\Hartley Media\\rose_wedding.jpg', 'ROSE_Wedding.JPG')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual((rose.status, rose.alias), ('matched', 'photos/1950/rose_wedding.jpg'))
+        ben = next(lk for lk in plan.photo_links if lk.person_xref == '@I4@')
+        self.assertEqual(ben.status, 'not found')
+
+    def test_exact_path_beside_the_ged_file(self) -> None:
+        self._scan()
+        text = self.ged.read_text(encoding='utf-8').replace(
+            'C:\\Users\\someone\\Hartley Media\\rose_wedding.jpg', '../archive/photos/1950/rose_wedding.jpg')
+        self.ged.write_text(text, encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        rose = next(lk for lk in plan.photo_links if lk.person_xref == '@I1@')
+        self.assertEqual((rose.status, rose.how), ('matched', 'same file'))
+
+    def test_non_image_and_file_url(self) -> None:
+        self._scan()
+        extra = ('0 @I10@ INDI\n1 NAME Hal /Hartley/\n'
+                 '1 OBJE\n2 FILE C:\\docs\\letter.pdf\n'
+                 '1 OBJE\n2 FILE file:///C:/Old%20Pics/rose_wedding.jpg\n')
+        self.ged.write_text(self.ged.read_text(encoding='utf-8').replace('0 TRLR\n', extra + '0 TRLR\n'),
+                            encoding='utf-8')
+        plan = gedcom_import.build_plan(self.archive, self.config, self.ged)
+        hal = [lk for lk in plan.photo_links if lk.person_xref == '@I10@']
+        self.assertEqual([lk.basename for lk in hal], ['rose_wedding.jpg'])   # the PDF is not a photo
+        self.assertEqual(hal[0].folder, 'Old Pics')

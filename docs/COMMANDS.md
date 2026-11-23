@@ -866,7 +866,8 @@ Bring a tree from Ancestry (or any genealogy program) into your archive.
 Download your tree as a GEDCOM (.ged) file, then run this. The file itself is
 filed as one source (your original untouched); every person becomes a record
 with their dates; every statement becomes a suggested fact for you to review
-later, family by family. Nothing imported is treated as proven. Re-importing
+later, family by family. Nothing imported is treated as proven. Photos your
+old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
   --plan-out FILE    Also write the full, uncut plan text to FILE.

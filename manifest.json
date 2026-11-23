@@ -20,7 +20,7 @@
     {
       "path": ".agents/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "acb791a82f0828b86fe37abe2d966ab2ab99ee34d19cc25f17df68d9524eb81d",
       "spec_version": "2.19",
       "src": ".claude/skills/find-photos/SKILL.md"
     },
@@ -193,7 +193,7 @@
     {
       "path": ".claude/skills/find-photos/SKILL.md",
       "category": "operating",
-      "sha256": "82f47c2d80aac818d3bc91463d07e4b3de36a00e1391e72bc0bd106dc8ceee35",
+      "sha256": "acb791a82f0828b86fe37abe2d966ab2ab99ee34d19cc25f17df68d9524eb81d",
       "spec_version": "2.19"
     },
     {
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
+      "sha256": "25f38d51bd3cac91ca6765bf0ba3d2ef93f7a228ba77ace39202bed855cd0e4f",
       "spec_version": "2.19",
       "src": "tools/gedcom_import.py"
     },
@@ -1161,7 +1161,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "ef5377532b1d6cabec6501f6798191b5789737653cf7ccef5b9784efbdcc51df",
+      "sha256": "ef6113b6d303a0ae3f460b0aee9b8f73f96d2f1dff2bbd4806de8e5ff696df96",
       "spec_version": "2.19"
     },
     {
@@ -1197,7 +1197,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "0def3e2a6ecc05b3b2c225faeaced3bbaff27008448d78a42b698d6ba5b6ff5c",
+      "sha256": "da00c8cab1777bc02af6e3d5bd6d96e69dcc5c9dca7f2be366088ac00433b432",
       "spec_version": "2.19"
     },
     {
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "c1ffa77082015413e8d16207903fff7437f758bcdf27b81600c5e9c2b9d8ca18",
+      "sha256": "04a2e2dd3537c46c9f899f8e12ed372c5666633d747cf58b57c4b90806443c32",
       "spec_version": "2.19",
       "src": "TOOLING.md"
     },
