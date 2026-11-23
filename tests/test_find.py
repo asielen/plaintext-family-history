@@ -2642,6 +2642,21 @@ _SOUNDS_LIKE_PEOPLE = {
         'name_variants:\n  - {value: George Wiśniewski, restricted: true}\n'
         '  - {value: George Wiszniewski, restricted: true}\n'
         'living: false\ntier: stub\n'),
+    # The aliases: copy of a private name differs only by a decomposed
+    # accent (text pasted from a Mac or a PDF) or a doubled space.
+    'stubs/nowak__adam_p-snd0000013.md': (
+        'id: p-snd0000013\naliases:\n  - p-snd0000013\n  - Adam Nowak\n'
+        '  - "Jerzy Wiśniewski"\n  - Adam  Kowalczyk\nname: Adam Nowak\n'
+        'name_variants:\n  - {value: Jerzy Wiśniewski, restricted: true}\n'
+        '  - {value: Adam Kowalczyk, restricted: true}\n'
+        'living: false\ntier: stub\n'),
+    # Surname prefixes, one and two words long.
+    'stubs/fitz_gerald__michael_p-snd0000014.md': (
+        'id: p-snd0000014\naliases: [p-snd0000014, Michael Fitz Gerald]\n'
+        'name: Michael Fitz Gerald\nliving: false\ntier: stub\n'),
+    'stubs/van_der_meer__pieter_p-snd0000015.md': (
+        'id: p-snd0000015\naliases: [p-snd0000015, Pieter Van der Meer]\n'
+        'name: Pieter Van der Meer\nliving: false\ntier: stub\n'),
 }
 
 
@@ -2750,6 +2765,20 @@ class SoundsLikeTests(unittest.TestCase):
         self.assertEqual(rc, EXIT_CLEAN, out)
         self.assertIn('p-fa7541e871', out)
         self.assertNotIn('p-6f7g8h9jka', out)
+
+    def test_a_private_name_copied_with_other_accents_or_spaces_is_not_shown(self) -> None:
+        for query in ('Wisniewski', 'Kowalczyk'):
+            for argv in (['--sounds-like', query], ['--sounds-like', query, '--json']):
+                rc, out, err = self._find(argv)
+                for text in (out, err):
+                    self.assertNotIn('p-snd0000013', text, argv)
+
+    def test_fitz_and_two_word_prefixes_join(self) -> None:
+        for query, pid in (('Fitzgerald', 'p-snd0000014'), ('Fitz Gerald', 'p-snd0000014'),
+                           ('Vandermeer', 'p-snd0000015'), ('Van der Meer', 'p-snd0000015')):
+            rc, out, _err = self._find(['--sounds-like', query])
+            self.assertEqual(rc, EXIT_CLEAN, (query, out))
+            self.assertIn(pid, out, query)
 
     def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Jovanović'])

@@ -76,6 +76,7 @@ import re
 import sqlite3
 import sys
 import textwrap
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -3077,10 +3078,8 @@ def _sounds_like_readings(query: str, terms: list[dict]) -> list[list[dict]]:
     Van Deusen)."""
     words = name_sound_words(query)
     readings = [terms]
-    for i in range(len(words) - 1):
-        if not _joins_next(words[i]):
-            continue
-        joined = [*words[:i], words[i] + words[i + 1], *words[i + 2:]]
+    for i, end in _prefix_spans(words):
+        joined = [*words[:i], ''.join(words[i:end]), *words[end:]]
         readings.append([_sound_term(w) for w in joined if len(w) > 1])
     return readings
 
@@ -3088,7 +3087,7 @@ def _sounds_like_readings(query: str, terms: list[dict]) -> list[list[dict]]:
 # Longer surname prefixes that are written both apart and joined; any word
 # of one to three letters (Van, De, Le, O, Mc, Mac, St, Ten) counts too.
 _SOUNDS_LIKE_LONG_PREFIXES = frozenset(
-    ('vande', 'vander', 'vanden', 'vonder', 'della', 'delle', 'dela', 'saint'))
+    ('vande', 'vander', 'vanden', 'vonder', 'della', 'delle', 'dela', 'saint', 'fitz'))
 
 
 def _joins_next(word: str) -> bool:
@@ -3098,6 +3097,26 @@ def _joins_next(word: str) -> bool:
     codes the same whatever follows, and "Calvin George" would find every
     Calvin."""
     return len(word) <= 3 or _fold_word(word) in _SOUNDS_LIKE_LONG_PREFIXES
+
+
+def _prefix_spans(words: list[str]) -> list[tuple[int, int]]:
+    """The runs of words to read as one: a prefix with the word after it
+    (Van Deusen), and two prefixes with the word after them (Van der Meer,
+    de la Cruz), as (start, end) slices."""
+    spans = []
+    for i in range(len(words) - 1):
+        if _joins_next(words[i]):
+            spans.append((i, i + 2))
+            if i + 2 < len(words) and _joins_next(words[i + 1]):
+                spans.append((i, i + 3))
+    return spans
+
+
+def _name_key(text: str) -> str:
+    """A name as two copies of it are compared for "the same name": one
+    Unicode form (an accent pasted from a Mac or a PDF arrives as a separate
+    mark), spaces collapsed, lower case."""
+    return ' '.join(unicodedata.normalize('NFC', text).split()).lower()
 
 
 def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
@@ -3141,9 +3160,12 @@ def _record_public_names(archive_root: Path, person: dict) -> list[str]:
         meta = _person_frontmatter_all(archive_root / person['path'])
     if meta is None:
         return [] if is_placeholder_name(person['name']) else [person['name']]
-    private = person_restricted_names(meta)
-    names = [n for n in person_alias_mirror(meta) if not is_placeholder_name(n)]
-    seen = {n.lower() for n in names}
+    # Compared by `_name_key`, so a copy that differs from the private value
+    # only by accent encoding or spacing is still taken as that value.
+    private = {_name_key(v) for v in person_restricted_names(meta)}
+    names = [n for n in person_alias_mirror(meta)
+             if not is_placeholder_name(n) and _name_key(n) not in private]
+    seen = {_name_key(n) for n in names}
     raw = meta.get('aliases')
     for item in (raw if isinstance(raw, list) else [raw]):
         if item is None or isinstance(item, dict):
@@ -3153,13 +3175,13 @@ def _record_public_names(archive_root: Path, person: dict) -> list[str]:
         # alias mirror does, or a private name written as a link is shown.
         text = yaml_list_link_text(item) if isinstance(item, list) else str(item)
         alias = alias_key_text(text).strip()
-        if not alias or ID_RE.search(alias) or alias.lower() in private:
+        if not alias or ID_RE.search(alias) or _name_key(alias) in private:
             continue
         if '_' in alias:
             alias = _stem_display(alias)
-        if alias.lower() in seen or alias.lower() in private:
+        if _name_key(alias) in seen or _name_key(alias) in private:
             continue
-        seen.add(alias.lower())
+        seen.add(_name_key(alias))
         names.append(alias)
     return names
 
@@ -3178,11 +3200,11 @@ def _match_name(name: str, terms: list[dict],
     its own spelling when there is one, else the first that shares a code.
 
     A surname prefix and the word after it also count as one word (Van
-    Deusen as Vandeusen, O Brien as OBrien; `_joins_next`), shown as
-    written."""
+    Deusen as Vandeusen, O Brien as OBrien, Van der Meer as Vandermeer;
+    `_prefix_spans`), shown as written."""
     words = name_sound_words(name)
     units = [(w, w) for w in words if len(w) > 1]
-    units += [(f'{a} {b}', a + b) for a, b in zip(words, words[1:]) if _joins_next(a)]
+    units += [(' '.join(words[i:end]), ''.join(words[i:end])) for i, end in _prefix_spans(words)]
     matched: list[str] = []
     exact = 0
     for term in terms:
