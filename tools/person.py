@@ -4329,8 +4329,9 @@ Append a quick note to Stories or Research Notes. Nothing you wrote is replaced.
 Adds TEXT as a new paragraph at the end of the section (creating it if
 missing). Plain markdown, human-written; text you wrote is never rewritten
 or removed. The first note replaces the section's "what goes here"
-instructions, if they are still there unchanged. Refuses if the section's <!-- private --> fencing is left
-unclosed, since it could not tell which side of it the new text belongs on."""
+instructions, if they are still there unchanged. Refuses if the section's
+<!-- private --> fencing is left unclosed, since it could not tell which
+side of it the new text belongs on."""
 
 
 def _add_note_arguments(sub: argparse._SubParsersAction) -> None:

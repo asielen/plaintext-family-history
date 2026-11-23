@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "6162288309032fd743dde789e90590bad76d8edf781c7b6ada7a56a59281a393",
+      "sha256": "1a63730d240e53452dc553a8e6fff8db0a6d846fd18d634d7a02f398660aef5c",
       "spec_version": "2.19",
       "src": "tools/person.py"
     },
@@ -1161,7 +1161,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "6d031470d3982cdcd72d46473993d3fa4bab68842ab4e5711c8dd6c0783fec4c",
+      "sha256": "9af41819004ef5acd6edf095f1c195382a8d016e76a024ce047c202eee471584",
       "spec_version": "2.19"
     },
     {
