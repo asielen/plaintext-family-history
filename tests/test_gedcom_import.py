@@ -2061,15 +2061,15 @@ class AdversarialFixtureTestCase(_ArchiveCase):
         # A DEAT is present, so he is not guessed to be living.
         self.assertEqual(stub.living, 'false')
 
-    def test_preserve_extensions_two_births_last_one_sets_stub(self) -> None:
+    def test_preserve_extensions_two_births_dated_one_sets_stub(self) -> None:
         plan = self._plan(ADVERSARIAL / 'preserve-extensions.ged')
         births = self._of(plan, 'birth')
         self.assertEqual(len(births), 2)
         self.assertEqual(sorted(bool(b.date) for b in births), [False, True])
-        # Both BIRTs become claims. Today the stub's provisional `birth:` follows
-        # the LAST BIRT in the file; that is a bug when the last one is undated
-        # (issue #449). Here the dated one happens to be last.
+        # Both BIRTs become claims. The stub's provisional `birth:` is the most
+        # exact readable one (#449); the unreadable first BIRT cannot blank it.
         self.assertEqual(plan.stubs[0].birth, '2000-01-01')
+        self.assertEqual(plan.stubs[0].living, 'false')     # a DEAT is present
         self.assertEqual(len(plan.date_downgrades), 1)
 
     def test_preserve_extensions_open_ended_deaths(self) -> None:
