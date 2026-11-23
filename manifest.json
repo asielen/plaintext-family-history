@@ -331,7 +331,7 @@
     {
       "path": ".fha/browser-companion/README.md",
       "category": "operating",
-      "sha256": "2801d3c3805928ed1fa60eec664434ecfa53e92263bf12e307f445280738ae46",
+      "sha256": "ade478620b1b8e9bb48a164786940be65fec4db7dbc157a2679b2e24f01299a8",
       "spec_version": "2.26",
       "src": "browser-companion/README-ARCHIVE.md"
     },
@@ -1393,7 +1393,7 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "2dd8fe0f6522715a126c5f687c088621bcc7c9e9fd240a43b60494a6c1e16b12",
+      "sha256": "3ddb455deb220989f85bbfc17838f934c79e4b7e935d4513a949784c7429f9a5",
       "spec_version": "2.26"
     },
     {
@@ -1435,7 +1435,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "da00c8cab1777bc02af6e3d5bd6d96e69dcc5c9dca7f2be366088ac00433b432",
+      "sha256": "e8500d19fc58b18e01666d1185665ef9eb99678af9696ccbf782f87e2510146b",
       "spec_version": "2.26"
     },
     {
@@ -1453,7 +1453,7 @@
     {
       "path": "docs/SETUP_FROM_ZIP.md",
       "category": "operating",
-      "sha256": "ffade4453d9f7f6f887c83e9861a9dd773a3950667d0bc93574ab4b4b3078910",
+      "sha256": "261552eafa50f2ff0adf36858540b0e2dfcb62837911fde0c9ebb75ff3d58228",
       "spec_version": "2.26"
     },
     {
@@ -1473,13 +1473,13 @@
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "4946dd282b1a5adc4f5363f222b6bcb1ab9a6edc4f42a497035fb50ac86a07df",
+      "sha256": "f62dc9f53a488277fecb4ec9ec117c028e6396319991e64c212e0d9bf5e946d3",
       "spec_version": "2.26"
     },
     {
       "path": "docs/UPDATING.md",
       "category": "operating",
-      "sha256": "918b8e01d82fbf464b4efd686fdc620757b037c2e63a93d8c54912ad6e2a1e47",
+      "sha256": "dca867d657355319c66633543f1e7a7c2414cce81cdd63df28dfe00022df1601",
       "spec_version": "2.26"
     },
     {

@@ -4,7 +4,7 @@ Nothing here is a disaster. Your archive is plain files, you have backups, and m
 
 > **Start with `fha doctor`.** Ask the assistant to run it, or run it yourself. It's the archive's health check: it looks at the things on this page and tells you which one is wrong.
 >
-> Commands on this page are written bare and run from inside your archive folder. On macOS or Linux type `./fha doctor`, in Windows PowerShell `.\fha doctor`, and in the Command Prompt `fha doctor`. The [cheat sheet](CHEATSHEET.md#typing-fha) has the table.
+> Commands on this page are written bare and run from inside your archive folder. On macOS or Linux type `./fha doctor`, and in Windows PowerShell `.\fha doctor`. The [cheat sheet](CHEATSHEET.md#typing-fha) has the table.
 
 ---
 
