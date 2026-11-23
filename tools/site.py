@@ -148,7 +148,8 @@ CODE MAP
     _auto_picture_workers,     - how many workers: processors, free memory, and
     _picture_workers_setting     fha.yaml `site.picture_workers` (1 = one at a time)
     _site_switch               - an on/off fha.yaml `site:` setting (the two
-                                 optional panels), off unless it says yes
+                                 optional panels, off unless it says yes; search,
+                                 on unless it says no)
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -185,6 +186,13 @@ CODE MAP
     _rel_href                  - relative href from a page dir to a target file
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
+
+  Site search (the spelling rule; the builder's search methods are below)
+    _search_fold: text -> search words (accents, old spellings, doubled
+        letters); the browser runs the same steps
+    _search_fold_table: that rule as data for vendor/fha-search.js
+    _search_tokens, _search_year: one entry's `t` words; a date's year
+    _search_data_js: `window.FHA_SEARCH = ...;`, sorted, script-safe
 
   Interactive tree (per-person since #115) + shared chart redaction
     _apex_ancestor             - #115: repurposed from "deepest ancestor of
@@ -246,6 +254,12 @@ CODE MAP
       ._calendar_event_entry   - one calendar line, people linked
       ._workbench_week         - workbench only: "This week in the family",
                                  the next seven days, everyone named
+      ._vitals_cached: `_person_vitals`, once per person per build
+      ._public_other_names: the other names a person can be searched by
+      ._search_entries: what the search box can find (published pages
+          only, behind the site's gates and the shared export reader)
+      .build_search_page: data/search-data.js and search.html
+      ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
   Core / CLI
@@ -274,6 +288,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+import unicodedata
 import warnings
 from collections import deque
 from pathlib import Path
@@ -340,6 +355,12 @@ from _lib import (
     pip_command,
     PROVISIONAL_VITAL_FIELDS,
     person_restricted_names,
+    person_other_name_entries,
+    export_privacy,
+    person_withheld,
+    public_source_sql,
+    ACCENT_FOLD,
+    fold_accents,
     read_record,
     read_restriction_marker,
     read_text_or_report,
@@ -2448,9 +2469,10 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
-def _site_switch(site_cfg: dict, key: str) -> tuple[bool, str | None]:
+def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool, str | None]:
     """An on/off setting under fha.yaml `site:` (`completeness_rings`,
-    `calendar`): off unless it says yes. YAML's own `true`/`false` and the
+    `calendar`, `search`): `default` when the setting is left out (off for
+    the optional panels, on for search). YAML's own `true`/`false` and the
     words people type for them (`yes`, `on`, `no`, `off`) are read as meant;
     anything else leaves the feature off, with a warning naming the setting,
     because an optional panel is not worth failing a build over and a typo
@@ -2458,7 +2480,9 @@ def _site_switch(site_cfg: dict, key: str) -> tuple[bool, str | None]:
 
     Returns (on, warning or None)."""
     raw = site_cfg.get(key)
-    if raw is None or raw is False:
+    if raw is None:
+        return default, None
+    if raw is False:
         return False, None
     if raw is True:
         return True, None
@@ -4244,6 +4268,92 @@ def _json_for_script(obj) -> str:
             .replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026'))
 
 
+# ── Site search: the spelling rule ──────────────────────────────────────────
+# A cousin types "Kowalsky" and finds Kowalski: old records spell one name
+# many ways, so the search folds both the names it ships and the words typed
+# into the box to one plain spelling. The browser half (vendor/fha-search.js)
+# does the same steps from the table `_search_fold_table` writes into the
+# search file, so there is one rule, stated here.
+
+# Spellings that meet, replaced in this order after accents fold: German
+# tsch/sch, Polish sz/cz, ph for f, w for v, y for i. Owner's call to grow it.
+_SEARCH_FOLD_PAIRS = (('tsch', 'ch'), ('sch', 'sh'), ('sz', 'sh'), ('cz', 'ch'),
+                      ('ph', 'f'), ('w', 'v'), ('y', 'i'))
+_SEARCH_DOUBLE_RE = re.compile(r'([a-z])\1+')
+_SEARCH_SPLIT_RE = re.compile(r'[^a-z0-9]+')
+
+
+def _search_fold(text) -> list[str]:
+    """The search words in `text`: "Szymański" -> ['shimanski'],
+    "1880 census, Elm Creek" -> ['1880', 'census', 'elm', 'creek'].
+
+    Accents fold the way filenames do (`_lib.fold_accents`: ł, ø, ß and every
+    combining accent), then every remaining mark is dropped too, because the
+    browser can only drop marks by category (`\\p{M}`) and the two halves must
+    agree. Then lower case, the `_SEARCH_FOLD_PAIRS` in order, doubled letters
+    once ("Schmitt" and "Schmit" meet), and a split on anything that is not a
+    plain letter or digit. Folding is applied to both sides of a search, so it
+    can only add matches, never lose one."""
+    s = ''.join(c for c in fold_accents(str(text or ''))
+                if not unicodedata.category(c).startswith('M')).lower()
+    for a, b in _SEARCH_FOLD_PAIRS:
+        s = s.replace(a, b)
+    s = _SEARCH_DOUBLE_RE.sub(r'\1', s)
+    return [t for t in _SEARCH_SPLIT_RE.split(s) if t]
+
+
+def _search_fold_table() -> dict:
+    """The fold rule as data for the browser: `chars` is `_lib.ACCENT_FOLD`
+    (the letters NFKD leaves whole), `pairs` is `_SEARCH_FOLD_PAIRS`."""
+    return {'chars': {chr(k): v for k, v in sorted(ACCENT_FOLD.items())},
+            'pairs': [list(p) for p in _SEARCH_FOLD_PAIRS]}
+
+
+# Apostrophes old records write, leave out, or space: O'Brien, OBrien, O Brien.
+_SEARCH_APOSTROPHES = ("'", '’', 'ʼ', '`')
+
+
+def _search_tokens(*texts) -> str:
+    """The folded words of `texts`, each once, in first-seen order, joined
+    by spaces: the `t` field of one search entry.
+
+    A name with an apostrophe also gives its joined word, so a cousin who
+    types "OBrien" finds Mary O'Brien as surely as one who types "O'Brien"
+    ("o brien" already finds her through the two split words)."""
+    out: list[str] = []
+    for text in texts:
+        text = str(text or '')
+        joined = text
+        for mark in _SEARCH_APOSTROPHES:
+            joined = joined.replace(mark, '')
+        for tok in _search_fold(text) + (_search_fold(joined) if joined != text else []):
+            if tok not in out:
+                out.append(tok)
+    return ' '.join(out)
+
+
+def _search_year(value) -> str:
+    """The year at the front of a date ("1845-03-02" -> "1845"), or '' when
+    it does not start with four digits ("184X", an empty date)."""
+    m = re.match(r'(\d{4})', str(value or ''))
+    return m.group(1) if m else ''
+
+
+def _search_data_js(data: dict) -> str:
+    """`window.FHA_SEARCH = {...};` for `data/search-data.js`.
+
+    A script that sets one global, not a JSON file: a page opened from a USB
+    stick (`file://`) may not `fetch()` a file beside it, but it may load a
+    script. Keys sorted and no spaces, so a rebuild of an unchanged archive
+    writes the same bytes. `<`, `>` and `&` are escaped as `_json_for_script`
+    does, so a record titled `</script>` cannot end the script, and so are
+    U+2028/U+2029, which older browsers read as a line break inside a string."""
+    text = (json.dumps(data, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+            .replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026')
+            .replace('\u2028', '\\u2028').replace('\u2029', '\\u2029'))
+    return f'window.FHA_SEARCH = {text};\n'
+
+
 # ── Builder ─────────────────────────────────────────────────────────────────
 
 class _SiteBuilder:
@@ -4315,7 +4425,13 @@ class _SiteBuilder:
         # unless fha.yaml `site:` turns them on.
         self.show_rings, ring_warning = _site_switch(site_cfg, 'completeness_rings')
         self.show_calendar, calendar_warning = _site_switch(site_cfg, 'calendar')
-        self._switch_warnings = [w for w in (ring_warning, calendar_warning) if w]
+        # The search box at the top of every page: on unless fha.yaml says
+        # `search: false` (TOOLING §12, "Search").
+        self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # Search's memos (`_vitals_cached`, `_public_other_names`).
+        self._vitals_cache: dict[str, dict] = {}
+        self._other_names_cache: dict[str, list[str]] = {}
         # The completeness engine's read of the index, made once on the first
         # person page that shows a ring (`_completeness_context`).
         self._completeness_ctx: dict | None = None
@@ -10259,6 +10375,192 @@ class _SiteBuilder:
         such string was built by our own helpers (escaped at the leaves)."""
         return jinja2.utils.markupsafe.Markup(raw_html)
 
+    # Site search (TOOLING §12, "Search")
+
+    def _vitals_cached(self, pid: str) -> dict:
+        """`_person_vitals(pid)`, worked out once per person per build: the
+        search file, and the pages that list people with their years, ask for
+        the same pair many times."""
+        if pid not in self._vitals_cache:
+            self._vitals_cache[pid] = self._person_vitals(pid)
+        return self._vitals_cache[pid]
+
+    def _public_other_names(self, pid: str) -> list[str]:
+        """The other names a person can be searched by: `name_variants`,
+        `name_at_birth`, `married_name` and `also_known_as`, read from the
+        record (the index stores a private one mangled, so it cannot tell),
+        each through `_lib.person_other_name_entries`.
+
+        A shared build drops a name marked restricted (a former name the
+        person keeps private) and any name equal to one of this person's
+        restricted names (`restricted_names`, which also carries a merged
+        record's private names onto the survivor), the rule the page header
+        (`_person_header_meta`) follows. The linked preview keeps every name.
+        A record that will not read gives no other names; on a shared build
+        that person is withheld anyway (`_load_restriction_markers`)."""
+        if pid in self._other_names_cache:
+            return self._other_names_cache[pid]
+        meta: dict = {}
+        row = self.person_meta.get(pid)
+        if row is not None and row['path']:
+            try:
+                rec = read_record(self.archive_root / row['path'],
+                                  on_decode_error=_ignore_decode_error)
+            except Exception:   # noqa: BLE001 (an unreadable record has no names to add)
+                rec = None
+            if rec is not None and not rec.get('undecodable') and not rec['parse_errors']:
+                meta = rec['meta'] or {}
+        private = set() if self.linked else (
+            self.restricted_names.get(pid, set()) | person_restricted_names(meta))
+        names: list[str] = []
+        for _field, value, marker in person_other_name_entries(meta):
+            marked = str('' if marker is None else marker).strip().lower() not in (
+                '', 'false', 'none', '0')
+            if not self.linked and (marked or value.lower() in private):
+                continue
+            names.append(value)
+        self._other_names_cache[pid] = names
+        return names
+
+    def _search_entries(self) -> dict:
+        """The people, places and records the search box can find, as
+        `{'people': [...], 'places': [...], 'sources': [...]}`.
+
+        The search file is downloaded by every visitor, so it holds only
+        what the site's own pages already show, and only names, years and
+        titles: no claim values, prose or citations that could carry
+        something private with them. On a shared build an entry has to pass
+        two gates. The site's: a page exists for it (`person_pages`,
+        `source_pages`, decided once in `prepare()`) and, for a married
+        name, the spouse and the marriage tie are shown on the page
+        (`_person_is_redacted`, `_claim_row_is_publishable`,
+        `_has_public_claim`). And the shared export reader every non-site
+        export asks (`_lib.export_privacy`, `person_withheld`,
+        `public_source_sql`): living, unknown, restricted and by-request
+        people, private records and private claims stay out. The two agree
+        today; asking both means a future slip in one cannot put a name in
+        a file nobody can take back. Nothing counts who was left out.
+
+        A married partner's surname finds a person ("Hartley" finds
+        Margaret Cole), with no guess about who took whose name. One
+        `m` entry per distinct spouse, labelled "married {name}"."""
+        shared = not self.linked
+        privacy = export_privacy(self.conn, self.archive_root) if shared else None
+        carried = living_carried_to_survivors(self.conn) if shared else {}
+        public_sources = {r[0] for r in self.conn.execute(
+            f'SELECT s.id FROM sources s WHERE {public_source_sql("s")}')} if shared else set()
+
+        def person_shown(row) -> bool:
+            if not shared:
+                return True
+            return not (self._person_is_redacted(row)
+                        or person_withheld(self.conn, row, privacy, self.person_meta.get,
+                                           carried=carried))
+
+        def source_public(sid) -> bool:
+            return not shared or (sid in public_sources and sid not in privacy.restricted_sources)
+
+        def married(pid: str, own: set[str]) -> list[dict]:
+            found: dict[str, dict] = {}
+            for r in self.conn.execute(
+                    "SELECT r.other_id, r.claim_id, c.source_id, c.status FROM relationships r "
+                    "LEFT JOIN claims c ON c.id = r.claim_id "
+                    "WHERE r.person_id = ? AND r.rel = 'spouse' ORDER BY r.other_id, r.claim_id",
+                    (pid,)):
+                srow = self.person_meta.get(r['other_id'])
+                if srow is None or not person_shown(srow):
+                    continue
+                spouse = self._shown_row(srow)
+                if spouse['id'] in (pid, *found) or not spouse['surname']:
+                    continue
+                if not self._claim_row_is_publishable(r['claim_id'], r['source_id'], r['status']):
+                    continue
+                if shared:
+                    if r['status'] is not None and (
+                            normalize_id(str(r['claim_id'])) in privacy.restricted_claims
+                            or not source_public(r['source_id'])):
+                        continue
+                    if not self._has_public_claim(pid, r['other_id']):
+                        continue
+                tokens = [t for t in _search_tokens(spouse['surname']).split() if t not in own]
+                if tokens:
+                    found[spouse['id']] = {'t': ' '.join(tokens),
+                                           'label': f'married {spouse["name"]}'}
+            return [found[k] for k in sorted(found, key=lambda k: (found[k]['label'].lower(), k))]
+
+        people = []
+        for pid in sorted(self.person_pages):
+            row = self.person_meta[pid]
+            if row['merged_into'] or not person_shown(row):
+                continue   # a merged duplicate's page shows its survivor, listed already
+            name = row['name'] or fmt_id_display(pid)
+            tokens = _search_tokens(name, *self._public_other_names(pid))
+            vitals = self._vitals_cached(pid)
+            born, died = _search_year(vitals.get('birth')), _search_year(vitals.get('death'))
+            years = (f'{born}-{died}' if born and died else
+                     f'b. {born}' if born else f'd. {died}' if died else '')
+            entry = {'name': name, 'years': years, 'href': f'persons/{_page_filename(pid)}',
+                     't': tokens}
+            spouses = married(pid, set(tokens.split()))
+            if spouses:
+                entry['m'] = spouses
+            people.append(entry)
+
+        alt_names: dict[str, list[str]] = {}
+        for lid, alt in self.conn.execute(
+                'SELECT place_id, alt_name FROM place_names ORDER BY place_id, alt_name'):
+            alt_names.setdefault(lid, []).append(alt)
+        places = []
+        for lid in sorted(self.place_pages):
+            name = self.place_names.get(lid) or fmt_id_display(lid)
+            within = self.place_meta[lid]['within']
+            places.append({
+                'name': name, 'href': f'places/{_page_filename(lid)}',
+                't': _search_tokens(name, *alt_names.get(lid, ())),
+                'within': (self.place_names.get(within) or '') if within in self.place_pages else ''})
+
+        sources = []
+        for sid in sorted(self.source_pages):
+            if not source_public(sid):
+                continue
+            row = self.source_meta[sid]
+            title = row['title'] or fmt_id_display(sid)
+            sources.append({'title': title, 'href': f'sources/{_page_filename(sid)}',
+                            't': _search_tokens(title),
+                            # The record's own date, as written ("1940~" is 1940;
+                            # its date_min would say 1939).
+                            'year': _search_year(row['date_edtf'])})
+
+        people.sort(key=lambda e: (e['name'].lower(), e['href']))
+        places.sort(key=lambda e: (e['name'].lower(), e['href']))
+        sources.sort(key=lambda e: (e['title'].lower(), e['href']))
+        return {'people': people, 'places': places, 'sources': sources}
+
+    def build_search_page(self) -> None:
+        """Write `data/search-data.js` (what the box can find) and
+        `search.html` (the results page every page's box sends a query to).
+        Called only when `site: search` is on; `_reset_targets` removes an
+        old `search.html` on every rebuild, so turning search off, or a
+        person becoming private, never leaves a stale copy behind."""
+        data = {'v': 1, 'fold': _search_fold_table(), **self._search_entries()}
+        path = self.data_dir / 'search-data.js'
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(_search_data_js(data), encoding='utf-8', newline='\n')
+        except OSError as e:
+            self.messages.append(
+                f'WARNING: could not write {path.name} ({e}), so the search box finds '
+                f'nothing. Close any program using that file and run `fha site` again.')
+        self._write_page(self.out_dir / 'search.html', 'search.html',
+                         {'root_prefix': '.', 'linked': self.linked})
+
+    def _page_count(self) -> int:
+        """How many pages a build writes: one per source, person and place
+        page, plus discoveries.html and index.html, plus search.html when
+        search is on. `run()` and `--dry-run` both report this one number."""
+        return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
+                + 2 + (1 if self.show_search else 0))
+
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
         are caught and reported so one bad page never aborts the whole build."""
@@ -10276,6 +10578,8 @@ class _SiteBuilder:
                     if not self.linked else
                     'Generated by fha site (linked preview - unredacted; do not publish).'
                 ),
+                # The search box in every page's header (base.html).
+                'show_search': self.show_search,
             }
             # Workbench chrome (serve only). base.html gates the serve bar, the
             # CSRF meta tag, the workbench assets, and the modal templates on
@@ -10321,6 +10625,8 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_discoveries_page()
         self.build_index_page()
+        if self.show_search:
+            self.build_search_page()
         self._finish_pictures()
         if self.needs_serial_rebuild:
             return 0   # `_site_payload` builds again, one picture at a time
@@ -10328,8 +10634,7 @@ class _SiteBuilder:
             self.derivative_cache.prune()
             self.cache_notes = self.derivative_cache.notes()
         self._write_marker()
-        # source + person + place pages, plus discoveries.html and index.html
-        return len(self.source_pages) + len(self.person_pages) + len(self.place_pages) + 2
+        return self._page_count()
 
     def _reset_targets(self) -> list[Path]:
         """The output paths a rebuild clears - the one list `_reset_output`
@@ -10337,7 +10642,10 @@ class _SiteBuilder:
         never drift apart."""
         return [self.persons_dir, self.sources_dir, self.places_dir,
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
-                self.out_dir / 'index.html', self.out_dir / 'discoveries.html']
+                self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
+                # Listed whether search is on or off, so switching it off
+                # removes the old page (the search data lives in data/).
+                self.out_dir / 'search.html']
 
     def reset_preview(self) -> list[str]:
         """Names of the existing files/subtrees a rebuild would first remove,
@@ -10472,8 +10780,7 @@ def _site_payload(
         if dry_run:
             return {
                 'status': 'dry-run', 'messages': builder.messages, 'out_dir': out_dir,
-                'pages': (len(builder.source_pages) + len(builder.person_pages)
-                          + len(builder.place_pages) + 2),
+                'pages': builder._page_count(),
                 # What a real rebuild would first clear from the output dir -
                 # the preview half of _reset_output's delete (never a warning,
                 # so it lives beside 'messages', not in it).
