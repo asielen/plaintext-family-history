@@ -6942,9 +6942,10 @@ def append_paragraph_to_section(
 
     Returns `(new_lines, created, old_content)`. `paragraph` lands as a new,
     blank-line-separated paragraph at the END of the section, never touching
-    what was already there (the nothing-ever-lost contract `fha person note`
+    what he wrote there (the nothing-ever-lost contract `fha person note`
     and `fha source note` both depend on). A section holding only a
-    `*(none yet)*` / `(none yet)` placeholder is treated as empty - the
+    `*(none yet)*` / `(none yet)` placeholder, or only text the caller's
+    `is_placeholder` recognizes, is treated as empty - the
     placeholder is replaced outright rather than kept alongside real prose,
     since it means exactly "nothing here yet" and leaving it in would read as
     a second, contradictory sentence. When the heading is absent it is created
@@ -17191,6 +17192,19 @@ PERSON_PURPOSE_BLOCK = (
 PERSON_SOURCES_PLACEHOLDER = (
     '*(none yet - regenerate with `fha views sources-index`.)*'
 )
+
+# What `fha process` writes under a new source's `## Notes` until a note
+# lands there. His first note (or a tool's own note) replaces it, so the
+# record does not say "none yet" above the note that is there (#393).
+SOURCE_NOTES_PLACEHOLDER = '*(none yet - drafted in the AI pass)*'
+
+
+def source_notes_is_unfilled(heading: str, content: str) -> bool:
+    """True when a source record's `## Notes` holds nothing but the
+    placeholder `fha process` scaffolded. The `is_placeholder` test the
+    source-note writers hand `append_paragraph_to_section`; exact on the
+    words (`_normalized_section_text`), so anything he typed is kept."""
+    return heading == 'Notes' and _normalized_section_text(content) == SOURCE_NOTES_PLACEHOLDER
 
 # The four hand-written sections' opening text, VERBATIM from
 # `_TEMPLATE.person.md` (`## Biography` through EOF) - adapted only where the
