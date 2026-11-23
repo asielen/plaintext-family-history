@@ -21561,7 +21561,9 @@ def shell_quote(word: str) -> str:
     printed commands are PowerShell spellings, so PowerShell wins:
     `_powershell_quote` writes these in the one form that reached fha intact
     in the #400 paste tests. Command Prompt reads that form's single quotes
-    as part of the value, so it is kept to these values. A `%NAME%` that
+    as part of the value, so it is kept to these values, and every command
+    that carries a quoted value starts with `fha_launcher()` (`.\\fha`, a
+    PowerShell line), never a bare `fha`, which only Command Prompt runs. A `%NAME%` that
     names a set variable is still expanded by `fha.cmd` either way.
     """
     if os.name == 'nt':
@@ -21605,6 +21607,19 @@ def _powershell_quote(word: str) -> str:
     inner = re.sub(r'(\\+)\Z', lambda m: m.group(1) * 2, inner)
     inner = '"' + inner + '"'
     return "'" + ''.join(ch * 2 if ch in _PS_SINGLE_QUOTES else ch for ch in inner) + "'"
+
+
+def fha_launcher() -> str:
+    """The way to start fha that runs when he pastes a printed command (#400).
+
+    `fha` is a file at the archive root, never a program on PATH, so a bare
+    `fha` runs only in Command Prompt. PowerShell needs `.\\fha` (Command
+    Prompt takes it too), and a Mac or Linux shell needs `./fha`. Any command
+    that carries a `shell_quote` value starts with this: on Windows that value
+    can be a PowerShell-only spelling, and a bare `fha` line would invite a
+    Command Prompt paste that saves it with stray apostrophes.
+    """
+    return '.\\fha' if os.name == 'nt' else './fha'
 
 
 def pip_command(target: str) -> str:

@@ -1634,6 +1634,45 @@ class ShellQuotePowerShellTest(unittest.TestCase):
                 self.assertEqual(_lib.shell_quote(word), shlex.quote(word))
 
 
+class PrintedCommandLauncherTest(unittest.TestCase):
+    """#400, owner's call: a printed command whose value may carry the
+    PowerShell-only spelling starts `.\\fha` on Windows, a line PowerShell
+    runs, never a bare `fha`, which only Command Prompt runs and which there
+    would save the value with stray apostrophes."""
+
+    BARE_FHA = re.compile(r'(?<![\\/.\w-])fha [a-z]')
+
+    def test_fha_launcher_is_the_spelling_each_shell_runs(self):
+        import _lib
+        with mock.patch.object(_lib.os, 'name', 'nt'):
+            self.assertEqual(_lib.fha_launcher(), '.\\fha')
+        with mock.patch.object(_lib.os, 'name', 'posix'):
+            self.assertEqual(_lib.fha_launcher(), './fha')
+
+    def test_no_command_built_with_shell_quote_starts_with_a_bare_fha(self):
+        # The class sweep: every statement in tools/ that quotes a value with
+        # shell_quote must spell the launcher, not type `fha ` by hand.
+        import ast
+        offenders = []
+        for path in sorted((ROOT / 'tools').glob('*.py')):
+            tree = ast.parse(path.read_text(encoding='utf-8'))
+            for stmt in ast.walk(tree):
+                if not isinstance(stmt, ast.stmt) or isinstance(
+                        stmt, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef,
+                               ast.If, ast.For, ast.While, ast.With, ast.Try,
+                               ast.Match)):
+                    continue
+                calls = [n for n in ast.walk(stmt) if isinstance(n, ast.Call)
+                         and isinstance(n.func, ast.Name) and n.func.id == 'shell_quote']
+                if not calls:
+                    continue
+                texts = [n.value for n in ast.walk(stmt)
+                         if isinstance(n, ast.Constant) and isinstance(n.value, str)]
+                if any(self.BARE_FHA.search(t) for t in texts):
+                    offenders.append(f'{path.name}:{stmt.lineno}')
+        self.assertEqual(offenders, [], 'print these with _lib.fha_launcher()')
+
+
 @unittest.skipUnless(os.name == 'nt' and shutil.which('powershell.exe')
                      and (shutil.which('py') or shutil.which('python')),
                      'pastes into Windows PowerShell 5.1 and Command Prompt')

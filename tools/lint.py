@@ -245,6 +245,7 @@ from _lib import (
     roots_change_orphans,
     sex_slot_is_defaulted,
     shell_quote,
+    fha_launcher,
     undecodable_file_recorder,
     unreadable_dir_recorder,
     walk_files,
@@ -1847,7 +1848,7 @@ def _check_claim_text_cut_by_hash(path: Path, body: str,
         hand = f'`{key}: {yaml_inline(whole)}`'
         flag = _CLAIM_FIELD_FLAGS.get(key)
         if cid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha claim {fmt_id_display(cid)} {flag} '
+            fix = (f'run `{fha_launcher()} claim {fmt_id_display(cid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in the record file: {hand}'
@@ -1906,7 +1907,7 @@ def _check_frontmatter_text_cut_by_hash(path: Path, block: str, fields: dict,
         where = {'place': 'places.yaml', 'notes': 'the notes file'}.get(record, 'the record file')
         flag = _PERSON_FIELD_FLAGS.get(field) if record == 'person' else None
         if rid and flag and not any(ch in whole for ch in '$`"'):
-            fix = (f'run `fha person estimate {fmt_id_display(rid)} {flag} '
+            fix = (f'run `{fha_launcher()} person estimate {fmt_id_display(rid)} {flag} '
                    f'{shell_quote(whole)}`, or put quotes around it by hand: {hand}')
         else:
             fix = f'put quotes around it by hand in {where}: {hand}'
@@ -5725,7 +5726,7 @@ def _check_stray_person_keywords(
                 f'pass, often), silently tying the document to someone it has nothing '
                 f'to do with - and any photo or desktop search over the file inherits '
                 f'the same wrong association. If the tag is wrong, clear it with '
-                f'`fha source clear-keyword {fmt_id_display(sid)} --keyword '
+                f'`{fha_launcher()} source clear-keyword {fmt_id_display(sid)} --keyword '
                 f'{shell_quote(text)}`; if the person genuinely belongs on this '
                 f'source, add them to its people: list instead.'))
 

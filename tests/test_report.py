@@ -27,6 +27,15 @@ import lint
 import report
 from _lib import shell_quote
 
+FHA = _lib.fha_launcher()
+
+
+def _fha_argv(command: str) -> list[str]:
+    """A printed command split as a shell would, its launcher (`.\\fha` on
+    Windows, `./fha` elsewhere, #400) read back as `fha`."""
+    assert command.startswith(FHA + ' '), command
+    return ['fha'] + shlex.split(command[len(FHA) + 1:])
+
 
 _PERSON_MD = '''---
 id: P-aaaaaaaaaa
@@ -611,7 +620,7 @@ class ReportTests(unittest.TestCase):
 
         line = next(l for l in md.splitlines() if 'fha confirm place' in l)
         command = line.split('`')[1]
-        argv = shlex.split(command)
+        argv = _fha_argv(command)
         self.assertEqual(
             argv[:5],
             ['fha', 'confirm', 'place', 'c-7777777771', 'c-7777777772'],
@@ -760,9 +769,9 @@ class ReportTests(unittest.TestCase):
         with unittest.mock.patch.object(report.photoindex, 'run_triage', return_value=triage):
             result = report.run_report(self.archive_root, {}, full=True, section='photo-triage')
         md = result['markdown']
-        line = next(l for l in md.splitlines() if 'suggested: fha process' in l)
+        line = next(l for l in md.splitlines() if f'suggested: {FHA} process' in l)
         command = line.split('suggested: ', 1)[1]
-        argv = shlex.split(command)
+        argv = _fha_argv(command)
         self.assertEqual(argv, ['fha', 'process', 'photos/1962/Family Reunion 1962.jpg'])
 
     def test_scan_error_still_shows_stale_triage_candidates(self) -> None:
@@ -1345,11 +1354,11 @@ class PlaceTextEscalationTests(unittest.TestCase):
         self.assertNotIn('>', md)
         line = next(l for l in md.splitlines() if 'MULTIPLE registered places' in l)
         commands = re.findall(r'`([^`]+)`', line)
-        into_commands = [c for c in commands if c.startswith('fha confirm place')]
+        into_commands = [c for c in commands if c.startswith(f'{FHA} confirm place')]
         self.assertEqual(len(into_commands), 2)   # one complete command per candidate
         seen_targets = set()
         for command in into_commands:
-            argv = shlex.split(command)
+            argv = _fha_argv(command)
             self.assertEqual(argv[:3], ['fha', 'confirm', 'place'])
             self.assertTrue(argv[-1].startswith('--into=l-'))
             seen_targets.add(argv[-1].split('=', 1)[1])
@@ -1489,12 +1498,12 @@ class PlaceTextGroupLineAmbiguousMatchTests(unittest.TestCase):
         }
         line = report._place_text_group_line(self.archive_root, self._group(), match=match)
         for pid in ('L-aaaaaaaaaa', 'L-bbbbbbbbbb'):
-            command = f'fha confirm place c-1111111111 c-2222222222 --into={pid}'
+            command = f'{FHA} confirm place c-1111111111 c-2222222222 --into={pid}'
             self.assertIn(f'`{command}`', line)
             # Genuinely a complete, shell-splittable command naming every
             # claim id in the cluster - not a fragment or a sample.
             self.assertEqual(
-                shlex.split(command),
+                _fha_argv(command),
                 ['fha', 'confirm', 'place', 'c-1111111111', 'c-2222222222', f'--into={pid}'])
         self.assertIn('fha places lint', line)   # the registry-hygiene pointer stays too
 
