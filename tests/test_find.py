@@ -2789,6 +2789,24 @@ class SoundsLikeTests(unittest.TestCase):
         rc, out, _err = self._find(['--sounds-like', 'Max Lynch'])
         self.assertNotIn('p-snd0000016', out)
 
+    def test_a_main_name_made_private_since_the_last_index_is_not_shown(self) -> None:
+        # The index still says "Ann Hartly"; the record now says Ann Smith
+        # and marks Ann Hartly private. The label must come from the record.
+        path = self.root / 'people' / 'stubs' / 'hartly__ann_p-snd0000001.md'
+        before = path.read_bytes()
+        path.write_text(
+            '---\nid: p-snd0000001\naliases: [p-snd0000001, Ann Smith]\nname: Ann Smith\n'
+            'name_variants:\n  - {value: Ann Hartly, restricted: true}\n'
+            'living: false\ntier: stub\n---\n\n# Ann Smith\n', encoding='utf-8')
+        try:
+            for argv in (['--sounds-like', 'Ann'], ['--sounds-like', 'Ann', '--json']):
+                rc, out, err = self._find(argv)
+                self.assertIn('p-snd0000001', out, argv)
+                self.assertIn('Ann Smith', out, argv)
+                self.assertNotIn('Hartly', out + err, argv)
+        finally:
+            path.write_bytes(before)
+
     def test_a_serbian_cyrillic_name_is_found_from_latin_spelling(self) -> None:
         rc, out, _err = self._find(['--sounds-like', 'Jovanović'])
         self.assertEqual(rc, EXIT_CLEAN, out)

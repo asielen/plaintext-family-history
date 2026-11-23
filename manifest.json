@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "e4617e0e72f5fc7deb93df370bb4ffeb434781289ced6cb7577541cca57a10aa",
+      "sha256": "0cecc189c5bfb58053e945cbc592e6c75d4338c15bb4da71db74090a19624f4c",
       "spec_version": "2.26",
       "src": "tools/find.py"
     },

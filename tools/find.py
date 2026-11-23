@@ -3154,19 +3154,24 @@ def _sounds_like_candidates(conn: sqlite3.Connection) -> dict[str, dict]:
     return people
 
 
-def _record_public_names(archive_root: Path, person: dict) -> list[str]:
+def _record_public_names(archive_root: Path, person: dict) -> tuple[str, list[str]]:
     """The names of one person that may be shown, read from their record:
     `name:`, each public other name (`person_alias_mirror`, which leaves out
     a value marked restricted in any field, even where another field lists
     it as public), then any other name typed into `aliases:` that is neither
     ID-shaped nor restricted. A name still sitting in `aliases:` from before
     it was marked private is not shown (SPEC §9). A record that cannot be
-    read gives only the index's `name:`."""
+    read gives only the index's `name:`.
+
+    Returns (the name to label them with, the names). The label is the
+    record's `name:` as it is now, not the index's copy: a main name made
+    private since the last `fha index` must not be shown either."""
     meta = None
     if person.get('path'):
         meta = _person_frontmatter_all(archive_root / person['path'])
     if meta is None:
-        return [] if is_placeholder_name(person['name']) else [person['name']]
+        return person['name'], [] if is_placeholder_name(person['name']) else [person['name']]
+    label = str(meta.get('name') or '').strip() or person['name']
     # Compared by `_name_key`, so a copy that differs from the private value
     # only by accent encoding or spacing is still taken as that value.
     private = {_name_key(v) for v in person_restricted_names(meta)}
@@ -3190,7 +3195,7 @@ def _record_public_names(archive_root: Path, person: dict) -> list[str]:
             continue
         seen.add(_name_key(alias))
         names.append(alias)
-    return names
+    return label, names
 
 
 def _stem_display(stem: str) -> str:
@@ -3340,14 +3345,14 @@ def run_find_sounds_like(archive_root: Path, fha_config: dict, query: str,
             for pid, person in people.items():
                 if _best_sound_match(person['names'], readings, word_codes) is None:
                     continue
-                best = _best_sound_match(_record_public_names(archive_root, person),
-                                         readings, word_codes)
+                label, public = _record_public_names(archive_root, person)
+                best = _best_sound_match(public, readings, word_codes)
                 if best is None:
                     continue
                 matched_words, exact, written = best
-                found.append({'id': pid, 'name': person['name'], 'exact': exact,
+                found.append({'id': pid, 'name': label, 'exact': exact,
                               'matched': ' '.join(matched_words),
-                              'written': '' if written == person['name'] else written})
+                              'written': '' if written == label else written})
             found.sort(key=lambda p: (-p['exact'], p['name'].lower(), p['id']))
             kept = found[:limit]
             years = _sounds_like_years(conn, [p['id'] for p in kept])
