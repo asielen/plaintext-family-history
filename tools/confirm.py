@@ -129,6 +129,9 @@ CODE MAP
     _relink_relationship_targets  - profile relationships: to: relink
     _unreadable_merge_refusal     - refuse a merge planned from a partial walk
     _display_dir                  - a folder's name as the human filed it
+    _name_key, _name_items,
+    _plan_merge_name_folds        - where each merged name lands on the survivor
+    _add_name_lines               - the preview/report lines for those names
 
   Verbs (each returns a Result)
     run_confirm_xref, run_confirm_cooccur, run_dismiss,
@@ -201,6 +204,8 @@ from _lib import (
     link_parts,
     strip_link_wrapper,
     person_restricted_names,
+    PERSON_OTHER_NAME_FIELDS,
+    person_other_name_entries,
     sync_person_aliases,
     relationship_entry_claim_ids,   # an entry's claims: list (SPEC §9)
     relationship_claims_value,      # the claims: ["[[c-…]]"] value tools write
@@ -2216,15 +2221,20 @@ def _fm_parse_problem(text: str) -> str | None:
 
 # The merge's declared frontmatter intent, per record (the changed_keys
 # contract of `_lib.frontmatter_edit_problem`): the survivor gains folds in
-# exactly these four keys; the tombstone additionally gains the four SPEC §9
+# exactly these keys (its names, aliases, external ids and relationships);
+# the tombstone additionally gains the four SPEC §9
 # tombstone fields and loses `tier:` (a redirect is not a curated profile, so
 # keeping the tier would keep regenerating companion views for it). Any other
 # field appearing, disappearing, or changing value is a refusal - the same
 # strictness `fha person set-living` applies to its one-key edit.
 _MERGE_SURVIVOR_KEYS = frozenset(
-    {'name_variants', 'aliases', 'external_ids', 'relationships'})
-_MERGE_TOMBSTONE_KEYS = _MERGE_SURVIVOR_KEYS | frozenset(
-    {'status', 'merged_into', 'merge_reason', 'merged_date', 'tier', 'living'})
+    {'name_variants', 'name_at_birth', 'married_name', 'also_known_as',
+     'aliases', 'external_ids', 'relationships'})
+# The tombstone keeps its own name_at_birth, married_name and also_known_as
+# as written, so those three are not in its set.
+_MERGE_TOMBSTONE_KEYS = frozenset(
+    {'name_variants', 'aliases', 'external_ids', 'relationships',
+     'status', 'merged_into', 'merge_reason', 'merged_date', 'tier', 'living'})
 
 
 def _merge_fm_problem(
@@ -2295,9 +2305,15 @@ def _fold_fm_list(text: str, key: str, rendered_items: list[str],
                 insert_at -= 1
             lines[insert_at:insert_at] = [f'{item_indent}- {item}' for item in rendered_items]
         else:
+            # A hand-typed `also_known_as: Ned` is one name, not a list. Say
+            # the line to write rather than leave him guessing which entries
+            # "by hand" means: once it is a list, the merge runs as usual.
+            example = (f' ({key}: [{stripped}])'
+                       if re.fullmatch(r'[^\[\]{}#,&*!|>\'"%@`]+', stripped) else '')
             raise _EditRefused(
-                f'the {key}: value is not a list this tool can extend; add the '
-                'folded entries by hand'
+                f'the {key}: value is one entry, not a list this tool can '
+                f'extend. Write it as a list in square brackets{example} and '
+                'run the merge again'
             )
     return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
 
@@ -2418,11 +2434,14 @@ def _fold_relationship_entries(text: str, entries: list[dict]) -> str:
     return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
 
 
-def _set_fm_scalar(text: str, key: str, rendered_value: str) -> str:
+def _set_fm_scalar(text: str, key: str, rendered_value: str,
+                   insert_after: tuple[str, ...] = ()) -> str:
     """Set one top-level frontmatter key to a scalar (replace or append).
 
     An existing key's whole span (including any nested block) is replaced by
-    the single scalar line; a missing key is appended at the bottom of the
+    the single scalar line. A missing key goes after the first `insert_after`
+    key the record has (so a folded `married_name:` sits with the other
+    names, where the person key order puts it), else at the bottom of the
     frontmatter, so the four tombstone fields land together in call order.
     """
     lines = text.splitlines()
@@ -2432,7 +2451,13 @@ def _set_fm_scalar(text: str, key: str, rendered_value: str) -> str:
     span = _fm_key_span(lines, fm[0], fm[1], key)
     new_line = f'{key}: {rendered_value}'
     if span is None:
-        lines.insert(fm[1], new_line)
+        pos = fm[1]
+        for anchor in insert_after:
+            a_span = _fm_key_span(lines, fm[0], fm[1], anchor)
+            if a_span is not None:
+                pos = a_span[1]
+                break
+        lines.insert(pos, new_line)
     else:
         lines[span[0]:span[1]] = [new_line]
     return '\n'.join(lines) + ('\n' if text.endswith('\n') else '')
@@ -2676,6 +2701,154 @@ def _display_dir(path: Path, archive_root: Path) -> str:
         return str(path).replace('\\', '/')
 
 
+# After a merge the survivor's record still says which name was her maiden
+# name and which her married name. Each of these person name fields (SPEC
+# §9) is written, when the survivor lacks it, after the first of these keys
+# the record has: the person key order `fha lint` uses.
+_NAME_FIELD_ANCHORS = {
+    'name_at_birth': ('name_variants', 'surname', 'name', 'aliases', 'id'),
+    'married_name': ('name_at_birth', 'name_variants', 'surname', 'name',
+                     'aliases', 'id'),
+    'also_known_as': ('married_name', 'name_at_birth', 'name_variants',
+                      'surname', 'name', 'aliases', 'id'),
+}
+
+
+def _name_key(item) -> str:
+    """How a merge compares two names: the text of a plain name or of a
+    `{value:, restricted:}` entry, link wrapper stripped, case and outer
+    spaces ignored. '' for an entry with no name in it."""
+    text = _variant_value(item)
+    return strip_link_wrapper(text).strip().lower() if text else ''
+
+
+def _name_items(raw) -> list:
+    """A name field's entries as a list: a list as written, one value as one
+    entry, nothing for an empty field."""
+    if raw is None or raw == '':
+        return []
+    return list(raw) if isinstance(raw, (list, tuple)) else [raw]
+
+
+def _plan_merge_name_folds(survivor_meta: dict, merged_meta: dict,
+                           merged_disp: str) -> dict:
+    """Decide where each of the merged record's names goes on the survivor.
+
+    A name keeps the kind its record gave it. The merged record's
+    `name_at_birth` and `married_name` fill the survivor's same field when
+    that is empty; when the survivor already holds a different one, the
+    merged name goes into `name_variants` (display variants, SPEC §9), since
+    a record has one birth name and `also_known_as` is for nicknames and
+    other spellings. `also_known_as` entries are appended after the
+    survivor's own, in the merged record's order. Then the merged `name` and
+    `name_variants` go into `name_variants`. The typed fields are
+    read first so a name the merged record files as its married name arrives
+    as the married name, not as a bare variant.
+
+    A name already shown anywhere on the survivor (`name` or any of the four
+    other-name fields), or already placed by this plan, is skipped
+    (`_name_key`). A `{value:, restricted: true}` entry is copied as the same
+    mapping (`_render_scalar`), so the privacy marker travels with the name.
+
+    Returns {'set': {field: rendered value}, 'also_known_as': [rendered],
+    'name_variants': [rendered], 'counts': {field: n}, 'lines': [one preview
+    line per name placed], 'moved': True when a name went to name_variants
+    because its own field was taken, 'prefold_known': the survivor's name
+    keys before the fold}.
+    """
+    known: set[str] = set()
+    for field in ('name',) + PERSON_OTHER_NAME_FIELDS:
+        for item in _name_items(survivor_meta.get(field)):
+            if _name_key(item):
+                known.add(_name_key(item))
+    plan: dict = {
+        'set': {}, 'also_known_as': [], 'name_variants': [], 'lines': [],
+        'moved': False, 'prefold_known': set(known),
+        'counts': {'name_variants': 0, 'name_at_birth': 0, 'married_name': 0,
+                   'also_known_as': 0},
+    }
+    # A name the merged record marks private in any one field is private in
+    # all of them (`person_alias_mirror`). Each field is placed separately
+    # and a repeat is skipped, so a plain copy placed first would otherwise
+    # carry the name over with no marker. Every placed copy of such a name
+    # takes the marker its private entry has.
+    private_markers: dict[str, object] = {}
+    for _field, value, marker in person_other_name_entries(merged_meta):
+        key = strip_link_wrapper(value).strip().lower()
+        if marker not in (None, False, '', 'false') and key not in private_markers:
+            private_markers[key] = (marker, strip_link_wrapper(value).strip())
+
+    def with_marker(item):
+        """`item`, as a `{value:, restricted:}` mapping when the merged
+        record marks its name private anywhere and this copy is plain."""
+        marker = private_markers.get(_name_key(item), (None,))[0]
+        if marker is None or (isinstance(item, dict) and item.get('restricted')
+                              not in (None, False, '', 'false')):
+            return item
+        return {'value': _variant_value(item), 'restricted': marker}
+
+    def place(item, field: str, origin: str = '', note: str = '') -> None:
+        """Record one placed name: its count and its preview line,
+        `married_name: Margaret Hartley (from p-…)`."""
+        known.add(_name_key(item))
+        plan['counts'][field] += 1
+        restricted = isinstance(item, dict) and \
+            item.get('restricted') not in (None, False, '', 'false')
+        plan['lines'].append(
+            f'{field}: {_variant_value(item)} (from {merged_disp}{origin}'
+            f'{", restricted" if restricted else ""}{note})')
+
+    for field in ('name_at_birth', 'married_name'):
+        held = next((_variant_value(x) for x in _name_items(survivor_meta.get(field))
+                     if _name_key(x)), None)
+        for item in _name_items(merged_meta.get(field)):
+            if not _name_key(item) or _name_key(item) in known:
+                continue
+            item = with_marker(item)
+            if held is None:
+                plan['set'][field] = _render_scalar(item)
+                held = _variant_value(item)
+                place(item, field)
+            else:
+                plan['name_variants'].append(_render_scalar(item))
+                plan['moved'] = True
+                place(item, 'name_variants', origin=f"'s {field}",
+                      note=f"; the survivor's {field} is already {held}")
+
+    for item in _name_items(merged_meta.get('also_known_as')):
+        if not _name_key(item) or _name_key(item) in known:
+            continue
+        item = with_marker(item)
+        plan['also_known_as'].append(_render_scalar(item))
+        place(item, 'also_known_as')
+
+    candidates: list = [str(merged_meta['name'])] if merged_meta.get('name') else []
+    candidates += _name_items(merged_meta.get('name_variants'))
+    for item in candidates:
+        if not _name_key(item) or _name_key(item) in known:
+            continue
+        item = with_marker(item)
+        plan['name_variants'].append(_render_scalar(item))
+        place(item, 'name_variants')
+
+    # A name the survivor shows plain but the merged record marks private:
+    # the skip above leaves the survivor's plain copy and the tombstone's
+    # private entry is stripped, so the marker would be lost. A private entry
+    # in the survivor's name_variants keeps it private there, as it was on
+    # the merged record. Not for the survivor's own `name:`, which is public.
+    survivor_private = person_restricted_names(survivor_meta)
+    survivor_name = _name_key(survivor_meta.get('name'))
+    for key, (marker, text) in private_markers.items():
+        if key in plan['prefold_known'] and key not in survivor_private \
+                and key != survivor_name:
+            item = {'value': text, 'restricted': marker}
+            plan['name_variants'].append(_render_scalar(item))
+            place(item, 'name_variants',
+                  note='; the survivor lists it without the marker, which now '
+                       'keeps it private there too')
+    return plan
+
+
 def run_confirm_merge(
     archive_root: Path, *, person_merged: str, into: str, reason: str,
     dry_run: bool = False,
@@ -2809,7 +2982,8 @@ def run_confirm_merge(
     token_re = _person_token_re(pm)
 
     # ── Plan: survivor folds ────────────────────────────────────────────────
-    folded = {'name_variants': 0, 'aliases': 0, 'external_ids': 0,
+    folded = {'name_variants': 0, 'name_at_birth': 0, 'married_name': 0,
+              'also_known_as': 0, 'aliases': 0, 'external_ids': 0,
               'external_id_conflicts': 0, 'relationships': 0}
     try:
         survivor_before = read_text_exact(survivor_path)
@@ -2819,38 +2993,24 @@ def run_confirm_merge(
 
     survivor_text = survivor_before
 
-    # Fold names: merged name + variants into the survivor's name_variants,
-    # deduped against everything the survivor already displays. A restricted
+    # Fold names so the survivor still says which was the birth name, which
+    # the married name and which the nicknames (`_plan_merge_name_folds`),
+    # deduped against every name the survivor already shows. A restricted
     # `{value:, restricted: true}` mapping folds as a mapping (SPEC §18) so
     # the privacy flag travels with the name.
-    survivor_known = set()
-    if survivor_meta.get('name'):
-        survivor_known.add(str(survivor_meta['name']).strip().lower())
-    survivor_variants = survivor_meta.get('name_variants') or []
-    if isinstance(survivor_variants, (list, tuple)):
-        for v in survivor_variants:
-            val = _variant_value(v)
-            if val:
-                survivor_known.add(val.strip().lower())
-    # Snapshot the PRE-fold display names now: the variant-fold loop below
-    # grows survivor_known as it dedupes, and the aliases fold must compare
-    # against what the survivor knew before - the freshly folded names are
-    # exactly what the aliases mirror needs to gain.
-    survivor_prefold_known = set(survivor_known)
-    fold_variant_items: list[str] = []
+    name_plan = _plan_merge_name_folds(survivor_meta, merged_meta, pm_disp)
+    folded.update(name_plan['counts'])
+    fold_variant_items: list[str] = name_plan['name_variants']
+    # The PRE-fold display names: the aliases fold compares against what the
+    # survivor knew before, since the freshly folded names are exactly what
+    # the aliases mirror needs to gain.
+    survivor_prefold_known = name_plan['prefold_known']
     merged_name_candidates: list[object] = []
     if merged_meta.get('name'):
         merged_name_candidates.append(str(merged_meta['name']))
     merged_variants = merged_meta.get('name_variants') or []
     if isinstance(merged_variants, (list, tuple)):
         merged_name_candidates.extend(merged_variants)
-    for cand in merged_name_candidates:
-        val = _variant_value(cand)
-        if not val or val.strip().lower() in survivor_known:
-            continue
-        survivor_known.add(val.strip().lower())
-        fold_variant_items.append(_render_scalar(cand))
-        folded['name_variants'] += 1
 
     # Fold alias stems. The survivor's aliases: is the tool-maintained mirror
     # (id + name + variants + human stems); when it exists, the folded names
@@ -2870,8 +3030,13 @@ def run_confirm_merge(
     survivor_alias_known = {a.lower() for a in _alias_strings(survivor_meta) if a}
     survivor_alias_known |= survivor_prefold_known
     survivor_alias_known.add(ps)
+    # Every name the merged record files in a name field arrives on the
+    # survivor through the name fold above, so its mirror in the merged
+    # aliases: is not a hand-typed stem and does not create the survivor's.
     merged_variant_values = {v.strip().lower() for v in
                              (_variant_value(x) for x in merged_name_candidates) if v}
+    merged_variant_values |= {value.lower() for _field, value, _marker
+                              in person_other_name_entries(merged_meta)}
     merged_public_names = [
         v for v in (_variant_value(x) for x in merged_name_candidates
                     if not _is_restricted_variant(x)) if v
@@ -2991,6 +3156,12 @@ def run_confirm_merge(
 
     try:
         survivor_text = _fold_fm_list(survivor_text, 'name_variants', fold_variant_items)
+        for field, rendered in name_plan['set'].items():
+            survivor_text = _set_fm_scalar(survivor_text, field, rendered,
+                                           insert_after=_NAME_FIELD_ANCHORS[field])
+        survivor_text = _fold_fm_list(survivor_text, 'also_known_as',
+                                      name_plan['also_known_as'],
+                                      insert_after=_NAME_FIELD_ANCHORS['also_known_as'])
         survivor_text = _fold_fm_list(survivor_text, 'aliases', fold_alias_items,
                                       insert_after=('name_variants', 'name', 'id'))
         # The survivor's own name and every public variant it now carries are
@@ -3236,6 +3407,7 @@ def run_confirm_merge(
     if dry_run:
         result.data['status'] = 'ok'
         result.add('info', f'[dry-run] Would merge {pm_disp} into {ps_disp}.')
+        _add_name_lines(result, name_plan, ps_disp, dry_run=True)
         for path, (before, after) in planned.items():
             for dline in difflib.unified_diff(
                 before.splitlines(), after.splitlines(),
@@ -3354,9 +3526,12 @@ def run_confirm_merge(
                    f'Deleted {len(view_files)} generated companion view(s) of '
                    f'the merged person ({", ".join(p.name for p in view_files)}) '
                    '- that life now shows on the survivor\'s views instead.')
+    _add_name_lines(result, name_plan, ps_disp, dry_run=False)
     result.add('info',
                f'Folded into the survivor: {folded["name_variants"]} name '
-               f'variant(s), {folded["aliases"]} alias(es), '
+               f'variant(s), {folded["name_at_birth"]} birth name, '
+               f'{folded["married_name"]} married name, '
+               f'{folded["also_known_as"]} other name(s), {folded["aliases"]} alias(es), '
                f'{folded["external_ids"]} external id(s), '
                f'{folded["relationships"]} relationship entr(y/ies).')
     result.add('info',
@@ -3384,6 +3559,26 @@ def run_confirm_merge(
     if has_warnings:
         result.exit_code = EXIT_WARNINGS
     return result
+
+
+def _add_name_lines(result: Result, name_plan: dict, survivor_disp: str, *,
+                    dry_run: bool) -> None:
+    """Say which of the merged record's names the survivor gains, and in
+    which field, so the owner sees a maiden name filed as a variant before
+    he says yes. One line per name; nothing when no name moves."""
+    if not name_plan['lines']:
+        return
+    tag = '[dry-run] ' if dry_run else ''
+    verb = 'Would add' if dry_run else 'Added'
+    result.add('info', f'{tag}{verb} these names to {survivor_disp}:')
+    for line in name_plan['lines']:
+        result.add('info', f'{tag}  {line}')
+    if name_plan['moved']:
+        when = 'before or after the merge' if dry_run else 'by hand'
+        result.add('info',
+                   f'{tag}A name listed under name_variants above came from a '
+                   'field the survivor already fills. If it is the right one '
+                   f"for that field, swap the two in the survivor's record {when}.")
 
 
 # ── Result helpers ──────────────────────────────────────────────────────────────

@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.22",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -223,7 +223,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "b8317ce01e5d887b19bba345f93be142308b8092ca37f69ed0b9ea5cffdb8263",
+      "sha256": "c8b8e47dedbcfc6ae9d0418e571e728deaaa683ab886197a190bc48be3f35307",
       "spec_version": "2.22"
     },
     {
@@ -744,7 +744,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "497953bc264508c4982d9cb57b96067dfec62519e27333baaea6f89267766bd3",
+      "sha256": "3afc3180323b564a0cc91c089f5105bb8ee1ebdf2a8a7a34b05d99d115cbd50b",
       "spec_version": "2.22",
       "src": "tools/confirm.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
+      "sha256": "ce4714bee28d5f97fac1285e8f10ef6d6370f619335c12a2ae10f05250d831cf",
       "spec_version": "2.22",
       "src": "tools/gedcom_import.py"
     },
@@ -1431,7 +1431,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "4f958adbd37d0b6afb571b06ed1a96df64728d466c5c88193a61ea04c4a90be4",
+      "sha256": "950b696f23b5f552581fb12284f4cecf4622be34dd145936145dd338f0e4454e",
       "spec_version": "2.22",
       "src": "TOOLING.md"
     },
