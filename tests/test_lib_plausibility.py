@@ -70,6 +70,17 @@ class DateRangeTests(unittest.TestCase):
         self.assertEqual(claim_date_range({'date': '1850-05-20'}),
                          ('1850-05-20', '1850-05-20'))
 
+    def test_a_mark_on_one_end_of_a_range_widens_only_that_end(self) -> None:
+        # "About 1880 to 1885": the 1885 end is exact, so a birth in 1886
+        # still cannot come before a death in that range.
+        self.assertEqual(claim_date_range({'date': '1880~/1885'}),
+                         ('1879-01-01', '1885-12-31'))
+        self.assertEqual(claim_date_range({'date': '1880/1885~'}),
+                         ('1880-01-01', '1886-12-31'))
+        self.assertEqual(claim_date_range({'date': '1850-05-~20/1860'}),
+                         ('1849-01-01', '1860-12-31'))
+        self.assertEqual(claim_date_range({'date': '../1890~'}), (None, '1891-12-31'))
+
     def test_a_backwards_interval_is_not_read(self) -> None:
         # `1890/1850` runs backwards (E014 says so); its intended range is
         # unknown, so no rule may read it.

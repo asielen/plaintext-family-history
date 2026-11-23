@@ -20220,16 +20220,26 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
     if lo_known is not None and hi_known is not None and lo_known > hi_known:
         return None
     written = normalize_date(text) or text
-    if any(mark in written for mark in '~?%'):
-        # Widen from the date with its marks taken off, so `1880?` (already
-        # 1879 to 1881) is not widened twice.
+    # Each end widens by its own half's mark only: "about 1880 to 1885"
+    # (`1880~/1885`) still ends exactly in 1885.
+    start_half, _, end_half = written.partition('/')
+    end_half = end_half or start_half
+
+    def _plain(half: str) -> tuple[str, str]:
+        # The half with its marks taken off, so `1880?` (already 1879 to
+        # 1881) is not widened twice.
         try:
-            plain_lo, plain_hi = edtf_bounds(re.sub(r'[~?%]', '', written))
+            return edtf_bounds(re.sub(r'[~?%]', '', half))
         except ValueError:
-            plain_lo, plain_hi = lo, hi
-        if lo_known is not None and plain_lo != _EDTF_FLOOR:
+            return (_EDTF_FLOOR, _EDTF_CEILING)
+
+    if lo_known is not None and any(m in start_half for m in '~?%'):
+        plain_lo = _plain(start_half)[0]
+        if plain_lo != _EDTF_FLOOR:
             lo_known = min(lo_known, f'{max(int(plain_lo[:4]) - 1, 1):04d}-01-01')
-        if hi_known is not None and plain_hi != _EDTF_CEILING:
+    if hi_known is not None and any(m in end_half for m in '~?%'):
+        plain_hi = _plain(end_half)[1]
+        if plain_hi != _EDTF_CEILING:
             hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
     return (lo_known, hi_known)
 
