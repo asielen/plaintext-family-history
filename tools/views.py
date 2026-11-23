@@ -5653,6 +5653,10 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
                     sources |= t['sources']
         return {'date': None, 'subtypes': subtypes, 'sources': sources}
 
+    def own_tie_genetic(c: str) -> bool:
+        own = [kids(subject).get(c), parents(c).get(subject)]
+        return any(is_genetic_parent_subtype(s) for t in own if t for s in t['subtypes'])             or not any(t and t['subtypes'] for t in own)
+
     out = []
     for c in candidates:
         if not is_child_of(subject, c):
@@ -5661,6 +5665,13 @@ def _report_children(rp: _ReportPrivacy, subject: str, spouse: str | None,
             out.append((c, tie_info(c, [subject, spouse])))
         elif not all_spouses or (first_sheet and not rp.other_parent_recorded(c, subject)):
             out.append((c, tie_info(c, [subject])))
+        elif first_sheet and not own_tie_genetic(c) and not (set(parents(c)) & set(all_spouses)):
+            # A child he adopted (or raised) alone, whose other parents share
+            # no sheet with him, would vanish from every sheet: keep her on his
+            # first one, marked as his alone so the spouse is not implied.
+            info = tie_info(c, [subject])
+            info['only'] = subject
+            out.append((c, info))
     return out
 
 
@@ -5709,6 +5720,8 @@ def _family_sheet_lines(rp: _ReportPrivacy, subject: str, spouse: str | None,
             mark = ''
             if subtypes and not any(is_genetic_parent_subtype(s) for s in subtypes):
                 kind = nonbirth_bracket_label(subtypes[0])
+                if kind and spouse and info.get('only'):
+                    kind = f'{kind} by {rp.name(info["only"])}'
                 mark = f' ({kind})' if kind else ''
             born_cell = _fact_text(rp, fn, birth) if birth else ''
             death = _report_pick_vital(rp, c, 'death')

@@ -576,6 +576,23 @@ class FamilySheetReviewFixTests(_SheetBase):
         self.assertEqual(text.count('Sam Miller'), 1)
         self.assertEqual(text.count('Ada Hartley'), 1)
 
+    def test_child_adopted_by_him_alone_stays_on_his_sheet_marked_as_his(self):
+        # Ada's birth mother is recorded and Thomas adopted her on his own:
+        # no other sheet of his lists her, so she must not vanish, and her
+        # row must not suggest Margaret is her mother.
+        bella, ada = 'p-wwwwwwwwww', 'p-yyyyyyyyyy'
+        self.add_person(bella, 'Bella Birth', 'F', 'false')
+        self.add_person(ada, 'Ada Hartley', 'F', 'false')
+        self.add_source('ada', 's-qqqqqqqqqq', 'Ada adoption', 'Breton County Orphans Court.',
+                        _rel('c-parAda0000', ada, [bella])
+                        + _claim('c-adoptAda00', 'relationship', [ada, T], '',
+                                 roles=f'{{child: {ada}, parent: [{T}]}}', subtype='adoptive'))
+        self.reindex()
+        text = self.sheet_text()
+        self.assertEqual(text.count('Ada Hartley'), 1)
+        self.assertIn('Ada Hartley (adopted by Thomas Edward Hartley)', text)
+        self.assertNotIn('Bella Birth', text)
+
     def test_parents_never_married_are_father_and_mother_not_husband_and_wife(self):
         jane, zeke = 'p-ssssssssss', 'p-tttttttttt'
         self.add_person(jane, 'Jane Doe', 'F', 'false')
