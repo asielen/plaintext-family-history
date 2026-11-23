@@ -2719,9 +2719,6 @@ def _yaml_problem_location(exc: object) -> str:
 # so text with any of these never goes to libyaml at all:
 #   - a Tab anywhere: libyaml accepts `name:<Tab>Mary` (Notepad alignment,
 #     a value pasted from a spreadsheet, a trailing Tab); PyYAML refuses it.
-#   - a `?` anywhere: libyaml accepts `[Mary Ann?]` and `[1880?]` in a flow
-#     list; PyYAML refuses them. A bare `1880?` date is common, so this one
-#     costs the most speed, and is still far faster than no libyaml at all.
 #   - a byte-order mark (U+FEFF) anywhere: libyaml skips one at the start
 #     of a later line, so `\ufeffb: 1` reads as the key `b`, not `\ufeffb`.
 #   - `#` straight after a block-scalar indicator (`|#`, `>-#`, `|2#`).
@@ -2735,7 +2732,82 @@ def _yaml_problem_location(exc: object) -> str:
 # synthetic ones, and written as every `key: value` line's whole value -
 # about a million documents. With this rule the helper's answer matched
 # SafeLoader's every time.
-_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff?!]|[|>][-+0-9]*#')
+#
+# A `?` is the other disagreement, and it is handled after libyaml has read
+# the text (#392), not here. An uncertain date (`1880?`), a question in a
+# note and a web address with `?id=` are common, and sending every block
+# that holds one to the slow parser cost about 5 s of every lint on a large
+# archive. The two parsers part ways only on a `?` inside [ ] or { }:
+# libyaml reads `[Mary Ann?]`, `[1880?]` and `{place: Ohio?}`; PyYAML
+# ends the value at the `?` and refuses them. Outside brackets they agree,
+# real `? key` lines included. So `_LibyamlFirst` lets libyaml find the
+# brackets and passes any text with a `?` inside them to the Python parser.
+_LIBYAML_DISAGREES_RE = re.compile('[\t\ufeff!]|[|>][-+0-9]*#')
+
+
+class _PythonParserDecides(Exception):
+    """Raised inside the libyaml read when the Python parser must decide."""
+
+
+def _flow_holds_question(node: Any, text: str) -> bool:
+    """True when any [ ] or { } collection libyaml read spans a `?`.
+
+    A record with `persons: [P-0123456789]` and `date: 1880?` keeps the fast
+    parser; `persons: [Mary Ann?]` goes to the Python parser, whose reading
+    is the archive's rule. Marks are character offsets into `text`; a span that
+    does not end on its closing bracket means a libyaml build counts them
+    some other way, and then the Python parser decides too. The walk stops
+    at the outermost brackets, and tracks what it has seen, since an alias
+    can make a node its own child.
+    """
+    seen = set()
+    todo = [node]
+    while todo:
+        n = todo.pop()
+        if isinstance(n, yaml.ScalarNode) or id(n) in seen:
+            continue
+        seen.add(id(n))
+        if n.flow_style:
+            span = text[n.start_mark.index:n.end_mark.index]
+            if '?' in span or span[-1:] not in (']', '}'):
+                return True
+            continue
+        if isinstance(n, yaml.MappingNode):
+            for key, value in n.value:
+                todo.append(key)
+                todo.append(value)
+        else:
+            todo.extend(n.value)
+    return False
+
+
+_LIBYAML_FIRST_LOADERS: dict = {}
+
+
+def _libyaml_first(c_loader: Any) -> Any:
+    """libyaml's loader, refusing text with a `?` inside [ ] or { }.
+
+    Its `get_single_data` is PyYAML's own (`BaseConstructor`), with the
+    bracket check between reading the text and building the values, so a
+    value it returns is exactly what plain CSafeLoader returns.
+    """
+    cls = _LIBYAML_FIRST_LOADERS.get(c_loader)
+    if cls is None:
+        class _LibyamlFirst(c_loader):
+            def __init__(self, stream):
+                super().__init__(stream)
+                self._fha_text = stream
+
+            def get_single_data(self):
+                node = self.get_single_node()
+                if node is None:
+                    return None
+                text = self._fha_text
+                if '?' in text and _flow_holds_question(node, text):
+                    raise _PythonParserDecides
+                return self.construct_document(node)
+        cls = _LIBYAML_FIRST_LOADERS[c_loader] = _LibyamlFirst
+    return cls
 
 
 def safe_load_yaml(stream: Any) -> Any:
@@ -2764,7 +2836,9 @@ def safe_load_yaml(stream: Any) -> Any:
         a bare `!` tag to a different value. Taking libyaml's word there
         would turn lint's E010 into silence, or change a value, and only
         on machines that have libyaml. Text that could hit one of those
-        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser.
+        cases (`_LIBYAML_DISAGREES_RE`) goes straight to the Python parser,
+        and so does text where libyaml finds a `?` inside [ ] or { }
+        (`_libyaml_first`).
 
     So a record reads to the same value, or fails with the same words, on
     every machine, with or without libyaml. The one known case left, and
@@ -2798,7 +2872,7 @@ def safe_load_yaml(stream: Any) -> Any:
         text = read if isinstance(read, str) else None
     if text is not None and not _LIBYAML_DISAGREES_RE.search(text):
         try:
-            return yaml.load(text, Loader=c_loader)
+            return yaml.load(text, Loader=_libyaml_first(c_loader))
         except Exception:  # noqa: BLE001 - the Python parse below decides
             pass
     if start is not None:
@@ -18276,6 +18350,35 @@ CENSUS_YEARS: dict[str, dict[str, tuple[int, ...]]] = {
         'required': (1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921, 1931),
         'extra': (1906, 1916, 1926),
     },
+    # England and Wales. Sources: The National Archives, "Census records"
+    # research guide (https://www.nationalarchives.gov.uk/help-with-your-research/research-guides/census-records)
+    # and the 1931 fire, RG 20/109 "Destruction of 1931 census schedules by fire".
+    # 1841 is the first census that names everyone, not only the heads.
+    # 1931 was destroyed in a fire at Hayes on 19 December 1942; 1941 was not taken.
+    'England and Wales': {
+        'required': (1841, 1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921),
+        'extra': (),
+    },
+    # Scotland. Source: National Records of Scotland, "Census records"
+    # (https://www.nrscotland.gov.uk/learning-and-events/research-guides/census-records):
+    # open 1841-1921; census records are closed for 100 years, so 1931 (a return
+    # that exists) is not yet open and is not asked for. 1941 was not taken.
+    'Scotland': {
+        'required': (1841, 1851, 1861, 1871, 1881, 1891, 1901, 1911, 1921),
+        'extra': (),
+    },
+    # Ireland (the island). Source: National Archives of Ireland, "Census records
+    # 1821-1891" (https://nationalarchives.ie/?p=696) and "History of Irish census
+    # records": 1901 and 1911 survive complete for all of Ireland. 1821-1851
+    # survive only in fragments (most lost in the 1922 fire). 1861 and 1871 were
+    # destroyed in 1877 after analysis; 1881 and 1891 in the First World War
+    # (paper shortage). No Irish census was taken in 1921. The Irish Free State's
+    # 1926 census was released on 18 April 2026 (National Archives of Ireland);
+    # Northern Ireland's 1926 household returns are lost, so 1926 is an extra.
+    'Ireland': {
+        'required': (1901, 1911),
+        'extra': (1821, 1831, 1841, 1851, 1926),
+    },
 }
 
 # The last part of a place's `hierarchy:` (largest last, SPEC §15), as people
@@ -18284,6 +18387,16 @@ _CENSUS_COUNTRY_NAMES: dict[str, str] = {
     'usa': 'United States', 'us': 'United States', 'united states': 'United States',
     'united states of america': 'United States',
     'canada': 'Canada',
+    # England and Wales: 1841 to 1921 (see CENSUS_YEARS).
+    'england': 'England and Wales', 'wales': 'England and Wales',
+    'england and wales': 'England and Wales',
+    # Scotland: 1841 to 1921.
+    'scotland': 'Scotland',
+    # Ireland: 1901 and 1911 required (see CENSUS_YEARS). "Eire" and "Éire" are
+    # the state's Irish-language name, written in English and in Irish.
+    'ireland': 'Ireland', 'northern ireland': 'Ireland',
+    'republic of ireland': 'Ireland', 'irish free state': 'Ireland',
+    'eire': 'Ireland', 'éire': 'Ireland',
 }
 
 # A hand-registered or GEDCOM-derived place often stops at the state or
@@ -18309,8 +18422,8 @@ _CENSUS_STATE_NAMES: dict[str, tuple[str, ...]] = {
         'northwest territories', 'nova scotia', 'nunavut', 'ontario',
         'prince edward island', 'quebec', 'québec', 'saskatchewan', 'yukon'),
 }
-# Left out on purpose, each with the reason. Not read by the code: kept so
-# the next person to touch the list sees why these are missing.
+# Left out on purpose, each with the reason. The census check shows the reason
+# beside "no census table for ..." so he knows what to write instead.
 _CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
     'georgia': 'also a country',
     'florida': 'also a department of Uruguay',
@@ -18320,6 +18433,11 @@ _CENSUS_STATE_NAMES_LEFT_OUT: dict[str, str] = {
     'hawaii': 'a kingdom and republic with its own censuses until 1898',
     'newfoundland': 'not part of Canada until 1949, after most of its table',
     'newfoundland and labrador': 'not part of Canada until 1949, after most of its table',
+    # Names that could mean any of the three UK census tables (or none).
+    'united kingdom': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'uk': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'great britain': 'names several census countries; write England, Wales, Scotland or Ireland',
+    'britain': 'names several census countries; write England, Wales, Scotland or Ireland',
 }
 _CENSUS_COUNTRY_NAMES.update(
     {state: country for country, states in _CENSUS_STATE_NAMES.items() for state in states})
@@ -18361,13 +18479,23 @@ def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
     return None
 
 
+def _census_left_out_note(country: str) -> str:
+    """A country name as written, with the reason it has no table when it is
+    left out on purpose ("United Kingdom (names several census countries; ...)")."""
+    norm = unicodedata.normalize('NFC', country).lower().replace('.', '').strip()
+    reason = _CENSUS_STATE_NAMES_LEFT_OUT.get(norm)
+    return f'{country} ({reason})' if reason else country
+
+
 def census_country_key(country: str | None) -> str | None:
     """The CENSUS_YEARS key for a country name as written (or a U.S. state
     or Canadian province standing for it), or None when the archive has no
     census table for it."""
     if not country:
         return None
-    norm = country.lower().replace('.', '').strip()
+    # NFC: an accent typed or pasted as two characters ("E" + combining
+    # acute, as some Macs paste it) is the same name.
+    norm = unicodedata.normalize('NFC', country).lower().replace('.', '').strip()
     return _CENSUS_COUNTRY_NAMES.get(norm)
 
 
@@ -18826,7 +18954,8 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if other_countries:
             return {'check': 'census', 'state': 'na', 'countries': sorted(other_countries),
                     **empty,
-                    'detail': 'no census table for ' + ', '.join(sorted(other_countries))}
+                    'detail': 'no census table for ' + ', '.join(
+                        _census_left_out_note(name) for name in sorted(other_countries))}
         return {'check': 'census', 'state': 'missing', 'countries': [], **empty,
                 'detail': "can't tell which country they lived in: none of their "
                           'records sits at a registered place. `fha report --section '
@@ -18874,7 +19003,12 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # birth keeps those years open.
     births_by, _from_birth = _birth_by_years(ctx, pid, statuses)
     alive_cap = min(this_year, max(births_by) + END_OF_LIFE_YEARS) if births_by else this_year
-    expected: list[int] = []
+    # Found years are merged across countries: a person is in one census on a
+    # census night, so an Irishman in the 1901 English census is not also
+    # missing from the Irish 1901 (the British, Irish and Canadian censuses
+    # shared their nights). Asked years are kept per country, to name the
+    # country of each year still missing.
+    asked_by: dict[str, list[int]] = {}
     extras_all: list[int] = []
     later: list[int] = []
     found_all: set[int] = set()
@@ -18892,17 +19026,30 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             continue
         table = CENSUS_YEARS[key]
         asked = [y for y in table['required'] if start <= y <= surely_alive_to]
-        expected += asked
+        asked_by[key] = asked
         # Extras: the table's own, plus required years inside the death window.
         extra_here = [y for y in list(table['extra']) + list(table['required'])
                       if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
         extras_all += [y for y in extra_here if y in here]
         found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
-            later += [y for y in table['required'] if max(start, end) < y <= alive_cap]
-    expected = sorted(set(expected))
-    found = sorted(y for y in expected if y in found_all)
+            # Extras count too: an Irish record after 1911 with no death leaves
+            # the 1926 census to check, though it is never reported missing.
+            later += [y for y in list(table['required']) + list(table['extra'])
+                      if max(start, end) < y <= alive_cap]
+    expected = sorted({y for asked in asked_by.values() for y in asked})
+    found = [y for y in expected if y in found_all]
     missing = [y for y in expected if y not in found_all]
+    missing_by = {key: [y for y in asked if y not in found_all]
+                  for key, asked in asked_by.items()}
+    # With more than one country asking years, say which country each
+    # missing year is for, so he knows which census to search.
+    if sum(1 for asked in asked_by.values() if asked) > 1:
+        missing_text = '; '.join(
+            ', '.join(str(y) for y in ys) + f' in {key}'
+            for key, ys in sorted(missing_by.items()) if ys)
+    else:
+        missing_text = ', '.join(str(y) for y in missing)
     extras = sorted(set(extras_all))
     unchecked_after = end if later else None
     base = {'check': 'census', 'countries': countries, 'expected': expected,
@@ -18933,7 +19080,7 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     state = 'partial' if found else 'missing'
     return {**base, 'state': state,
             'detail': f'{len(found)} of {len(expected)} census years on file; missing '
-                      + ', '.join(str(y) for y in missing) + tail}
+                      + missing_text + tail}
 
 
 def _parent_claims(ctx: dict, pid: str, statuses: tuple[str, ...], *,

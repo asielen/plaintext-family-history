@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "f5ddcb3fd4089c85701cf6bc94c77950388885adb538f14e2f372a1883700e4e",
+      "sha256": "5dc8fd9c71c7ddeae4b4641992ec5cabffc5afb027403774470b04794011f78c",
       "spec_version": "2.21",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "1bfb44b3e41d4f9041cc17031a29c8a77977e344e9588c395d2116e2d6a6dfbb",
+      "sha256": "cda06c0d62a948b9245667ba831e7fd70966d9ccdb381ef7515836115173ada3",
       "spec_version": "2.21",
       "src": "browser-companion/src/content.js"
     },
@@ -450,7 +450,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "c138f499afe76aafc4a887fd5305c59e6678b587db3019e2dc4aaba11e6c29da",
+      "sha256": "87941bf211f117074acce44211225e122176381bbcf44ea91e82ecf627b61fef",
       "spec_version": "2.21",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -527,7 +527,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "715f20266009072ea2e3d3d40ddf70d6540fee49782b9da4ff1153d14fdb5e82",
+      "sha256": "3721571d9fcfe57fe38c38e470896ae5c96474893ee06f8353ee559ab0ae9076",
       "spec_version": "2.21",
       "src": "browser-companion/src/panel.js"
     },
@@ -646,7 +646,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "e990618ede810e43a9426f1bf9e734fa43bb2dff137d374e18d85c2f16b2a034",
+      "sha256": "ffcdfe038ed0352b2fdc220253997d2ed62230f41bf9c601473aa2dd54d2fb0f",
       "spec_version": "2.21",
       "src": "tools/_lib.py"
     },
@@ -695,7 +695,7 @@
     {
       "path": ".fha/tools/capture_recipes/familysearch.py",
       "category": "operating",
-      "sha256": "68b18daf5fba76f225cb31818b166f320fb0fac77c24f82d80297628bbe59fbc",
+      "sha256": "66921f3d9e5ead96e9c6b64972d769102b2c60181d07ba62b20e3a4fcc6de340",
       "spec_version": "2.21",
       "src": "tools/capture_recipes/familysearch.py"
     },
@@ -772,7 +772,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "9ba9411476851237d493ed0e1ab4e4ef5ad03a36abeb160ba76cb319f7e75a39",
+      "sha256": "fc279b8350c2ca34c9552e1a420eb40d20556aac01a98fc89e078d7dbf41fb51",
       "spec_version": "2.21",
       "src": "tools/gedcom_import.py"
     },
@@ -1228,7 +1228,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "c3d30afcab170c338b23355bb5bd20f74ffe887dfe85222ed1bbfe2e8cdb8bff",
+      "sha256": "d6084bdf7e737f68a6e575556eb67977e6361423ee4316e458863840f289a116",
       "spec_version": "2.21",
       "src": "TOOLING.md"
     },
