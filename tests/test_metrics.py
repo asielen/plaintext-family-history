@@ -363,9 +363,10 @@ class CensusCheckTests(_Base):
                                         'place': PL}])
         self.assertEqual(self.a.check(KID, 'census')['state'], 'na')
 
-    def test_a_move_abroad_shows_as_a_gap_not_a_complete(self):
-        # No migration is modelled: born in Canada, so Canada's years run to
-        # death; the years spent in the U.S. stay visible as Canadian gaps.
+    def test_a_dated_move_abroad_ends_the_old_countrys_years(self):
+        # Born in Canada, in the U.S. from a dated 1885 immigration: Canada's
+        # 1891 to 1911 are not asked, and every U.S. census to his death is
+        # on file, so the check is met.
         self.a.source('vital-record', [_birth(KID, '1850', CA)])
         self.a.source('census', [{'type': 'census', 'persons': [KID], 'date': f'{y}', 'place': CA}
                                  for y in (1851, 1861, 1871, 1881)])
@@ -376,8 +377,8 @@ class CensusCheckTests(_Base):
         self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1920-12-01',
                                         'place': US}])
         c = self.a.check(KID, 'census')
-        self.assertEqual(c['state'], 'partial')
-        self.assertEqual(c['missing'], [1891, 1901, 1911])
+        self.assertEqual((c['expected'], c['missing'], c['state']),
+                         ([1851, 1861, 1871, 1881, 1900, 1910, 1920], [], 'met'))
 
     def test_a_death_abroad_does_not_hide_missing_censuses_at_home(self):
         # No immigration claim: nothing says when they left, so the gaps stay.
@@ -691,18 +692,90 @@ class CensusCheckTests(_Base):
         self.assertEqual((c['missing'], c['state']), ([], 'met'))
 
     def test_missing_years_name_their_country_when_two_ask(self):
-        # Born in Cork 1850, in the US from 1870: the Irish 1901 and 1911
-        # are still asked (no move is inferred), and the detail says where.
+        # Born in Cork 1850, in the 1870 US census, back in Cork by 1905:
+        # the US 1880 and the Irish 1911 are both asked, and the detail
+        # says which country each missing year is for.
         self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
         self.a.source('vital-record', [_birth(KID, '1850', 'L-eeeeeeeeee'),
                                        {'type': 'death', 'persons': [KID], 'date': '1915',
-                                        'place': US}])
-        for year in (1870, 1880, 1900, 1910):
-            self.a.source('census', [{'type': 'census', 'persons': [KID],
-                                      'date': str(year), 'place': US}])
+                                        'place': 'L-eeeeeeeeee'}])
+        self.a.source('census', [{'type': 'census', 'persons': [KID],
+                                  'date': '1870', 'place': US}])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1905',
+                                 'place': 'L-eeeeeeeeee'}])
         c = self.a.check(KID, 'census')
-        self.assertEqual(c['missing'], [1901, 1911])
-        self.assertIn('missing 1901, 1911 in Ireland', c['detail'])
+        self.assertEqual(c['missing'], [1880, 1900, 1911])
+        self.assertIn('missing 1911 in Ireland; 1880, 1900 in United States', c['detail'])
+
+    def test_an_emigrant_is_not_asked_the_census_of_the_country_he_left(self):
+        # Born in Cork 1870, in Kansas by 1895, died there 1930: from the
+        # Kansas record on, he is looked for in the US census, not Ireland's.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee')])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1895',
+                                 'place': US}])
+        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1930',
+                                        'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1900, 1910, 1920, 1930])
+        self.assertNotIn(1901, c['expected'])
+        self.assertNotIn(1911, c['expected'])
+        self.assertNotIn('Ireland', c['detail'])
+
+    def test_a_scot_in_leeds_is_looked_for_in_the_english_census(self):
+        # Born in Glasgow 1850, in Leeds from 1870, died there 1905: Scotland
+        # asks 1851 and 1861 only; the later years are England and Wales's.
+        self._register('L-eeeeeeeeee', 'Glasgow', 'Glasgow, Scotland')
+        self._register('L-ffffffffff', 'Leeds', 'Leeds, England')
+        self.a.source('vital-record', [_birth(KID, '1850', 'L-eeeeeeeeee')])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1870',
+                                 'place': 'L-ffffffffff'}])
+        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1905',
+                                        'place': 'L-ffffffffff'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1851, 1861, 1871, 1881, 1891, 1901])
+        self.assertIn('missing 1871, 1881, 1891, 1901 in England and Wales; '
+                      '1851, 1861 in Scotland', c['detail'])
+
+    def test_someone_who_went_to_the_us_and_came_back(self):
+        # Born in Cork 1870, in Kansas in 1895, back in Cork in 1905, died
+        # there 1925: US 1900, then Ireland 1911; not Ireland 1901 or US 1910.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee')])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID], 'date': '1895',
+                                 'place': US},
+                                {'type': 'residence', 'persons': [KID], 'date': '1905',
+                                 'place': 'L-eeeeeeeeee'}])
+        self.a.source('vital-record', [{'type': 'death', 'persons': [KID], 'date': '1925',
+                                        'place': 'L-eeeeeeeeee'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1900, 1911])
+
+    def test_no_move_on_record_keeps_every_country_asked(self):
+        # An Irish birth and an English death with no dates between them show
+        # no move before 1901: both countries' years are asked, as before.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1912'}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual((c['expected'], c['missing'], c['state']),
+                         ([1901, 1911], [1901, 1911], 'missing'))
+
+    def test_an_undated_or_loosely_dated_us_record_does_not_move_him(self):
+        # Born in Cork 1870, died 1930 (no place): an undated US mention and a
+        # US residence dated only "1890 to 1900" say he was there, not when,
+        # so Ireland's 1901 and 1911 are still asked, as are the US years
+        # from 1890.
+        self._register('L-eeeeeeeeee', 'Cork', 'Cork, Ireland')
+        self.a.source('vital-record', [_birth(KID, '1870', 'L-eeeeeeeeee'),
+                                       {'type': 'death', 'persons': [KID], 'date': '1930'}])
+        self.a.source('other', [{'type': 'occupation', 'persons': [KID], 'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1901, 1911])
+        self.a.source('other', [{'type': 'residence', 'persons': [KID],
+                                 'date': '1890/1900', 'place': US}])
+        c = self.a.check(KID, 'census')
+        self.assertEqual(c['expected'], [1900, 1901, 1910, 1911, 1920, 1930])
 
     def test_a_census_year_found_in_both_countries_counts_once(self):
         self._register('L-eeeeeeeeee', 'Bristol', 'Bristol, England')

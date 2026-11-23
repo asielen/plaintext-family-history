@@ -19183,6 +19183,32 @@ def _birth_by_years(ctx: dict, pid: str,
             if c['y_hi'] is not None], False
 
 
+def _census_night_countries(dated: list[tuple[int, int, str]], year: int) -> set[str]:
+    """Which census country a person counts for in this census year, so an
+    Irishman last seen in Kansas is looked for in the US census, not
+    Ireland's.
+
+    `dated` holds (earliest year, latest year, census table key) for each of
+    the person's own records that sits at a place with a census table and is
+    dated to within a couple of years. The answer is the country of their
+    latest such record on or before the year; with none before it, their
+    earliest one after. A record whose few-year span takes in the year itself
+    ("about 1900" for 1900) counts as there that night too, and records tied
+    for latest all count, so a doubtful night keeps every country it might
+    be. An empty set means no dated record says, and nothing is dropped."""
+    here = {key for lo, hi, key in dated if lo <= year < hi}
+    before = [(hi, key) for lo, hi, key in dated if hi <= year]
+    if before:
+        latest = max(hi for hi, _key in before)
+        here |= {key for hi, key in before if hi == latest}
+    elif not here:
+        after = [(lo, key) for lo, _hi, key in dated if lo > year]
+        if after:
+            first = min(lo for lo, _key in after)
+            here = {key for lo, key in after if lo == first}
+    return here
+
+
 # Birth claims this close together are readings of one birth (a census age
 # off by a few years), so the latest of them is the latest possible birth.
 # Further apart, they may be two people merged into one record, and the
@@ -19195,8 +19221,14 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
 
     The rule: years are asked in each country the person's own records place
     them, from birth if they were born there (otherwise from their first
-    dated record there), to death. No move is inferred, so a real stay
-    abroad shows as a gap rather than hiding one. A country comes from the
+    dated record there), to death. On each census night they count for one
+    country: where their latest record dated to the year (or within a couple
+    of years) put them (`_census_night_countries`). Once such a record shows
+    them in another country, the one they left is not asked again until a
+    dated record shows them back. An undated or loosely dated record ("1890
+    to 1900") moves nobody, and a country with no such record is asked as
+    before, so a stay abroad nothing dates still shows as a gap rather than
+    hiding one. A country comes from the
     place registry (the last part of a registered place's hierarchy), never
     from free text, and a census year on file that fits a country's table
     widens that country's start. Only records of the person's own life place
@@ -19235,6 +19267,9 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
     # census claim names no registered place, which may count for any
     # country): an 1881 census in England does not fill a Canadian 1881.
     found_by: dict[str | None, set[int]] = {}
+    # (earliest, latest, country) of each record that says when they were
+    # where, to tell which country they were in on each census night.
+    dated_places: list[tuple[int, int, str]] = []
     for cid, c in _life_claims(ctx, pid, statuses):
         if c['y_hi'] is not None:
             latest_any = c['y_hi'] if latest_any is None else max(latest_any, c['y_hi'])
@@ -19255,8 +19290,21 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
             born_in.add(key)
         if c['y_lo'] is not None:
             first_in[key] = min(first_in.get(key, c['y_lo']), c['y_lo'])
+        if c['y_lo'] is not None and c['y_hi'] is not None and c['y_hi'] - c['y_lo'] <= 2:
+            dated_places.append((c['y_lo'], c['y_hi'], key))
 
-    empty = {'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
+    # A country is asked a year unless their dated records put them in some
+    # other country that night. A country no dated record names is never
+    # dropped: nothing says when they were there.
+    dated_countries = {key for _lo, _hi, key in dated_places}
+
+    def counted_in(key: str, year: int) -> bool:
+        if key not in dated_countries:
+            return True
+        there = _census_night_countries(dated_places, year)
+        return not there or key in there
+
+    empty ={'expected': [], 'found': [], 'missing': [], 'extras': [], 'unchecked_after': None}
     countries = sorted(set(first_in) | born_in)
     if not countries:
         if placed_undated:
@@ -19341,18 +19389,20 @@ def _check_census(ctx: dict, pid: str, statuses: tuple[str, ...], this_year: int
         if start is None:
             continue
         table = CENSUS_YEARS[key]
-        asked = [y for y in table['required'] if start <= y <= surely_alive_to]
+        asked = [y for y in table['required']
+                 if start <= y <= surely_alive_to and counted_in(key, y)]
         asked_by[key] = asked
         # Extras: the table's own, plus required years inside the death window.
         extra_here = [y for y in list(table['extra']) + list(table['required'])
-                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)]
+                      if start <= y <= end and (y in table['extra'] or y > surely_alive_to)
+                      and counted_in(key, y)]
         extras_all += [y for y in extra_here if y in here]
         found_all.update(y for y in asked if y in here)
         if death_hi is None:   # no death year at all, not even "before 1880"
             # Extras count too: an Irish record after 1911 with no death leaves
             # the 1926 census to check, though it is never reported missing.
             later += [y for y in list(table['required']) + list(table['extra'])
-                      if max(start, end) < y <= alive_cap]
+                      if max(start, end) < y <= alive_cap and counted_in(key, y)]
     expected = sorted({y for asked in asked_by.values() for y in asked})
     found = [y for y in expected if y in found_all]
     missing = [y for y in expected if y not in found_all]
