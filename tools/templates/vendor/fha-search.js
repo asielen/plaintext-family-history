@@ -54,7 +54,10 @@
    * stop partway through a spelling the fold rewrites: "Step" is on its way
    * to "Stephen", shipped as "stefen". Such a word also tries each way of
    * finishing that spelling ("Steph" -> "stef"), so it keeps finding the
-   * name while she types. These forms only add matches, never lose one. */
+   * name while she types. These forms only add matches, never lose one.
+   * A word of two letters or more that folds to one ("Yi" -> "i", "Ll")
+   * is marked `whole`: it finds only that one-letter word, not every name
+   * starting with the letter. */
   function queryWords(query, table) {
     var pairs = (table && table.pairs) || [];
     return plain(query, table).split(/[^a-z0-9]+/).filter(Boolean).map(function (raw) {
@@ -64,6 +67,7 @@
         if (f.length === 1 && forms.indexOf(f[0]) < 0) forms.push(f[0]);
       };
       add(raw);
+      forms.whole = raw.length >= MIN_LETTERS && forms[0].length < MIN_LETTERS;
       pairs.forEach(function (pair) {
         for (var n = 1; n < pair[0].length; n++) {
           if (raw.slice(-n) === pair[0].slice(0, n)) add(raw + pair[0].slice(n));
@@ -79,9 +83,9 @@
 
   /* How well one entry matches the query words (from queryWords()): 3 for
    * each word that is a whole word of the entry, 2 for each that starts
-   * one, 1 for each found only in a married surname. A word typed partway
-   * through a folded spelling counts as starting one. 0 when any word
-   * matches nothing. */
+   * one, 1.5 for one found only by finishing a folded spelling (so "Mart"
+   * lists Martin above Marchetti, and Enter opens Martin), 1 for each found
+   * only in a married surname. 0 when any word matches nothing. */
   function score(words, entry) {
     var own = tokensOf(entry.t);
     var total = 0;
@@ -92,7 +96,8 @@
       for (var j = 0; j < own.length && best < 3; j++) {
         for (var f = 0; f < forms.length && best < 3; f++) {
           if (own[j].indexOf(forms[f]) !== 0) continue;
-          best = Math.max(best, f === 0 && own[j] === forms[0] ? 3 : 2);
+          if (own[j] === forms[f] && f === 0) best = 3;
+          else if (!forms.whole) best = Math.max(best, f === 0 ? 2 : 1.5);
         }
       }
       if (!best && entry.m) {
@@ -100,7 +105,7 @@
           var mt = tokensOf(entry.m[k].t);
           for (var n = 0; n < mt.length && !best; n++) {
             for (var g = 0; g < forms.length; g++) {
-              if (mt[n].indexOf(forms[g]) === 0) {
+              if (forms.whole ? mt[n] === forms[g] : mt[n].indexOf(forms[g]) === 0) {
                 best = 1; married = married || entry.m[k].label; break;
               }
             }
@@ -207,8 +212,9 @@
   function show(box, results, data, query) {
     while (results.firstChild) results.removeChild(results.firstChild);
     if (!data) {
-      results.appendChild(el('p', 'empty',
-        'The list of names for this search is missing from this copy of the site.'));
+      // search.html carries the message, with the home page link and the fix.
+      var missing = document.getElementById('search-missing');
+      if (missing) missing.hidden = false;
       return;
     }
     if (!longEnough(query, data.fold)) return;

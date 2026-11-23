@@ -573,7 +573,51 @@ class QueryTests(_Base):
         self.person(MARGARET, 'Soon Yi')
         self.person(THOMAS, 'Ivan Cole', sex='M')
         self.build()
-        self.assertEqual([p['name'] for p in self.query('Yi')['people']][0], 'Soon Yi')
+        self.person(JOSEFA, 'Lena Lowe')
+        self.build()
+        # Only the one-letter word, not every name starting with i or l.
+        self.assertEqual([p['name'] for p in self.query('Yi')['people']], ['Soon Yi'])
+        self.assertEqual(self.query('Ll')['people'], [])
+
+    def test_a_name_found_as_typed_ranks_above_one_found_by_finishing_a_spelling(self):
+        # "Mart" also tries "martsch" (folded "march"), but Enter must open
+        # Martin, whose name starts with the letters she typed.
+        self.person(MARGARET, 'Anna Marchetti')
+        self.person(THOMAS, 'John Martin', sex='M')
+        self.person(JOSEFA, 'Ida Hoffman')
+        self.person(EDITH, 'Paul Hopkins', sex='M')
+        self.build()
+        self.assertEqual([p['name'] for p in self.query('Mart')['people']],
+                         ['John Martin', 'Anna Marchetti'])
+        self.assertEqual([p['name'] for p in self.query('Hop')['people']][0], 'Paul Hopkins')
+
+    def test_a_copy_missing_its_name_list_points_to_the_home_page(self):
+        # A cousin given the site without data/search-data.js must be told
+        # where everyone is listed and how the copy gets fixed, not only
+        # that something is missing.
+        self.seed()
+        self.build()
+        page = (self.out / 'search.html').read_text(encoding='utf-8')
+        m = re.search(r'<p id="search-missing"[^>]*hidden[^>]*>(.*?)</p>', page, re.S)
+        self.assertIsNotNone(m, 'search.html has no hidden missing-list message')
+        self.assertIn('href="index.html#people"', m.group(1))
+        self.assertIn('copy the whole site folder again', m.group(1))
+        # The page shows it when the list did not load.
+        script = (
+            'const nodes = {"search-q": {value: "", addEventListener() {}},'
+            ' "search-results": {firstChild: null, removeChild() {}, appendChild() {},'
+            '   querySelector() { return null; }},'
+            ' "search-missing": {hidden: true}};'
+            'let ready = null;'
+            'global.window = {location: {search: "?q=cole"}};'
+            'global.document = {getElementById: id => nodes[id] || null,'
+            ' addEventListener: (ev, fn) => { ready = fn; }};'
+            'require(process.argv[1]); ready();'
+            'process.stdout.write(JSON.stringify(nodes["search-missing"].hidden));')
+        r = subprocess.run(['node', '-e', script, str(SEARCH_JS)],
+                           capture_output=True, text=True, encoding='utf-8')
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(json.loads(r.stdout), False)
 
     def test_a_whole_word_ranks_above_a_prefix(self):
         self.person(MARGARET, 'Ann Coleman')

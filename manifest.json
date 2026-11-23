@@ -1038,7 +1038,7 @@
     {
       "path": ".fha/tools/templates/search.html",
       "category": "operating",
-      "sha256": "9bd1576a7f4d9da3b2c909b02473a25e0cbcd83fa8948fc35806de1ea60850f3",
+      "sha256": "266ff2ff37d7f979147ce638d4a7d55dd92f837e57eaeb7fb350e621ea0db306",
       "spec_version": "2.22",
       "src": "tools/templates/search.html"
     },
@@ -1059,7 +1059,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-search.js",
       "category": "operating",
-      "sha256": "dead35aec0e9d715228858aa1bea7e71adba95525d0c29a5616862c6f94e673a",
+      "sha256": "fad0c5fdeebcdd706c1dc75e9a965d76be6fa9b633b34ef5623353feffa68965",
       "spec_version": "2.22",
       "src": "tools/templates/vendor/fha-search.js"
     },
