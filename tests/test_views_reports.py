@@ -321,9 +321,15 @@ class FamilySheetContentTests(_SheetBase):
         self.assertIn('Mary Hartley', text)
 
     def test_a_person_with_no_spouse_gets_one_sheet(self):
+        text = self.sheet_text(pid=NEWSPOUSE)
+        self.assertIn('Family group sheet: Edith Lowe', text)
+        self.assertIn('No spouse is recorded.', text)
+
+    def test_parents_with_no_marriage_record_share_one_sheet(self):
+        # Thomas's parents have no marriage on record, only his parentage.
         text = self.sheet_text(pid=TM)
-        self.assertIn('Family group sheet: Ann Price', text)
-        self.assertIn('Spouse', text)
+        self.assertIn('Family group sheet: John Hartley and Ann Price', text)
+        self.assertIn('| 1 | Thomas Edward Hartley', text)
 
     def test_rewrite_after_no_change_is_byte_identical(self):
         first = self.sheet_text()
@@ -489,12 +495,27 @@ class FamilySheetReviewFixTests(_SheetBase):
                         _rel('c-parZ000000', zeke, [T, jane]))
         self.add_source('young', 's-qqqqqqqqqq', 'Young birth', 'Breton County Birth Register vol. 5.',
                         _rel('c-parY000000', young, [T]))
+        zoe = 'p-yyyyyyyyyy'
+        self.add_person(zoe, 'Zoe Hartley', 'F', 'true')
+        self.add_source('zoe', 's-rrrrrrrrrr', 'Zoe birth', 'Breton County Birth Register vol. 6.',
+                        _rel('c-parZoe0000', zoe, [T, jane]))
         self.reindex()
         text = self.sheet_text()
-        self.assertNotIn('Zeke Hartley', text)
-        self.assertIn('Young Hartley', text)   # no other parent recorded: still listed
-        # On Jane's own sheet (no spouse recorded) Zeke is her child.
+        margaret_sheet = text.split('Jane Doe')[0]
+        self.assertNotIn('Zeke Hartley', margaret_sheet)
+        self.assertIn('Young Hartley', margaret_sheet)   # no other parent recorded: still listed
+        # Jane and Thomas, with no marriage on record, still get their own
+        # sheet, so Zeke is not lost and living Zoe is counted, not named.
+        self.assertIn('## Family group sheet: Thomas Edward Hartley and Jane Doe', text)
+        jane_sheet = text.split('Family group sheet: Thomas Edward Hartley and Jane Doe')[1]
+        self.assertIn('Zeke Hartley', jane_sheet)
+        self.assertNotIn('Zoe Hartley', text)
+        self.assertIn('1 living child (not named)', jane_sheet)
+        self.assertNotIn('Young Hartley', jane_sheet)
+        # From Jane's side the same couple is one sheet.
         self.assertIn('Zeke Hartley', self.sheet_text(pid=jane))
+        # --spouse accepts the other parent of his children.
+        self.assertIn('Zeke Hartley', self.sheet_text(spouse=jane))
 
     def break_file(self, pid: str) -> None:
         path = self.root / 'people' / 'stubs' / f'x__{pid}.md'
@@ -507,7 +528,9 @@ class FamilySheetReviewFixTests(_SheetBase):
         # him wondering why Margaret's mother is missing.
         self.break_file(MM)
         result, out, err = self.run_sheet()
-        self.assertEqual(result.exit_code, EXIT_CLEAN, err)
+        # Written, but exit 1 as fha gedcom does, so a script sees the gap.
+        self.assertEqual(result.exit_code, EXIT_WARNINGS, err)
+        self.assertTrue(Path(result.changed[0]).exists())
         self.assertIn(f'x__{MM}.md', err)
         self.assertIn('fha index', err)
 

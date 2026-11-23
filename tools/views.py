@@ -5383,6 +5383,16 @@ class _ReportPrivacy:
                 found.append(child)
         return found
 
+    def co_parents(self, pid: str) -> set[str]:
+        """The other parents of `pid`'s children, through ties a report may
+        walk (so never a restricted person)."""
+        children = set(self.ties(pid, 'child')) | set(self.parented_by(pid))
+        out: set[str] = set()
+        for c in children:
+            if pid in self.ties(c, 'parent') or c in self.ties(pid, 'child'):
+                out |= {p for p in self.ties(c, 'parent') if p != pid}
+        return out
+
     def other_parent_recorded(self, child: str, parent: str) -> bool:
         """Whether the records name any parent of `child` besides `parent`,
         private or not. A child with another recorded parent is not that
@@ -5867,6 +5877,13 @@ def run_family_sheet(
         all_spouses = sorted(
             (s for s in spouse_ties if rp.state(s) != _PERSON_RESTRICTED),
             key=lambda s: (spouse_ties[s]['date'] is None, spouse_ties[s]['date'] or '', s))
+        # The other parent of his children with no marriage on record (a
+        # birth record naming both, no marriage found) gets a sheet too,
+        # after the spouses, so those children are neither lost nor printed
+        # under a wife who was not their mother.
+        all_spouses += sorted(
+            p for p in rp.co_parents(pid)
+            if p not in spouse_ties and rp.state(p) != _PERSON_RESTRICTED)
         if spouse_id:
             sp = rp.canon(spouse_id)
             if sp is None or sp not in all_spouses:
@@ -5888,7 +5905,8 @@ def run_family_sheet(
         else:
             lines = built[0]
         out = _render_report(archive_root, 'family-sheet', pid, lines, fmt)
-        for warning in rp.unreadable_warnings():
+        warnings = rp.unreadable_warnings()
+        for warning in warnings:
             print(warning, file=sys.stderr)
         rel = _rel_display(out, archive_root)
         if fmt == 'html':
@@ -5896,7 +5914,10 @@ def run_family_sheet(
                   f'in the print box.')
         else:
             print(f'Wrote {rel}.')
-        return _views_result(EXIT_CLEAN, changed=[str(out)])
+        # Exit 1 when a file that would not read left something out (as
+        # `fha gedcom` does), so a script never calls a sheet with a missing
+        # grandmother clean.
+        return _views_result(EXIT_WARNINGS if warnings else EXIT_CLEAN, changed=[str(out)])
     except GeneratedFileRefused as e:
         return _views_result(_refused_exit(e))
     except OSError as e:
