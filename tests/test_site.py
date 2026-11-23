@@ -10679,6 +10679,15 @@ class FanChartGeometryTests(unittest.TestCase):
                          'abt. 1850–aft. 1920')
         self.assertEqual(site._pedigree_years({'birth': '185X', 'death': None}), 'b. 1850s')
 
+    def test_a_date_range_never_reads_as_birth_and_death(self):
+        # "1918–1920–1990" could be read as born 1918, died 1920. With a
+        # range on either side, both charts spell out b. and d.
+        self.assertEqual(site._pedigree_years({'birth': '1918/1920', 'death': '1990'}),
+                         'b. 1918–1920, d. 1990')
+        self.assertEqual(site._fan_years({'birth': '1850', 'death': '1918/1920'}),
+                         'b. 1850, d. 1918–1920')
+        self.assertEqual(site._fan_years({'birth': '1850', 'death': '1920'}), '1850-1920')
+
     def test_every_line_fits_its_cell(self):
         for dates in ({'birth': '1840', 'death': '1941'},
                       {'birth': '[..1840]', 'death': '[1941-01-02..]'},

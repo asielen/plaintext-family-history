@@ -3122,20 +3122,27 @@ def _chart_bare_year(s: str) -> str:
 
 def _pedigree_years(dates: dict | None) -> str:
     """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
-    dates = dates or {}
-    b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
-    return f'{b}–{d}' if (b and d) else (f'b. {b}' if b else (f'd. {d}' if d else ''))
+    return _chart_lifespan(dates, '–')
 
 
 def _fan_years(dates: dict | None) -> str:
     """The years line under a fan name: '1840-1941', 'b. 1840', 'd. 1941' or '',
     each year in `_chart_year`'s short form ('abt. 1850-bef. 1920'). Birth and
-    death are joined by a hyphen; an en dash appears only inside one date's
-    own range ('1838–1841-1920'), so the two never read alike."""
+    death are joined by a hyphen; with a range on either side they are
+    spelled out instead ('b. 1838–1841, d. 1920')."""
+    return _chart_lifespan(dates, '-')
+
+
+def _chart_lifespan(dates: dict | None, join: str) -> str:
+    """'b<join>d', 'b. b', 'd. d' or '' from a {'birth', 'death'} map. When
+    either date is a range ('1918–1920'), the two are spelled out as
+    'b. 1918–1920, d. 1990', so a range never reads as a birth and a death."""
     dates = dates or {}
     b, d = _chart_year(dates.get('birth')), _chart_year(dates.get('death'))
     if b and d:
-        return f'{b}-{d}'
+        if '–' in b or '–' in d:
+            return f'b. {b}, d. {d}'
+        return f'{b}{join}{d}'
     return f'b. {b}' if b else (f'd. {d}' if d else '')
 
 
