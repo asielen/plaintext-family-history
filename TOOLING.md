@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.20, 2026-11-22 · companion to SPEC.md v2.20 (versions track the SPEC)**
+**Version 2.21, 2026-11-22 · companion to SPEC.md v2.21 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -157,7 +157,7 @@ CREATE TABLE places(id TEXT PRIMARY KEY, name TEXT, hierarchy TEXT, within TEXT,
 CREATE TABLE place_names(place_id TEXT, alt_name TEXT);
 CREATE TABLE place_history(place_id TEXT, period_edtf TEXT, date_min TEXT, date_max TEXT, hierarchy TEXT);
 CREATE TABLE search_log(date TEXT, person_id TEXT, question TEXT, repository TEXT,
-  collection TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
+  collection TEXT, years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT);
 CREATE TABLE hypotheses(id TEXT PRIMARY KEY, person_id TEXT, question TEXT, guess TEXT,
   basis TEXT, verify TEXT, origin TEXT, status TEXT, path TEXT);
 CREATE TABLE hypothesis_persons(hypothesis_id TEXT, person_id TEXT);  -- the people in refs:
@@ -1679,7 +1679,7 @@ The session start screen, narrated by the `today` skill.
 | 2 | `new-since-last` | Sources, claims, people added or changed. |
 | 3 | `vitals-gaps` | Curated people first, then people touched since last report (W101). Computed fresh each run; never written as questions (SPEC §17b). |
 | 4 | `contradictions` | `contradicts:` pairs lacking an open question (E009). |
-| 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)"; a nil older than 18 months is "worth re-running". Then captures from the last 30 days not yet linked to a person. |
+| 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)", with the years searched when the entry gives them; a nil older than 18 months is "worth re-running". An `unavailable` entry reads "could not be searched (date)" and a `requested` one "asked (date), waiting for a reply"; both are still to do. Then captures from the last 30 days not yet linked to a person. |
 | 5b | `answerable-questions` | Open questions whose referenced gap now has an accepted claim, or whose referenced claims changed status, proposed for `answered [[s-...]]`. The human closes. |
 | 6 | `photo-triage` | Top N (§15b). Prefixed by the scan's note: unreadable files, and when any are new or changed, that the catalog stays out of date until they read (§9). A `MISSING:` group points at `reconcile`. |
 | 6b | `place-candidates` | `fha places candidates` clusters, with elevate-or-dismiss prompts, led by the commands that settle them all at once: `fha places link` when a cluster fits a registered place, `fha places candidates --register` when one fits none. |

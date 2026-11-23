@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.20, 2026-11-22**
+**Version 2.21, 2026-11-22**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -921,13 +921,33 @@ Tooling may propose answers and closures and append context; status changes requ
   question: "[[h-4f20aa91c3]] parents of [[p-cd795c61e0|Margaret Cole]]"
   repository: Ancestry
   collection: "Kansas State Census, 1875"
+  years: 1875
   terms: "Hartley, Breton Co."
   result: nil
+
+- date: 2026-07-09
+  question: "death of [[p-de957bcda1|Thomas Edward Hartley]]"
+  repository: Breton County clerk
+  collection: "Death register"
+  years: 1911/1925
+  terms: "Hartley"
+  result: unavailable (the clerk's office holds no registers before 1930; they went to the state archive)
 ```
 
-One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person; a person ID there makes the search count for that person); `repository`; `collection`; `terms`; `result` (`nil` | `found [[s-…]]` | `partial (note)` | `staged inbox/…`: captured into the inbox, not yet processed). `fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
+One entry per search: a markdown list item whose other fields sit on two-space-indented lines below it. `date` (required); `question` (the objective, free text, which may link a question, a working answer or a person; a person ID there makes the search count for that person); `repository`; `collection`; `years` (optional: the years of records the search covered, in EDTF, such as `1875` or `1911/1925`; with no `years`, the search covered whatever the collection holds); `terms`; `result`, one of:
 
-Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first**: "already searched (date)" is surfaced before any lead is proposed.
+- `nil`: searched, and nothing was found in what the entry says was searched;
+- `found [[s-…]]`: found, and processed as that source;
+- `partial (note)`: something found, the note says what;
+- `staged inbox/…`: captured into the inbox, not yet processed;
+- `requested (note)`: asked for by letter, email or form, and no answer yet;
+- `unavailable (note)`: could not be searched at all (the office was closed, the records are lost or closed to the public, the site was down); the note says why.
+
+`fha capture` appends exactly this shape, one entry per capture, with `result: staged` and the inbox path.
+
+**A nil says what one search covered.** It is not on its own evidence that the record was never made: it supports a negative finding (Appendix A.2) only together with what shows the record would have been made, survives for those years and that place, and could have been found by that search, and that reasoning is written in a proof-argument source (§14). An `unavailable` or `requested` entry is no evidence either way: the search is still to be done.
+
+Entries are **dated** because collections grow: a nil from 2024 is worth re-running in 2027. `research-next` and the report **check the log first**: "already searched (date)" is surfaced before any lead is proposed. An `unavailable` or `requested` entry is shown as still to do, never as already searched.
 
 **Search history is optional.** The log is useful when present and never needed to understand or operate the archive. Being a durable record, it lives under `notes/`, never in `.cache/`.
 
@@ -1060,7 +1080,7 @@ Every field here is valid and fully defined, and most archives never use any of 
 
 Some of the most important genealogical findings are *absences*: a person who never married, had no children, or (for someone still living) has no death record. "We researched and it did not happen" is a real, citable conclusion, represented two ways:
 
-- **Negative-fact claim** (the researched case): a normal claim of the relevant `type` with **`negated: true`** and `evidence: negative`, e.g. `type: marriage, negated: true, value: "no marriage found", confidence: medium` citing the searches that justify it. It sits in the source's claims list like any claim and is fully sourced, typically by a proof-argument source (§14) assembling the negative searches.
+- **Negative-fact claim** (the researched case): a normal claim of the relevant `type` with **`negated: true`** and `evidence: negative`, e.g. `type: marriage, negated: true, value: "no marriage found", confidence: medium` citing the searches that justify it, with what they covered (§17c). It sits in the source's claims list like any claim and is fully sourced, typically by a proof-argument source (§14) assembling the negative searches.
 - **Person-level convenience flags** (the common, low-ceremony case): optional booleans on the person record (`no_known_marriages: true`, `no_known_children: true`) for quickly recording a settled judgment without authoring a claim. They are *assertions of current knowledge*, not sourced facts; tooling treats them as "stop flagging this person's missing marriage/children in vitals gaps," and a later contradicting claim supersedes them.
 
 ```yaml
