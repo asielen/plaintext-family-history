@@ -563,6 +563,46 @@ class StepDatesTests(unittest.TestCase):
         self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', False))
         self.assertIn('or only after Baby Ames died', bm['hedge'])
 
+    @staticmethod
+    def _undated(cid, ctype, pid):
+        """A second record of the event that gives no date (a birthplace
+        from a census, a death noted in a letter)."""
+        role = 'child' if ctype == 'birth' else 'deceased'
+        return (f'- value: "{pid} {ctype}, no date"\n'
+                f'  id: {cid}\n  type: {ctype}\n'
+                f'  persons: [{pid}]\n  roles: {{{role}: [{pid}]}}\n'
+                f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: low\n'
+                f'  information: secondary\n  evidence: direct\n  notes: x.\n')
+
+    def test_undated_second_death_record_keeps_the_dated_death(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'),
+                      self._undated('C-0000000005', 'death', self.K))
+        self.assertEqual(bm['relationship'], "father's later wife")
+
+    def test_undated_second_birth_record_keeps_the_dated_birth(self):
+        bm = self._bm(_married('C-0000000002', self.F, self.W, '1890'),
+                      _died('C-0000000004', self.W, '1901-03-01'),
+                      _born('C-0000000003', self.K, '1905-06-01'),
+                      self._undated('C-0000000005', 'birth', self.K))
+        self.assertEqual((bm['relationship'], bm['certain']), ("father's earlier wife", True))
+
+    def test_spouse_tie_from_a_relationship_claim_reads_its_whole_date(self):
+        # The pair's first spouse row comes from a relationship claim dated
+        # "before 1920"; it proves nothing about when the marriage began.
+        spouses = (f'- value: "{self.F} and {self.W} were husband and wife"\n'
+                   f'  id: C-0000000001a\n  type: relationship\n  subtype: spouse\n'
+                   f'  persons: [{self.F}, {self.W}]\n'
+                   f'  roles: {{spouse: [{self.F}, {self.W}]}}\n  date: "[..1920]"\n'
+                   f'  status: accepted\n  reviewed: 2026-01-01\n  confidence: high\n'
+                   f'  information: primary\n  evidence: direct\n  notes: x.\n')
+        bm = self._bm(spouses,
+                      _born('C-0000000003', self.K, '1899'),
+                      _died('C-0000000004', self.K, '1900'),
+                      _died('C-0000000007', self.W, '1925-05-01'))
+        self.assertNotEqual((bm['relationship'], bm['certain']), ('stepmother', True))
+
     def test_child_alive_long_after_marriage_is_certain(self):
         bm = self._bm(_married('C-0000000002', self.F, self.W, '1903'),
                       _born('C-0000000003', self.K, '1899'),

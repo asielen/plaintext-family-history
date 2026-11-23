@@ -500,6 +500,8 @@ class MarriageAnswerTests(unittest.TestCase):
             (('1903', None, '1899', '1960'), ('stepmother', True)),
             (('190X', None, '1899', '1960'), ('stepmother', True)),
             (('190X', None, '1899', '1905'), ('stepmother', False)),
+            # An index lower bound with no upper bound ("before 1920") is no date.
+            (('0001-01-01', '1925', '1899', '1900'), ('stepmother', False)),
         ]
         for args, want in cases:
             with self.subTest(args=args):

@@ -18398,7 +18398,8 @@ def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> No
     """Give each spouse row its dates as ranges, in place, so "190X" is never
     read as 1900. The index keeps only each date's earliest day (date_start
     from the marriage, date_end from the first divorce or death that closed
-    it). date_start becomes the marriage claim's own EDTF; date_end becomes
+    it). date_start becomes the backing marriage or relationship claim's own
+    EDTF; date_end becomes
     "earliest/latest", the latest day taken from the closing claim (a death
     of either spouse or a divorce naming one of them, matched on that
     earliest day), or "earliest/.." when no such claim is found. The
@@ -18407,7 +18408,7 @@ def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> No
     if not spouse_rows:
         return
     start_edtf = {r['id']: r['date_edtf'] for r in dicts(conn.execute(
-        "SELECT id, date_edtf FROM claims WHERE type = 'marriage'"))}
+        "SELECT id, date_edtf FROM claims WHERE type IN ('marriage', 'relationship')"))}
     closing: dict[tuple[str, str], str] = {}
     for r in dicts(conn.execute(
             '''SELECT cp.person_id AS pid, c.date_min AS dmin, c.date_max AS dmax
@@ -18419,9 +18420,10 @@ def _kin_marriage_spans(conn: sqlite3.Connection, rows: list[dict], dicts) -> No
         if latest > closing.get(key, ''):
             closing[key] = latest
     for r in spouse_rows:
-        edtf = start_edtf.get(r.get('claim_id'))
-        if edtf:
-            r['date_start'] = edtf
+        if r.get('claim_id') in start_edtf:
+            # The backing claim's whole date, or none: its lower bound alone
+            # would read "1900" as 1 January 1900.
+            r['date_start'] = start_edtf[r['claim_id']] or None
         end = r.get('date_end')
         if end:
             latest = max((closing.get((p, end), '') for p in (r['person_id'], r['other_id'])),
@@ -18849,8 +18851,11 @@ def _kin_bounds(value: Any) -> tuple[str | None, str | None]:
         return None, None
     else:
         lo, hi = edtf_bounds(str(value).strip())
-    lo = None if not lo or lo == '0001-01-01' else lo
-    hi = None if not hi or hi == '9999-12-31' else hi
+    # The index's stand-ins for "no bound" (0001-01-01, 9999-12-31) mean the
+    # same on either side: a bare '0001-01-01' is a "before" date's lower
+    # bound, not a day in year 1.
+    lo = None if not lo or str(lo)[:4] in ('0001', '9999') else lo
+    hi = None if not hi or str(hi)[:4] in ('0001', '9999') else hi
     return lo, hi
 
 
@@ -19172,6 +19177,8 @@ def person_life_dates(conn: sqlite3.Connection, pid: str,
             if not claim_is_own_vital(conn, pid, cid, ctype, cache):
                 continue
             lo, hi = _kin_bounds((dmin, dmax))
+            if lo is None and hi is None:
+                continue   # an undated record of the event says nothing about when
             los.append(lo)
             his.append(hi)
         if los:
