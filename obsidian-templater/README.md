@@ -24,4 +24,4 @@ Apply a template to a new, empty note and answer the prompt. Name the note whate
 
 ## A note on querying
 
-Vitals, the `relationships:` block, `sex:`, `gender:` and `restricted:` all live in **person-level frontmatter**, which Dataview and Bases read directly, so "everyone without a death date" or "everyone born in Breton County" are ordinary frontmatter queries. The structured per-claim data stays in fenced ` ```yaml ` blocks (so notes render cleanly) and is queried through `fha` and its index rather than Dataview. See `docs/USING_WITH_OBSIDIAN.md`.
+The `relationships:` block, `sex:`, `gender:`, `restricted:` and any estimated `birth:` and `death:` (your own jottings, or dates a GEDCOM import brought in) live in **person-level frontmatter**, which Dataview and Bases read directly, so "everyone whose living status is unknown" or "every stub" are ordinary frontmatter queries. Sourced vitals live in the claims, not in frontmatter. The structured per-claim data stays in fenced ` ```yaml ` blocks (so notes render cleanly) and is queried through `fha` and its index rather than Dataview. See `docs/USING_WITH_OBSIDIAN.md`.
