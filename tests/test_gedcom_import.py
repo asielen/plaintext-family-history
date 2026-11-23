@@ -2991,6 +2991,19 @@ class ReimportPlanTestCase(_ReimportCase):
         plan = self._plan(later)
         self.assertTrue(any('Rose Winters' in n for n in plan.name_changes), plan.name_changes)
 
+    def test_codex_an_unreadable_date_the_tree_changed_is_a_change(self) -> None:
+        # Ben's birth is "INT 1902 (spring after the flood)": a date no one
+        # can read into the date field. The tree changes it; that is shown.
+        later = self._edited('later.ged', SMALL, ('1 DATE 1 JUL 2026', '1 DATE 1 JUL 2027'),
+                             ('2 DATE INT 1902 (spring after the flood)',
+                              '2 DATE INT 1905 (spring after the fire)'))
+        plan = self._plan(later)
+        self.assertEqual(self._fact(plan, 'birth', 'Ben Hartley').outcome, 'changed')
+        self.assertEqual(len(plan.questions), 1)
+        # Unchanged, it is still the same.
+        plan = self._plan(self._same_tree_redownloaded())
+        self.assertEqual(self._fact(plan, 'birth', 'Ben Hartley').outcome, 'same')
+
     def test_date_disagreements_are_listed_for_new_people_only(self) -> None:
         # A matched person keeps the record he already has, so "the new record
         # shows" is said only of someone the plan would add.

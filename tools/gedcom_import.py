@@ -1034,6 +1034,9 @@ class _Claim:
     # the earlier one's by these words, so a renamed or renumbered person, or
     # a spouse whose name the tree respelled, still said the same thing.
     said: str = ''
+    # The date as the file wrote it, when it could not be read into `date`
+    # ("INT 1878 (guess)"): the only way to tell two such dates apart.
+    raw_date: str = ''
 
 
 @dataclass
@@ -1221,6 +1224,7 @@ def _map_individual(
             confidence='medium' if cites else 'low',
             anchor=f'line {node.line}', subtype=subtype, notes=notes,
             said=_event_words(verb, node),
+            raw_date=date_raw if date_raw and not edtf else '',
         )
 
     for node in indi.children:
@@ -1397,6 +1401,7 @@ def _map_family(
             notes=f'GEDCOM cites: {"; ".join(cites)}' if cites else None,
             fam_xref=fam.xref,
             said=_event_words(phrase, node),
+            raw_date=date_raw if date_raw and not edtf else '',
         ))
 
     marr = fam.child('MARR')
@@ -1690,6 +1695,7 @@ class _OldFact:
     # filed under its wording now, so a tree that makes the same correction
     # is not planned as a second claim.
     now_key: tuple | None = None
+    raw_date: str = ''             # the filed copy's unread date wording
 
 
 @dataclass(eq=False)
@@ -2106,7 +2112,8 @@ def _read_prior_import(archive_root: Path, fha_config: dict, path: Path, rec: di
             kind=new.kind, key=new.key, text=new.text, date=old_claim.date or '',
             place=old_claim.place_text or '', live=False, cid='',
             people=frozenset(old_claim.persons), value=old_claim.value,
-            parents=new.parents, orig_parents=new.parents, joined=True))
+            parents=new.parents, orig_parents=new.parents, joined=True,
+            raw_date=old_claim.raw_date))
 
     return _PriorImport(
         sid=sid, record_path=path, file_name=file_name or path.name, file_alias=file_alias,
@@ -2258,7 +2265,8 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
         live=status not in _SETTLED_STATUSES,
         cid=normalize_id(str(claim.get('id') or '')), people=people, value=value,
         parents=parents, orig_parents=orig_parents, joined=source is not None,
-        orig_key=orig_key, now_key=now_key)
+        orig_key=orig_key, now_key=now_key,
+        raw_date=source.raw_date if source is not None else '')
 
 
 # ── Who is who ───────────────────────────────────────────────────────────────
@@ -2608,6 +2616,12 @@ def _fields_relation(old: _OldFact, claim: _Claim) -> str:
     archive holds, by date and place as the record reads today."""
     relations = (_date_relation(old.date, claim.date or ''),
                  _place_relation(old.place, claim.place_text or ''))
+    if (old.joined and not old.date and not claim.date and (old.raw_date or claim.raw_date)
+            and _norm_text(old.raw_date) != _norm_text(claim.raw_date)):
+        # Neither date could be read, and the wording changed: it cannot be
+        # compared, so it goes to him as a change rather than being lost.
+        # (Without the filed copy the earlier wording is not known.)
+        return 'changed'
     if 'conflict' in relations:
         return 'changed'
     return 'more detail' if 'adds' in relations else 'same'
