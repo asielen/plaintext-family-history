@@ -786,6 +786,14 @@ class DuplicateBirthTestCase(_ArchiveCase):
                 self.assertEqual(stub.living, 'false')
                 self.assertNotIn('keeps living: unknown', self._text(plan))
 
+    def test_a_hebrew_calendar_alternate_birth_is_read_as_its_year(self) -> None:
+        # 5600 is 1840; 5755 is 1995 and may be her real, recent birth.
+        for raw, living in (('@#DHEBREW@ 5600', 'false'),
+                            ('@#DHEBREW@ 5755', 'unknown')):
+            with self.subTest(raw=raw):
+                plan = self._plan(f'1 BIRT\n2 DATE {raw}\n1 BIRT\n2 DATE 1840\n')
+                self.assertEqual(plan.stubs[0].living, living)
+
     def test_an_open_ended_birth_that_agrees_does_not_hide_her(self) -> None:
         # AFT 1850 and BEF 1990 both fit 12 Jan 1878: nothing disagrees, so
         # she is not hidden as possibly living.

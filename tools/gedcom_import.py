@@ -902,6 +902,9 @@ def _unread_date_may_be_recent(raw: str | None) -> bool:
     if not runs:
         return False                    # `Unknown`: no year at all
     years = [int(r) for r in runs if 3 <= len(r) <= 4]
+    if '@#DHEBREW@' in raw.upper():
+        # Hebrew years run 3,760 ahead (5600 is 1840), so compare the real year.
+        years = [y - 3760 for y in years]
     if not years or any(len(r) > 4 for r in runs):
         # `5/6/95`, `Jun 95`, `19950506`: a year is there but can't be told
         # apart, so it may be recent.
