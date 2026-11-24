@@ -25442,9 +25442,10 @@ def connected_facts(conn: Any, pid: str) -> list[dict]:
             if half:
                 label = f'half-{label}'
             if ctype == 'birth' and gap <= 1:
+                twins = '' if half else ' (twins?)'
                 lead = 'Born the same day as' if gap == 0 else 'Born within a day of'
                 days = date(mine) if gap == 0 else f'{date(mine)} and {date(theirs)}'
-                line = f'{lead} {poss} {label} {link(sib)}{'' if half else ' (twins?)'}: {days} {tok(mine)} {tok(theirs)}.'
+                line = f'{lead} {poss} {label} {link(sib)}{twins}: {days} {tok(mine)} {tok(theirs)}.'
             elif ctype == 'baptism' and gap == 0:
                 line = (f'Baptised the same day as {poss} {label} {link(sib)}, '
                         f'{date(mine)} {tok(mine)} {tok(theirs)}.')
