@@ -11082,6 +11082,12 @@ def _fan_full_labels(depth, *, dates=None, name=None):
     return labels
 
 
+def _fan_cell_count(svg):
+    """Ancestor cells in a fan SVG: not the hub, not a Private card. A cell may
+    carry a side or repeat class beside `fan-seg`."""
+    return len(re.findall(r'<path class="fan-seg(?: fan-(?:line|seg-repeat)[a-z-]*)*"', svg))
+
+
 def _fan_line_length(d):
     """Length of a straight label path `M x,y L x,y`."""
     m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) L([-0-9.]+),([-0-9.]+)', d)
@@ -11293,7 +11299,7 @@ class FanChartGeometryTests(unittest.TestCase):
         labels = _fan_full_labels(5)
         labels[32] = {'name': '', 'url': None, 'redacted': True}
         svg = site._render_fan_svg(labels, 5)
-        self.assertEqual(svg.count('class="fan-seg"'), 62)
+        self.assertEqual(_fan_cell_count(svg), 62)
         self.assertEqual(len(_fan_labels(svg)), 61)
         self.assertNotIn('Anc32', svg)
 
@@ -11338,7 +11344,7 @@ class FanChartDepthTests(_Base):
         self._seed_full_tree(6)
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 6 - 2)
         for num in range(32, 64):
             self.assertIn(f'<title>Anc{num} Hartley</title>', fan)
         self.assertNotIn('Anc64 Hartley', fan)
@@ -11378,7 +11384,7 @@ class FanPosterGeometryTests(unittest.TestCase):
         return site._render_fan_svg(_fan_full_labels(depth, **kw), depth, span_deg=span_deg)
 
     def _segs(self, svg):
-        return re.findall(r'<path class="fan-seg" style="[^"]*" d="([^"]+)"/>', svg)
+        return re.findall(r'<path class="fan-seg(?: fan-(?:line|seg-repeat)[a-z-]*)*" style="[^"]*" d="([^"]+)"/>', svg)
 
     def test_a_fan_of_any_other_angle_is_refused(self):
         with self.assertRaises(ValueError):
@@ -11584,21 +11590,21 @@ class FanPosterSettingsTests(_Base):
         self.assertEqual(self._fan_warnings(res), [])
         fan = self._fan()
         self.assertIn('<circle class="fan-seg fan-seg-subject"', fan)
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 7 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 7 - 2)
 
     def test_270_degrees_with_fewer_generations(self):
         self._seed_full_tree(6)
         self._config('  fan_degrees: 270\n  fan_generations: 3\n')
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 4 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 4 - 2)
         self.assertNotIn('<circle', fan)
 
     def test_the_default_is_a_half_fan_of_five_generations(self):
         self._seed_full_tree(6)
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 6 - 2)
         self.assertNotIn('<circle', fan)
 
     def test_a_quoted_number_is_read_as_that_number(self):
@@ -11625,7 +11631,7 @@ class FanPosterSettingsTests(_Base):
                 self.assertEqual(len(warned), 1, warned)
                 self.assertIn(key, warned[0])
                 self.assertIn('default', warned[0])
-                self.assertEqual(self._fan().count('class="fan-seg"'), 2 ** 6 - 2)
+                self.assertEqual(_fan_cell_count(self._fan()), 2 ** 6 - 2)
 
 
 class FanPrivateCardTests(_Base):
@@ -11745,6 +11751,178 @@ class FanPrivateCardTests(_Base):
         self.assertIn('Fenwick Ford', self._fan('p-wren000000'))
         self.assertIn('Tobias Webb', self._fan('p-kitt000000'))
         self.assertNotIn('Private</textPath>', self._fan('p-wren000000'))
+
+
+class FanRepeatTests(_Base):
+    """When cousins married, one great-grandfather fills two places in the
+    ancestor fan. A relative should see that at a glance: both places share a
+    colour, a dashed edge and a lettered badge (so colour is never the only
+    clue), and each tooltip names the other place. A switch above the fan
+    lights the father's or the mother's side. Nothing here may reveal a living
+    person: a Private card is never grouped or coloured, and a repeat that is
+    only visible through one is not shown."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._claims = 0
+
+    def _parent(self, child, parent):
+        self._claims += 1
+        cid = f'c-p{self._claims:09d}'
+        self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                         persons=(child, parent), roles={child: 'child', parent: 'parent'})
+        self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    @staticmethod
+    def _pid(key):
+        return f'p-{key:0<10}'
+
+    def _seed_cousins(self, *, mother_sex='F', mum_father_living=False, repeat=True):
+        # Wren's father Dan (slot 2) and mother Mia (slot 3). Zed is Dan's
+        # father's father (slot 8) and Mia's father's father (slot 12).
+        people = {'wren': ('Wren Hartley', 'F'), 'dad0': ('Dan Hartley', 'M'),
+                  'mum0': ('Mia Reed', mother_sex), 'gdad': ('Gus Hartley', 'M'),
+                  'mdad': ('Ned Reed', 'M'), 'zed0': ('Zed Hartley', 'M'),
+                  'zpar': ('Ira Hartley', 'M')}
+        for key, (name, sex) in people.items():
+            kw = {'surname': name.split()[1], 'sex': sex}
+            if key == 'mdad' and mum_father_living:
+                kw['living'] = 'true'
+            self._seed_person(self._pid(key), name, **kw)
+        ties = [('wren', 'dad0'), ('wren', 'mum0'), ('dad0', 'gdad'), ('gdad', 'zed0'),
+                ('mum0', 'mdad'), ('zed0', 'zpar')]
+        if repeat:
+            ties.append(('mdad', 'zed0'))
+        for child, parent in ties:
+            self._parent(self._pid(child), self._pid(parent))
+        if mum_father_living:
+            self._seed_claim('c-born00001', 's-1111111111', 'birth', 'born',
+                             date_edtf='1950-01-01', persons=(self._pid('mdad'),),
+                             roles={self._pid('mdad'): 'child'})
+
+    def _fan(self):
+        page = self._read('persons/p-wren000000.html')
+        return re.search(r'<svg class="fan-chart.*?</svg>', page, re.S).group(0)
+
+    def _cells(self, fan):
+        return re.findall(r'<path class="([^"]*fan-seg[^"]*)" style="([^"]*)"', fan)
+
+    def test_an_ancestor_in_two_places_is_marked_in_both(self):
+        self._seed_cousins()
+        self._run()
+        fan = self._fan()
+        zed = re.findall(r'<title>(Zed Hartley[^<]*)</title>', fan)
+        self.assertEqual(len(zed), 2)
+        self.assertIn('Also no. 12 on this chart', zed[0])
+        self.assertNotIn('their ancestors', zed[0])
+        self.assertIn('Also no. 8 on this chart (their ancestors are shown at no. 8)', zed[1])
+        repeat = [(c, st) for c, st in self._cells(fan) if 'fan-seg-repeat' in c]
+        self.assertEqual(len(repeat), 2)
+        self.assertEqual(repeat[0][1], repeat[1][1], 'the same colour in both places')
+        self.assertEqual(fan.count('class="fan-repeat-mark"'), 2, 'a badge in both places')
+        self.assertEqual(len(re.findall(r'>A</text>', fan)), 2)
+        # His father is drawn once, behind the lower slot.
+        self.assertEqual(fan.count('<title>Ira Hartley'), 1)
+
+    def test_no_repeat_means_no_marks(self):
+        self._seed_cousins(repeat=False)
+        self._run()
+        fan = self._fan()
+        self.assertNotIn('fan-seg-repeat', fan)
+        self.assertNotIn('fan-repeat-mark', fan)
+
+    def test_a_repeat_seen_only_through_a_private_card_is_not_shown(self):
+        # Mia's father is a living adult: a Private card. Zed behind him is
+        # the same Zed as at slot 8, but saying so would tell a relative that
+        # the Private card descends from Zed.
+        self._seed_cousins(mum_father_living=True)
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('>Private</textPath>'), 1)
+        self.assertNotIn('fan-seg-repeat', fan)
+        self.assertNotIn('Also no.', fan)
+        self.assertNotIn('Ned Reed', fan)
+
+    def test_the_preview_shows_the_repeat_through_everyone(self):
+        self._seed_cousins(mum_father_living=True)
+        self._run(linked=True)
+        self.assertIn('Also no. 12 on this chart', self._fan())
+
+    def test_the_switch_lights_a_side_with_no_script(self):
+        self._seed_cousins()
+        self._run()
+        page = self._read('persons/p-wren000000.html')
+        fan = self._fan()
+        self.assertEqual(fan.count('fan-seg fan-line-paternal'), 3, 'slots 2, 4, 8')
+        self.assertEqual(fan.count('fan-seg fan-line-maternal'), 1, 'slot 3 only')
+        radios = re.findall(r'<input type="radio" class="fan-mode"[^>]*>', page)
+        self.assertEqual(len(radios), 3)
+        self.assertIn('checked', radios[0])
+        for r in radios[1:]:
+            self.assertNotIn('checked', r)
+        # The radios sit before .chart-body so `~` reaches the chart.
+        self.assertLess(page.index('id="fan-mode-maternal"'),
+                        page.index('<div class="chart-body"><div class="fan-wrap"'))
+
+    def test_a_parent_placed_by_guesswork_claims_no_side(self):
+        self._seed_cousins(mother_sex='')
+        self._run()
+        fan = self._fan()
+        self.assertNotIn('fan-line-maternal', fan)
+        self.assertIn('fan-line-paternal', fan)
+
+    def test_no_side_known_means_no_switch(self):
+        self._seed_cousins(mother_sex='')
+        self.conn.execute("UPDATE persons SET sex = '' WHERE id = ?", (self._pid('dad0'),))
+        self._run()
+        self.assertNotIn('fan-mode', self._read('persons/p-wren000000.html'))
+
+    def test_a_private_card_is_never_coloured_by_side_or_repeat(self):
+        self._seed_cousins(mum_father_living=True)
+        self._run()
+        cells = self._cells(self._fan())
+        private = [c for c, _ in cells if 'fan-seg-private' in c]
+        self.assertEqual(private, ['fan-seg fan-seg-private'])
+
+    def test_the_line_switch_does_not_dim_a_private_card(self):
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        self.assertRegex(css, r'fan-mode-paternal:checked ~ \.chart-body \.fan-seg'
+                              r'(:not\([^)]*\))*:not\(\.fan-seg-private\)')
+
+    def test_the_switch_stays_off_the_printed_page(self):
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        self.assertIn('.fan-mode + label { display: none; }', css[css.index('@media print'):])
+
+    def test_builds_are_identical(self):
+        self._seed_cousins()
+        self._run()
+        first = self._fan()
+        self._run()
+        self.assertEqual(first, self._fan())
+
+    def test_the_repeat_shows_at_every_fan_width(self):
+        for deg in (180, 270, 360):
+            labels = _fan_full_labels(4)
+            labels[8]['pid'] = labels[12]['pid'] = 'p-zed0000000'
+            svg = site._render_fan_svg(labels, 4, span_deg=deg)
+            with self.subTest(span=deg):
+                self.assertEqual(svg.count('fan-seg-repeat'), 2)
+                self.assertEqual(svg.count('class="fan-repeat-mark"'), 2)
+
+    def test_a_private_cell_and_a_blank_are_never_grouped(self):
+        labels = _fan_full_labels(3)
+        for num in (4, 6):
+            labels[num].update({'private': True, 'pid': 'p-same000000'})
+        for num in (5, 7):
+            labels[num].update({'redacted': True, 'name': '', 'pid': 'p-blank00000'})
+        self.assertNotIn('fan-seg-repeat', site._render_fan_svg(labels, 3))
 
 
 class KnownAdultTests(_Base):

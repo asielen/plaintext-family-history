@@ -114,6 +114,16 @@
       there, and the wrap runs on a click, after the page has loaded. -#}
   <details class="chart">
     <summary class="chart-title">Ancestor fan</summary>
+    {%- if person.fan_modes %}
+    {#- Pure CSS, no script: the radios are direct siblings of .chart-body so
+        `:checked ~ .chart-body` reaches the chart. They stay out of the print. -#}
+    <input type="radio" class="fan-mode" name="fan-mode" id="fan-mode-family" checked>
+    <label for="fan-mode-family" class="fan-modes">Whole family</label>
+    <input type="radio" class="fan-mode" name="fan-mode" id="fan-mode-paternal">
+    <label for="fan-mode-paternal" class="fan-modes">Father's father's line</label>
+    <input type="radio" class="fan-mode" name="fan-mode" id="fan-mode-maternal">
+    <label for="fan-mode-maternal" class="fan-modes">Mother's mother's line</label>
+    {%- endif %}
     <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div></div>
   </details>
   {% if not person.descendants_tree %}<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>{% endif %}
