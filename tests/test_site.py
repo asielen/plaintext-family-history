@@ -9498,6 +9498,10 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
         self.assertEqual(t(s, 'chroniclingamerica'), 'Thomas Hartley, newspapers 1840 to 1910')
         self.assertEqual(t(s, 'findmypast'), 'Thomas Hartley, born about 1840, died about 1910')
         self.assertEqual(t(s, 'ukdiscovery'), 'Thomas Hartley')
+        # A place with no year still says which event it was.
+        self.assertEqual(t({'given': 'Thomas', 'surname': 'Hartley', 'birth_place': 'Ohio',
+                            'death_place': 'Boston'}, 'familysearch'),
+                         'Thomas Hartley, born in Ohio; died in Boston')
         self.assertEqual(t({**s, 'places': ['Suwalki, podlaskie']}, 'geneteka'),
                          'Thomas Hartley, baptisms 1840 to 1841, province podlaskie')
 

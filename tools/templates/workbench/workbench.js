@@ -1128,8 +1128,7 @@
      is filed in the research log and is not repeated next session.
      "Nothing found" opens the usual preview/confirm for `confirm.search`.
      "Found something" only points him to the capture add-on, which files the
-     record and logs the search itself (logging it here too would count it
-     twice). */
+     record; the record itself is the finding, so nothing is logged here. */
   document.addEventListener('click', function (e) {
     var link = e.target.closest('a[data-wb-search]');
     if (!link) return;

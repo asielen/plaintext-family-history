@@ -10266,8 +10266,9 @@ def research_search_terms(subject: dict, site_key: str = '') -> str:
     full = site_key in ('familysearch', 'ancestry', 'myheritage', '')
 
     def event(word: str, year, place) -> str:
-        bits = ([f'{word} about {year}'] if year else []) + ([str(place)] if place else [])
-        return ', '.join(bits)
+        if not year:            # a bare place would not say which event it was
+            return f'{word} in {place}' if place else ''
+        return ', '.join([f'{word} about {year}'] + ([str(place)] if place else []))
 
     def who(prefix: str) -> str:
         return ' '.join(x for x in (s.get(f'{prefix}_given'), s.get(f'{prefix}_surname')) if x)
