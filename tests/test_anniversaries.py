@@ -35,6 +35,7 @@ from _lib import (
     EXIT_FAILURE,
     calendar_date_parts,
     family_calendar_events,
+    family_calendar_year,
     load_fha_yaml,
 )
 
@@ -609,7 +610,14 @@ class BirthdayListTests(unittest.TestCase):
 
     def test_other_options_and_bad_days_are_refused_with_exit_2(self):
         self.a.build()
-        for extra in (['june'], ['--week'], ['--include-suggested']):
+        # On its own (and with --json, --days or a plain --format text) it runs.
+        for extra in ([], ['--json'], ['--days', '60'], ['--format', 'text']):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                code = anniversaries._standalone_main(
+                    ['--birthdays', *extra, '--root', str(self.a.root)])
+            self.assertEqual(code, 0, extra)
+        for extra in (['june'], ['--week'], ['--include-suggested'],
+                      ['--format', 'html'], ['--year', '2027']):
             err = io.StringIO()
             with redirect_stdout(io.StringIO()), redirect_stderr(err):
                 code = anniversaries._standalone_main(
@@ -637,3 +645,164 @@ class BirthdayListTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class WallCalendarTests(unittest.TestCase):
+    """`fha calendar --format html`: a printable twelve-month wall calendar."""
+
+    def setUp(self):
+        self.a = _Archive()
+        self.a.source([{'type': 'birth', 'persons': [KID], 'date': '1880-06-14'},
+                       {'type': 'death', 'persons': [MOM], 'date': '1930-06'}])
+        self.a.build()
+
+    def tearDown(self):
+        shutil.rmtree(self.a.root, ignore_errors=True)
+
+    def wall(self, year=2027, **kw):
+        kw.setdefault('today', TODAY)
+        return anniversaries.run_calendar_wall(self.a.root, {}, year, **kw)
+
+    def page(self, year=2027, **kw):
+        r = self.wall(year, **kw)
+        self.assertEqual(r.exit_code, EXIT_CLEAN, [m.text for m in r.messages])
+        return Path(r.data['path']).read_text(encoding='utf-8')
+
+    def test_wall_calendar_has_twelve_months_with_events_in_their_day_cells(self):
+        text = self.page()
+        self.assertEqual(text.count('<table class="wall-month"'), 12)
+        self.assertIn('b. Kid (1880)', text)
+        self.assertIn('class="day-num">14</span>', text)
+        for month in ('January', 'June', 'December'):
+            self.assertIn(month, text)
+        r = self.wall()
+        self.assertTrue(r.data['path'].endswith('calendar_2027.html'))
+        self.assertIn('generated', Path(r.data['path']).parts)
+
+    def test_feb_29_goes_on_feb_28_in_a_common_year_and_stays_in_a_leap_year(self):
+        self.a.source([{'type': 'birth', 'persons': [MOM], 'date': '1880-02-29'}])
+        self.a.build()
+        conn = sqlite3.connect(self.a.root / '.cache' / 'index.sqlite')
+        conn.row_factory = sqlite3.Row
+        try:
+            common = family_calendar_year(conn, 2027, ('accepted',))
+            leap = family_calendar_year(conn, 2028, ('accepted',))
+        finally:
+            conn.close()
+        self.assertEqual(sorted(common[1]['days']), [28])
+        self.assertTrue(common[1]['days'][28][0]['leap_moved'])
+        self.assertEqual(sorted(leap[1]['days']), [29])
+        self.assertIn('(29 February)', self.page(2027))
+
+    def test_month_only_events_are_listed_under_the_grid(self):
+        text = self.page()
+        self.assertIn('Also in June, day not recorded:', text)
+        self.assertIn('d. Mom (1930)', text)
+        self.assertNotIn('Also in July', text)
+
+    def test_year_only_dates_are_left_off(self):
+        self.a.source([{'type': 'birth', 'persons': [DAD], 'date': '1900'}])
+        self.a.build()
+        self.assertNotIn('Dad', self.page())
+
+    def test_more_than_three_events_in_a_day_shows_and_more(self):
+        for n in range(4):
+            self.a.source([{'type': 'death', 'persons': [MOM], 'date': f'{1900 + n}-06-14'}])
+        self.a.build()
+        text = self.page()
+        self.assertIn('and 2 more', text)
+        self.assertIn('All of June:', text)
+
+    def test_suggested_only_line_is_marked_with_include_suggested(self):
+        self.a.source([{'type': 'death', 'persons': [MOM], 'date': '1900-07-02',
+                        'status': 'suggested'}])
+        self.a.build()
+        self.assertNotIn('d. Mom (1900)', self.page())
+        text = self.page(include_suggested=True)
+        self.assertIn('d. Mom (1900) (not yet reviewed)', text)
+
+    def test_empty_month_says_nothing_on_file(self):
+        self.assertIn('Nothing on file for January yet.', self.page())
+
+    def test_names_are_escaped(self):
+        self.a.source([{'type': 'birth', 'persons': [DAD], 'date': '1900-03-03'}])
+        path = next((self.a.root / 'people' / 'stubs').glob('*cccccccccc*'))
+        path.write_text(path.read_text(encoding='utf-8').replace('name: Dad', 'name: A<b>d'),
+                        encoding='utf-8')
+        self.a.build()
+        text = self.page()
+        self.assertNotIn('<b>d', text)
+        self.assertIn('A&lt;b&gt;d', text)
+
+    def test_week_or_when_with_format_html_is_refused(self):
+        for argv in (['june', '--format', 'html'], ['--week', '--format', 'html'],
+                     ['--json', '--format', 'html']):
+            err = io.StringIO()
+            with redirect_stderr(err), redirect_stdout(io.StringIO()):
+                code = anniversaries._standalone_main([*argv, '--root', str(self.a.root)])
+            self.assertEqual(code, EXIT_ERRORS, argv)
+            self.assertIn('whole year', err.getvalue())
+            self.assertIn('fha calendar --format html --year', err.getvalue())
+
+    def test_year_without_format_html_is_refused(self):
+        err = io.StringIO()
+        with redirect_stderr(err), redirect_stdout(io.StringIO()):
+            code = anniversaries._standalone_main(['--year', '2027', '--root', str(self.a.root)])
+        self.assertEqual(code, EXIT_ERRORS)
+        self.assertIn('--format html', err.getvalue())
+
+    def test_year_out_of_range_is_refused(self):
+        self.assertEqual(self.wall(999).exit_code, EXIT_ERRORS)
+        self.assertEqual(self.wall(10000).exit_code, EXIT_ERRORS)
+
+    def test_no_index_exit_3(self):
+        (self.a.root / '.cache' / 'index.sqlite').unlink()
+        self.assertEqual(self.wall().exit_code, EXIT_FAILURE)
+
+    def test_handwritten_file_is_not_overwritten(self):
+        out = self.a.root / 'generated' / 'views' / 'calendar_2027.html'
+        out.parent.mkdir(parents=True)
+        out.write_text('my own notes', encoding='utf-8')
+        r = self.wall()
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('is not a file fha made, so it was left alone', r.messages[0].text)
+        self.assertEqual(out.read_text(encoding='utf-8'), 'my own notes')
+
+    def test_views_clean_sweeps_the_calendar(self):
+        import views
+        path = Path(self.wall().data['path'])
+        self.assertTrue(path.is_file())
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            views.main(['clean', '--root', str(self.a.root)])
+        self.assertFalse(path.exists())
+
+    def test_self_contained_and_marked(self):
+        text = self.page()
+        self.assertTrue(text.startswith('<!-- GENERATED by fha views calendar'))
+        self.assertNotIn('<link', text)
+        self.assertNotIn('src=', text)
+        self.assertEqual(text.count('<style>'), 1)
+        self.assertIn('Private research companion', text)
+
+    def test_print_css_fits_one_month_to_a_page(self):
+        # Measured in headless Chrome at A4 and Letter landscape: with taller
+        # cells or the page padding left on, January (which also carries the
+        # banner) spills onto a thirteenth page.
+        text = self.page()
+        printed = text[text.index('@media print {', text.index('.wall-month-block')):]
+        self.assertIn('.wall-month td { height: 4rem; }', printed)
+        self.assertIn('break-after: page', printed)
+        self.assertIn('main { padding: 0; }', printed)
+
+    def test_rewrite_after_no_change_is_byte_identical(self):
+        first = self.page()
+        self.assertEqual(first, self.page())
+
+    def test_success_line_names_the_file(self):
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = anniversaries._standalone_main(
+                ['--format', 'html', '--year', '2027', '--root', str(self.a.root)])
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Wrote the 2027 family calendar:', out.getvalue())
+        self.assertIn('each month prints on its own page', out.getvalue())

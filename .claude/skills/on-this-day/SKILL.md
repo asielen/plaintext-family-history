@@ -33,6 +33,7 @@ The archive's "on this day" column: a warm, plain way into the family's history.
    - "this month", "in June", "anything in March?" → `fha calendar --json` (this month) or `fha calendar june --json`
    - a named day, "the 14th of June" → `fha calendar june 14 --json`
    - "any birthdays coming up?", "who do I need to send a card to?" → `fha calendar --birthdays --json` (add `--days 60` for longer). It lists living relatives, so it is private: never paste it into anything shared.
+   - a printable year, "a calendar for the kitchen wall" → `fha calendar --format html` writes a wall calendar (private: it names living relatives).
 
    Exit `2` means the words did not read as a day or month: the tool's message names the forms it takes. Translate it, or ask one plain question ("the 14th of which month?"). Exit `3` means there is no index yet: run `fha index`, then the calendar again.
 

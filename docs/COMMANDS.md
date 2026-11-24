@@ -614,8 +614,13 @@ What happened in the family this month, or on this day?
   fha calendar --birthdays     Living relatives' birthdays in the next 30 days
                                (private: for you only, never in a shared copy)
   fha calendar --birthdays --days 60
+  fha calendar --format html   A printable wall calendar for this year
+  fha calendar --format html --year 2027
+                               The same, for another year
 
-Only dates recorded to the month or day appear. Read-only: nothing is written.
+Only dates recorded to the month or day appear. The text views write nothing;
+the wall calendar writes one private page under generated/views/ and names
+living relatives, so keep it to yourself.
 ```
 
 | Argument | What it does |
@@ -626,6 +631,8 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--birthdays` | Living relatives' coming birthdays (private; for you only) |
 | `--days` `N` | With --birthdays: how many days ahead (1 to 366, default 30) |
 | `--json` | Machine-readable JSON output |
+| `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
+| `--year` `YYYY` | With --format html: the year to print (default: this year) |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha date`
