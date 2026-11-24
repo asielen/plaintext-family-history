@@ -11235,7 +11235,9 @@ def _fan_rings_by_formula(n, span=math.pi):
     rings, r = [], _FAN_R0
     for g in range(1, n + 1):
         seg = span / 2 ** g
-        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        # A cell that is a whole half circle is read level, never along its arc.
+        mode = ('arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN and seg < math.pi - 1e-9
+                else 'radial')
         t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
         rings.append((mode, r, r + t))
         r += t
@@ -11423,19 +11425,25 @@ class FanChartGeometryTests(unittest.TestCase):
         for dates in ({'birth': '1840', 'death': '1941'},
                       {'birth': '[..1840]', 'death': '[1941-01-02..]'},
                       {'birth': '1838/1841', 'death': '194X'}):
-            self._every_line_fits(dates)
+            for span_deg in (180, 270, 360):
+                self._every_line_fits(dates, span_deg)
 
-    def _every_line_fits(self, dates):
+    def _every_line_fits(self, dates, span_deg=180):
+        # Measured on the path each line is actually drawn on, so a poster's
+        # lower half (where the lines stack the other way) is held to it too.
+        span = math.radians(span_deg)
         for depth in (5, 6):
-            rings = _fan_rings_by_formula(depth)
+            rings = _fan_rings_by_formula(depth, span)
             for name in (lambda n: f'Anc{n} Hartley',
-                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley'):
-                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth)
+                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley',
+                         lambda n: f'Anc{n} Wilhelmina Augusta Brandenburg'):
+                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth,
+                                           span_deg=span_deg)
                 paths = dict(_FAN_PATH_RE.findall(svg))
                 for title, item in _fan_items(svg).items():
                     g = _fan_slot_of(title).bit_length() - 1
                     mode, r_in, r_out = rings[g - 1]
-                    seg = math.pi / 2 ** g
+                    seg = span / 2 ** g
                     lines = [(item['fs'], pid, t) for pid, t in item['lines']]
                     lines += [(item['fy'], pid, t) for pid, t in item['years']]
                     for fs, pid, text in lines:
@@ -11446,7 +11454,7 @@ class FanChartGeometryTests(unittest.TestCase):
                             avail = r * seg - 2 * _FAN_PAD
                         else:
                             avail = min(_fan_line_length(paths[pid]), r_out - r_in - 2 * _FAN_PAD)
-                        with self.subTest(depth=depth, title=title, line=text):
+                        with self.subTest(span=span_deg, depth=depth, title=title, line=text):
                             self.assertLessEqual(len(text) * _FAN_CW * fs, avail + 0.5)
                     if mode == 'radial':
                         # Stacked lines fit across the narrow end of the cell.
@@ -11523,6 +11531,273 @@ class FanChartDepthTests(_Base):
         self.assertIn('id="fha-fan"', page)
         self.assertEqual(page.count('vendor/fha-tree.js"'), 1)
         self.assertIn('wrapStatic', page)
+
+
+# The poster angles (08-4). Path coordinates are read back out of the SVG and
+# checked against the geometry written down here, not against the renderer.
+_FAN_POINT_RE = re.compile(r'(-?[0-9]+\.?[0-9]*),(-?[0-9]+\.?[0-9]*)')
+
+
+def _fan_viewbox(svg):
+    return tuple(float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split())
+
+
+class FanPosterGeometryTests(unittest.TestCase):
+    """A fan can be set to 270 degrees or a full circle so a family can print
+    a poster with every name readable and upright."""
+
+    def _svg(self, depth, span_deg, **kw):
+        return site._render_fan_svg(_fan_full_labels(depth, **kw), depth, span_deg=span_deg)
+
+    def _segs(self, svg):
+        return re.findall(r'<path class="fan-seg" style="[^"]*" d="([^"]+)"/>', svg)
+
+    def test_a_fan_of_any_other_angle_is_refused(self):
+        with self.assertRaises(ValueError):
+            site._render_fan_svg(_fan_full_labels(2), 2, span_deg=200)
+
+    def test_poster_angles_cover_the_whole_span(self):
+        # Each generation's cells run end to end around the hub, the first
+        # starting at the fan's left edge, and together they cover the span.
+        for span_deg in (270, 360):
+            span = math.radians(span_deg)
+            rings = _fan_rings_by_formula(4, span)
+            svg = self._svg(4, span_deg)
+            centre = rings[-1][2] + 14
+            segs = self._segs(svg)
+            for g in range(1, 5):
+                widths, his = [], []
+                for d in segs[(1 << g) - 2:(1 << (g + 1)) - 2]:
+                    pts = [tuple(map(float, m)) for m in
+                           _FAN_POINT_RE.findall(re.sub(r'A[0-9.,]+ [01] [01] [01] ', '', d))]
+                    lo, hi = pts[0], pts[1]      # M outer-low, arc to outer-high
+                    a_lo = math.atan2(centre - lo[1], lo[0] - centre)
+                    a_hi = math.atan2(centre - hi[1], hi[0] - centre)
+                    widths.append((a_hi - a_lo) % (2 * math.pi) or 2 * math.pi)
+                    his.append(a_hi)
+                self.assertAlmostEqual(sum(widths), span, places=1)
+                want = math.pi / 2 + span / 2
+                self.assertAlmostEqual(math.cos(his[0]), math.cos(want), places=1)
+                self.assertAlmostEqual(math.sin(his[0]), math.sin(want), places=1)
+
+    def test_every_cell_sits_inside_the_canvas(self):
+        for span_deg in (180, 270, 360):
+            svg = self._svg(6, span_deg)
+            _x, _y, w, h = _fan_viewbox(svg)
+            hub = re.findall(r'<path class="fan-seg fan-seg-subject" d="([^"]+)"', svg)
+            for d in self._segs(svg) + hub:
+                for x, y in _FAN_POINT_RE.findall(re.sub(r'A[0-9.,]+ [01] [01] [01] ', '', d)):
+                    self.assertTrue(-0.5 <= float(x) <= w + 0.5, (span_deg, x, w))
+                    self.assertTrue(-0.5 <= float(y) <= h + 0.5, (span_deg, y, h))
+        # The full circle is as tall as it is wide.
+        _x, _y, w, h = _fan_viewbox(self._svg(6, 360))
+        self.assertEqual(w, h)
+
+    def test_lower_half_arc_text_reads_upright(self):
+        # Below the horizontal a curved name runs counter-clockwise (left to
+        # right along the bottom), so it is not upside down; above it, clockwise.
+        svg = self._svg(3, 360)
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        rings = _fan_rings_by_formula(3, 2 * math.pi)
+        checked = {'lower': 0, 'upper': 0}
+        for title, item in _fan_items(svg).items():
+            num = _fan_slot_of(title)
+            g = num.bit_length() - 1
+            if rings[g - 1][0] != 'arc':
+                continue
+            seg = 2 * math.pi / 2 ** g
+            mid = 3 * math.pi / 2 - (num - 2 ** g) * seg - seg / 2
+            m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) A[0-9.]+,[0-9.]+ 0 [01] ([01]) ([-0-9.]+),([-0-9.]+)',
+                             paths[item['lines'][0][0]])
+            self.assertIsNotNone(m, title)
+            if math.sin(mid) < -1e-9:
+                self.assertEqual(m.group(3), '0', title)
+                checked['lower'] += 1
+            else:
+                self.assertEqual(m.group(3), '1', title)
+                checked['upper'] += 1
+        self.assertGreater(checked['lower'], 2)
+        self.assertGreater(checked['upper'], 2)
+
+    def test_lower_half_name_lines_stack_with_the_name_nearest_the_hub(self):
+        # On the lower half the hub side is the top as read, so the name sits
+        # at the smaller radius and the years under it at the larger.
+        dates = {'birth': '1840', 'death': '1901'}
+        svg = self._svg(3, 360, dates=dates, name=lambda n: 'Calvin George Hartley')
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        rings = _fan_rings_by_formula(3, 2 * math.pi)
+        seen = 0
+        # every name here is the same, so number the cells by document order
+        cells = re.findall(r'<(?:a|g)[^>]*>(<title>[^<]*</title><text class="fan-label".*?)</(?:a|g)>', svg, re.S)
+        slots = [n for n in range(2, 2 ** 4)]
+        self.assertEqual(len(cells), len(slots))
+        for num, cell in zip(slots, cells):
+            g = num.bit_length() - 1
+            seg = 2 * math.pi / 2 ** g
+            mid = 3 * math.pi / 2 - (num - 2 ** g) * seg - seg / 2
+            if rings[g - 1][0] != 'arc' or math.sin(mid) >= -1e-9:
+                continue
+            ids = re.findall(r'href="#([^"]+)"', cell)
+            if len(ids) < 2:
+                continue
+            radii = [float(re.match(r'M[-0-9.]+,[-0-9.]+ A([0-9.]+),', paths[i]).group(1)) for i in ids]
+            self.assertEqual(radii, sorted(radii), num)
+            seen += 1
+        self.assertGreater(seen, 0)
+
+    def test_full_circle_parents_use_horizontal_text(self):
+        # At 360 degrees each parent is a half circle: the name runs straight
+        # across, level, on whichever side the parent is.
+        svg = self._svg(3, 360)
+        self.assertEqual(_fan_rings_by_formula(3, 2 * math.pi)[0][0], 'radial')
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        items = _fan_items(svg)
+        for num in (2, 3):
+            item = next(i for t, i in items.items() if _fan_slot_of(t) == num)
+            for pid, _t in item['lines']:
+                m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) L([-0-9.]+),([-0-9.]+)', paths[pid])
+                self.assertIsNotNone(m, paths[pid])
+                self.assertAlmostEqual(float(m.group(2)), float(m.group(4)), places=1)
+            # and it reads left to right
+            sx, ex = (float(paths[item['lines'][0][0]].split()[0].split(',')[0][1:]),
+                      float(paths[item['lines'][0][0]].split()[1].split(',')[0][1:]))
+            self.assertLess(sx, ex)
+
+    def test_the_hub_matches_the_angle(self):
+        half = self._svg(2, 180)
+        sector = self._svg(2, 270)
+        circle = self._svg(2, 360)
+        self.assertRegex(half, r'<path class="fan-seg fan-seg-subject" d="M[^"]* A54\.0,54\.0 0 0 1 ')
+        self.assertRegex(sector, r'<path class="fan-seg fan-seg-subject" d="M[-0-9.,]+ L[-0-9.,]+ '
+                                 r'A54\.0,54\.0 0 1 1 [-0-9.,]+ Z"')
+        self.assertRegex(circle, r'<circle class="fan-seg fan-seg-subject" cx="[0-9.]+" '
+                                 r'cy="[0-9.]+" r="54"')
+
+    def test_the_hub_names_the_subject_on_two_lines_when_it_fits(self):
+        labels = _fan_full_labels(2)
+        labels[1].update(name='Ada Hartley', surname='Hartley')
+        hub = re.search(r'<text class="fan-label-subject".*?</text>',
+                        site._render_fan_svg(labels, 2, span_deg=360), re.S).group(0)
+        self.assertEqual(re.findall(r'<tspan[^>]*>([^<]*)</tspan>', hub), ['Ada', 'Hartley'])
+        labels[1].update(name='Alexandrina Montgomery-Hartley', surname='Montgomery-Hartley')
+        hub = re.search(r'<text class="fan-label-subject".*?</text>',
+                        site._render_fan_svg(labels, 2, span_deg=360), re.S).group(0)
+        self.assertNotIn('<tspan', hub)
+        self.assertIn('Alexandrina', hub)
+
+    def test_no_curved_name_runs_past_the_horizontal(self):
+        # At 270 degrees a parent's cell runs from the upper half down past
+        # the horizontal. Its name keeps to one side, so its last letters do
+        # not tip past sideways; a lower-half name still runs left to right.
+        for depth in (3, 5):
+            svg = self._svg(depth, 270, name=lambda n: f'Anc{n} Montgomery-Fitzwilliam Hartley')
+            centre = _fan_rings_by_formula(depth, math.radians(270))[-1][2] + 14
+            checked = 0
+            for d in dict(_FAN_PATH_RE.findall(svg)).values():
+                m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) A[0-9.]+,[0-9.]+ 0 [01] ([01]) '
+                                 r'([-0-9.]+),([-0-9.]+)', d)
+                if m is None:
+                    continue                      # a straight (radial) line
+                ys = (float(m.group(2)), float(m.group(5)))
+                below = [y > centre + 0.15 for y in ys]
+                above = [y < centre - 0.15 for y in ys]
+                self.assertFalse(any(below) and any(above), d)
+                if any(below):
+                    self.assertEqual(m.group(3), '0', d)
+                checked += 1
+            self.assertGreater(checked, 4)
+
+    def test_the_270_hub_keeps_its_name_off_the_open_notch(self):
+        # The 270-degree hub is open at the bottom; two lines of 15px text
+        # centred on the hub's middle put the surname in that gap.
+        labels = _fan_full_labels(2)
+        labels[1].update(name='Margaret Hartley', surname='Hartley')
+        svg = site._render_fan_svg(labels, 2, span_deg=270)
+        hub = re.search(r'<text class="fan-label-subject" x="([0-9.]+)" y="([0-9.]+)"', svg)
+        centre = float(hub.group(1))                     # the canvas is square
+        self.assertEqual(re.findall(r'<tspan[^>]*>([^<]*)</tspan>', svg), ['Margaret', 'Hartley'])
+        last_line_foot = float(hub.group(2)) + 0.6 * 15 + 15 / 2
+        self.assertLessEqual(last_line_foot, centre + 3, svg)
+
+    def test_the_half_fan_is_unchanged(self):
+        # The default is what the fan drew before the poster angles existed.
+        labels = _fan_full_labels(5, dates={'birth': '1840', 'death': '1941'})
+        svg = site._render_fan_svg(labels, 5)
+        self.assertEqual(svg, site._render_fan_svg(labels, 5, span_deg=180))
+        self.assertIn('<text class="fan-label-subject" x="', svg)
+        self.assertNotIn('<circle', svg)
+
+
+class FanPosterSettingsTests(_Base):
+    """`site.fan_degrees` and `site.fan_generations` in fha.yaml."""
+
+    def _config(self, extra):
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\nsite:\n{extra}', encoding='utf-8')
+
+    def _seed_full_tree(self, depth):
+        self._seed_person('p-0000000001', 'Subject Hartley', surname='Hartley')
+        for num in range(2, 2 ** (depth + 1)):
+            self._seed_person(f'p-{num:010d}', f'Anc{num} Hartley', surname='Hartley',
+                              sex='M' if num % 2 == 0 else 'F')
+            self._seed_rel(f'p-{num // 2:010d}', 'parent', f'p-{num:010d}')
+
+    def _fan(self):
+        page = self._read('persons/p-0000000001.html')
+        return re.search(r'<svg class="fan-chart.*?</svg>', page, re.S).group(0)
+
+    def _fan_warnings(self, res):
+        return [m for m in res['messages'] if 'fan_' in m]
+
+    def test_the_settings_shape_the_fan(self):
+        self._seed_full_tree(6)
+        self._config('  fan_degrees: 360\n  fan_generations: 6\n')
+        res = self._run()
+        self.assertEqual(self._fan_warnings(res), [])
+        fan = self._fan()
+        self.assertIn('<circle class="fan-seg fan-seg-subject"', fan)
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 7 - 2)
+
+    def test_270_degrees_with_fewer_generations(self):
+        self._seed_full_tree(6)
+        self._config('  fan_degrees: 270\n  fan_generations: 3\n')
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 4 - 2)
+        self.assertNotIn('<circle', fan)
+
+    def test_the_default_is_a_half_fan_of_five_generations(self):
+        self._seed_full_tree(6)
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertNotIn('<circle', fan)
+
+    def test_a_quoted_number_is_read_as_that_number(self):
+        # `fan_degrees: "360"` is what he meant; the sister setting
+        # home_pedigree_generations reads "6" the same way.
+        for cfg, want in (({'fan_degrees': '360'}, (360, 5)),
+                          ({'fan_generations': ' 6 '}, (180, 6))):
+            with self.subTest(cfg=cfg):
+                degrees, generations, warnings = site._fan_settings(cfg)
+                self.assertEqual((degrees, generations), want)
+                self.assertEqual(warnings, [])
+
+    def test_bad_fan_settings_warn_and_use_the_default(self):
+        self._seed_full_tree(6)
+        for extra, key in (('  fan_degrees: 200\n', 'fan_degrees'),
+                           ('  fan_generations: 9\n', 'fan_generations'),
+                           ('  fan_generations: "five"\n', 'fan_generations'),
+                           ('  fan_generations: 0\n', 'fan_generations'),
+                           ('  fan_degrees: abc\n', 'fan_degrees')):
+            with self.subTest(extra=extra):
+                self._config(extra)
+                res = self._run()
+                warned = self._fan_warnings(res)
+                self.assertEqual(len(warned), 1, warned)
+                self.assertIn(key, warned[0])
+                self.assertIn('default', warned[0])
+                self.assertEqual(self._fan().count('class="fan-seg"'), 2 ** 6 - 2)
 
 
 class FanPrivateCardTests(_Base):
