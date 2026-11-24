@@ -19,10 +19,8 @@
   {% endif %}
   {% if person.alt_names %}
   <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
-  {% endif %}
-  {% if person.quote %}
-  <blockquote class="voice-quote">"{{ person.quote.text }}" {{ person.quote.source_html }}{% if person.quote.play %} <a class="play-from" href="{{ person.quote.play.href }}"{% if person.quote.play.audio_id %} data-audio="{{ person.quote.play.audio_id }}" data-t="{{ person.quote.play.seconds }}"{% endif %}>hear it</a>{% endif %}</blockquote>
-  {% endif %}
+  {% endif %}{% if person.quote %}
+  <blockquote class="voice-quote">"{{ person.quote.text }}" {{ person.quote.source_html }}{% if person.quote.play %} <a class="play-from" href="{{ person.quote.play.href }}"{% if person.quote.play.audio_id %} data-audio="{{ person.quote.play.audio_id }}" data-t="{{ person.quote.play.seconds }}"{% endif %}>hear it</a>{% endif %}</blockquote>{% endif %}
   {% if workbench and person.open_review_count %}
   <p class="wb-pointer">{{ person.open_review_count }} open review item{{ 's' if person.open_review_count != 1 else '' }} involve{{ '' if person.open_review_count != 1 else 's' }} this person -
     <a href="{{ root_prefix }}/review">open the review queue</a>.</p>
@@ -223,16 +221,14 @@
     <span class="wb-later">timeline entries are claims - the form asks which source it comes from.</span></p>
   {% endif %}
 
-  {% if person.recordings %}
+  {% if person.recordings -%}
   <h2>Recordings</h2>
   <p class="note">{{ person.name }} can be heard on {{ 'this recording' if person.recordings|length == 1 else 'these recordings' }}.</p>
   {% for r in person.recordings %}
   <figure class="recording"><audio id="{{ r.audio_id }}" controls preload="none"><source src="{{ r.audio_href }}" type="{{ r.audio_type }}">Your browser cannot play this recording. <a href="{{ r.audio_href }}">Download it</a>.</audio>
   <figcaption>{{ r.title_html }}{% if r.date %}, {{ r.date }}{% endif %}</figcaption></figure>
   {% endfor %}
-  {% endif %}
-
-  {% if person.photos %}
+  {% endif %}{% if person.photos %}
   <h2>Photographs</h2>
   <div class="photo-strip">
     {% for p in person.photos %}
