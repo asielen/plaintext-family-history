@@ -18,6 +18,8 @@
 **Claim** (`c-`): one statement a source makes (a date, place, relationship or other fact). It lives inside its source record and moves through review (see *Status*).
 *Example: "born 12 March 1898 in Leeds," read off a birth certificate and marked `accepted`.*
 
+**Double cousin:** when two brothers marry two sisters, their children share all four grandparents and are double first cousins. `fha relate` says *double* only for two full lines at the same cousin degree; two people related some other way twice (cousins whose grandparents were cousins) hear each line on its own, nearest first.
+
 **Doctor:** `fha doctor`, the archive's health check. It looks for the common problems (an out-of-date index, a drive that isn't plugged in, a missing helper program, an old backup) and names the fix for each. Run it first whenever something seems wrong.
 
 **EDTF:** Extended Date/Time Format (ISO 8601-2), the way all dates are written, so approximate and partial dates are as valid as exact ones (`1850~`, `185X`, `1871-02/1871-03`).
