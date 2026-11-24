@@ -40,7 +40,7 @@ import chart_cases
 from index import _DDL as INDEX_DDL
 from photoindex import _DDL as PHOTOS_DDL
 from _lib import (
-    index_manifest_path, path_to_alias, photoindex_manifest_path,
+    edtf_bounds, index_manifest_path, path_to_alias, photoindex_manifest_path,
     photoindex_record_manifest, record_path_manifest, render_person_body_scaffold,
     write_path_manifest,
 )
@@ -4382,9 +4382,10 @@ class PlacePageTests(_Base):
         for a in alt_names:
             self.conn.execute('INSERT INTO place_names(place_id, alt_name) VALUES (?,?)', (lid, a))
         for period, hier in history:
+            lo, hi = edtf_bounds(period) if period else ('', '')
             self.conn.execute(
-                'INSERT INTO place_history(place_id, period_edtf, date_min, hierarchy) VALUES (?,?,?,?)',
-                (lid, period, (period or '')[:4], hier))
+                'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) '
+                'VALUES (?,?,?,?,?)', (lid, period, lo, hi, hier))
 
     def _seed_claim_at_place(self, cid, sid, lid, value, persons):
         self.conn.execute(
@@ -4394,6 +4395,85 @@ class PlacePageTests(_Base):
         for pos, pid in enumerate(persons):
             self.conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,?)', (cid, pid, pos))
+
+    def _seed_dated_claim(self, cid, sid, lid, value, date, persons=(), *, status='accepted', negated=0):
+        lo, hi = edtf_bounds(date) if date else (None, None)
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, value, status, place_id, date_edtf, date_min, '
+            'date_max, negated) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (cid, sid, 'residence', value, status, lid, date, lo, hi, negated))
+        for pos, pid in enumerate(persons):
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,?)', (cid, pid, pos))
+
+    def _chronology_fixture(self):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview', hierarchy='Fairview, Kansas',
+                         lat=39.8, lon=-95.6,
+                         history=(('1858/1861', 'Fairview, Kansas Territory'),))
+        self._seed_place('l-2222222222', 'Fairview Cemetery', hierarchy='Fairview Cemetery, Kansas',
+                         within='l-1111111111')
+
+    def test_through_the_years_shows_cemetery_claims_on_the_town_page(self):
+        self._chronology_fixture()
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-2222222222',
+                               'Buried in the cemetery', '1880', ('p-aaaaaaaaaa',))
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        self.assertIn('Through the years', html)
+        self.assertIn('Buried in the cemetery', html)
+        self.assertIn('at <a href="l-2222222222.html">', html)
+
+    def test_through_the_years_names_the_town_as_it_was_called_then(self):
+        self._chronology_fixture()
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-1111111111', 'Lived in 1859', '1859')
+        self._seed_dated_claim('c-2222222222', 's-1111111111', 'l-1111111111', 'Lived in 1880', '1880')
+        self._seed_dated_claim('c-3333333333', 's-1111111111', 'l-1111111111', 'Lived across', '1855/1865')
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        by_value = {}
+        for row in re.findall(r'<tr[^>]*>(.*?)</tr>', html, re.S):
+            for v in ('Lived in 1859', 'Lived in 1880', 'Lived across'):
+                if v in row:
+                    by_value[v] = row
+        self.assertIn('then called Fairview, Kansas Territory', by_value['Lived in 1859'])
+        self.assertNotIn('then called', by_value['Lived in 1880'])
+        self.assertNotIn('then called', by_value['Lived across'])
+
+    def test_through_the_years_orders_name_rows_among_events(self):
+        self._chronology_fixture()
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-1111111111', 'EventA 1857', '1857')
+        self._seed_dated_claim('c-2222222222', 's-1111111111', 'l-1111111111', 'EventB 1858', '1858')
+        self._seed_dated_claim('c-3333333333', 's-1111111111', 'l-1111111111', 'EventC undated', '')
+        self._run(linked=True)
+        html = self._read('places/l-1111111111.html')
+        body = html.split('Through the years', 1)[1]
+        a, name, b, c = (body.index(x) for x in
+                         ('EventA 1857', 'Called Fairview, Kansas Territory', 'EventB 1858', 'EventC undated'))
+        self.assertTrue(a < name < b < c)
+
+    def test_through_the_years_audience_rules_and_negated(self):
+        self._chronology_fixture()
+        self._seed_person('p-bbbbbbbbbb', 'Living Lee', living='true')
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-2222222222', 'Lee at cemetery',
+                               '1990', ('p-bbbbbbbbbb',))
+        self._seed_dated_claim('c-2222222222', 's-1111111111', 'l-1111111111', 'Confirmed absence',
+                               '1880', ('p-aaaaaaaaaa',), negated=1)
+        self._seed_dated_claim('c-3333333333', 's-1111111111', 'l-1111111111', 'Parked guess',
+                               '1881', ('p-aaaaaaaaaa',), status='suggested')
+        self._run(linked=False)
+        html = self._read('places/l-1111111111.html')
+        for text in ('Lee at cemetery', 'Living Lee', 'Confirmed absence', 'Parked guess'):
+            self.assertNotIn(text, html)
+
+    def test_through_the_years_is_the_same_on_two_builds(self):
+        self._chronology_fixture()
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-2222222222', 'Buried', '1880')
+        self._run(linked=True)
+        first = self._read('places/l-1111111111.html')
+        self._run(linked=True)
+        self.assertEqual(first, self._read('places/l-1111111111.html'))
 
     def test_place_page_sections(self):
         self._seed_person('p-aaaaaaaaaa', 'Jane Doe')

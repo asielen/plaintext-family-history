@@ -8691,6 +8691,40 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
     return ('0001-01-01', '9999-12-31')
 
 
+def place_hierarchy_at(conn, place_id: str, date_min: str | None,
+                       date_max: str | None = None) -> dict | None:
+    """What a place was called on a date: the `history:` period that wholly
+    covers the date range, or None.
+
+    A family reader sees "1859: Fairview, Kansas Territory" instead of a
+    modern name that did not exist yet. A claim dated `1855/1865` is not
+    inside the 1858-1861 period, so it gets no old name rather than a wrong
+    one; an undated claim gets none either. When several periods cover the
+    range the narrowest wins, then the one listed first. Returns
+    `{'period', 'hierarchy', 'date_min', 'date_max'}`. Dates are the ISO
+    bounds `edtf_bounds` gives; `date_max` defaults to `date_min`."""
+    if not date_min:
+        return None
+    hi = date_max or date_min
+    best = None
+    for r in conn.execute(
+            'SELECT period_edtf, date_min, date_max, hierarchy FROM place_history '
+            "WHERE place_id = ? AND date_min IS NOT NULL AND date_min != '' "
+            "AND date_max IS NOT NULL AND date_max != '' ORDER BY rowid", (place_id,)):
+        if r['date_min'] <= date_min and hi <= r['date_max']:
+            span = (int(r['date_max'][:4]) - int(r['date_min'][:4])) if (
+                r['date_max'][:4].isdigit() and r['date_min'][:4].isdigit()) else 0
+            if best is None or span < best[0]:
+                best = (span, {'period': r['period_edtf'] or '', 'hierarchy': r['hierarchy'] or '',
+                               'date_min': r['date_min'], 'date_max': r['date_max']})
+    return best[1] if best else None
+
+
+def place_hierarchy_in_year(conn, place_id: str, year: int) -> dict | None:
+    """`place_hierarchy_at` for a whole year."""
+    return place_hierarchy_at(conn, place_id, f'{int(year):04d}-01-01', f'{int(year):04d}-12-31')
+
+
 def claim_date_order_sql(alias: str = 'c') -> str:
     """SQL ORDER BY terms that put a claim in date order: undated last, and
     each dated one by its known bound from `edtf_bounds`.

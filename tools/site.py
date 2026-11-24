@@ -299,6 +299,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
     COMPLETENESS_STATE_WORDS,
     completeness_context,
@@ -8861,6 +8862,29 @@ class _SiteBuilder:
 
     # - place page -
 
+    @staticmethod
+    def _chronology_key(date_edtf, date_min, date_max, kind):
+        """Sort key for the place page's year-by-year list: a family reader
+        reads it top to bottom, so dated rows go first by their known bound,
+        a town's name change before the events of that year, undated last."""
+        if not date_min:
+            return (1, '', kind)
+        bound = date_max if (date_edtf or '').startswith('[..') and date_max else date_min
+        return (0, (bound + '-01-01')[:10] if len(bound) == 4 else bound, kind)
+
+    def _then_name(self, c, lid: str) -> str:
+        """What the town was called when this claim happened, when that differs
+        from today's name; '' when no period wholly covers the claim."""
+        if not c['date_min']:
+            return ''
+        for pid in (c['place_id'], lid):
+            hit = place_hierarchy_at(self.conn, pid, c['date_min'], c['date_max'])
+            if hit:
+                meta = self.place_meta.get(pid)
+                modern = (meta['hierarchy'] if meta is not None else '') or ''
+                return hit['hierarchy'] if hit['hierarchy'] and hit['hierarchy'] != modern else ''
+        return ''
+
     def build_place_page(self, lid: str) -> None:
         """Render one place page (TOOLING §12): name, coords (an embedded
         OpenStreetMap view plus the plain map link - owner decision, review
@@ -8905,12 +8929,21 @@ class _SiteBuilder:
         # public = accepted only; linked/workbench keeps reviewed-but-open, marked.
         place_status_filter = (_ACCEPTED_OR_PARKED_SQL if self.linked
                                else "c.status = 'accepted'")
+        # Claims at the place and at every place `within:` it (a cemetery or
+        # house inside the town), so the town's page tells the whole story.
+        # SPEC A.9 makes this one hop; the depth cap guards a registry cycle.
+        scope = [r[0] for r in self.conn.execute(
+            'WITH RECURSIVE scope(id, depth) AS (SELECT ?, 0 UNION '
+            'SELECT p.id, scope.depth + 1 FROM places p JOIN scope ON p.within = scope.id '
+            'WHERE scope.depth < 8) SELECT DISTINCT id FROM scope ORDER BY id', (lid,))]
+        marks = ','.join('?' * len(scope))
         claim_rows = self.conn.execute(
-            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id, "
-            "c.status, c.confidence, c.reviewed FROM claims c "
-            f"WHERE c.place_id = ? AND {place_status_filter} {living_filter} "
+            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.date_max, c.place_id, "
+            "c.source_id, c.status, c.confidence, c.reviewed FROM claims c "
+            f"WHERE c.place_id IN ({marks}) AND COALESCE(c.negated, 0) = 0 "
+            f"AND {place_status_filter} {living_filter} "
             f"ORDER BY {claim_date_order_sql('c')}",
-            (lid,),
+            scope,
         ).fetchall()
         # Standalone: also withhold events whose only source is restricted/living-linked,
         # and a restricted claim regardless of its source.
@@ -8953,7 +8986,28 @@ class _SiteBuilder:
                 'status': c['status'], 'confidence': c['confidence'] or '',
                 'unconfirmed': c['status'] == 'suggested',
                 'parked': c['reviewed'] or '',
+                'kind': 'event',
+                'at_html': (self._markup(self.render_token(fmt_id_display(c['place_id']), page_dir))
+                            if c['place_id'] != lid and c['place_id'] in self.place_meta else ''),
+                'then_name': self._then_name(c, lid),
+                '_sort': self._chronology_key(c['date_edtf'], c['date_min'], c['date_max'], 1),
             })
+
+        # Merge the place's dated names into the same list, name rows first
+        # on a shared date, undated events last (Python's sort is stable, so
+        # the SQL's date-and-source order holds within a date).
+        for h in self.conn.execute(
+                'SELECT period_edtf, date_min, hierarchy FROM place_history WHERE place_id = ? '
+                "AND date_min IS NOT NULL AND date_min != ''", (lid,)):
+            claims.append({
+                'kind': 'name', 'type': 'name', 'value': f"Called {h['hierarchy'] or ''}",
+                'date': h['period_edtf'] or '', 'persons_html': '', 'source_html': '',
+                'unconfirmed': False, 'parked': '', 'confidence': '', 'at_html': '', 'then_name': '',
+                '_sort': self._chronology_key(h['period_edtf'], h['date_min'], None, 0),
+            })
+        claims.sort(key=lambda e: e['_sort'])
+        for e in claims:
+            del e['_sort']
 
         # People-frequency list: links only, redacted persons omitted entirely.
         people = []
