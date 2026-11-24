@@ -131,6 +131,7 @@ from _lib import (
     configure_utf8_stdout,
     format_edtf_error,
     format_source_type_error,
+    id_type_of,
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
@@ -1085,8 +1086,15 @@ def _render_bundle_notes(
     accessed: str,
     assets: list[tuple[str, str]],
     primary: str | None = None,
+    attach_to: str | None = None,
 ) -> str:
     """Render a §12.1 bundle `notes.md`: light hint frontmatter + per-file roles + prose.
+
+    `attach_to` is the source he said these files belong to (a neighbouring
+    FamilySearch film image of a deed he already holds): written as
+    `attach_to: s-…`, which `fha process` reads to add the files to that
+    source instead of minting a new one. Deleting the line files them as a
+    new source, so the comment beside it says so.
 
     `primary` names the one file the capture marked as the source's main file
     (capture.json `is_primary`, e.g. a Find a Grave memorial's gravestone): it
@@ -1102,6 +1110,9 @@ def _render_bundle_notes(
     lines = ['---']
     if result.title:
         lines.append(f'title: {_yaml_inline(result.title)}')
+    if attach_to:
+        lines.append(f'attach_to: {attach_to}   # add these files to that source; '
+                     'delete this line to file them as a new source')
     lines.append(f'source_type: {result.source_type}')
     if result.citation:
         lines.append('citation: >')
@@ -1163,6 +1174,7 @@ def _ingest_bundle_folder(
     source_class: str | None = None,
     dry_run: bool = False,
     primary: str | None = None,
+    attach_to: str | None = None,
 ) -> Result:
     """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
 
@@ -1205,7 +1217,8 @@ def _ingest_bundle_folder(
         planned.append((src, dest_name, role))
 
     asset_hints = [(dest_name, role) for _, dest_name, role in planned]
-    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints, primary=primary)
+    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints, primary=primary,
+                                      attach_to=attach_to)
 
     matched = 'generic recipe' if recipe_name == 'generic' else f'{recipe_name} recipe'
     notes_rel = _rel(folder / 'notes.md', archive_root)
@@ -1247,6 +1260,8 @@ def _ingest_bundle_folder(
 
     print(f'Captured via {matched} ({result.source_type})')
     print(f'Staged bundle folder {_rel(folder, archive_root)}/')
+    if attach_to:
+        print(f'  (its files go into the source you already have, {attach_to}, when you process it)')
     print(f'  notes.md')
     for _, dest_name, role in planned:
         print(f'  {dest_name}  (role: {role})')
@@ -1503,6 +1518,20 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
         cap['people'] = [str(x) for x in people
                          if x is not None and not isinstance(x, (list, dict))]
 
+    # `attach_to`: the source he said this capture's files belong to (the
+    # panel asks when a FamilySearch film image sits next to one the archive
+    # holds). Anything but a source id is dropped: a new source is the safe
+    # answer, and he is told.
+    attach = cap.pop('attach_to', None)
+    if attach is not None:
+        sid = attach.strip().lower() if isinstance(attach, str) else ''
+        if id_type_of(sid) == 'S':
+            cap['attach_to'] = sid
+        else:
+            print(f'WARNING: bundle {bundle.name} asked to add its files to {attach!r}, which is not '
+                  'a source id (one looks like s-0a1b2c3d4e), so it is filed as a new source.',
+                  file=sys.stderr)
+
     assets = _resolve_bundle_assets(bundle, cap)
 
     # Scrape source: the raw page.html when shipped, else the webpage-role HTML
@@ -1755,8 +1784,16 @@ def run_ingest(
                     assets=assets,
                     dry_run=dry_run,
                     primary=_bundle_primary(cap, assets),
+                    attach_to=cap.get('attach_to'),
                 )
             else:
+                if cap.get('attach_to'):
+                    # Only a bundle folder's notes say where its files go; a
+                    # lone file is filed as its own source, and he is told.
+                    print(f'WARNING: {name} asked to add its file to {cap["attach_to"]}, but it holds '
+                          'only one file, so it is filed as a new source. To add it to that source '
+                          'instead, attach it with `fha process <a file of that source> --more <this file> record`.',
+                          file=sys.stderr)
                 result = run_capture(
                     archive_root, fha_config,
                     url=cap.get('url'),

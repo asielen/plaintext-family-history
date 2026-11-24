@@ -228,6 +228,11 @@ button.primary:hover { filter: brightness(1.05); background: var(--accent); }
 .copy-btn:hover { background: var(--accent); color: #fff; }
 .reassure { font-size: 13px; color: var(--muted); margin: 12px 0 0; }
 
+/* "You already have the image next to this one: add it to that source?" */
+.attach-ask { margin-top: 16px; border: 1.5px solid var(--warn); border-radius: 12px; padding: 14px 16px; }
+.attach-ask p { font-size: 15px; margin: 0 0 12px; }
+.attach-ask-choices { display: flex; flex-direction: column; gap: 8px; }
+
 .stage-result { font-size: 13px; margin: 8px 0 0; white-space: pre-wrap; }
 .stage-result.ok { color: var(--ok); }
 .stage-result.warn { color: var(--warn); }
