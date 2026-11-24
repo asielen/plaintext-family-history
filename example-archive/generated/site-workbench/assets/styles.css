@@ -512,6 +512,28 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
 .fan-years { font-family: var(--font-sans); fill: var(--muted);
              text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
+/* Heritage chart on a person page: one bar per generation, a segment per
+   country. The colour is set inline as --seg-color (a --branch-N token); the
+   segment's own name and tooltip carry the meaning too. */
+.heritage-chart { display: block; width: 100%; max-width: 40rem; height: auto;
+                  margin: var(--space-4) 0; font-size: 12px; }
+.heritage-row-label { font-family: var(--font-sans); fill: var(--ink); text-anchor: end;
+                      dominant-baseline: middle; }
+.heritage-seg { fill: color-mix(in srgb, var(--seg-color, var(--surface-sunken)) 55%, var(--paper));
+                stroke: var(--paper);
+                stroke-width: 1; }
+.heritage-seg-unknown { fill: var(--surface-sunken); stroke: var(--rule-strong); }
+.heritage-seg-untraced { fill: var(--paper); stroke: var(--rule-strong);
+                         stroke-dasharray: 1 3; stroke-width: 1.5; }
+.heritage-seg-label { font-family: var(--font-sans); fill: var(--ink); text-anchor: middle;
+                      dominant-baseline: middle; pointer-events: none; }
+.heritage-legend { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap;
+                   gap: var(--space-2) var(--space-5); font-size: 0.9em; }
+.heritage-swatch { display: inline-block; width: 0.9em; height: 0.9em; margin-right: 0.4em;
+                   vertical-align: -0.1em; background: color-mix(in srgb, var(--seg-color, var(--surface-sunken)) 55%, var(--paper));
+                   border: 1px solid var(--rule-strong); }
+.heritage-swatch.heritage-seg-untraced { background: var(--paper); border-style: dotted; }
+.heritage-note { color: var(--muted); font-size: 0.9em; max-width: 40rem; }
 /* A living adult in a shared site: a neutral cell reading "Private". */
 .fan-label-private { font-style: italic; fill: var(--muted); }
 
