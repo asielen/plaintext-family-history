@@ -4385,6 +4385,11 @@ def _search_data_js(data: dict) -> str:
 
 # ── Builder ─────────────────────────────────────────────────────────────────
 
+
+def _tree_row_subtype(row) -> str | None:
+    """A tree row's claim subtype, lower-cased (None when unset: genetic)."""
+    return (row['subtype'] or '').strip().lower() or None
+
 class _SiteBuilder:
     """Holds the shared state for one site build and renders every page.
 
@@ -9608,19 +9613,27 @@ class _SiteBuilder:
                 if not self.linked:
                     if card_kind(other) == 'omit':
                         continue
-                    if not self._has_public_claim(cur, other):
+                    # Each tie is judged by its own records, never pair-wide:
+                    # a census line naming both must not publish a parent
+                    # tie the owner sealed, or hang the sealed child under a
+                    # Private card (PR #495 review). A tie with no claim row
+                    # behind it is judged as the site's other walks judge one.
+                    if r['status'] is None:
+                        if not self._has_public_claim(cur, other):
+                            continue
+                    elif not self._claim_row_is_publishable(
+                            r['claim_id'], r['source_id'], r['status']):
                         continue
-                publishable = self.linked or self._claim_row_is_publishable(
-                    r['claim_id'], r['source_id'], r['status'])
                 tie = ties.get((cur, other))
                 if tie is None:
-                    tie = ties[(cur, other)] = {'row': r, 'row_public': publishable,
-                                                'confidence': None}
-                elif publishable and not tie['row_public']:
-                    # The edge names a claim the build may show when it has one.
-                    tie['row'], tie['row_public'] = r, True
-                if publishable:
-                    tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
+                    tie = ties[(cur, other)] = {'row': r, 'confidence': None}
+                elif (not is_genetic_parent_subtype(_tree_row_subtype(tie['row']))
+                      and is_genetic_parent_subtype(_tree_row_subtype(r))):
+                    # A father with both a birth record and an adoption record
+                    # for his son is drawn as the father, as his pedigree
+                    # seats him; the edge names that birth record.
+                    tie['row'] = r
+                tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
                 if other not in seen:
                     seen.add(other)
                     order.append(other)
@@ -9641,7 +9654,7 @@ class _SiteBuilder:
             # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
             # (adoptive, step, foster, guardian, …) draws distinctly from the
             # genetic line. Unset/legacy subtypes default to genetic.
-            subtype = (r['subtype'] or '').strip().lower() or None
+            subtype = _tree_row_subtype(r)
             genetic = is_genetic_parent_subtype(subtype)
             edges.append({
                 'type': rel, 'from': shown_id[cur], 'to': shown_id[other],
@@ -9844,7 +9857,7 @@ class _SiteBuilder:
         (`_lib.weaker_confidence` along the slot's own chain). So when
         Grandpa Thomas's parents rest on one family story, everyone above him
         can be drawn faded. The subject has neither."""
-        entry_for =self._tree_card_entry if private_cards else self._chart_entry
+        entry_for = self._tree_card_entry if private_cards else self._chart_entry
         labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])

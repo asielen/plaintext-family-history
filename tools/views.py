@@ -3699,14 +3699,19 @@ def _collect_edges(
 def _merge_edge(edges: dict[tuple, dict], edge: dict) -> None:
     """Add one edge to the traversal, one per `(from, to, type)`. A tie that
     a family story and a certificate both record is as strong as the
-    certificate, so a repeat lifts the kept edge's `confidence`; its
-    `claim_id` and nature stay the first claim's."""
+    certificate, so a repeat lifts the kept edge's `confidence`. Its
+    `claim_id` and nature stay the first claim's, except that a birth record
+    beats an adoption record by the same parent: he is drawn as the father,
+    as his pedigree seats him."""
     ekey = (edge['from'], edge['to'], edge['type'])
     kept = edges.get(ekey)
     if kept is None:
         edges[ekey] = edge
-    else:
-        kept['confidence'] = stronger_confidence(kept['confidence'], edge['confidence'])
+        return
+    confidence = stronger_confidence(kept['confidence'], edge['confidence'])
+    if not kept.get('genetic', True) and edge.get('genetic', True):
+        edges[ekey] = kept = edge
+    kept['confidence'] = confidence
 
 
 def _traverse_tree(
@@ -3794,8 +3799,8 @@ def _edge_to_json_dict(edge: dict) -> dict:
     relationship types use null per TOOLING §7.  The claim_id and P-ids are
     written in the one all-lowercase ID form (SPEC §10). `kind` is the one
     the site's explorer draws by (SPEC §12.2): 'genetic', 'legal' for an
-    adoptive, step, foster or guardian parent tie (and any spouse tie
-    recorded on such a claim), 'other' for a friend, associate or neighbour.
+    adoptive, step, foster or guardian parent tie, 'other' for a friend,
+    associate or neighbour.
     """
     is_spouse = edge['type'] == 'spouse'
     genetic = edge.get('genetic', True)

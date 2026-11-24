@@ -634,6 +634,16 @@ class TreeJsonContractTests(unittest.TestCase):
         self.assertEqual(lines, {self.KIT: None, self.ALAN: 'low',
                                  self.SILAS: 'low', self.RUTH: 'high'})
 
+    def test_a_birth_record_beats_an_adoption_record_by_the_same_father(self) -> None:
+        # Legitimation: Alan adopted Kit, who was also born to him. He is
+        # drawn as the father, whichever record sorts first.
+        self._parent(self.KIT, self.ALAN, 'high', cid='c-3000000001')
+        self.conn.execute("UPDATE claims SET subtype = 'adoptive' WHERE id = 'c-3000000001'")
+        self._parent(self.KIT, self.ALAN, 'low', cid='c-3000000002')
+        edge, = self._tree()['edges']
+        self.assertEqual((edge['kind'], edge['claim_id']), ('genetic', 'c-3000000002'))
+        self.assertEqual(edge['confidence'], 'high')
+
     def test_two_records_of_one_tie_count_as_the_stronger(self) -> None:
         # A family story and a birth certificate both say Alan is Kit's
         # father: the tie is as strong as the certificate.

@@ -5225,6 +5225,58 @@ class TreeJsonConfidenceTests(_Base):
         edge, = self._tree('p-cccccccccc')['edges']
         self.assertEqual(edge['confidence'], 'high')
 
+    def _sealed_child_behind(self, pat_living):
+        # Pat (born 1961) is Gus's daughter on the shared record. That Pat is
+        # Sam's parent is recorded ONLY in a sealed record; a public census
+        # line names both Pat and Sam.
+        self._gus_and_pat()
+        if pat_living:
+            self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-bbbbbbbbbb'")
+        self._born('p-bbbbbbbbbb', '1961-07-14')
+        self._seed_person('p-aaaaaaaaaa', 'Secret Sam', surname='Sam')
+        self._seed_source('s-3333333333', '1990 census', source_type='census')
+        self._parent('p-bbbbbbbbbb', 'p-cccccccccc')
+        sealed = self._parent('p-aaaaaaaaaa', 'p-bbbbbbbbbb', source='s-2222222222')
+        self._seed_claim('c-ce00000001', 's-3333333333', 'residence', 'lived at 4 Elm St',
+                         persons=('p-bbbbbbbbbb', 'p-aaaaaaaaaa'))
+        return sealed
+
+    def _assert_sealed_tie_stays_home(self, sealed):
+        self._run(linked=False)
+        tree = self._tree('p-cccccccccc')
+        self.assertNotIn('p-aaaaaaaaaa', [n['p_id'] for n in tree['nodes']])
+        self.assertEqual(len(tree['edges']), 1)
+        for path in self.out_dir.rglob('*'):
+            if path.suffix in ('.html', '.json', '.js'):
+                self.assertNotIn(sealed, path.read_text(encoding='utf-8'), path)
+
+    def test_a_sealed_tie_is_not_walked_through_a_private_card(self):
+        # A shared census line must not publish the child the owner sealed,
+        # hung under Pat's Private card with the sealed record's id.
+        self._assert_sealed_tie_stays_home(self._sealed_child_behind(pat_living=True))
+
+    def test_a_sealed_tie_is_not_walked_from_a_dead_parent_either(self):
+        self._assert_sealed_tie_stays_home(self._sealed_child_behind(pat_living=False))
+
+    def test_a_father_with_a_birth_and_an_adoption_record_is_drawn_as_the_father(self):
+        # Legitimation: the son's birth record and a later adoption both name
+        # Gus. The explorer draws him as the father, as the pedigree does.
+        self._gus_and_pat()
+        self._claims += 1
+        adoption = f'c-a{self._claims:09d}'
+        self._seed_claim(adoption, 's-1111111111', 'relationship', 'adopted by',
+                         confidence='high', subtype='adoptive',
+                         persons=('p-bbbbbbbbbb', 'p-cccccccccc'),
+                         roles={'p-bbbbbbbbbb': 'child', 'p-cccccccccc': 'parent'})
+        self._seed_rel('p-bbbbbbbbbb', 'parent', 'p-cccccccccc', claim_id=adoption)
+        self._seed_rel('p-cccccccccc', 'child', 'p-bbbbbbbbbb', claim_id=adoption)
+        birth = self._parent('p-bbbbbbbbbb', 'p-cccccccccc', 'medium')
+        for linked in (False, True):
+            self._run(linked=linked)
+            edge, = self._tree('p-cccccccccc')['edges']
+            self.assertEqual((edge['kind'], edge['claim_id']), ('genetic', birth), linked)
+            self.assertEqual(edge['confidence'], 'high')
+
     def test_tree_json_lists_each_edge_once(self):
         # Two records of one tie used to give Pat two cards in the explorer,
         # the second with none of her children under it.
