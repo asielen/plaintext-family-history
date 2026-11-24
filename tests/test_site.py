@@ -11577,6 +11577,23 @@ class TimelineFamilyRowsTests(_Base):
         tl = self._timeline(linked=True)
         self.assertRegex(tl, r'Her father .*?unconfirmed - parked 2026-01-01')
 
+    def test_accepted_record_beats_more_exact_parked_one_in_preview(self):
+        # In his private preview, Ethel's birth he accepted (the bible, year
+        # only) must not vanish behind a parked register entry with a day:
+        # the family row rests on the accepted record.
+        self._family()
+        self._seed_source('s-7777777777', 'Fairview register', source_type='vital-record')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel register entry',
+                         date_edtf='1902-05-04', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'},
+                         status='suggested', reviewed='2026-01-01')
+        tl = self._timeline(linked=True)
+        ethel = [r for r in re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+                 if 'Ethel Cole' in r]
+        self.assertEqual(len(ethel), 1)
+        self.assertNotIn('unconfirmed', ethel[0])
+        self.assertTrue(ethel[0].startswith('<li class="tl-family">1902 - '), ethel[0])
+
     def test_marriage_to_living_person_dropped(self):
         self._family()
         self._brother()
