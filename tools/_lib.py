@@ -20597,6 +20597,15 @@ def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
 def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
                      life: Callable[[str], Any] | None = None) -> dict | None:
     """`marriage_answer` for a pair already known to share no blood line."""
+    ranked = _marriage_ranked(graph, a, b, life=life)
+    return ranked[4] if ranked else None
+
+
+def _marriage_ranked(graph: KinshipGraph, a: str, b: str, *,
+                     life: Callable[[str], Any] | None = None) -> tuple | None:
+    """The winning tie by marriage with its rank, (cost, rank, gens, via,
+    answer), or None. `kinship_relatives` sorts by the cost, so a spouse's
+    parents come before a spouse's cousins in the reunion list."""
     if a == b:
         return None
     lifeof = _kin_life_reader(life)
@@ -20800,7 +20809,7 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
 
     if not cands:
         return None
-    return min(cands, key=lambda c: c[:4])[4]
+    return min(cands, key=lambda c: c[:4])
 
 
 def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
@@ -20811,6 +20820,104 @@ def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
     blood = blood_answer(graph, a, b)
     by_marriage = None if blood else _marriage_answer(graph, a, b, life=life)
     return {'blood': blood, 'by_marriage': by_marriage}
+
+
+def kinship_relatives(graph: KinshipGraph, pid: str, *,
+                      life: Callable[[str], Any] | None = None,
+                      skip: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+    """Everyone the recorded tree ties to `pid`, as a list for a reunion:
+    blood relatives first (nearest first), then everyone related by
+    marriage or a step, adoptive or foster tie. Each row is {pid, name, kind
+    ('blood' or 'by-marriage'), relationship (what the person is to `pid`),
+    half (False, True, None), half_relationship, certain (False for a step
+    tie the dates cannot settle), hedge, gens_a, gens_b (None for a tie by
+    marriage), note, double, routes (`blood_answer`'s own keys, so the list
+    says double, may-be-half and every route as the pair answer does)}.
+
+    Candidates are gathered from the graph and each goes through
+    `blood_answer` / `marriage_answer`, so every word is the one `fha
+    relate` gives for the same pair. `skip` leaves people out of the output
+    only (a merged-away record); the graph is not changed."""
+    def descendants(roots: Iterable[str]) -> set[str]:
+        seen: set[str] = set()
+        stack = list(roots)
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(graph.genetic_children(cur))
+        return seen
+
+    def blood_kin(p: str) -> set[str]:
+        return descendants(graph.ancestors(p)) - {p}
+
+    def name_of(p: str) -> str:
+        return graph.people.get(p, {}).get('name') or p
+
+    blood_rows: list[dict] = []
+    blood_ids: set[str] = set()
+    for x in sorted(blood_kin(pid)):
+        ans = blood_answer(graph, x, pid)
+        if not ans:
+            continue
+        blood_ids.add(x)
+        blood_rows.append({
+            'pid': x, 'name': name_of(x), 'kind': 'blood',
+            'relationship': ans['relationship'], 'half': ans['half'],
+            'half_relationship': ans['half_relationship'], 'certain': True,
+            'hedge': None, 'gens_a': ans['gens_a'], 'gens_b': ans['gens_b'],
+            'note': ans['note'], 'double': ans['double'], 'routes': ans['routes']})
+    blood_rows.sort(key=lambda r: (max(r['gens_a'], r['gens_b']),
+                                   r['gens_a'] + r['gens_b'],
+                                   r['name'].casefold(), r['pid']))
+
+    # Who could be tied by marriage: spouses of his blood relatives, his own
+    # spouses and their blood relatives (and those relatives' spouses), his
+    # parents of any kind and their other children, anyone with a step,
+    # adoptive or foster tie to him or his parents, and step-siblings.
+    cands: set[str] = set()
+    for y in blood_ids | {pid}:
+        cands |= set(graph.spouses.get(y, {}))
+    for s in graph.spouses.get(pid, {}):
+        cands.add(s)
+        kin = blood_kin(s)
+        cands |= kin
+        for y in kin:
+            cands |= set(graph.spouses.get(y, {}))
+    parents = set(graph.genetic_parents.get(pid, ())) | set(graph.other_parents.get(pid, {}))
+    cands |= parents
+    for par in parents:
+        cands |= graph.genetic_children(par)
+    for child, ties_to in graph.other_parents.items():
+        if pid in ties_to or parents & set(ties_to):
+            cands.add(child)
+    for par in graph.genetic_parents.get(pid, ()):
+        for q in graph.spouses.get(par, {}):
+            cands |= graph.genetic_children(q)
+    cands -= blood_ids | {pid}
+
+    # Nearest tie first, by the cost `fha relate` itself ranks ties with (a
+    # spouse or recorded tie 1, a spouse's parent 2, a spouse's first cousin
+    # 5), then a spouse before another tie of that cost, then name and P-id.
+    ties: list[tuple] = []
+    for y in cands:
+        if blood_answer(graph, y, pid):
+            continue
+        ranked = _marriage_ranked(graph, y, pid, life=life)
+        if ranked:
+            ans = ranked[4]
+            ties.append((ranked[0], ans['kind'] != 'spouse',
+                         name_of(y).casefold(), y, ans))
+    ties.sort(key=lambda t: t[:4])
+    marriage_rows = [{
+        'pid': y, 'name': name_of(y), 'kind': 'by-marriage',
+        'relationship': ans['relationship'], 'half': False,
+        'half_relationship': None, 'certain': ans['certain'],
+        'hedge': ans['hedge'], 'gens_a': None, 'gens_b': None,
+        'note': None, 'double': False, 'routes': []}
+        for _, _, _, y, ans in ties]
+    return [r for r in blood_rows + marriage_rows if r['pid'] not in skip]
 
 
 def person_life_dates(conn: sqlite3.Connection, pid: str,
