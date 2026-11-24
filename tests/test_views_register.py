@@ -108,7 +108,9 @@ class RegisterNumberingTests(_RegBase):
     def test_roman_numerals_follow_birth_order_and_undated_last(self):
         text = self.reg_text()
         self.assertRegex(text, r'(?m)^- ii\. Zed Hartley')   # no birth date: after Anna
-        self.assertRegex(text, r'(?m)^- iii\. Adam Lowe \(adopted\)')   # adopted: after birth children
+        # Adopted by Thomas alone: listed with no other parent named, never
+        # as Margaret's child.
+        self.assertRegex(text, r'Children of Thomas Edward Hartley:\n- i\. Adam Lowe \(adopted\)')
 
     def test_a_child_with_no_shown_children_gets_no_arabic_number(self):
         text = self.reg_text()
@@ -326,13 +328,44 @@ class RegisterStepChildTests(_RegBase):
         self.assertRegex(second, r'(?m)^- i\. Sam Lowe \(step\)')
 
 
+BLANK = '\n\n'
+ED = 'p-rsrsrsrsrs'     # Edna: Thomas's second wife, private (by-request)
+
+
+class RegisterStepChildOfPrivateWifeTests(_RegBase):
+    """Her son is not printed as the first wife's stepson, and she is not named."""
+
+    def people(self):
+        return super().people() + [(ED, 'Edna Private', 'F', 'false', 'restricted: by-request\n'),
+                                   (ST, 'Sam Lowe', 'M', 'false', '')]
+
+    def sources(self):
+        return super().sources() + [
+            ('s-rgrgrgrgr6', 'Edna marriage', 'Edna page.',
+             R._claim('c-marrEn0000', 'marriage', [T, ED], '1930', roles=f'{{spouse: [{T}, {ED}]}}'),
+             '', None),
+            ('s-rgrgrgrgr7', 'Sam step tie', 'Sam page.',
+             R._claim('c-stepSN0000', 'relationship', [ST, T], '',
+                      roles=f'{{child: {ST}, parent: [{T}]}}', subtype='step'), '', None),
+            ('s-rgrgrgrgr8', 'Sam mother', 'Sam mother page.', R._rel('sm', ST, [ED]), '', None),
+        ]
+
+    def test_a_private_wifes_son_is_listed_with_no_other_parent_named(self):
+        text = self.reg_text()
+        first = text.split('Children of Thomas Edward Hartley and Margaret Cole:')[1].split(BLANK)[0]
+        self.assertNotIn('Sam Lowe', first)
+        alone = text.split('Children of Thomas Edward Hartley:')[1].split(BLANK)[0]
+        self.assertIn('Sam Lowe (step)', alone)
+        self.assertNotIn('Edna', text)
+
+
 class RegisterOneGenerationTests(_RegBase):
     def test_one_generation_prints_only_the_person(self):
         text = self.reg_text(generations=1)
         self.assertNotIn('Children of', text)
         self.assertNotIn('John Hartley Junior', text)
         self.assertIn('shows 1 generation.', text)
-        self.assertIn('Descendants beyond 1 generations are not printed.', text)
+        self.assertIn('Descendants beyond 1 generation are not printed.', text)
 
 
 class RegisterCommandTests(unittest.TestCase):

@@ -6065,8 +6065,6 @@ def _reg_other_parent(rp: _ReportPrivacy, child: str, pid: str, spouses) -> str 
     return None
 
 
-_REG_NONBIRTH = object()
-
 
 def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list, int]:
     """One person's children the report may name, as families `(other parent
@@ -6087,7 +6085,7 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
             # relative never reads him as the first wife's child.
             other = next((sp for sp in sorted(spouses, key=lambda s: (
                 spouses[s]['date'] is None, spouses[s]['date'] or '', s))
-                if sp not in hidden and c in _desc_children(rp, sp)), _REG_NONBIRTH)
+                if sp not in hidden and c in _desc_children(rp, sp)), None)
         else:
             other = _reg_other_parent(rp, c, pid, spouses)
         by_other.setdefault(other, []).append((c, info, birth))
@@ -6098,13 +6096,9 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
         date = spouses.get(other, {}).get('date')
         return (1 if date is None else 0, date or '', other)
 
-    # An adopted or step child tied to no spouse is listed at the end of the
-    # first couple's family, not in a family of their own that would restart
-    # the numerals.
-    if _REG_NONBIRTH in by_other:
-        adopted = by_other.pop(_REG_NONBIRTH)
-        couples = sorted((o for o in by_other if o is not None), key=family_key)
-        by_other.setdefault(couples[0] if couples else None, []).extend(adopted)
+    # An adopted or step child tied to no shown spouse is listed with the
+    # children who have no other parent named ("Children of Thomas"), never
+    # under a wife who may not be his mother.
     families = []
     for other in sorted(by_other, key=family_key):
         families.append((other, by_other[other]))
@@ -6279,7 +6273,8 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
         summary += (f' {k} living relatives are counted but not named.' if k != 1
                     else ' 1 living relative is counted but not named.')
     if cut:
-        summary += f' Descendants beyond {generations} generations are not printed.'
+        summary += (f' Descendants beyond {generations} generation{"" if generations == 1 else "s"}'
+                    ' are not printed.')
     lines = [f'# Register report: descendants of {rp.name(root)}', '', summary, ''] + body
     notes = fn.lines()
     if notes:
