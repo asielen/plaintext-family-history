@@ -267,6 +267,74 @@ class RegisterFileTests(_RegBase):
         self.assertEqual(list(folder.iterdir()), [])
 
 
+DL = 'p-dkdkdkdkdk'     # Dora Hartley: Mary's deceased daughter whose only children are living
+LV1 = 'p-vwvwvwvwv1'
+LV2 = 'p-vwvwvwvwv2'
+ST = 'p-ststststst'     # Sam Lowe: Edith's son, Thomas's stepson
+
+
+class RegisterParentOfLivingOnlyTests(_RegBase):
+    """A relative must not read that Dora had no children because hers are living."""
+
+    def people(self):
+        return super().people() + [
+            (DL, 'Dora Hartley', 'F', 'false', ''),
+            (LV1, 'Liv One', 'F', 'true', ''),
+            (LV2, 'Liv Two', 'M', 'true', ''),
+        ]
+
+    def sources(self):
+        return super().sources() + [
+            ('s-rgrgrgrgr4', 'Dora register', 'Dora page.',
+             R._rel('dl', DL, [C2]) + R._rel('l1', LV1, [DL]) + R._rel('l2', LV2, [DL])
+             + R._claim('c-birthDL000', 'birth', [DL], '1897', roles=f'{{child: {DL}}}'),
+             '', None),
+        ]
+
+    def test_a_parent_of_only_living_children_gets_a_number_and_the_count(self):
+        text = self.reg_text()
+        self.assertRegex(text, r'(?m)^- \d+ ii\. Dora Hartley')
+        dora = text.split('Dora Hartley was born', 1)[1].split('## ', 1)[0]
+        self.assertIn('- and 2 living children (not named)', dora)
+        self.assertNotIn('Liv One', text)
+        self.assertNotIn('Liv Two', text)
+
+
+class RegisterStepChildTests(_RegBase):
+    """A stepson is listed with the wife he came with, not the first wife."""
+
+    def people(self):
+        return super().people() + [(ST, 'Sam Lowe', 'M', 'false', '')]
+
+    def sources(self):
+        return super().sources() + [
+            ('s-rgrgrgrgr5', 'Edith marriage and stepson', 'Lowe page.',
+             R._claim('c-marrEd0000', 'marriage', [T, R.NEWSPOUSE], '1930',
+                      roles=f'{{spouse: [{T}, {R.NEWSPOUSE}]}}')
+             + R._claim('c-stepST0000', 'relationship', [ST, T], '',
+                        roles=f'{{child: {ST}, parent: [{T}]}}', subtype='step')
+             + R._rel('st', ST, [R.NEWSPOUSE])
+             + R._claim('c-birthST000', 'birth', [ST], '1915', roles=f'{{child: {ST}}}'),
+             '', None),
+        ]
+
+    def test_a_stepchild_is_listed_under_the_spouse_he_came_with(self):
+        text = self.reg_text()
+        first = text.split('Children of Thomas Edward Hartley and Margaret Cole:')[1].split('\n\n')[0]
+        self.assertNotIn('Sam Lowe', first)
+        second = text.split('Children of Thomas Edward Hartley and Edith Lowe:')[1].split('\n\n')[0]
+        self.assertRegex(second, r'(?m)^- i\. Sam Lowe \(step\)')
+
+
+class RegisterOneGenerationTests(_RegBase):
+    def test_one_generation_prints_only_the_person(self):
+        text = self.reg_text(generations=1)
+        self.assertNotIn('Children of', text)
+        self.assertNotIn('John Hartley Junior', text)
+        self.assertIn('shows 1 generation.', text)
+        self.assertIn('Descendants beyond 1 generations are not printed.', text)
+
+
 class RegisterCommandTests(unittest.TestCase):
     def test_register_is_a_views_subcommand(self):
         import argparse

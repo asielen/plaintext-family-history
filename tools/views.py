@@ -6081,7 +6081,15 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
     listed, living_n = _desc_shown_children(rp, pid, hidden)
     for nonbirth, _date, _name, c, info in listed:
         birth = _report_pick_vital(rp, c, 'birth')
-        other = _REG_NONBIRTH if nonbirth else _reg_other_parent(rp, c, pid, spouses)
+        if nonbirth:
+            # A stepchild or adopted child goes under the spouse they are also
+            # tied to (a second wife's son by her first marriage), so a
+            # relative never reads him as the first wife's child.
+            other = next((sp for sp in sorted(spouses, key=lambda s: (
+                spouses[s]['date'] is None, spouses[s]['date'] or '', s))
+                if sp not in hidden and c in _desc_children(rp, sp)), _REG_NONBIRTH)
+        else:
+            other = _reg_other_parent(rp, c, pid, spouses)
         by_other.setdefault(other, []).append((c, info, birth))
 
     def family_key(other):
@@ -6090,8 +6098,9 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
         date = spouses.get(other, {}).get('date')
         return (1 if date is None else 0, date or '', other)
 
-    # An adopted or step child is listed at the end of the first couple's
-    # family, not in a family of their own that would restart the numerals.
+    # An adopted or step child tied to no spouse is listed at the end of the
+    # first couple's family, not in a family of their own that would restart
+    # the numerals.
     if _REG_NONBIRTH in by_other:
         adopted = by_other.pop(_REG_NONBIRTH)
         couples = sorted((o for o in by_other if o is not None), key=family_key)
@@ -6214,7 +6223,10 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
                         following.append(c)
         level = []
         for c in following:
-            if depth + 1 < generations and families(c)[0]:
+            # Numbered when there is something to say under them: a child
+            # to list, or living children to count, so a reader never takes
+            # a parent of living children for someone who had none.
+            if depth + 1 < generations and (families(c)[0] or families(c)[1]):
                 counter += 1
                 number_of[c] = counter
                 level.append(c)
@@ -6222,6 +6234,9 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
             cut = any(families(c)[0] or families(c)[1] for c in following)
         if not level:
             break
+    if generations == 1:
+        # Only the person was asked for: nothing below is listed or counted.
+        cut = bool(families(root)[0] or families(root)[1])
 
     fn = _Footnotes(rp)
     tally = _SheetTally(rp)
@@ -6230,11 +6245,14 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
     for depth, people in layout:
         if not people:
             continue
-        shown_depth = max(shown_depth, depth + (1 if any(families(p)[0] for p in people) else 0))
+        below = depth < generations and any(families(p)[0] for p in people)
+        shown_depth = max(shown_depth, depth + (1 if below else 0))
         body += [f'## Generation {depth}', '']
         for pid in people:
             tally.see(pid)
             body += [f'**{number_of[pid]}.** {_reg_paragraph(rp, fn, tally, pid, hidden)}', '']
+            if depth >= generations:
+                continue
             fams, living_n = families(pid)
             for other, kids in fams:
                 parents = rp.name(pid) + (f' and {rp.name(other)}' if other else '')
