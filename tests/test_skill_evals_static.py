@@ -105,8 +105,8 @@ class GuardrailRegistryTests(unittest.TestCase):
                 path = ROOT / rel
                 self.assertTrue(path.is_file(), f"{entry['id']}: {rel} is missing")
                 text = _collapse(path.read_text(encoding='utf-8'))
-                self.assertIn(
-                    _collapse(entry['phrase']), text,
+                self.assertTrue(
+                    _collapse(entry['phrase']) in text,
                     f"{entry['id']} ({entry['rule']}): {rel} no longer says "
                     f"\"{entry['phrase']}\". If the rule was reworded on "
                     f"purpose, change tests/skill_evals/guardrails.yaml in the "
