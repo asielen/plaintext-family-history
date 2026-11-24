@@ -529,6 +529,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    person_restricted         - restricted only: the narrower test a family walk asks
 #    export_tie_ok             - may a walk use this tie (through the living, never
 #                                 the restricted, never on withheld evidence)
+#    claim_subjects            - who a claim is about (an event of a living
+#                                 person's own keeps it home)
+#    claim_people_verdict      - shown, shown without its wording, or withheld, by
+#                                 who it names: the one rule site, gedcom, wikitree read
+#    indexed_claim_verdict     - the same for one indexed claim
 #
 #  Walking a tree that might not open
 #    unreadable_dir_recorder   - os.walk onerror collector: the folders it failed on
@@ -15013,6 +15018,109 @@ def export_tie_ok(conn: sqlite3.Connection, row, privacy: ExportPrivacy, lookup,
     return True
 
 
+# What a shared copy does with one claim, judged by the people it names
+# (SPEC §21). The values `claim_people_verdict` returns:
+#   CLAIM_SHOWN     names nobody the copy withholds: shown as written
+#   CLAIM_UNWORDED  kept, but also names a living or unknown person: shown by
+#                   its kind, date and place and the shown people it is
+#                   about, without its own wording or the living person
+#   CLAIM_WITHHELD  an event of a living or unknown person's own, a tie to
+#                   one, a fact about nobody but such people, or a claim
+#                   naming a restricted person
+CLAIM_SHOWN = 'shown'
+CLAIM_UNWORDED = 'unworded'
+CLAIM_WITHHELD = 'withheld'
+
+# The roles that say whose fact a claim that is not an event is (SPEC §8.3).
+_FACT_SUBJECT_ROLES = frozenset({'subject', 'head', 'household_member'})
+
+
+def claim_subjects(claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]]) -> list[str]:
+    """The people a claim is about, in the claim's order, for deciding what a
+    shared copy may show of it (`claim_people_verdict`).
+
+    An event (birth, baptism, death, burial, marriage, divorce) is about its
+    own people (SPEC §8.3: the `child`, the `deceased`, the couple) and,
+    failing closed, about anyone it names with no role or with a misspelling
+    of that role (`chlid:`): a twin listed beside his sister with no role was
+    born that day too, and a guess that lets a living person's birthday out
+    cannot be taken back. A `relationship` claim is about every party: it is
+    the tie itself. Any other claim is about the people under `subject`,
+    `head` or `household_member`; when it names none, everyone it names."""
+    pairs = list(persons_with_roles)
+    roles_of = roles_by_person(pairs)
+    everyone = list(roles_of)
+    ctype = str(claim_type or '').strip().lower()
+    if ctype in VITAL_SUBJECT_ROLES:
+        own_role = VITAL_SUBJECT_ROLES[ctype]
+        own = set(vital_subjects(ctype, pairs) or ())
+        own.update(pid for pid, roles in roles_of.items()
+                   if not roles or any(r == own_role or role_near_miss(r) == own_role
+                                       for r in roles))
+        return [pid for pid in everyone if pid in own]
+    if ctype == 'relationship':
+        return everyone
+    named = [pid for pid, roles in roles_of.items() if _FACT_SUBJECT_ROLES & set(roles)]
+    return named or everyone
+
+
+def claim_people_verdict(claim_type: Any, persons_with_roles: Iterable[tuple[str, Any]], *,
+                         withheld: Callable[[str], bool],
+                         restricted: Callable[[str], bool]) -> str:
+    """Whether a shared copy shows one claim, judged by who it names: one of
+    `CLAIM_SHOWN`, `CLAIM_UNWORDED`, `CLAIM_WITHHELD` (owner decisions
+    2026-11-22 and 2026-11-23, SPEC §21).
+
+    A great-grandfather's baptism stays on the shared site when his godmother
+    is still alive, and the 1950 census of his household stays on his page
+    when the son listed in it is still alive: the record may be the heart of
+    his story. The living person is left out of it (not named, not linked,
+    not labelled), and so is the claim's own wording, which usually names
+    everyone on the record (`CLAIM_UNWORDED`). What stays home
+    (`CLAIM_WITHHELD`):
+
+      - an event that is a living or unknown person's own (a living son's
+        birth that names his dead father; a marriage with a living spouse),
+        since its date and place are that person's birthday or wedding;
+      - a `relationship` claim naming one, since it is the very tie that
+        would connect them to the family;
+      - any other claim whose people it is about are all living or unknown;
+      - a claim naming anyone restricted, `by-request` included, whatever
+        else it names: by-request is honored by every export path (§19).
+
+    A claim naming nobody withheld is shown as it always was.
+
+    The one rule every shared copy reads: the site, GEDCOM and WikiTree each
+    pass their own `withheld(pid)` (living or unknown, merges followed, and
+    in GEDCOM lifted by `--include-living`) and `restricted(pid)` (any
+    `restricted:` value on the record or a record merged into it). A copy may
+    be stricter, never looser."""
+    pairs = [(pid, role) for pid, role in persons_with_roles if pid]
+    people = list(dict.fromkeys(pid for pid, _role in pairs))
+    if any(restricted(pid) for pid in people):
+        return CLAIM_WITHHELD
+    hidden = {pid for pid in people if withheld(pid)}
+    if not hidden:
+        return CLAIM_SHOWN
+    about = claim_subjects(claim_type, pairs)
+    ctype = str(claim_type or '').strip().lower()
+    if ctype in VITAL_SUBJECT_ROLES or ctype == 'relationship':
+        return CLAIM_WITHHELD if hidden & set(about) else CLAIM_UNWORDED
+    return CLAIM_UNWORDED if any(pid not in hidden for pid in about) else CLAIM_WITHHELD
+
+
+def indexed_claim_verdict(conn: sqlite3.Connection, claim_id: str, claim_type: Any, *,
+                          withheld: Callable[[str], bool],
+                          restricted: Callable[[str], bool]) -> str:
+    """`claim_people_verdict` for one indexed claim, its people and roles read
+    from `claim_persons` in the claim's own order (`claim_role_pairs`)."""
+    pairs = claim_role_pairs(
+        (normalize_id(str(r[0])), r[1]) for r in conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id = ? ORDER BY position',
+            (claim_id,)))
+    return claim_people_verdict(claim_type, pairs, withheld=withheld, restricted=restricted)
+
+
 # ── AI-draft prose exclusion (the AGENTS.md AI-pass contract) ─────────────────
 # THE one implementation for every publication path (fha site, fha wikitree;
 # fha packet is a planned consumer - round-2 finding S1). The marker grammar
@@ -17678,6 +17786,49 @@ def name_sound_codes(word: str) -> set[str]:
     for form in forms:
         codes.update(dm_soundex(form))
     return codes
+
+
+def surname_spelling_groups(person_surnames: dict[str, list[str]]) -> list[dict]:
+    """Surnames that sound alike, so a researcher can see that "Hartley,
+    Hartly, Hartlie" is probably one family spelled three ways. Advisory:
+    nothing is ever renamed.
+
+    `person_surnames` maps each person to the surnames that person may be
+    shown under. The caller passes public names only (`find.py` checks each
+    against the person's own record); this function never reads a file.
+
+    Spellings are grouped by the FIRST Daitch-Mokotoff code of the folded
+    spelling, not by any shared code, so one odd spelling cannot chain two
+    families into a single group. A spelling with no code (another script)
+    is left out. A group needs two or more distinct folded spellings.
+    Returns `[{code, spellings: [{spelling, count}], people}]`, largest
+    group first (people, then first spelling). `count` is how many people
+    use the spelling; `people` how many people are in the group at all."""
+    by_code: dict[str, dict[str, dict]] = {}
+    people_in: dict[str, set[str]] = {}
+    for pid, surnames in person_surnames.items():
+        for surname in dict.fromkeys(surnames):
+            # Fold first (and join a loose accent mark to its letter), so
+            # Bąk, a pasted Ba + ogonek and Bak all code and group alike.
+            folded = fold_accents(unicodedata.normalize('NFC', surname)).lower()
+            codes = dm_soundex(folded)
+            if not codes:
+                continue
+            spelling = by_code.setdefault(codes[0], {}).setdefault(
+                folded, {'forms': {}, 'people': set()})
+            spelling['forms'][surname] = spelling['forms'].get(surname, 0) + 1
+            spelling['people'].add(pid)
+            people_in.setdefault(codes[0], set()).add(pid)
+    groups = []
+    for code, spellings in by_code.items():
+        if len(spellings) < 2:
+            continue
+        rows = [{'spelling': max(s['forms'], key=lambda f: (s['forms'][f], f)),
+                 'count': len(s['people'])} for s in spellings.values()]
+        rows.sort(key=lambda r: (-r['count'], r['spelling'].lower()))
+        groups.append({'code': code, 'spellings': rows, 'people': len(people_in[code])})
+    groups.sort(key=lambda g: (-g['people'], g['spellings'][0]['spelling'].lower()))
+    return groups
 
 
 # Generational suffixes SPEC §13's filename split must never mistake for a
