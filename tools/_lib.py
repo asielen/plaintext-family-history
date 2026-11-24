@@ -424,6 +424,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
 #    build_ahnentafel_map      - index BFS: {P-id → Ahnentafel position} (SPEC §12.2)
 #    ahnentafel_generation     - position → generation depth (the --generations cap)
+#    ahnentafel_path_words     - position → "mother's father's mother" from the root person
 #    couple_folder_prefix      - position → the even couple-folder number
 #    couple_folder_dirs        - digit-prefixed dirs under people/ (not stubs/connections)
 #    couple_folder_for_prefix  - canonical on-disk couple folder for a number, or None
@@ -8689,40 +8690,6 @@ def edtf_bounds(s: str | None) -> tuple[str, str]:
         return edtf_bounds(normalized)
 
     return ('0001-01-01', '9999-12-31')
-
-
-def place_hierarchy_at(conn, place_id: str, date_min: str | None,
-                       date_max: str | None = None) -> dict | None:
-    """What a place was called on a date: the `history:` period that wholly
-    covers the date range, or None.
-
-    A family reader sees "1859: Fairview, Kansas Territory" instead of a
-    modern name that did not exist yet. A claim dated `1855/1865` is not
-    inside the 1858-1861 period, so it gets no old name rather than a wrong
-    one; an undated claim gets none either. When several periods cover the
-    range the narrowest wins, then the one listed first. Returns
-    `{'period', 'hierarchy', 'date_min', 'date_max'}`. Dates are the ISO
-    bounds `edtf_bounds` gives; `date_max` defaults to `date_min`."""
-    if not date_min:
-        return None
-    hi = date_max or date_min
-    best = None
-    for r in conn.execute(
-            'SELECT period_edtf, date_min, date_max, hierarchy FROM place_history '
-            "WHERE place_id = ? AND date_min IS NOT NULL AND date_min != '' "
-            "AND date_max IS NOT NULL AND date_max != '' ORDER BY rowid", (place_id,)):
-        if r['date_min'] <= date_min and hi <= r['date_max']:
-            span = (int(r['date_max'][:4]) - int(r['date_min'][:4])) if (
-                r['date_max'][:4].isdigit() and r['date_min'][:4].isdigit()) else 0
-            if best is None or span < best[0]:
-                best = (span, {'period': r['period_edtf'] or '', 'hierarchy': r['hierarchy'] or '',
-                               'date_min': r['date_min'], 'date_max': r['date_max']})
-    return best[1] if best else None
-
-
-def place_hierarchy_in_year(conn, place_id: str, year: int) -> dict | None:
-    """`place_hierarchy_at` for a whole year."""
-    return place_hierarchy_at(conn, place_id, f'{int(year):04d}-01-01', f'{int(year):04d}-12-31')
 
 
 def claim_date_order_sql(alias: str = 'c') -> str:
@@ -19336,6 +19303,25 @@ def ahnentafel_generation(pos: int) -> int:
     span 2**g .. 2**(g+1)-1, so the depth is the bit length minus one - the
     arithmetic behind every `--generations N` cap."""
     return max(int(pos).bit_length() - 1, 0)
+
+
+def ahnentafel_path_words(pos: int, root_position: int = 1) -> str:
+    """How an ancestor is related to the numbered root person, in the words a
+    family uses: position 13 from root 1 is "mother's father's mother".
+
+    A grandmother's number means nothing to most people; "his father's
+    mother" does. The bits of `pos` after the bits of `root_position` read
+    left to right, 0 = father and 1 = mother. The root itself is '' (no path).
+    Raises ValueError when `pos` is not at or below `root_position` in the
+    numbering (its leading bits differ), since there is no path to describe.
+    """
+    pos, root_position = int(pos), int(root_position)
+    depth = pos.bit_length() - root_position.bit_length()
+    if root_position < 1 or depth < 0 or (pos >> depth) != root_position:
+        raise ValueError(
+            f'position {pos} is not a descendant slot of position {root_position}')
+    return "'s ".join(
+        'mother' if (pos >> i) & 1 else 'father' for i in range(depth - 1, -1, -1))
 
 
 def couple_folder_prefix(pos: int) -> int:

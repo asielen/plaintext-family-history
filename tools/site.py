@@ -8877,13 +8877,14 @@ class _SiteBuilder:
         from today's name; '' when no period wholly covers the claim."""
         if not c['date_min']:
             return ''
-        for pid in (c['place_id'], lid):
-            hit = place_hierarchy_at(self.conn, pid, c['date_min'], c['date_max'])
-            if hit:
-                meta = self.place_meta.get(pid)
-                modern = (meta['hierarchy'] if meta is not None else '') or ''
-                return hit['hierarchy'] if hit['hierarchy'] and hit['hierarchy'] != modern else ''
-        return ''
+        # place_hierarchy_at follows `within:` itself, so a cemetery with no
+        # history of its own takes its town's.
+        then, _period = place_hierarchy_at(self.conn, c['place_id'], c['date_min'], c['date_max'])
+        if not then:
+            return ''
+        meta = self.place_meta.get(c['place_id'])
+        modern = (meta['hierarchy'] if meta is not None else '') or ''
+        return then if then != modern else ''
 
     def build_place_page(self, lid: str) -> None:
         """Render one place page (TOOLING §12): name, coords (an embedded
