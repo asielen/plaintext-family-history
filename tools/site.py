@@ -322,6 +322,7 @@ from _lib import (
     ASSET_ROOT_ALIASES,
     bracket_given_name,
     claim_is_own_vital,
+    VITAL_SUBJECT_ROLES,
     age_between,
     age_phrase,
     family_life_events,
@@ -7794,7 +7795,9 @@ class _SiteBuilder:
         # One record of a house fire that names her and her daughter as
         # deceased is still her own death line as well.
         family_claims = {ev['claim_id'] for ev in family['events']}
-        rows = [r for r in rows if r['id'] not in family_claims
+        rows = [r for r in rows
+                if (r['id'] not in family_claims
+                    and not self._repeats_family_event(r, family['events']))
                 or claim_is_own_vital(self.conn, pid, r['id'], r['type'],
                                       self._vital_subjects)]
         own_birth, own_death = family['birth'], family['death']
@@ -7924,6 +7927,23 @@ class _SiteBuilder:
             claim_ok=claim_ok, edge_ok=edge_ok, cache=self._vital_subjects,
             kin=self._family_kin)
 
+    def _repeats_family_event(self, r, events: list[dict]) -> bool:
+        """Ethel's birth written in both the register and the family bible
+        shows once on her mother's page, as the labelled family row, not again
+        as a bare "birth" line. True when this own-row claim records the same
+        relative's same event as a family row: a birth, death or burial (each
+        happens once), or a marriage to the same spouse. The other record
+        still sits in her Sources list."""
+        for ev in events:
+            if ev['type'] != r['type'] or not claim_is_own_vital(
+                    self.conn, ev['relative_id'], r['id'], r['type'], self._vital_subjects):
+                continue
+            if r['type'] == 'marriage' and (ev['other_id'] is None or not claim_is_own_vital(
+                    self.conn, ev['other_id'], r['id'], 'marriage', self._vital_subjects)):
+                continue
+            return True
+        return False
+
     def _own_age_text(self, pid: str, r, own_birth: dict | None,
                       own_death: dict | None) -> str:
         """"aged 21 or 22" for one of the person's own timeline lines, or ''.
@@ -7936,6 +7956,12 @@ class _SiteBuilder:
             return ''
         if r['type'] == 'birth' and claim_is_own_vital(
                 self.conn, pid, r['id'], 'birth', self._vital_subjects):
+            return ''
+        # Her grandfather's death, where she was only the informant, is not
+        # her event: "Josiah died, aged 82 ... aged 18 or 19" reads as his
+        # age twice. Only her own birth, death or marriage carries her age.
+        if r['type'] in VITAL_SUBJECT_ROLES and not claim_is_own_vital(
+                self.conn, pid, r['id'], r['type'], self._vital_subjects):
             return ''
         if (own_death is not None and own_death['date_max'] and r['date_min']
                 and r['date_min'] > own_death['date_max']):

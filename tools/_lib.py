@@ -23415,13 +23415,17 @@ def age_between(birth_edtf: str | None, event_edtf: str | None) -> tuple[int, in
             return None
         if e_max < b_min:
             return None
-        lo = max(_whole_years_between(b_max, e_min), 0)
+        lo = _whole_years_between(b_max, e_min)
         hi = _whole_years_between(b_min, e_max)
     except (ValueError, TypeError):
         return None
+    # The one-year test reads the spread before a "not yet born" end is
+    # clamped to 0: for an "about 1871" birth, a father's death in 1870 may
+    # have come before she was born, and "She was under a year old" would
+    # state as fact what the records leave open.
     if hi < 0 or hi - lo > 1:
         return None
-    return (lo, hi)
+    return (max(lo, 0), hi)
 
 
 def age_phrase(age: tuple[int, int]) -> str:

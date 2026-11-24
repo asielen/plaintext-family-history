@@ -11483,6 +11483,49 @@ class TimelineFamilyRowsTests(_Base):
         self.assertIn('She was 30 or 31.', ethel[0])
         self.assertEqual(tl.count('Ethel Cole'), 1)
 
+    def test_child_birth_in_two_sources_appears_once(self):
+        # Ethel's birth written in the register and again in the family
+        # bible is one birth: one labelled row, no bare "birth" line with
+        # her mother's age on it.
+        self._family()
+        self._seed_source('s-7777777777', 'Cole family bible', source_type='document')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel born (bible)',
+                         date_edtf='1902', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'})
+        tl = self._timeline()
+        self.assertNotIn('Ethel born (bible)', tl)
+        rows = re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+        self.assertEqual(len([r for r in rows if 'Ethel Cole' in r]), 1)
+
+    def test_informant_line_carries_no_age_of_hers(self):
+        # Margaret informed on her grandfather's death: the line is his
+        # death, so "aged 18 or 19" must not follow "Josiah died, aged 82".
+        self._family()
+        G = 'p-g000000001'
+        self._seed_person(G, 'Josiah Hartley', surname='Hartley5', sex='M')
+        self._seed_source('s-6666666666', 'Josiah death certificate', source_type='vital-record')
+        self._seed_claim('c-gd0000001', 's-6666666666', 'death', 'Josiah Hartley died, aged 82',
+                         date_edtf='1890-04-02', persons=[G, self.M],
+                         roles={G: 'deceased', self.M: 'informant'})
+        tl = self._timeline()
+        line = re.search(r'<li>1890-04-02 - death:.*?</li>', tl, re.S).group(0)
+        self.assertNotIn('tl-age', line)
+        # Her own residence line still says how old she was.
+        self.assertRegex(tl, r'lived in Fairview.*?aged 21 or 22')
+
+    def test_father_death_with_about_birth_gives_no_age(self):
+        # Born "about 1871", father died 1870: he may have died before she
+        # was born, so the row must not say "She was under a year old".
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf='1871~', date_min='1870-01-01', "
+                          "date_max='1872-12-31' WHERE id='c-mb0000001'")
+        self.conn.execute("UPDATE claims SET date_edtf='1870', date_min='1870-01-01', "
+                          "date_max='1870-12-31' WHERE id='c-fd0000001'")
+        tl = self._timeline()
+        father = re.search(r'<li class="tl-family">(?:(?!</li>).)*Her father.*?</li>', tl, re.S).group(0)
+        self.assertIn('died at Easton.', father)
+        self.assertNotIn('She was', father)
+
     def test_living_relative_gives_no_row(self):
         self._family()
         self._brother(living='true')

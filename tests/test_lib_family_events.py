@@ -35,6 +35,10 @@ class AgeBetweenTests(unittest.TestCase):
             ((None, '1890'), None),
             (('1871', ''), None),
             (('1871', 'not a date'), None),
+            # "About 1871": her father's death in 1870 or 1871 may have come
+            # before she was born, so no "under a year old" / "not yet 2".
+            (('1871~', '1870'), None),
+            (('1871~', '1871'), None),
         ]
         for (birth, event), expected in cases:
             with self.subTest(birth=birth, event=event):
