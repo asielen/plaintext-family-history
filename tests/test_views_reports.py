@@ -733,7 +733,7 @@ class AhnentafelTests(_SheetBase):
     def test_a_living_subject_with_no_parents_is_told_so(self):
         result, _out, err = self.run_ahn(LIVSPOUSE)
         self.assertEqual(result.exit_code, EXIT_ERRORS)
-        self.assertIn('No birth parents are on record', err)
+        self.assertIn('no birth parent it can show', err)
         self.assertNotIn('adoptive', err)
 
     def test_restricted_subject_is_refused_without_a_name(self):
@@ -850,11 +850,14 @@ class AhnentafelTests(_SheetBase):
         result, _out, err = self.run_ahn('p-adadad0001')
         self.assertEqual(result.exit_code, EXIT_ERRORS)
         self.assertNotIn('living or private', err)
-        self.assertIn('birth parents', err)
+        self.assertIn('no birth parent it can show', err)
         self.assertIn('adoptive', err)
 
-    def test_a_deceased_person_with_only_adoptive_parents_says_so(self):
+    def test_the_printed_page_never_hints_at_an_adoptive_or_withheld_parent(self):
+        # The reason is for him at the keyboard; a relative reading the page
+        # must not learn that an adoption, or a withheld parent, is on file.
         self._adopted_only('p-adadad0002', 'false')
         text = self.text('p-adadad0002')
-        self.assertIn('No birth parents are on record', text)
         self.assertNotIn('Thomas Edward Hartley', text)
+        self.assertNotIn('adoptive', text)
+        self.assertNotIn('birth parent', text)

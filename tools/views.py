@@ -6026,10 +6026,13 @@ def _ahn_walk(rp: _ReportPrivacy, root: str, generations: int):
 
 
 def _ahn_no_parents(rp: _ReportPrivacy, root: str) -> str:
-    """Why nobody is numbered above no. 1: an Ahnentafel follows birth
-    parents only, so a person whose only parents on record are adoptive or
-    step parents is told that, not that everyone is living or private."""
-    why = 'No birth parents are on record for this person, so nobody is numbered above no. 1.'
+    """Why nobody is numbered above no. 1, for the refusal he sees (never
+    the printed page, which must not hint at a withheld or adoptive parent):
+    an Ahnentafel follows birth parents only, so a person whose only parents
+    on record are adoptive or step parents is told that, not that everyone
+    is living or private."""
+    why = ('This report has no birth parent it can show for this person, so nobody '
+           'is numbered above no. 1.')
     if rp.ties(root, 'parent'):
         why += (' This report follows birth parents only; adoptive, step and other '
                 'parents are not numbered.')
@@ -6040,7 +6043,7 @@ def _ahn_lines(rp: _ReportPrivacy, root: str,
                generations: int) -> tuple[list[str], bool, str]:
     """The report as markdown, whether anyone in it is shown by name, and
     (when nobody is numbered above no. 1 and more than one generation was
-    asked for) the sentence saying why."""
+    asked for) the sentence saying why, for a refusal only."""
     at, also, edge_sources = _ahn_walk(rp, root, generations)
     no_parents = _ahn_no_parents(rp, root) if len(at) == 1 and generations > 1 else ''
     fn = _Footnotes(rp)
@@ -6103,8 +6106,6 @@ def _ahn_lines(rp: _ReportPrivacy, root: str,
     if k:
         summary += (f' {k} living relatives are counted but not named.' if k != 1
                     else ' 1 living relative is counted but not named.')
-    if no_parents:
-        summary += ' ' + no_parents
     notes = fn.lines()
     if notes:
         body += ['## Notes', ''] + notes + ['']
