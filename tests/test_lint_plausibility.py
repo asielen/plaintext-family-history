@@ -449,5 +449,116 @@ class ChangedScopeTests(_PlausibilityBase):
         self.assertEqual(len(w163), 1, out.getvalue())
 
 
+class LeadsToCheckTests(_PlausibilityBase):
+    """Things worth a look that are not errors. They print after the findings
+    and never move the exit code, because a correct record can carry each one."""
+
+    def _margarets(self, women: int, men: int = 0, *, unknown: int = 0) -> None:
+        n = 0
+        for count, sex in ((women, 'F'), (men, 'M'), (unknown, 'unknown')):
+            for _ in range(count):
+                n += 1
+                pid = f'P-{n:010d}'
+                # Each gets her own surname so lint's same-name warning (W112)
+                # stays out of the way of what these tests are about.
+                surname = 'Hartley' + ''.join(chr(97 + int(d)) for d in str(n))
+                self._person(pid, f'Margaret {surname}', sex=sex)
+
+    def _unsexed(self, sex: str | None, name: str = 'Margaret Cole') -> str:
+        pid = 'P-zzzzzzzzzz'
+        self._person(pid, name, sex=sex)
+        return pid
+
+    def _leads(self) -> list[str]:
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        return result.data['leads']
+
+    def test_sex_lead_fires_at_19_of_20_and_says_find_a_record(self) -> None:
+        self._margarets(19, 1)
+        pid = self._unsexed(None)
+        leads = self._leads()
+        self.assertEqual(len(leads), 1, leads)
+        self.assertIn('19 of 20', leads[0])
+        self.assertIn(f'fha person set-sex {pid.lower()} F', leads[0])
+        # SPEC 9: sex is birth-assigned where a record states it, never
+        # taken from name statistics, so the lead sends him to a record first.
+        self.assertIn('record that states', leads[0])
+
+    def test_sex_lead_never_prints_a_restricted_persons_name(self) -> None:
+        # A restricted person's name stays off lint's informational lists; the
+        # lead still helps him, by id, without the name or the given name.
+        self._margarets(20)
+        pid = 'P-zzzzzzzzzz'
+        self._person(pid, 'Margaret Quillfeather', sex=None, extra='restricted: true\n')
+        leads = self._leads()
+        self.assertEqual(len(leads), 1, leads)
+        self.assertNotIn('Quillfeather', leads[0])
+        self.assertNotIn('Margaret', leads[0])
+        self.assertIn(f'fha person set-sex {pid.lower()} F', leads[0])
+
+    def test_sex_lead_silent_at_90_percent(self) -> None:
+        self._margarets(18, 2)
+        self._unsexed(None)
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_silent_below_five_people(self) -> None:
+        self._margarets(4)
+        self._unsexed(None)
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_silent_for_a_stated_unknown(self) -> None:
+        self._margarets(20)
+        self._unsexed('unknown')
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_fires_for_a_blank_sex(self) -> None:
+        self._margarets(20)
+        self._unsexed('')
+        self.assertEqual(len(self._leads()), 1)
+
+    def test_sex_lead_silent_for_a_sex_written_as_a_word(self) -> None:
+        # He wrote `sex: male` (W141 asks him to spell it M); the lead must not
+        # call that "no sex recorded" and steer him to the name's F.
+        for written in ('male', 'Male', 'f', 'female'):
+            with self.subTest(written=written):
+                self._margarets(20)
+                self._unsexed(written)
+                self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_skips_titled_wife_names(self) -> None:
+        self._margarets(20)
+        self._unsexed(None, name='Mrs. Doe')
+        self.assertEqual(self._leads(), [])
+
+    def test_leads_are_left_out_with_changed(self) -> None:
+        self._margarets(20)
+        self._unsexed(None)
+        subprocess.run([_GIT, 'init', '-q'], cwd=self.root, check=True, capture_output=True)
+        subprocess.run([_GIT, '-c', 'user.name=Test', '-c', 'user.email=t@example.com',
+                        '-c', 'commit.gpgsign=false', 'add', '-A'],
+                       cwd=self.root, check=True, capture_output=True)
+        subprocess.run([_GIT, '-c', 'user.name=Test', '-c', 'user.email=t@example.com',
+                        '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'start'],
+                       cwd=self.root, check=True, capture_output=True)
+        touched = next((self.root / 'people').glob('cole__*'))
+        touched.write_text(touched.read_text(encoding='utf-8') + '\nA note.\n',
+                           encoding='utf-8')
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            lint._standalone_main(['--root', str(self.root), '--changed'])
+        self.assertNotIn('Leads to check', out.getvalue())
+
+    def test_leads_never_move_the_exit_code(self) -> None:
+        self._margarets(20)
+        self._unsexed(None)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = lint._standalone_main(['--root', str(self.root)])
+        self.assertIn('Leads to check', out.getvalue())
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        self.assertEqual(code, result.exit_code)
+        self.assertEqual(code, lint.EXIT_CLEAN, out.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()
