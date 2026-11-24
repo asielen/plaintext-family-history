@@ -488,6 +488,24 @@ class ProbablyNotLivingTests(_PlausibilityBase):
         self._source(self.S2, self._claim('C-2222222222', 'census', [self.ADA], date='1900'))
         self.assertEqual(self._w173(), [])
 
+    def test_an_accepted_birth_is_not_outvoted_by_a_relatives_record(self) -> None:
+        # Born 1950 by his birth record; a child misfiled as born 1900, or a
+        # mother recorded as dying in 1890, is a conflict, not his age.
+        for case in ('child', 'mother'):
+            with self.subTest(case=case):
+                self._person(self.BEN, 'Ben Hartley', sex='M', living='unknown')
+                self._born(self.S1, 'C-1111111111', self.BEN, '1950')
+                if case == 'child':
+                    self._person(self.CARA, 'Cara Hartley')
+                    self._parent_of(self.S2, 'C-2222222222', self.BEN, self.CARA)
+                    self._born(self.S3, 'C-3333333333', self.CARA, '1900')
+                else:
+                    self._person(self.ADA, 'Ada Hartley')
+                    self._parent_of(self.S2, 'C-2222222222', self.ADA, self.BEN)
+                    self._source(self.S3, self._claim('C-3333333333', 'death', [self.ADA],
+                                                      date='1890'))
+                self.assertEqual(self._w173(), [])
+
     def test_a_provisional_death_that_is_not_a_date_is_silent(self) -> None:
         for value in ('unknown', '"?"', 'false'):
             with self.subTest(value=value):

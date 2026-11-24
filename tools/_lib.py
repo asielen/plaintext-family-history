@@ -22423,8 +22423,7 @@ def born_by_estimate(
     """The latest year each person can have been born, with the evidence.
 
     Read from, in this order on a tie: a dated record naming them
-    (`lived`, less any dated before an accepted birth: that is a conflict,
-    not a bound), their own birth (or, with none, baptism), their own death
+    (`lived`), their own birth (or, with none, baptism), their own death
     (or, with none, burial), the provisional
     `birth:` on their record (only when no birth claim is accepted, since a
     sourced birth supersedes it, SPEC §9), each genetic child's own
@@ -22432,7 +22431,8 @@ def born_by_estimate(
     and a genetic parent's death: a child is born by the mother's death, and
     within a year of the father's. The earliest year wins; ties break by the
     order above, then by claim or person id, so the message never changes
-    between runs.
+    between runs. Any of these earlier than an accepted birth's first
+    possible day is a conflict, not a bound, and is left out.
 
     `parents_of`/`children_of` are {pid: genetic parent or child pids}: the
     caller decides which edges are genetic (an adoptive parent can be
@@ -22505,6 +22505,13 @@ def born_by_estimate(
                     if got is not None:
                         options.append(BornBy(got.year - PLAUSIBLE_MIN_PARENT_AGE,
                                               ('child', child, got)))
+                # Anything earlier than an accepted birth is a conflict, not
+                # a bound: a child misfiled as born before him, or a mother's
+                # death read onto the wrong son, must not tell him a man born
+                # in 1950 is over 110.
+                birth = data.facts.get(pid, {}).get('birth')
+                if birth is not None and birth.lo is not None:
+                    options = [o for o in options if o.year >= int(birth.lo[:4])]
                 if options:
                     result[pid] = min(options, key=_key)
                 else:
