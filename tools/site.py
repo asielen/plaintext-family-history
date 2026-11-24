@@ -259,6 +259,8 @@ CODE MAP
       ._search_entries: what the search box can find (published pages
           only, behind the site's gates and the shared export reader)
       .build_search_page: data/search-data.js and search.html
+      ._graves / .build_graves_page: graves.html, every family grave by
+          burial place with map and directions links
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -7235,9 +7237,7 @@ class _SiteBuilder:
                     # branch is scrubbed.
                     # A record that also names a living person keeps its
                     # wording home (`_claim_unworded`): the date, or nothing.
-                    'value': r['date_edtf'] or (
-                        '' if not self.linked and self._claim_unworded(r['id'])
-                        else _scrub_internal_encoding(r['value'] or '')),
+                    'value': self._vital_when(r),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -7314,6 +7314,14 @@ class _SiteBuilder:
                 _VITAL_LABELS[t] for t in _VITAL_ORDER)}
             summary.sort(key=lambda row: order.get(row['label'], 99))
         return summary
+
+    def _vital_when(self, r: sqlite3.Row) -> str:
+        """When a picked vital happened, as the summary box shows it: the
+        structured date, else the record's own words ("Spring of the flood
+        year"). The graves list uses the same, so the two never disagree."""
+        return r['date_edtf'] or (
+            '' if not self.linked and self._claim_unworded(r['id'])
+            else _scrub_internal_encoding(r['value'] or ''))
 
     # - graves to visit -
 
@@ -7425,14 +7433,19 @@ class _SiteBuilder:
             name = meta['name'] or fmt_id_display(pid)
             row = {
                 'person_html': self._markup(self._person_link(pid, page_dir)),
-                'burial_date': burial['date_edtf'] or '',
-                'death_date': (death['date_edtf'] or '') if death is not None else '',
+                'burial_date': self._vital_when(burial),
+                'death_date': self._vital_when(death) if death is not None else '',
                 'source_html': (self._markup(self._source_link(burial['source_id'], page_dir))
                                 if burial['source_id'] else ''),
                 'sort': (burial['date_min'] or '9999', fold_accents(name).lower(), pid),
             }
             if place['registered']:
                 group = groups.setdefault(place['key'], {**place, 'rows': []})
+                # The plot as the record wrote it ("Fairview Cemetery,
+                # Section B, Lot 47") is what a visitor needs at the gate.
+                written = _scrub_internal_encoding(burial['place_text'] or '').strip()
+                if written and written.lower() != place['name'].lower():
+                    row['place_text'] = written
             else:
                 # Burials at a place nobody registered: one list at the end,
                 # each row keeping the place as it was written.
@@ -10893,7 +10906,8 @@ class _SiteBuilder:
     def _page_count(self) -> int:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
-        search is on. `run()` and `--dry-run` both report this one number."""
+        search is on, plus graves.html when anyone has a grave to list.
+        `run()` and `--dry-run` both report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0))
 

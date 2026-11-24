@@ -12610,6 +12610,32 @@ class GravesTests(_Base):
         self._run()
         self.assertEqual(first, self._read('graves.html'))
 
+    def test_home_links_the_graves_list_even_with_no_registered_places(self):
+        # A family whose burials are written only as words ("Back field,
+        # Dunmore") still finds the graves list from the home page.
+        self.conn.execute('DELETE FROM places')
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_text='Back field, Dunmore')
+        self._run()
+        self.assertTrue((self.out_dir / 'graves.html').exists())
+        self.assertIn('href="graves.html"', self._read('index.html'))
+
+    def test_graves_list_keeps_the_plot_written_on_the_record(self):
+        # "Section B, Lot 47" is what a visitor needs at the cemetery gate.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222',
+                          place_text='Fairview Cemetery, Section B, Lot 47')
+        self._run()
+        self.assertIn('Section B, Lot 47', self._read('graves.html'))
+
+    def test_graves_list_shows_a_burial_date_written_only_in_words(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222', date='1901')
+        self.conn.execute("UPDATE claims SET date_edtf = NULL, value = 'Spring of the flood year'")
+        self._run()
+        self.assertIn('Spring of the flood year', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertIn('Spring of the flood year', self._read('graves.html'))
+
 
 if __name__ == '__main__':
     unittest.main()
