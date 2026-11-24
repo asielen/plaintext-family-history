@@ -5014,7 +5014,8 @@ _XML_NAMESPACE_LITERALS = re.compile(
     r'(["\'])http://www\.w3\.org/(?:2000/svg|1999/xhtml|1999/xlink|2000/xmlns/'
     r'|XML/1998/namespace)\1')
 # A vendored library's licence banner on its first line names its home page.
-_BANNER_HOME_PAGE = re.compile(r'\A// https://d3js\.org v[0-9.]+ ')
+_BANNER_HOME_PAGE = re.compile(
+    r'\A// https://(?:d3js\.org|github\.com/topojson/topojson-client) v[0-9.]+ ')
 
 
 def _remote_urls_in_vendor_js(text):
@@ -11910,7 +11911,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-map.js', 'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,
@@ -11944,6 +11945,18 @@ class VendoredLibraryTests(_Base):
         digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
         self.assertEqual(m.group(1), digest,
                          'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
+
+    def test_every_licence_records_the_checksum_of_the_file_it_covers(self):
+        # A notice says "Shipped as vendor/NAME, ... sha256 HEX"; the shipped
+        # file must still be those bytes, so nobody edits a pinned copy unseen.
+        for name, notice in sorted(self._readme_entries().items()):
+            with self.subTest(name):
+                text = (self.LICENCES / notice).read_text(encoding='utf-8')
+                m = re.search(r'Shipped as vendor/' + re.escape(name)
+                              + r',[^\n]*?sha256 ([0-9a-f]{64})', text)
+                self.assertIsNotNone(m, f'{notice} must record the sha256 of {name}')
+                digest = hashlib.sha256((self.VENDOR / name).read_bytes()).hexdigest()
+                self.assertEqual(m.group(1), digest, f'{name} does not match {notice}')
 
     def test_a_site_build_carries_d3_and_its_licence(self):
         self._seed_person('p-aaaaaaaaaa', 'Solo')
