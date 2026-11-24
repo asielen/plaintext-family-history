@@ -20618,6 +20618,13 @@ def _status_counts(c: dict, statuses: tuple[str, ...]) -> bool:
 # owes a death or burial whatever their age (SPEC §8.2, lint W101).
 END_OF_LIFE_YEARS = 130
 
+# Past this many years since birth, the archive takes someone to be no longer
+# living when it proposes the flag (lint W173 asks him) or defaults it
+# (`fha gedcom import`, owner-approved 2026-07-10). Lower than
+# END_OF_LIFE_YEARS on purpose: 130 decides on its own that a missing death is
+# a gap, so it has to be certain; 110 only asks, and his yes is the gate.
+LIVING_CUTOFF_YEARS = 110
+
 # Someone who died before this age is not asked for a marriage: a child who
 # died at two is not a gap in the record.
 MARRIAGE_MIN_AGE = 14
@@ -23365,6 +23372,241 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
                 'Open those records and fix the one that is wrong; until then the family '
                 'tree cannot show this line correctly.')
     raise ValueError(f'unknown plausibility problem kind {kind!r}')
+
+
+# ── "Probably not living" (fha lint W173; TOOLING §3) ────────────────────────
+#
+# "Thomas Hartley shows as Living Person on the family site, but his son was
+# born in 1871." A person left at `living: unknown` is treated as living
+# (SPEC §19), so every shared page hides him, and nothing said the dates
+# already settle it. These rules work out the latest year someone can have
+# been born, from their own records and their family's, so lint can ask the
+# owner. They only ask: nothing here writes the flag.
+#
+#   PLAUSIBLE_MIN_PARENT_AGE - nobody is taken to be a parent younger than this
+#   BornBy                  - the latest birth year and the evidence for it
+#   lived_claims_from_claims - per person, the dated records that name them
+#   born_by_estimate        - per person, the BornBy with the earliest year
+
+# PLAUSIBLE_MIN_PARENT_AGE (12) is W168's, defined with the family rules.
+
+
+@dataclasses.dataclass(frozen=True)
+class BornBy:
+    """The latest year a person can have been born, and why.
+
+    `evidence` is one of:
+      ('own', DatedClaim)                   a dated record names them
+      ('birth' | 'baptism', DatedClaim)     their own birth or baptism
+      ('death' | 'burial', DatedClaim)      their own death or burial
+      ('provisional', value)                the `birth:` estimate on their record
+      ('child', child_pid, BornBy)          a genetic child's own BornBy, less
+                                            PLAUSIBLE_MIN_PARENT_AGE
+      ('parent-died', parent_pid, DatedClaim)  a genetic parent's death (or
+                                            burial); a father's plus a year
+    """
+    year: int
+    evidence: tuple
+
+
+_BORN_BY_RANK = {'own': 0, 'birth': 1, 'baptism': 2, 'death': 3, 'burial': 4,
+                 'provisional': 5, 'child': 6, 'parent-died': 7}
+
+# The roles that put someone at the event on the claim's date, so they were
+# born by it: the event's own people and parties, and those the record says
+# were there. Not `informant` or a descriptive role (`narrator`,
+# `grandchild`): mine-transcript puts the living aunt who tells of her
+# grandfather's 1890 death on that claim, dated 1890, and she was not born
+# by then.
+_BORN_BY_ROLES: frozenset[str] = (
+    (CLAIM_ROLE_WORDS - {'informant'})
+    | {'subject', 'godparent', 'officiant', 'grantor', 'grantee'})
+
+
+def lived_claims_from_claims(
+    claims: Iterable[dict], alias_map: dict | None,
+    survivors: dict[str, str] | None = None, *,
+    statuses: tuple[str, ...] = ('accepted',),
+) -> dict[str, list[DatedClaim]]:
+    """Per person, the dated records that name them: a record that names
+    someone was made after they were born, so its last possible day is a
+    year they were born by.
+
+    Any type counts but `note` (a researcher's jotting dated today says
+    nothing about the person), in a role that puts them at the event
+    (`_BORN_BY_ROLES`, or no role), with the same status and
+    `negated:` rules as `plausibility_input_from_claims`. A person's own
+    birth, baptism, death or burial is left out: those are merged into one
+    range there, so two disagreeing birth years never read as the earlier
+    one. A claim whose end is open or unreadable is skipped. Merged records
+    count for their survivor."""
+    survivors = {normalize_id(str(k)): normalize_id(str(v))
+                 for k, v in (survivors or {}).items()}
+    wanted = {s.strip() for s in statuses}
+    lived: dict[str, list[DatedClaim]] = {}
+    vital_held: dict[tuple, int] = {}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get('status', '')).strip() not in wanted:
+            continue
+        if str(claim.get('negated')).strip().lower() == 'true':
+            continue
+        ctype = str(claim.get('type', '')).strip().lower()
+        if not ctype or ctype == 'note':
+            continue
+        cid = normalize_id(str(claim.get('id') or ''))
+        span = claim_date_range(claim)
+        if not cid or span is None or span[1] is None:
+            continue
+        dated = DatedClaim(
+            claim_id=cid, ctype=ctype, lo=span[0], hi=span[1],
+            date=optional_scalar(claim.get('date')) or '',
+            subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
+        pairs = resolve_claim_persons_with_roles(claim, alias_map)
+        named = list(dict.fromkeys(p for p, _role in pairs))
+        present = {p for p, role in pairs
+                   if role is None or role_meaning(role) in _BORN_BY_ROLES}
+        own_vital: set[str] = set()
+        if ctype in _PLAUSIBILITY_VITAL_TYPES:
+            subjects = vital_subjects(ctype, pairs)
+            if subjects is None:
+                subjects = named if len(named) == 1 else []
+            own_vital = set(subjects)
+        for pid in dict.fromkeys(survivors.get(p, p) for p in named
+                                 if p not in own_vital and p in present):
+            if own_vital:
+                # A relative on a birth or death record: records of one
+                # person's one event merge into one range, so only the latest
+                # end counts for the relative too (two births, 1900 and 1930,
+                # leave the mother born by the later one).
+                key = (ctype, frozenset(own_vital), pid)
+                held = vital_held.get(key)
+                if held is not None:
+                    old = lived[pid][held]
+                    if (dated.hi, dated.claim_id) > (old.hi, old.claim_id):
+                        lived[pid][held] = dated
+                    continue
+                vital_held[key] = len(lived.get(pid, []))
+            lived.setdefault(pid, []).append(dated)
+    return lived
+
+
+def _latest_claim(fact: FactRange) -> DatedClaim:
+    """The claim behind a merged range's end (ties by claim id)."""
+    return max(fact.claims, key=lambda c: (c.hi or '', c.claim_id))
+
+
+def born_by_estimate(
+    data: PlausibilityInput, persons: dict[str, dict],
+    parents_of: dict[str, set[str]], children_of: dict[str, set[str]],
+    lived: dict[str, list[DatedClaim]],
+) -> dict[str, BornBy]:
+    """The latest year each person can have been born, with the evidence.
+
+    Read from, in this order on a tie: a dated record naming them
+    (`lived`), their own birth (or, with none, baptism), their own death
+    (or, with none, burial), the provisional
+    `birth:` on their record (only when no birth claim is accepted, since a
+    sourced birth supersedes it, SPEC §9), each genetic child's own
+    estimate less PLAUSIBLE_MIN_PARENT_AGE (so through grandchildren too),
+    and a genetic parent's death: a child is born by the mother's death, and
+    within a year of the father's. The earliest year wins; ties break by the
+    order above, then by claim or person id, so the message never changes
+    between runs. Any of these earlier than an accepted birth's first
+    possible day is a conflict, not a bound, and is left out.
+
+    `parents_of`/`children_of` are {pid: genetic parent or child pids}: the
+    caller decides which edges are genetic (an adoptive parent can be
+    younger than the child). A loop in the tree (lint W170) is cut where it
+    closes. Walked without recursion, so a very deep line cannot overflow."""
+    persons = {normalize_id(str(k)): v for k, v in (persons or {}).items()}
+    pids = (set(persons) | set(data.facts) | set(lived)
+            | set(parents_of) | set(children_of))
+
+    def _key(b: BornBy) -> tuple:
+        kind = b.evidence[0]
+        tail = b.evidence[1]
+        tie = tail.claim_id if isinstance(tail, DatedClaim) else str(tail)
+        return (b.year, _BORN_BY_RANK[kind], tie)
+
+    def _own(pid: str) -> list[BornBy]:
+        found: list[BornBy] = []
+        facts = data.facts.get(pid, {})
+        birth, bapt = facts.get('birth'), facts.get('baptism')
+        fact = birth if birth else bapt
+        born_lo = birth.lo if birth else None
+        for c in lived.get(pid, []):
+            # A record dated before his accepted birth is a conflict, not a
+            # bound: a misfiled 1900 census must not tell him a man born in
+            # 1950 is over 110 and should be marked dead.
+            if born_lo is not None and c.hi < born_lo:
+                continue
+            found.append(BornBy(int(c.hi[:4]), ('own', c)))
+        if fact is not None and fact.hi is not None and fact.claims:
+            found.append(BornBy(int(fact.hi[:4]),
+                                ('birth' if birth else 'baptism', _latest_claim(fact))))
+        # Someone who died or was buried by a year was born by it too, so a
+        # child known only from a death record still ages the parents.
+        death, burial = facts.get('death'), facts.get('burial')
+        ended = death if death else burial
+        if ended is not None and ended.hi is not None and ended.claims:
+            found.append(BornBy(int(ended.hi[:4]),
+                                ('death' if death else 'burial', _latest_claim(ended))))
+        meta = persons.get(pid)
+        if birth is None and isinstance(meta, dict):
+            value = optional_scalar(meta.get('birth'))
+            span = claim_date_range({'date': value}) if value else None
+            if span is not None and span[1] is not None:
+                found.append(BornBy(int(span[1][:4]), ('provisional', value)))
+        for parent in sorted(parents_of.get(pid, ())):
+            bounds = _plausibility_bounds(data.facts.get(parent, {}))
+            died_hi, died_from = bounds['died_hi']
+            if died_hi is None or not died_from.claims:
+                continue
+            grace = 0 if data.sex.get(parent) == 'F' else 1
+            found.append(BornBy(int(died_hi[:4]) + grace,
+                                ('parent-died', parent, _latest_claim(died_from))))
+        return found
+
+    result: dict[str, BornBy] = {}
+    for start in sorted(pids):
+        if start in result:
+            continue
+        # Post-order walk down the children: a person is settled once every
+        # child is. `on_path` cuts a loop where it closes.
+        stack: list[tuple[str, bool]] = [(start, False)]
+        on_path: set[str] = set()
+        while stack:
+            pid, expanded = stack.pop()
+            if expanded:
+                on_path.discard(pid)
+                options = _own(pid)
+                for child in sorted(children_of.get(pid, ())):
+                    got = result.get(child)
+                    if got is not None:
+                        options.append(BornBy(got.year - PLAUSIBLE_MIN_PARENT_AGE,
+                                              ('child', child, got)))
+                # Anything earlier than an accepted birth is a conflict, not
+                # a bound: a child misfiled as born before him, or a mother's
+                # death read onto the wrong son, must not tell him a man born
+                # in 1950 is over 110.
+                birth = data.facts.get(pid, {}).get('birth')
+                if birth is not None and birth.lo is not None:
+                    options = [o for o in options if o.year >= int(birth.lo[:4])]
+                if options:
+                    result[pid] = min(options, key=_key)
+                else:
+                    result.setdefault(pid, None)  # type: ignore[arg-type]
+                continue
+            if pid in result or pid in on_path:
+                continue
+            on_path.add(pid)
+            stack.append((pid, True))
+            for child in sorted(children_of.get(pid, ()), reverse=True):
+                if child not in result and child not in on_path:
+                    stack.append((child, False))
+    return {pid: b for pid, b in result.items() if b is not None}
 
 
 # ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────

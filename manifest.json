@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "8d0d740c2c944953f8e13b96efda160e7892969019790b3b47e337fb13efd4f5",
+      "sha256": "53098939b7cd83549e53b67b65432f2494736ddd388c7e72cff8b468e30ef187",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
@@ -827,7 +827,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "61816e450d4753251494c57401284381c9b1c740057d45de7d5a5962ba1e6c0d",
+      "sha256": "906df5343957a52bce3059a514a0347a149ce07919352cb97ff4fe3950973f45",
       "spec_version": "2.31",
       "src": "tools/gedcom_import.py"
     },
@@ -848,7 +848,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8223f43704e59433eff7d0942507e0adc6e51d1153e0c11335122762014c5160",
+      "sha256": "73dc3359bb71157a9738bd8eddae0c3bf6f90083a693ccd13004566418a172fb",
       "spec_version": "2.31",
       "src": "tools/lint.py"
     },
@@ -1465,7 +1465,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "48de57c627b038460f522e60ec9e5434dcc2b1ce246a9ba7a1ff471f393f197b",
+      "sha256": "6cfab78b74bbe7a46c0eff2f581ddde82cc19eb595c804d6b82fd38a15b18e8c",
       "spec_version": "2.31"
     },
     {
@@ -1514,7 +1514,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "5199b25a0d101e64253c49f6de9c8f559d98074adaed30915db96c7467ea8740",
+      "sha256": "5275c66daa94045ac950f1efbfcbc14137ef04527ea98dc5506d7b33ddfcc98d",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
