@@ -1683,14 +1683,14 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
 
 
 def _birth_span_words(event: str, lo: int | None, hi: int, plural: bool = False,
-                      about: int | None = None) -> str:
+                      about: str | None = None) -> str:
     """When one relative (or a group) was born or baptised, as the end of a
-    sentence: 'was born in 1840', 'was born about 1840', 'was born between
-    1838 and 1842', 'was baptised in 1840'. A range stays a range so a vague
-    date never reads as an exact one."""
+    sentence: 'was born in 1840', 'was born about 1840', 'was born in 1840
+    (uncertain)', 'was born between 1838 and 1842', 'was baptised in 1840'.
+    A range stays a range so a vague date never reads as an exact one."""
     verb = 'were' if plural else 'was'
     if event == 'birth' and about is not None and not plural:
-        return f'{verb} born about {about}'
+        return f'{verb} born {about}'
     if event == 'birth':
         if lo == hi:
             return f'{verb} born in {hi}'

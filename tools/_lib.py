@@ -21184,10 +21184,14 @@ def _relative_birth_window(ctx: dict, pid: str) -> dict | None:
     births = [c for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',))
               if c['y_lo'] is not None and c['y_hi'] is not None]
     if births:
-        # "1840~" reads back as "about 1840", not "between 1839 and 1841".
+        # "1840~" reads back as "about 1840" and "1840?" as "in 1840
+        # (uncertain)", not "between 1839 and 1841" as if records gave a range.
         dates = {c['date'] for c in births}
-        about = (int(next(iter(dates))[:4]) if len(dates) == 1
-                 and re.fullmatch(r'\d{4}~', next(iter(dates))) else None)
+        m = re.fullmatch(r'(\d{4})([~?%])', next(iter(dates))) if len(dates) == 1 else None
+        about = None
+        if m:
+            about = (f'in {m.group(1)} (uncertain)' if m.group(2) == '?'
+                     else f'about {m.group(1)}')
         return {'lo': min(c['y_lo'] for c in births),
                 'hi': max(c['y_hi'] for c in births), 'event': 'birth', 'about': about}
     baptisms = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('baptism',))
@@ -21235,8 +21239,8 @@ def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict |
       each spouse S         -> S-8 .. S+8
       full siblings, as one -> earliest-8 .. latest+8
 
-    Siblings are only those with exactly the same known parents: a half-sister
-    from a second marriage can be twenty years younger. The person's own
+    A sibling with a different recorded father or mother is left out: a
+    half-sister from a second marriage can be twenty years younger. The person's own
     accepted records cap the range: someone in an 1880 census, or who died in
     1866, was born by then (kind `record` in the basis when it narrows).
 
@@ -21272,12 +21276,25 @@ def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict |
     spouses = known([normalize_id(str(r[0])) for r in conn.execute(
         "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? "
         "AND rel = 'spouse' ORDER BY other_id", (pid,))])
+    def by_sex(ids: list[str]) -> dict[str, set[str]]:
+        out: dict[str, set[str]] = {}
+        for i in ids:
+            sex = str((ctx['persons'].get(i) or {}).get('sex') or '').upper()
+            if sex in ('M', 'F'):
+                out.setdefault(sex, set()).add(i)
+        return out
+
+    # A half-brother or half-sister has a different recorded father or
+    # mother. A parent recorded on one side only (her mother not entered
+    # yet) rules nobody out: that is the commonest stub, not a half-sibling.
     siblings: list[str] = []
-    own_parents = set(parents)
+    own_by_sex = by_sex(parents)
     for parent in parents:
         for sib in known(_genetic_kin(conn, parent, 'child')):
-            if (sib not in siblings and sib not in own_parents
-                    and set(_genetic_kin(conn, sib, 'parent')) == own_parents):
+            if sib in siblings or sib in parents:
+                continue
+            sib_by_sex = by_sex(_genetic_kin(conn, sib, 'parent'))
+            if all(own_by_sex[s] == sib_by_sex[s] for s in own_by_sex if s in sib_by_sex):
                 siblings.append(sib)
 
     def sex_of(rid: str) -> str:
@@ -21315,7 +21332,10 @@ def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict |
     if sibs:
         sibs.sort(key=lambda t: (t[1]['hi'], t[0]))
         los = [w['lo'] for _r, w in sibs]
-        earliest = None if None in los else min(los)
+        # A baptism-only sibling gives no earliest year of his own; the
+        # others' births still do.
+        known_los = [y for y in los if y is not None]
+        earliest = min(known_los) if known_los else None
         latest = max(w['hi'] for _r, w in sibs)
         events = {w['event'] for _r, w in sibs}
         bases.append({'kind': 'siblings', 'relative': [r for r, _w in sibs],

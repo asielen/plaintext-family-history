@@ -2745,9 +2745,41 @@ class BirthSuggestionTests(unittest.TestCase):
         ann = self._person('Ann Wells', 'F')
         half = self._person('Half Wells', 'F', born=1905)
         self._parent(ann, pa)
+        self._parent(ann, self._person('First Wife', 'F'))
         self._parent(half, pa)
         self._parent(half, self._person('Second Wife', 'F'))
         self.assertIsNone(self._suggest(ann, self._build(r)))
+
+    def test_a_sibling_counts_when_her_own_mother_is_not_recorded_yet(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        pa = self._person('Pa Wells', 'M')
+        ma = self._person('Ma Wells', 'F')
+        ann = self._person('Ann Wells', 'F')
+        self._parent(ann, pa)
+        for born in (1850, 1856):
+            kid = self._person(f'Kid {born}', 'M', born=born)
+            self._parent(kid, pa)
+            self._parent(kid, ma)
+        got = self._suggest(ann, self._build(r))
+        self.assertEqual((got['lo'], got['hi']), (1842, 1864))
+
+    def test_a_baptism_only_sibling_keeps_the_others_earliest_year(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        pa = self._person('Pa Wells', 'M')
+        ann = self._person('Ann Wells', 'F')
+        bob = self._person('Bob Wells', 'M', born=1850)
+        cat = self._person('Cat Wells', 'F')
+        self._claim('baptism', 'baptised 1856', [cat], date='1856',
+                    roles=f'    child: {cat}\n')
+        for kid in (ann, bob, cat):
+            self._parent(kid, pa)
+        got = self._suggest(ann, self._build(r))
+        self.assertEqual((got['lo'], got['hi']), (1842, 1864))
+
+    def test_an_uncertain_year_is_not_called_a_range(self) -> None:
+        r, sarah = self._husband_dated(('birth', '1840?'))
+        self.assertIn('her husband was born in 1840 (uncertain), so she was '
+                      'probably born between 1831 and 1849', self._body(self._build(r)))
 
     def test_an_undated_birth_claim_still_gets_a_suggestion(self) -> None:
         r, sarah = self._wife()
