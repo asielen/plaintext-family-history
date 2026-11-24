@@ -54,6 +54,7 @@ import datetime
 import difflib
 import fnmatch
 import hashlib
+import heapq
 import html
 import json
 import math
@@ -728,6 +729,81 @@ def is_genetic_parent_subtype(subtype: Any) -> bool:
     foster, guardian, surrogate-gestational, social). An unset or
     unrecognised subtype defaults to genetic (SPEC §12.2)."""
     return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
+
+
+# How strongly a tie is proven, so a chart can show which part of his tree
+# rests on a family story (TOOLING §7 `line_confidence`). Claim confidence
+# words (SPEC §8.5), weakest first; anything else is "not rated".
+CONFIDENCE_RANK: dict[str, int] = {'low': 1, 'medium': 2, 'high': 3}
+_CONFIDENCE_WORD = {rank: word for word, rank in CONFIDENCE_RANK.items()}
+_UNRATED = 4    # above 'high': an unrated tie never weakens a line
+
+
+def stronger_confidence(a: str | None, b: str | None) -> str | None:
+    """The better of two confidence words. A tie told in a family story and
+    shown on a certificate is as strong as the certificate. None, or a word
+    outside the scale, is not rated and loses to any word."""
+    ra, rb = CONFIDENCE_RANK.get(a or ''), CONFIDENCE_RANK.get(b or '')
+    if ra is None:
+        return b if rb is not None else None
+    if rb is None or ra >= rb:
+        return a
+    return b
+
+
+def weaker_confidence(a: str | None, b: str | None) -> str | None:
+    """The weaker of two ties along one line. An unrated tie (None) says
+    nothing about strength, so it never weakens: the rated one is the
+    answer, or None when neither is rated."""
+    ra = CONFIDENCE_RANK.get(a or '', _UNRATED)
+    rb = CONFIDENCE_RANK.get(b or '', _UNRATED)
+    return _CONFIDENCE_WORD.get(min(ra, rb))
+
+
+def line_confidence(seed: str, edges) -> dict[str, str | None]:
+    """For each person reachable from `seed`, the weakest rated parent or
+    child tie on their strongest route from the seed: 'low' | 'medium' |
+    'high', or None when no rated tie lies on that route (the seed itself, or
+    only unrated ties). This is what lets a chart fade everything above
+    Great-grandpa Thomas when his own parents rest on one family story.
+
+    `edges` is an iterable of (a, b, type, confidence) with type in
+    {'parent', 'child', 'spouse'} (any other type is ignored). Parent and
+    child ties are rated by their confidence (None = unrated); spouse ties are
+    never rated, so an in-law takes the line of the person they married.
+    Undirected: a child reached through a weak tie is as weak as an ancestor
+    reached through one. People the seed cannot reach are not in the result.
+
+    Widest-path search: a route is worth its weakest tie and the best route
+    counts. Best value first, so each person is settled once. The idea is
+    topola's propagateConfidence (https://github.com/PeWu/topola,
+    src/confidence.ts, Apache-2.0); this is a fresh implementation.
+    Deterministic: ties between equal values go by person id, and the result
+    is sorted by person id."""
+    adjacency: dict[str, list[tuple[str, int]]] = {}
+    for a, b, etype, conf in edges:
+        if etype == 'spouse':
+            weight = _UNRATED
+        elif etype in ('parent', 'child'):
+            weight = CONFIDENCE_RANK.get(conf or '', _UNRATED)
+        else:
+            continue
+        adjacency.setdefault(a, []).append((b, weight))
+        adjacency.setdefault(b, []).append((a, weight))
+    best: dict[str, int] = {seed: _UNRATED}
+    settled: set[str] = set()
+    heap: list[tuple[int, str]] = [(-_UNRATED, seed)]
+    while heap:
+        neg, node = heapq.heappop(heap)
+        if node in settled:
+            continue
+        settled.add(node)
+        for nxt, weight in adjacency.get(node, ()):
+            value = min(-neg, weight)
+            if nxt not in settled and value > best.get(nxt, 0):
+                best[nxt] = value
+                heapq.heappush(heap, (-value, nxt))
+    return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:
@@ -23248,6 +23324,119 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
         if plain_hi != _EDTF_CEILING:
             hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
     return (lo_known, hi_known)
+
+
+# Role words that name a sex (lint W171): the six SPEC §8.3 kin synonyms
+# plus the words marriage and death records add. Closed on purpose: `sister`,
+# `grandmother` and the rest would catch more, but it is a list that never
+# ends, and each extra word is another way to fire on a correct record.
+SEX_IMPLYING_ROLES: dict[str, str] = {
+    'mother': 'F', 'wife': 'F', 'daughter': 'F', 'bride': 'F', 'widow': 'F',
+    'father': 'M', 'husband': 'M', 'son': 'M', 'groom': 'M',
+    'bridegroom': 'M', 'widower': 'M',
+}
+
+
+def role_sex_conflicts(
+    claim: dict, sex_by_pid: dict[str, str], alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """`(pid, role word, implied sex)` for each person a claim calls by a word
+    that implies the other sex than the one recorded for them.
+
+    The role is read as written (lower-cased), never folded through
+    `role_meaning`: `wife` must stay `wife`, not become `spouse`. Only a
+    recorded `M` or `F` is compared; `intersex`, `unknown` and a missing
+    `sex:` never conflict (W120 asks for a missing one)."""
+    found: list[tuple[str, str, str]] = []
+    for pid, role in resolve_claim_persons_with_roles(claim, alias_map):
+        word = clean_role_word(role).lower()
+        implied = SEX_IMPLYING_ROLES.get(word)
+        recorded = sex_by_pid.get(pid, '')
+        if implied and recorded in ('M', 'F') and recorded != implied \
+                and (pid, word, implied) not in found:
+            found.append((pid, word, implied))
+    return found
+
+
+# The days a calendar change skipped (lint W172): (first, last, who and when).
+CALENDAR_GAPS: tuple[tuple[str, str, str], ...] = (
+    ('1582-10-05', '1582-10-14',
+     'Catholic Europe (Spain, Portugal, the Italian states, Poland) moved to '
+     'the new calendar and skipped 5 to 14 October 1582'),
+    ('1752-09-03', '1752-09-13',
+     'Great Britain and its colonies, America included, moved to the new '
+     'calendar and skipped 3 to 13 September 1752'),
+)
+
+
+def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
+    """The calendar gap a date lies wholly inside, or None. A year, a month or
+    a range that reaches outside the gap is never inside it."""
+    span = claim_date_range({'date': date})
+    if span is None or span[0] is None or span[1] is None:
+        return None
+    for gap in CALENDAR_GAPS:
+        if gap[0] <= span[0] and span[1] <= gap[1]:
+            return gap
+    return None
+
+
+# What shows a claim's date was converted from the old calendar (lint W172):
+# an Old Style / O.S. / Julian marker, or a double year such as 1751/52.
+# "Julian" counts only as the calendar ("Julian calendar", "(Julian)"), never
+# as a first name.
+_OLD_STYLE_MARKER = re.compile(
+    r'\bold[\s-]?style\b'
+    r'|\bjulian[\s-]*(?:calendar|date|style|reckoning)\b'
+    r'|\(\s*julian\s*\)', re.IGNORECASE)
+# O.S. with its stop: a bare "OS" is as often Ordnance Survey.
+_OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
+# 1751/52 or 1751/2, not a reference such as 11/1234/56 or 1752/09/05.
+_DOUBLE_YEAR = re.compile(r'(?<![\d/])(1\d{3})/(\d{1,2})(?![\d/])')
+_WRITTEN_DAY = re.compile(
+    r'\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b'
+    r'|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b')
+
+
+def _has_double_year(text: str) -> bool:
+    for match in _DOUBLE_YEAR.finditer(text):
+        after = match.group(2)
+        if (int(match.group(1)) + 1) % (10 ** len(after)) == int(after):
+            return True
+    return False
+
+
+def calendar_conversion_shown(claim: dict) -> bool:
+    """True when a claim shows its gap `date:` was converted from the old
+    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian
+    marker or a double year (1751/52), or its `value` writes the old-calendar
+    day that converts to `date:` (25 Aug 1752 beside 1752-09-05; the record's
+    own day beside the converted one, SPEC §11). Structural only: no other
+    wording counts, and another day in `value` (a baptism after a birth, the
+    banns before a marriage) does not."""
+    value = str(claim.get('value') or '')
+    notes = str(claim.get('notes') or '')
+    for text in (value, notes):
+        if (_OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)
+                or _has_double_year(text)):
+            return True
+    date = optional_scalar(claim.get('date')) or ''
+    gap = calendar_gap_of(date)
+    if gap is None or len(date) != 10:
+        return False
+    try:
+        target = datetime.date.fromisoformat(date)
+        shift = (datetime.date.fromisoformat(gap[1])
+                 - datetime.date.fromisoformat(gap[0])).days + 1
+        for match in _WRITTEN_DAY.finditer(value):
+            written = normalize_date(match.group(0).replace(',', ' '))
+            if (written and len(written) == 10
+                    and datetime.date.fromisoformat(written)
+                    + datetime.timedelta(days=shift) == target):
+                return True
+    except ValueError:
+        return False
+    return False
 
 
 def iso_plus_years(iso: str, years: int) -> str:
