@@ -9458,6 +9458,31 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
         self.assertRegex(page, r'Ancestry</a>.*?searched 2026-11-22: nothing found')
         self.assertEqual(page.count('searched 2026-11-22'), 1)   # only the site he logged
 
+    def test_a_search_that_could_not_be_run_shows_as_still_to_do(self):
+        # SPEC §17c: an unavailable or requested entry is still to do, never
+        # "already searched".
+        log = self.root / 'notes' / 'research-log.md'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(f'\n- date: 2026-11-20\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Find a Grave\n  result: unavailable (the site was down)\n'
+                    f'\n- date: 2026-11-21\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Ancestry\n  result: requested (letter to the county)\n')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertNotIn('searched 2026-11-20', page)
+        self.assertNotIn('searched 2026-11-21', page)
+        self.assertRegex(page, r'Find a Grave</a>.*?tried 2026-11-20: could not be searched, still to do')
+        self.assertRegex(page, r'Ancestry</a>.*?asked for the records 2026-11-21, still to do')
+
+    def test_a_grave_site_logs_the_married_surname_it_searched(self):
+        subject = {'given': 'Mary', 'surname': 'Cole', 'married_surname': 'Hartley',
+                   'birth_year': 1840}
+        self.assertEqual(_lib.research_search_terms(subject, 'findagrave'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'billiongraves'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'familysearch'),
+                         'Mary Cole, born about 1840')
+
     def test_a_living_subject_logs_the_name_alone(self):
         self._edit(self.THOMAS, 'living: false', 'living: true')
         page = self._thomas_page(self._build(linked=True, workbench=True))

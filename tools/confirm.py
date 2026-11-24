@@ -1784,6 +1784,12 @@ def run_confirm_search(
         return refuse('merged', f'{fmt_id_display(pid)} was merged into another record.{where} '
                                 'Nothing was written.')
     name = ' '.join(str(meta.get('name') or '').split()) or fmt_id_display(pid)
+    # A restricted or by-request person is never offered a search, and the
+    # tools never write one down for them either (SPEC §19).
+    if meta.get('restricted') not in (None, False, '', 'false'):
+        return refuse('restricted',
+                      f'{fmt_id_display(pid)} is marked restricted, so searches for this '
+                      'person are not logged. Nothing was written.')
 
     repository = ' '.join((repository or '').split())
     if not repository:
@@ -1798,6 +1804,10 @@ def run_confirm_search(
         if not (source_id and is_valid_id(source_id) and id_type_of(source_id) == 'S'):
             return refuse('failed', 'A search that found something names the source it filed: add '
                                     '--source s-… (capture the record first, then log the search).')
+        if find_source_record_path(archive_root, source_id) is None:
+            return refuse('not-found',
+                          f'No source in the archive has the ID {source_id}. Check the ID with '
+                          '`fha find --json "title"`; nothing was written.')
         result_text = f'found [[{normalize_id(source_id)}]]'
     elif result in ('partial', 'unavailable'):
         if not note:
@@ -1835,7 +1845,8 @@ def run_confirm_search(
 
     sink = append_research_log_entry(
         archive_root, date=date, question=question, repository=repository,
-        collection=collection, terms=terms, result=result_text, years=years, person_id=pid)
+        collection=collection, terms=terms, result=result_text, years=years, person_id=pid,
+        require_log=True)
     if sink == 'none':
         return result_fail(res, 'failed',
                            'Could not write notes/research-log.md. Check the file is not '

@@ -10231,11 +10231,20 @@ RESEARCH_SITES: tuple = (
 )
 
 
-def research_search_terms(subject: dict) -> str:
+# The sites whose search sends a woman's married surname (graves are marked
+# with it); the log must name the surname that was actually searched.
+_RS_MARRIED_NAME_SITES = frozenset({'findagrave', 'billiongraves'})
+
+
+def research_search_terms(subject: dict, site_key: str = '') -> str:
     """What he typed into the other website, in words, for the research log:
     "Thomas Hartley, born about 1840, New York". Only what the subject carries,
-    so a living person's entry is the name alone."""
-    name = ' '.join(x for x in (subject.get('given'), subject.get('surname')) if x)
+    so a living person's entry is the name alone. For a grave site the surname
+    is her married one when she has one, as that site's link searches it."""
+    surname = subject.get('surname')
+    if site_key in _RS_MARRIED_NAME_SITES:
+        surname = subject.get('married_surname') or surname
+    name = ' '.join(x for x in (subject.get('given'), surname) if x)
     parts = [name] if name else []
     if subject.get('birth_year'):
         parts.append(f"born about {subject['birth_year']}")
@@ -16846,6 +16855,7 @@ def append_research_log_entry(
     result: str,
     years: str = '',
     person_id: str | None = None,
+    require_log: bool = False,
 ) -> str:
     """Record one search in the research log (SPEC §17c).
 
@@ -16863,7 +16873,9 @@ def append_research_log_entry(
     sees it at once, without waiting for the next rebuild. Returns 'index' or
     'log' for the caller's status line (favoring 'index' when both succeed),
     'none' when neither landed; a logging failure is reported but never fails
-    the caller.
+    the caller. With `require_log` (a search he files himself), a failed append
+    to the file writes no index row either and returns 'none': an index row
+    alone would say "logged" and then vanish at the next `fha index`.
     """
     archive_root = Path(archive_root)
     db_path = archive_root / '.cache' / 'index.sqlite'
@@ -16903,6 +16915,8 @@ def append_research_log_entry(
         log_ok = True
     except OSError as e:
         print(f'WARNING: could not write {log_rel}: {e}', file=sys.stderr)
+        if require_log:
+            return 'none'
 
     if db_path.exists():
         try:

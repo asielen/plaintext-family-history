@@ -1127,8 +1127,9 @@
      comes back, a short line asks how it went, so a search that found nothing
      is filed in the research log and is not repeated next session.
      "Nothing found" opens the usual preview/confirm for `confirm.search`.
-     "Found something" only explains: the capture add-on files a found record
-     and logs the search itself, so logging it here too would count it twice. */
+     "Found something" only points him to the capture add-on, which files the
+     record and logs the search itself (logging it here too would count it
+     twice). */
   document.addEventListener('click', function (e) {
     var link = e.target.closest('a[data-wb-search]');
     if (!link) return;
@@ -1157,7 +1158,7 @@
     var found = button('Found something');
     var done = button('Not finished');
     found.addEventListener('click', function () {
-      ask.textContent = 'Save the record with the capture add-on; it files the search for you. ';
+      ask.textContent = 'Save the record with the capture add-on, then process it from the inbox. ';
       Array.prototype.slice.call(box.querySelectorAll('button')).forEach(function (b) {
         if (b !== done) b.remove();
       });

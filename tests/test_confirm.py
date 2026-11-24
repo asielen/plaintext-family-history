@@ -1857,6 +1857,47 @@ class ConfirmSearchTests(unittest.TestCase):
                 self.assertIn(needle, ' '.join(m.text for m in r.messages))
                 self.assertEqual(self.log.read_bytes(), before)
 
+    def test_a_found_search_naming_a_source_that_does_not_exist_is_refused(self) -> None:
+        # A typo in the s-id would leave the log saying a record was found and
+        # filed when there is no such record.
+        before = self.log.read_bytes()
+        r = self._run(result='found', source_id='s-0000000000')
+        self.assertEqual(r.exit_code, 2)
+        self.assertIn('No source in the archive has the ID', ' '.join(m.text for m in r.messages))
+        self.assertEqual(self.log.read_bytes(), before)
+
+    def test_a_restricted_or_by_request_person_is_never_logged(self) -> None:
+        [path] = [p for p in self.root.rglob(f'*{THOMAS}.md')
+                  if '_research_' not in p.name and '_view_' not in p.name]
+        original = path.read_text(encoding='utf-8')
+        before = self.log.read_bytes()
+        for marker in ('restricted: true', 'restricted: by-request'):
+            with self.subTest(marker=marker):
+                path.write_text(original.replace('living: false', f'living: false\n{marker}', 1),
+                                encoding='utf-8', newline='')
+                r = self._run()
+                self.assertEqual(r.exit_code, 2)
+                self.assertIn('restricted', ' '.join(m.text for m in r.messages))
+                self.assertEqual(self.log.read_bytes(), before)
+
+    def test_a_log_that_cannot_be_written_is_a_failure_not_an_index_only_save(self) -> None:
+        # If only the index row landed, he would be told "logged" and the next
+        # `fha index` would drop the search.
+        import contextlib
+        import io
+        self.index.build_index(self.root, load_fha_yaml(self.root))
+        self.log.unlink()
+        self.log.mkdir()                      # appending to it now fails
+        with contextlib.redirect_stderr(io.StringIO()):
+            r = self._run()
+        self.assertNotEqual(r.exit_code, EXIT_CLEAN)
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute("SELECT 1 FROM search_log WHERE date='2026-11-22'").fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [])
+
     def test_cli_verb_logs_the_search(self) -> None:
         import contextlib
         import io

@@ -7033,12 +7033,12 @@ class _SiteBuilder:
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
         links = research_search_links(subject)
-        terms = research_search_terms(subject)
         last = self._research_last_searches(pid)
         for link in links:
             # What "Nothing found" files: the person, the site's own label and
             # what was typed in (workbench.js reads this off the link).
-            link['args'] = {'person_id': pid, 'repository': link['label'], 'terms': terms,
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
                             'result': 'nil'}
             link['searched'] = last.get(link['label'].casefold(), '')
         return {
@@ -7047,8 +7047,13 @@ class _SiteBuilder:
             'research_given': subject.get('given') or name,
         }
 
-    _SEARCH_OUTCOME = {'nil': 'nothing found', 'found': 'found a record',
-                       'partial': 'partly searched', 'unavailable': 'could not be searched'}
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
 
     def _research_last_searches(self, pid: str) -> dict[str, str]:
         """For this person, the latest logged search at each website, as the
@@ -7064,8 +7069,8 @@ class _SiteBuilder:
         out: dict[str, str] = {}
         for r in rows:                                # later rows overwrite earlier ones
             kind = str(r['result'] or '').split(' ', 1)[0].lower()
-            out[str(r['repository'] or '').strip().casefold()] = (
-                f"searched {r['date']}: {self._SEARCH_OUTCOME.get(kind, 'logged')}")
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
         return out
 
     def _person_research_subject(self, pid: str) -> dict | None:

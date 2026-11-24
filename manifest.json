@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ee79dd0691bc40e5df6bbfcc5ab5b39a2a200695fc62f32a44466b47e092b9f1",
+      "sha256": "cc9fc2af74f419ca9093ddb9d263bbbbd767c113f257b07843f1a87ec7349914",
       "spec_version": "2.30",
       "src": "tools/_lib.py"
     },
@@ -771,7 +771,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "5470390c582d4ed5e0f36b27b84c86bb98c3b5a5000835457f58fa8cda1f91c2",
+      "sha256": "1feb088fbdcb78a7a6c99f47087eee7b4d8fe5ad01726ad3c6ce89166746e795",
       "spec_version": "2.30",
       "src": "tools/confirm.py"
     },
@@ -1149,7 +1149,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "82344c757373a7da5c2bf803798bc66e31fb0d1c1e917194eeb0386ae97ea4ab",
+      "sha256": "3d1bdaaab2db6dc00cf7283f69e4a79662297e181ca0d2a046d1816fd2804047",
       "spec_version": "2.30",
       "src": "tools/site.py"
     },
@@ -1352,7 +1352,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "9d5ab72a7215f2036fa6376262e4b50a1f002aa2f4e144ba85664f8d25f4ab4b",
+      "sha256": "c18e1b867c808ca2c15dda9e2e0b8eed815bfac0b307c17ef882ffe209fedb7b",
       "spec_version": "2.30",
       "src": "tools/templates/workbench/workbench.js"
     },
