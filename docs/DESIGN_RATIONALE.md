@@ -27,7 +27,8 @@ Contents:
 17. Sounds-alike search
 18. Site search: a script, not a data file
 19. Calendar conversion is a tool
-20. Importing a newer download of the same tree
+20. The tree fades a weak line, from the tie outward
+21. Importing a newer download of the same tree
 
 ---
 
@@ -446,7 +447,22 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 
 ---
 
-## 20. Importing a newer download of the same tree
+## 20. The tree fades a weak line, from the tie outward
+
+**The rule.** The tree data rates every parent and child tie by the best confidence among the claims behind it (SPEC §8.5), and gives each person a `line_confidence`: the weakest rated tie on their strongest route back to the person the chart is drawn around. A spouse tie is never rated. On the shared site only claims a visitor could see count.
+
+**Why.** When the only thing linking Grandpa Thomas to his parents is a family story, everyone above Thomas rests on that story, however good their own records are. A chart that shows only each tie's own strength draws his great-grandparents as solid. Taking the strongest route means a person reached two ways, as in a cousin marriage, is as well tied as the better way allows. A doubtful marriage says the couple may not have married, not that the wife belongs to another family, so an in-law takes the line of the person they married. A sealed certificate cannot lift a shared family story: the shared site would then tell visitors that stronger evidence exists and is being kept from them.
+
+**Rejected.**
+
+- **Each tie's own confidence only.** It fades the one weak tie and leaves everyone beyond it looking proven.
+- **The weakest tie on any route.** A person reached through both a story and a certificate would fade although the certificate settles them.
+- **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
+- **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
+
+---
+
+## 21. Importing a newer download of the same tree
 
 **The rule.** `fha gedcom import` on a newer download of a tree already imported adds only what changed. People are matched to the records the first import made. A statement the newer file words as the earlier file did is never added again, whatever has since been done to its claim. A statement the tree changed is compared with the archive as it reads now: it is added as a new suggested claim, and when it cannot be true together with an earlier claim it `contradicts:` that claim and gets an open question. No existing record is edited. The one file added to is `notes/questions.md`.
 

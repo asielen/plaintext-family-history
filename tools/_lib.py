@@ -54,6 +54,7 @@ import datetime
 import difflib
 import fnmatch
 import hashlib
+import heapq
 import html
 import json
 import math
@@ -483,7 +484,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
 #  Possible duplicate people (fha report §4b): one person entered twice, scored
-#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_NAME_RATIO: thresholds
+#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_DAY_SLACK_DAYS,
+#    DUPLICATE_NAME_RATIO: thresholds
 #    person_vital_window       : a birth or death as a year window (baptism stands in)
 #    possible_duplicate_people : ranked pairs with plain reasons; hard stops drop a pair
 #
@@ -727,6 +729,81 @@ def is_genetic_parent_subtype(subtype: Any) -> bool:
     foster, guardian, surrogate-gestational, social). An unset or
     unrecognised subtype defaults to genetic (SPEC §12.2)."""
     return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
+
+
+# How strongly a tie is proven, so a chart can show which part of his tree
+# rests on a family story (TOOLING §7 `line_confidence`). Claim confidence
+# words (SPEC §8.5), weakest first; anything else is "not rated".
+CONFIDENCE_RANK: dict[str, int] = {'low': 1, 'medium': 2, 'high': 3}
+_CONFIDENCE_WORD = {rank: word for word, rank in CONFIDENCE_RANK.items()}
+_UNRATED = 4    # above 'high': an unrated tie never weakens a line
+
+
+def stronger_confidence(a: str | None, b: str | None) -> str | None:
+    """The better of two confidence words. A tie told in a family story and
+    shown on a certificate is as strong as the certificate. None, or a word
+    outside the scale, is not rated and loses to any word."""
+    ra, rb = CONFIDENCE_RANK.get(a or ''), CONFIDENCE_RANK.get(b or '')
+    if ra is None:
+        return b if rb is not None else None
+    if rb is None or ra >= rb:
+        return a
+    return b
+
+
+def weaker_confidence(a: str | None, b: str | None) -> str | None:
+    """The weaker of two ties along one line. An unrated tie (None) says
+    nothing about strength, so it never weakens: the rated one is the
+    answer, or None when neither is rated."""
+    ra = CONFIDENCE_RANK.get(a or '', _UNRATED)
+    rb = CONFIDENCE_RANK.get(b or '', _UNRATED)
+    return _CONFIDENCE_WORD.get(min(ra, rb))
+
+
+def line_confidence(seed: str, edges) -> dict[str, str | None]:
+    """For each person reachable from `seed`, the weakest rated parent or
+    child tie on their strongest route from the seed: 'low' | 'medium' |
+    'high', or None when no rated tie lies on that route (the seed itself, or
+    only unrated ties). This is what lets a chart fade everything above
+    Great-grandpa Thomas when his own parents rest on one family story.
+
+    `edges` is an iterable of (a, b, type, confidence) with type in
+    {'parent', 'child', 'spouse'} (any other type is ignored). Parent and
+    child ties are rated by their confidence (None = unrated); spouse ties are
+    never rated, so an in-law takes the line of the person they married.
+    Undirected: a child reached through a weak tie is as weak as an ancestor
+    reached through one. People the seed cannot reach are not in the result.
+
+    Widest-path search: a route is worth its weakest tie and the best route
+    counts. Best value first, so each person is settled once. The idea is
+    topola's propagateConfidence (https://github.com/PeWu/topola,
+    src/confidence.ts, Apache-2.0); this is a fresh implementation.
+    Deterministic: ties between equal values go by person id, and the result
+    is sorted by person id."""
+    adjacency: dict[str, list[tuple[str, int]]] = {}
+    for a, b, etype, conf in edges:
+        if etype == 'spouse':
+            weight = _UNRATED
+        elif etype in ('parent', 'child'):
+            weight = CONFIDENCE_RANK.get(conf or '', _UNRATED)
+        else:
+            continue
+        adjacency.setdefault(a, []).append((b, weight))
+        adjacency.setdefault(b, []).append((a, weight))
+    best: dict[str, int] = {seed: _UNRATED}
+    settled: set[str] = set()
+    heap: list[tuple[int, str]] = [(-_UNRATED, seed)]
+    while heap:
+        neg, node = heapq.heappop(heap)
+        if node in settled:
+            continue
+        settled.add(node)
+        for nxt, weight in adjacency.get(node, ()):
+            value = min(-neg, weight)
+            if nxt not in settled and value > best.get(nxt, 0):
+                best[nxt] = value
+                heapq.heappush(heap, (-value, nxt))
+    return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:
@@ -22520,6 +22597,144 @@ def _duplicate_name_match(fa: list[dict], fb: list[dict], ratio) -> tuple[int, s
     return best
 
 
+def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, dict]:
+    """The index's claims as the raw claim dicts the date rules read
+    (`plausibility_input_from_claims`), keyed by claim id: `persons:` and
+    `roles:` rebuilt from `claim_people`, so the rules decide whose birth or
+    marriage each one is exactly as they do for `fha lint`."""
+    out: dict[str, dict] = {}
+    for cid, c in ctx['claims'].items():
+        if c['status'] not in statuses or c['negated']:
+            continue
+        pairs = ctx['claim_people'].get(cid, [])
+        roles: dict[str, list[str]] = {}
+        for pid, role in pairs:
+            if role:
+                roles.setdefault(role, []).append(pid)
+        out[cid] = {'id': cid, 'type': c['type'], 'subtype': c['subtype'],
+                    'status': c['status'], 'date': c['date'],
+                    'persons': list(dict.fromkeys(p for p, _r in pairs)),
+                    'roles': roles}
+    return out
+
+
+DUPLICATE_DAY_SLACK_DAYS = 90   # how far two registers' days may disagree
+
+
+def _widened_plausibility_input(data: PlausibilityInput, *,
+                                vitals_too: bool = False) -> PlausibilityInput:
+    """The same input with every date known to the day or month widened by
+    DUPLICATE_DAY_SLACK_DAYS each way.
+
+    Two records of one person usually come from two sources, and two sources
+    disagree by days: a civil birth on the 10th and a baptism "on the 8th",
+    a death and a burial typed two days apart. Read at face value those say
+    "cannot be one person" and would hide a real duplicate he then never
+    merges. A date known only to the year is already a whole year wide and
+    is left alone, so a wife dead in 1880 and a husband remarried in 1881
+    (two events, not one typed twice) still cannot be one woman. The known
+    end of an open date ("died by 10 March 1880") is widened too.
+
+    `vitals_too` also widens every birth, baptism, death and burial known
+    only to the year: two copies of one event (a death index giving the
+    year registered, 1881, and a burial register 1880) are read that way.
+    A widened start never passes `0001-01-01`, the archive's floor."""
+    def shift(iso: str, days: int) -> str:
+        try:
+            moved = datetime.date.fromisoformat(iso) + datetime.timedelta(days=days)
+        except (ValueError, OverflowError):
+            return _EDTF_FLOOR if days < 0 else _EDTF_CEILING
+        return moved.isoformat()
+
+    def widen(c: DatedClaim) -> DatedClaim:
+        if c.lo is None or c.hi is None:
+            return dataclasses.replace(
+                c, lo=None if c.lo is None else shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                hi=None if c.hi is None else shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
+        try:
+            span = _iso_day_number(c.hi) - _iso_day_number(c.lo)
+        except ValueError:
+            return c
+        if span >= 300 and not (vitals_too and c.ctype in _PLAUSIBILITY_VITAL_TYPES):
+            return c
+        return dataclasses.replace(c, lo=shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                                   hi=shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
+
+    out = PlausibilityInput(sex=dict(data.sex), parent_edges=data.parent_edges)
+    out.facts = {pid: {t: merge_fact_range([widen(c) for c in fr.claims])
+                       for t, fr in by_type.items()}
+                 for pid, by_type in data.facts.items()}
+    out.life_events = {pid: [widen(c) for c in cs] for pid, cs in data.life_events.items()}
+    out.marriages = [(widen(c), couple) for c, couple in data.marriages]
+    return out
+
+
+def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
+                            kin: set[str], statuses: tuple[str, ...],
+                            kin_vitals: dict[str, list[str]]) -> bool:
+    """Would reading records a and b as one person give that person dates
+    that cannot all be true? A widower's two wives of one name: the first
+    died in 1880, the second married him in 1885, so one woman would marry
+    after her own death.
+
+    The question goes to the same rules `fha lint` runs (W163 to W170), over
+    every claim naming the two people plus the births, baptisms, deaths and
+    burials of their parents, children and spouses (`kin`), first as they
+    stand and then with b read as a. Hiding a pair hides a real duplicate if
+    the answer is wrong, so only a clear clash counts:
+
+    - dates known to the day or month are widened by a few months before
+      the joined reading, so two sources a few days apart never count, and
+      a clash only among one person's own birth, baptism, death and burial
+      must also survive their year-only dates widened (one death, two
+      registers);
+    - a problem the records already have apart does not count, and neither
+      does any new one built on a claim already in such a problem: a death
+      typed before the birth on one record is lint's to report there, not
+      a reason the other record cannot be her.
+
+    `kin_vitals` caches each relative's own vital claims across pairs, so a
+    father of hundreds is read once, not once per child pair."""
+    wanted = {a, b} | kin
+    picked = list(dict.fromkeys(
+        cid for pid in (a, b)
+        for cid in ctx['person_claims'].get(pid, ()) if cid in claims))
+    for pid in sorted(kin):
+        if pid not in kin_vitals:
+            kin_vitals[pid] = [cid for cid, _c in _own_vital_claims(
+                ctx, pid, statuses, _PLAUSIBILITY_VITAL_TYPES) if cid in claims]
+        picked.extend(cid for cid in kin_vitals[pid] if cid not in picked)
+    picked_claims = [claims[cid] for cid in picked]
+    persons = {pid: ctx['persons'].get(pid) or {} for pid in wanted}
+
+    def problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+        return one_person_problems(data) + family_problems(data)
+
+    apart = problems(plausibility_input_from_claims(
+        picked_claims, persons, None, {}, statuses=statuses))
+    before = {(pr.kind, tuple(a if p == b else p for p in pr.pids)) for pr in apart}
+    tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
+    joined_raw = plausibility_input_from_claims(
+        picked_claims, persons, None, {b: a}, statuses=statuses)
+    # A clash among one person's own birth, baptism, death and burial may
+    # be one event written twice (a death index's 1881, a burial register's
+    # 1880), so it must also hold with year-only dates widened. A clash with
+    # a marriage, a census or a child's birth is two events.
+    loose = {(pr.kind, pr.pids) for pr in problems(
+        _widened_plausibility_input(joined_raw, vitals_too=True))}
+
+    def counts(pr: PlausibilityProblem) -> bool:
+        claims_in = [dc for side in pr.claims for dc in side]
+        if (pr.kind, pr.pids) in before or any(dc.claim_id in tainted for dc in claims_in):
+            return False
+        if (len(set(pr.pids)) == 1
+                and all(dc.ctype in _PLAUSIBILITY_VITAL_TYPES for dc in claims_in)):
+            return (pr.kind, pr.pids) in loose
+        return True
+
+    return any(counts(pr) for pr in problems(_widened_plausibility_input(joined_raw)))
+
+
 def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                               not_same: set) -> dict:
     """Pairs of people who look like one person entered twice, best first.
@@ -22530,7 +22745,11 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
     are counted so the report can say how many it is keeping quiet about.
 
     Returns `{'pairs': [{'person_a', 'person_b', 'name_a', 'name_b', 'points',
-    'strength', 'reasons'}], 'dismissed_hidden': int}`, `person_a` the lower id.
+    'strength', 'reasons'}], 'dismissed_hidden': int, 'impossible_hidden': int}`,
+    `person_a` the lower id. A pair whose records, read as one person, would
+    give that person dates that cannot all be true (`_merge_makes_impossible`,
+    the rules `fha lint` runs) is never offered for a merge: it is counted in
+    `impossible_hidden` instead.
 
     Speed on a big imported tree (thousands of people): people are compared
     only within a block that shares the first letters of the given name and
@@ -22672,9 +22891,13 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
             return ('text:' + place_text, label)
         return None
 
+    claim_dicts: dict[str, dict] | None = None   # built when the first pair needs it
+    kin_vitals: dict[str, list[str]] = {}          # each relative's own vitals, read once
+
     seen_pairs: set[tuple[str, str]] = set()
     kept: list[dict] = []
     hidden = 0
+    impossible = 0
     for members in blocks.values():
         for i, pa in enumerate(members):
             for pb in members[i + 1:]:
@@ -22747,6 +22970,19 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 if frozenset(pair) in not_same:
                     hidden += 1
                     continue
+                # Two records that cannot be one person are never offered
+                # for a merge. Last, as the slowest check: only the few
+                # pairs that got this far need it.
+                if claim_dicts is None:
+                    claim_dicts = _duplicate_claim_dicts(ctx, statuses)
+                kin: set[str] = set()
+                for pid in pair:
+                    kin |= parents.get(pid, set()) | children.get(pid, set())
+                    kin |= spouses.get(pid, set())
+                if _merge_makes_impossible(ctx, claim_dicts, a, b, kin - {a, b}, statuses,
+                                           kin_vitals):
+                    impossible += 1
+                    continue
                 kept.append({
                     'person_a': a, 'person_b': b,
                     'name_a': name_of(a), 'name_b': name_of(b),
@@ -22756,7 +22992,7 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 })
     kept.sort(key=lambda p: (-p['points'], p['name_a'], p['name_b'],
                              p['person_a'], p['person_b']))
-    return {'pairs': kept, 'dismissed_hidden': hidden}
+    return {'pairs': kept, 'dismissed_hidden': hidden, 'impossible_hidden': impossible}
 
 
 # ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────
