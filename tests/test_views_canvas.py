@@ -13,7 +13,7 @@ Covered here:
   * a canvas the owner made is never overwritten or removed (exit 1);
   * a canvas whose couple folder is gone is removed; `clean` removes owned
     canvases only; `--dry-run` writes nothing and prints the same lines;
-  * the tables still arrive after a canvas run, and in `id` mode nothing is
+  * a table the owner deleted stays deleted, and in `id` mode nothing is
     written at all.
 
 Temp copies throughout; the example archive itself is never written.
@@ -195,10 +195,13 @@ class CanvasTests(unittest.TestCase):
         for tree in ('people', 'sources', 'places'):
             self.assertEqual(list((self.root / tree).rglob('*.canvas')), [])
 
-    def test_the_tables_still_arrive_after_a_canvas_run(self):
-        _run(views.run_canvas, self.root)
-        _run(views.run_places, self.root)
-        self.assertTrue((self.root / 'notes' / 'obsidian' / 'People.base').is_file())
+    def test_a_table_the_owner_deleted_stays_deleted_beside_canvases(self):
+        _run(views.run_refresh, self.root)
+        base = self.root / 'notes' / 'obsidian' / 'People.base'
+        self.assertTrue(base.is_file())
+        base.unlink()
+        _run(views.run_refresh, self.root)
+        self.assertFalse(base.exists())
 
     def test_refresh_keeps_the_canvases_current(self):
         _run(views.run_refresh, self.root)

@@ -4693,8 +4693,8 @@ def _write_obsidian_bases(archive_root: Path, dry_run: bool = False) -> list[Pat
     table owns no data (SPEC §3). Returns the files written (or that would be).
     """
     folder = archive_root / _OBSIDIAN_BASES_DIR
-    if folder.exists() and any(p.name != 'canvas' for p in folder.iterdir()):
-        return []     # the canvas/ folder alone does not count: see `_canvas_pass`
+    if folder.exists():
+        return []
     src_dir = Path(__file__).resolve().parent / 'templates' / 'obsidian'
     written: list[Path] = []
     for name in _OBSIDIAN_BASES:
