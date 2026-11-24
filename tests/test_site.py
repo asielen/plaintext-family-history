@@ -12525,5 +12525,199 @@ class ChartCaseTests(_Base):
         self.assertEqual(outputs[0], outputs[1])
 
 
+class GravesTests(_Base):
+    """Graves to visit (09 PR 5): a relative who wants to stand at a great-
+    grandmother's grave finds the cemetery, its map and its directions on her
+    page, and every family grave in one list."""
+
+    SRC = 's-1111111111'
+
+    def setUp(self) -> None:
+        super().setUp()
+        self._seed_source(self.SRC, 'Burial register')
+        self._seed_place('l-1111111111', 'Fairview', hierarchy='Fairview, Kansas',
+                         lat=39.8, lon=-95.6)
+        self._seed_place('l-2222222222', 'Fairview Cemetery', within='l-1111111111',
+                         lat=39.81, lon=-95.61)
+
+    def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None):
+        self.conn.execute(
+            'INSERT INTO places(id, name, hierarchy, within, lat, lon) VALUES (?,?,?,?,?,?)',
+            (lid, name, hierarchy, within, lat, lon))
+
+    def _seed_burial(self, cid, pid, *, place_id=None, place_text=None, date='1901',
+                     status='accepted', source=None, date_min=None, date_max=None):
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, '
+            'date_max, place_id, place_text) VALUES (?,?,?,?,?,?,?,?,?,?)',
+            (cid, source or self.SRC, 'burial', 'Buried', status, date,
+             date_min or f'{date[:4]}-01-01', date_max or f'{date[:4]}-12-31',
+             place_id, place_text))
+        self.conn.execute(
+            'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,0)', (cid, pid))
+
+    def test_person_page_names_the_grave_with_map_and_directions(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self._run()
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="burial-visit"', html)
+        self.assertIn('Buried at <a href="../places/l-2222222222.html">Fairview Cemetery</a>', html)
+        self.assertIn('Fairview, Kansas', html)            # the parent's hierarchy
+        self.assertIn('mlat=39.81&amp;mlon=-95.61#map=16/39.81/-95.61', html)
+        self.assertIn('directions?to=39.81%2C-95.61', html)
+
+    def test_cemetery_without_coordinates_uses_the_town_it_is_within(self):
+        self._seed_place('l-3333333333', 'Old Churchyard', within='l-1111111111')
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-3333333333')
+        self._run()
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('directions?to=39.8%2C-95.6', html)
+        self.assertIn('#map=16/39.8/-95.6', html)
+
+    def test_two_accepted_burials_pick_the_same_one_as_the_summary_row(self):
+        self._seed_place('l-4444444444', 'Hilltop Cemetery', lat=40.0, lon=-96.0)
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        # The exact date wins, in the summary row and in the block alike.
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-4444444444',
+                          date='1900/1905', date_min='1900-01-01', date_max='1905-12-31')
+        self._seed_burial('c-2222222222', 'p-aaaaaaaaaa', place_id='l-2222222222',
+                          date='1901-03-04', date_min='1901-03-04', date_max='1901-03-04')
+        self._run()
+        html = self._read('persons/p-aaaaaaaaaa.html')
+        block = html.split('<p class="burial-visit">')[1].split('</p>')[0]
+        self.assertIn('l-2222222222.html', block)
+        self.assertNotIn('l-4444444444', block)
+        summary = html.split('<dl class="summary">')[1].split('</dl>')[0]
+        self.assertIn('Fairview Cemetery', summary)
+        self.assertNotIn('Hilltop Cemetery', summary)
+
+    def test_graves_page_groups_people_by_cemetery(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley', surname='Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Ben Hartley', surname='Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222', date='1901')
+        self._seed_burial('c-2222222222', 'p-bbbbbbbbbb', place_id='l-2222222222', date='1899')
+        self._run()
+        html = self._read('graves.html')
+        self.assertEqual(html.count('directions?to=39.81%2C-95.61'), 1)   # one block per cemetery
+        self.assertLess(html.index('Ben Hartley'), html.index('Ada Hartley'))  # earlier first
+        self.assertIn('need an internet connection', html)
+        self.assertIn('graves.html', self._read('index.html'))
+
+    def test_burial_with_only_place_text_goes_under_other_burial_places(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_text='Back field, Dunmore')
+        self._run()
+        html = self._read('graves.html')
+        self.assertIn('Other burial places', html)
+        self.assertIn('Back field, Dunmore', html)
+        self.assertNotIn('openstreetmap.org/directions', html)
+        self.assertNotIn('burial-visit', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_a_shared_site_leaves_out_living_restricted_and_dna_burials(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Larry Living', living='true')
+        self._seed_person('p-cccccccccc', 'Rita Restricted',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_person('p-dddddddddd', 'Dana Dna')
+        self._seed_source('s-2222222222', 'Match list', source_type='dna')
+        self._seed_source('s-3333333333', 'Private letter')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self._seed_burial('c-2222222222', 'p-bbbbbbbbbb', place_id='l-2222222222')
+        self._seed_burial('c-3333333333', 'p-cccccccccc', place_id='l-2222222222',
+                          source='s-3333333333')
+        self._seed_burial('c-4444444444', 'p-dddddddddd', place_id='l-2222222222',
+                          source='s-2222222222')
+        self._run()
+        graves = self._read('graves.html')
+        self.assertIn('Ada Hartley', graves)
+        for name in ('Larry Living', 'Rita Restricted', 'Dana Dna'):
+            self.assertNotIn(name, graves)
+        self.assertNotIn('burial-visit', self._read('persons/p-dddddddddd.html'))
+
+    def test_the_linked_preview_still_leaves_out_the_living(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Larry Living', living='true')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self._seed_burial('c-2222222222', 'p-bbbbbbbbbb', place_id='l-2222222222')
+        self._run(linked=True)
+        graves = self._read('graves.html')
+        self.assertIn('Ada Hartley', graves)
+        self.assertNotIn('Larry Living', graves)
+
+    def test_a_parked_burial_stays_off_both_surfaces(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222',
+                          status='suggested')
+        self._run(linked=True)
+        self.assertFalse((self.out_dir / 'graves.html').exists())
+        self.assertNotIn('burial-visit', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_no_burials_means_no_page_no_link_and_a_stale_page_is_removed(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self._run()
+        self.assertTrue((self.out_dir / 'graves.html').exists())
+        self.conn.execute("UPDATE claims SET status = 'suggested'")
+        self._run()
+        self.assertFalse((self.out_dir / 'graves.html').exists())
+        self.assertNotIn('graves.html', self._read('index.html'))
+
+    def test_page_count_includes_the_graves_page_only_when_there_is_one(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        without = self._run()['pages']
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self.assertEqual(self._run()['pages'], without + 1)
+
+    def test_two_builds_are_byte_identical(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_person('p-bbbbbbbbbb', 'Ben Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self._seed_burial('c-2222222222', 'p-bbbbbbbbbb', place_text='Somewhere')
+        self._run()
+        first = self._read('graves.html')
+        self._run()
+        self.assertEqual(first, self._read('graves.html'))
+
+    def test_home_links_the_graves_list_even_with_no_registered_places(self):
+        # A family whose burials are written only as words ("Back field,
+        # Dunmore") still finds the graves list from the home page.
+        self.conn.execute('DELETE FROM places')
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_text='Back field, Dunmore')
+        self._run()
+        self.assertTrue((self.out_dir / 'graves.html').exists())
+        self.assertIn('href="graves.html"', self._read('index.html'))
+
+    def test_graves_list_keeps_the_plot_written_on_the_record(self):
+        # "Section B, Lot 47" is what a visitor needs at the cemetery gate.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222',
+                          place_text='Fairview Cemetery, Section B, Lot 47')
+        self._run()
+        self.assertIn('Section B, Lot 47', self._read('graves.html'))
+
+    def test_graves_list_shows_a_burial_date_written_only_in_words(self):
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222', date='1901')
+        self.conn.execute("UPDATE claims SET date_edtf = NULL, value = 'Spring of the flood year'")
+        self._run()
+        self.assertIn('Spring of the flood year', self._read('persons/p-aaaaaaaaaa.html'))
+        self.assertIn('Spring of the flood year', self._read('graves.html'))
+
+    def test_graves_row_with_no_date_does_not_put_buried_before_a_sentence(self):
+        # Record wording is a sentence; "buried Ada Hartley was buried..." reads
+        # as nonsense on the list a relative prints for the cemetery trip.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self.conn.execute(
+            "UPDATE claims SET date_edtf = NULL, value = 'Ada Hartley was buried beside her husband'")
+        self._run()
+        graves = self._read('graves.html')
+        self.assertIn('Ada Hartley was buried beside her husband', graves)
+        self.assertNotIn('buried Ada Hartley', graves)
+
+
 if __name__ == '__main__':
     unittest.main()

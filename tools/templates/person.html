@@ -49,6 +49,10 @@
     {% endfor %}
   </dl>
   {% endif %}
+  {%- if person.burial_visit %}{% set bv = person.burial_visit %}
+  <p class="burial-visit">Buried at {{ bv.html }}{% if bv.hierarchy %}, {{ bv.hierarchy }}{% endif %}.
+    <a href="{{ bv.map_url }}">Map</a> &middot; <a href="{{ bv.directions_url }}">Directions</a></p>
+  {%- endif %}
   {% if person.completeness %}
   {#- fha.yaml `site: completeness_rings: true` (TOOLING §12), always on in
       the workbench. One ring segment per check; the list beside it says the
