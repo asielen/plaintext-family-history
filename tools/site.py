@@ -300,6 +300,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
@@ -3148,51 +3149,6 @@ def _real_path(path: str | Path) -> Path:
 
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
-
-def _chart_year(edtf) -> str:
-    """The year a chart prints for a date, keeping what the date means: a
-    death recorded "before 1920" must not read as a death in 1920. Charts show
-    years only; the person's page carries the full date. Owner decision
-    (2026-11-22) on the short forms:
-
-    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
-      '1840?' are both '1840');
-    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
-    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
-    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
-    - an interval `1918/1920`: '1918–1920', or the one year when both ends
-      fall in it.
-
-    Anything else falls back to the first four-digit run, or '' when there is
-    none. Used by the fan and the family chart alike."""
-    if not edtf:
-        return ''
-    s = str(edtf).strip()
-    if '/' in s:
-        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
-        if ends[0] and ends[1]:
-            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
-        return ends[0] or ends[1]
-    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
-    if m:
-        return f'bef. {m.group(1)}'
-    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
-    if m:
-        return f'aft. {m.group(1)}'
-    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
-    if m:
-        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
-    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
-    if m:
-        return f'abt. {m.group(1) or m.group(2)}'
-    return _chart_bare_year(s)
-
-
-def _chart_bare_year(s: str) -> str:
-    """The first four-digit run of a date's text, or ''."""
-    m = re.search(r'\d{4}', s)
-    return m.group(0) if m else ''
-
 
 def _pedigree_years(dates: dict | None) -> str:
     """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
