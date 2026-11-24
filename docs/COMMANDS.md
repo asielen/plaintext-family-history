@@ -1388,11 +1388,11 @@ Append a dated entry to notes/discoveries.md
 
 ### `fha confirm draft`
 
-Accept AI-DRAFT prose markers in a person profile
+Accept AI-DRAFT prose markers in a person profile or a source record
 
 | Argument | What it does |
 |---|---|
-| `p-id` | The person whose profile to accept drafts in. |
+| `p-id|s-id` | The person profile or source record (a proof argument) whose drafts to accept. |
 | `--dry-run` | Preview the change without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -1797,6 +1797,7 @@ Change a source record: note (append), edit-note (rewrite one), extract (PDF tex
 Update a source record directly, one field or section at a time, or merge
 two records of one piece of evidence into one.
 
+  fha source new --type proof-argument --title "..." [--people p-...]
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
@@ -1804,7 +1805,8 @@ two records of one piece of evidence into one.
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
   fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
-note appends a hand-written paragraph to a source's ## Notes section;
+new starts a written proof argument as a source record with no file; note
+appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
 text) and leaves the rest untouched; extract dumps the source PDF's embedded
 text layer into a derived [Page N]-labeled companion file (needs the pypdf
@@ -1840,6 +1842,31 @@ Preview the change first with --dry-run.
 | `--text` `TEXT` | The note to add, in your own words. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the change without writing. |
+
+### `fha source new`
+
+Start a written proof argument as a source record (no file needed).
+
+```text
+Start a written proof argument as a source record.
+
+  fha source new --type proof-argument --title "When Thomas Edward Hartley was born" \
+      [--people p-de957bcda1,p-075114a0f8] [--date 2026-11-22]
+
+Writes sources/proofs/{title}_{s-id}.md with the question, evidence, reasoning
+and conclusion headings empty, ready to write in. It is the one kind of source
+made without a file. Other kinds start from a document or a photo: put the file
+in the inbox and run `fha process <file>`. Preview with --dry-run.
+```
+
+| Argument | What it does |
+|---|---|
+| `--type` `TYPE` | Only proof-argument starts without a file. |
+| `--title` `TITLE` | What the argument settles, e.g. "When Thomas Edward Hartley was born". |
+| `--people` `P-IDS` | Comma-separated p-ids the argument is about. |
+| `--date` `EDTF` | When it was written (default: today). |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the path and file text without writing. |
 
 ### `fha source edit-note`
 

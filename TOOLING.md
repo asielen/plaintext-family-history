@@ -601,9 +601,10 @@ After a move the index is updated in place (rows moved, tier applied), so batche
 
 ## 3d. `fha source`: source-field write-backs
 
-Write-backs to a source's own text and files. Six verbs; all locate the record by scanning `sources/`.
+Write-backs to a source's own text and files. Seven verbs; all locate the record by scanning `sources/`.
 
 ```
+fha source new --type proof-argument --title TEXT [--people P-IDS] [--date EDTF] [--dry-run] [--root PATH]
 fha source note <s-id> --text TEXT [--dry-run] [--root PATH]
 fha source extract <s-id> [--pages RANGES] [--copy LABEL] [--dry-run] [--root PATH]
 fha source edit-note <s-id> --old-text TEXT --text TEXT [--dry-run] [--root PATH]
@@ -611,6 +612,8 @@ fha source clear-keyword <s-id> --keyword TEXT [--replace-with TEXT] [--file NAM
 fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 fha source merge <keeper> <retiree> [--dry-run] [--root PATH]
 ```
+
+**`new`.** `--type proof-argument` writes `sources/proofs/{slug}_{s-id}.md` (§14): `source_class: authored`, `repository: this archive`, a citation dated from `--date` (default today), `people:` from `--people` (known p-ids only), no `files:`, the purpose block, an empty `## Claims` fence, then empty `## The question`, `## The evidence`, `## The reasoning`, `## Conclusion` and `## Notes`. Any other `--type` is refused: other sources start from a file (`fha process`). A fresh s-id each run; `--dry-run` prints the path and text.
 
 **`note`.** Appends a paragraph to `## Notes` (SPEC §14), adding the heading at the end if missing. Append-only, no AI marker. Refuses if the `## Claims` block was sound before and not after (Claims-less sources are fine), or on several `## Notes` headings. Superseded sources are not refused.
 
@@ -717,7 +720,7 @@ One query over:
 - One explanation prints after the results, before the coverage note: what the label means, that the image is the evidence, and `fha find <s-id>`.
 - `--json` and `/api/find` add `"unchecked": true`; the workbench shows a caution chip. One rule for all surfaces.
 
-No verb flips a transcript from draft to accepted (`fha confirm draft` edits profiles only), so AI transcripts stay unreviewed (idea, see BACKLOG.md).
+No verb flips a transcript from draft to accepted (`fha confirm draft` edits profiles and a source record's body, not a transcript companion), so AI transcripts stay unreviewed (idea, see BACKLOG.md).
 
 ### `--json <ID|text> [--kind K,K…] [--limit N]`
 
@@ -1459,7 +1462,7 @@ Builds the archive as a website in `generated/site/` (or `--out`): relative link
 - **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names on two lines when long, with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
 - **Person (stub)**: one-line entries on their couple's section.
 - **Source**: scan thumbnail (the Files list's privacy-checked image, `role: front` preferred) linking to the full scan; citation, metadata, claims table with status badges, files list.
-- **Place**: embedded OpenStreetMap iframe with marker when coords exist (offline an empty frame; the map link always works); `notes:`; `history:`; claims; `within:` children.
+- **Place**: embedded OpenStreetMap iframe with marker when coords exist (offline an empty frame; the map link always works); `notes:`; "Names over time" (`history:`); `within:` children; and "Through the years", one dated list that merges the place's dated names with every claim at the place and at the places `within:` it (a cemetery shows on its town's page, marked "at {place}"). A claim whose date falls wholly inside a `history:` period shows what the place was called then; a range that crosses a period boundary, an undated claim, or a period running to the present (today's name) shows none. A confirmed absence (`negated`) is not an event. Audience rules are the existing ones.
 - **Person (curated), burial line**: when the person's picked accepted burial (the one the summary box shows) names a registered place with a map position, its own or that of a place it is `within:`, the page says "Buried at {place}, {where}" with an OpenStreetMap map link (zoom 16) and a directions link that leaves the visitor's own starting point blank. The links need an internet connection; there is no embedded map.
 - **Graves to visit** (`graves.html`, linked under Places on the home page, built only when someone has such a burial): every person with a page who is not living, unknown, restricted, by-request or merged away, grouped by the picked burial's place with its map and directions links (or "no map position recorded yet"), the burial and death dates and the source; burials at places nobody registered come last as "Other burial places", as written. Same claim filters as the summary box, so a parked or restricted burial never shows.
 - **Discoveries**: from `notes/discoveries.md`.
@@ -1786,7 +1789,7 @@ The detectors only read; `fha confirm` writes what the human picks, from any cal
 | `confirm undismiss <p-a> <p-b> [--not-same-person]` / `confirm undismiss --list` | Take a pair back out of the file so it can be suggested again; `--list` prints every remembered pair with its undo command. |
 | `confirm place <c-id> [<c-id> ...] (--name NAME [--hierarchy H] \| --into <l-id>)` | Mint a place in `places/places.yaml` (or merge into an existing one) and relink the claims' `place:`. |
 | `confirm discovery "<text>" [--refs s-...,p-...]` | Append a dated entry with refs to `notes/discoveries.md`, the wins log report §0 leads with. |
-| `confirm draft <p-id>` | Flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a tombstone it resolves through `merged_into`. |
+| `confirm draft <p-id\|s-id>` | In a person profile, or in a source record's body (a proof argument; never its frontmatter or `## Claims`), flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a merged person's tombstone it writes nothing and names the surviving record to accept on. |
 | `confirm merge <p-merged> --into <p-survivor> --reason "<why>"` | Enact a human-confirmed SPEC §9 merge; see below. |
 
 **`confirm merge`** is planned in memory and applied with an undo journal; any failure or Ctrl+C rolls everything back (a step joins the journal once it has landed), and a file that could not be put back is named with the hand fix.
@@ -1821,7 +1824,7 @@ The session start screen, narrated by the `today` skill.
 | 1b | `second-look` | Parked claims (`suggested` with a `reviewed:` date, SPEC §8.1; oldest first) and accepted low-confidence claims (§8.5): counts plus the oldest few. |
 | 2 | `new-since-last` | Sources, claims, people added or changed. |
 | 3 | `vitals-gaps` | Curated people first, then people touched since last report (W101). Computed fresh each run; never written as questions (SPEC §17b). |
-| 3b | `loose-ends` | Computed fresh, never written as questions (SPEC §17b). (a) End of the line: direct-line ancestors from `root_person` with one or both genetic parents unrecorded, closest first, with their Ahnentafel number and the path in words ("father's mother's father"). (b) Not connected to the tree: people with no accepted relationship of any kind (family, social or power) linking them to `root_person`'s group (the largest group when `root_person` is unset): groups largest first, then people on their own, most mentioned first, and how many are named on family-tie claims still waiting for review. (c) Same surname, not connected: unconnected people who share a surname with someone in the tree. Counts plus the top five per bucket. |
+| 3b | `loose-ends` | Computed fresh, never written as questions (SPEC §17b). (a) End of the line: direct-line ancestors from `root_person` with one or both genetic parents unrecorded, closest first, with their Ahnentafel number and the path in words ("father's mother's father"). (b) Not connected to the tree: people with no accepted relationship of any kind (family, social or power) linking them to `root_person`'s group (the largest group when `root_person` is unset): groups largest first, then people on their own, most mentioned first, and how many are named on family-tie claims still waiting for review. (c) Same surname, not connected: unconnected people who share a surname with someone in the tree. (d) Birth years the family suggests: for a named person with no birth date or estimate who is not marked `living: true`, the range implied by accepted relatives' births (parents, eldest child, spouses, brothers and sisters, leaving out anyone with a different recorded father or mother; a relative's vague date kept as a span, a baptism only as "born by then"), capped by the person's own earliest accepted record, offered as `fha person estimate --birth LO/HI`; never when the range is empty, wider than 35 years, or ends after 1935. Counts plus the top five per bucket. |
 | 4 | `contradictions` | `contradicts:` pairs lacking an open question (E009). |
 | 4b | `possible-duplicates` | Pairs of people that look like one person entered twice: names match after folding accents and case (a close spelling counts), and nothing rules them out (different recorded sex, different generational suffix, a parent, child, spouse or ancestor tie between them, a pair noted as two different people, or recorded birth or death dates that cannot be one person: two exact dates that differ, or approximate ones more than two years apart). Ranked by what they share (birth, death, a parent, a spouse, a birthplace) and shown as "strong" or "worth a look" with the reasons; at most ten. Each line offers the merge-identities skill and the exact `fha confirm dismiss <p-a> <p-b> --not-same-person` command. The owner's private view, so living people are named. Engine: `_lib.possible_duplicate_people`. |
 | 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)", with the years searched when the entry gives them; a nil older than 18 months is "worth re-running". An `unavailable` entry reads "could not be searched (date)" and a `requested` one "asked (date), waiting for a reply"; both are still to do. Then captures from the last 30 days not yet linked to a person. |
@@ -1922,7 +1925,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `transcribe-audio` skill (A) | "Run this through whisper." Local faster-whisper pass attached beside the original transcript; both always kept. |
 | `transcribe-source` skill (A) | "Type out what this scan says." Reads an image-only source and writes a `role: transcript` companion (`fha process --more`), marked `<!-- AI-DRAFT … -->` until a human checks it against the image. Drafts no claims; a contradiction with an accepted claim becomes an open question. Its detectors are lint W124 and `fha find --text`'s coverage note; that same marker is what makes `fha find --text` label a hit from an unchecked transcript (§4a D15). |
 | `write-biography` skill (A) | "Draft Margaret's bio." Consumes the draft queue; AI-DRAFT markers. |
-| `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. |
+| `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. Repository names come from `fha repositories`. |
 | `write-records-request` skill (A) | "Write to the county for the death certificate." Drafts a short records request from accepted facts, in the conversation, with placeholders and "(check this)" on every address and fee; saves it under `notes/research/letters/` on a yes; logs `result: requested` once he says it went. Sends nothing. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
@@ -1970,6 +1973,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha person edit <p-id> --section …` / `fha person note <p-id> --section …` (T C) | Bounded prose write-backs to a curated profile's Biography/Stories/Research Notes (§3c): `edit` replaces or (`--append`) appends via `--text`/`--file`; `note` is always append-only. `--dry-run`. |
 | `fha person edit-note <p-id> --section … --old-text … --text …` (T C) | Rewrite ONE existing Stories/Research Notes entry, named by its exact current text (§3c): the workbench's per-entry edit button; every other entry untouched. `--dry-run`. |
 | `fha person promote <p-id> [--into FOLDER]` (T C) | Graduate a direct-line stub to a curated record (§3c, the §5 carve-out): tier flip + move out of `stubs/` into the derived couple folder + backfill any missing §16 body section (never a research file, which exists only once something is written in it), via the shared engine behind `fha views brackets --fix-promote`. Direct-line-only; explicitly human-invoked, never automatic. `--dry-run`. |
+| `fha source new --type proof-argument --title TEXT` (T C) | Start a written proof argument as a source record under `sources/proofs/` (§3d), the one source made without a file: the question, evidence, reasoning and conclusion headings come empty. Any other `--type` is refused with a pointer to `fha process`. `--people`, `--date`, `--dry-run`. |
 | `fha source note <s-id> --text …` (T C) | Append a hand-written paragraph to a source's `## Notes` (§3d): the safe one-line way to jot something down without touching frontmatter or `## Claims`. `--dry-run`. |
 
 **`fha source extract <s-id> [--pages A-B] [--copy LABEL]` (T C)**: dump the source PDF's embedded text layer into a derived `[Page N]`-labeled companion (`role: extracted-text, derived: true`, §3d): seconds instead of vision-reading hundreds of pages.
