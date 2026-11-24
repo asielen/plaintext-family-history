@@ -9,6 +9,7 @@ person.py - fha person: deterministic person-field write-backs (TOOLING §3c).
                      [--dry-run] [--root PATH]
   fha person set-living <p-id> true|false|unknown [--dry-run] [--root PATH]
   fha person set-sex <P-id> M|F|intersex|unknown [--dry-run] [--root PATH]
+  fha person set-external-id <P-id> SITE ID [--replace] [--dry-run] [--root PATH]
   fha person relate <p-id> (--parent|--child|--sibling|--spouse) <p-id2>
                      [--subtype WORD] [--reciprocal] [--dry-run]
   fha person estimate <p-id> [--birth DATE|-] [--death DATE|-] [--dry-run]
@@ -187,6 +188,7 @@ CODE MAP
   _frontmatter_edit_problem   - _lib.living_edit_problem: the living-specific guard
   run_set_living              - _lib.set_person_living: validate, locate, edit
   run_set_sex                 - same shape for sex:, ends with the brackets nudge
+  run_set_external_id         - one key in external_ids: (WikiTree id etc.); refuses an id another person holds
   -- shared prelude for every verb below set-living --
   _refuse_result / _not_found_result - the two non-happy Result shapes every
                                  verb returns, factored so they cannot drift
@@ -283,6 +285,7 @@ from _lib import (
     duplicate_person_name_message,
     find_people_by_name,
     unreadable_people_note,
+    parse_filename,
     couple_folder_dirs,
     couple_folder_for_prefix,
     couple_folder_prefix,
@@ -800,6 +803,202 @@ def run_set_sex(
                'rebuild it still shows the old placement and --realign will not '
                'run at all.',
                next_step='fha views brackets')
+    return result
+
+
+_EXTERNAL_ID_KEY_RE = re.compile(r'^[a-z][a-z0-9_]*$')
+
+
+def _external_id_holder(archive_root: Path, pid: str, key: str, value: str) -> tuple[str, str] | None:
+    """(p-id, name) of ANOTHER person whose `external_ids:` already holds `key: value`.
+
+    Scans the person files, never the index, so a stale index cannot let the
+    same profile land on two people. A tombstone merged into `pid` is the same
+    person and does not count."""
+    people_dir = archive_root / 'people'
+    if not people_dir.is_dir():
+        return None
+    want = value.strip().casefold()
+    for p in sorted(people_dir.rglob('*.md')):
+        parsed = parse_filename(p)
+        if parsed is None or parsed['id_type'] != 'P' or parsed['kind'] != 'profile':
+            continue
+        other = normalize_id(parsed['id_str'])
+        if other == pid:
+            continue
+        try:
+            m = FRONT_RE.match(read_text_exact(p))
+            meta = safe_load_yaml(m.group(1)) if m else None
+        except (OSError, yaml.YAMLError):
+            continue
+        if not isinstance(meta, dict):
+            continue
+        if is_merged_meta(meta) and normalize_id(str(meta.get('merged_into') or '')) == pid:
+            continue
+        ext = meta.get('external_ids')
+        if isinstance(ext, dict) and str(ext.get(key) or '').strip().casefold() == want:
+            return other, str(meta.get('name') or '').strip()
+    return None
+
+
+def run_set_external_id(
+    archive_root: Path, person_id: str, key: str, value: str,
+    replace: bool = False, dry_run: bool = False,
+) -> Result:
+    """Record which profile on another site is this person's (SPEC A.7
+    `external_ids:`), so the next capture and the WikiTree export match the
+    right person; return a Result.
+
+    Writes or replaces ONE key in the person's `external_ids:` mapping and
+    nothing else. A key the person already holds with the same value is a
+    no-op; with a different value it asks for `--replace`; a key:value that
+    another person holds is refused, naming that person. `data` is {'status':
+    'ok'|'already'|'dry-run'|'needs-replace'|'not-found'|'merged'|'refused',
+    'person_id', 'path', 'key', 'old', 'new'}."""
+    result = Result(data={'status': None, 'person_id': None, 'path': None,
+                          'key': None, 'old': None, 'new': None})
+    key = (key or '').strip().lower()
+    value = (value or '').strip()
+    if not _EXTERNAL_ID_KEY_RE.match(key):
+        return _refuse_result(
+            result, 'refused',
+            f'{key!r} is not a usable site name. Use lower-case letters, digits and '
+            'underscores, such as wikitree, ancestry or familysearch.')
+    if not value or re.search(r'\s', value):
+        return _refuse_result(
+            result, 'refused',
+            'The id must be one word with no spaces, as the site shows it '
+            '(for example Hartley-6084). Nothing was written.')
+    result.data.update(key=key, new=value)
+
+    located = _locate_person(archive_root, person_id, result)
+    if located is None:
+        return result
+    path, text, before_meta, pid = located
+    result.data['person_id'] = fmt_id_display(pid)
+    result.data['path'] = str(path)
+    name = str(before_meta.get('name') or '').strip()
+    label = f'{fmt_id_display(pid)} ({name})' if name else fmt_id_display(pid)
+
+    ext = before_meta.get('external_ids')
+    if ext is not None and not isinstance(ext, dict):
+        return _refuse_result(
+            result, 'refused',
+            f'external_ids: in {path.name} is not a list of site: id pairs, so it '
+            f'cannot be edited safely. Open {path} and add {key}: {value} by hand. '
+            'Nothing was written.')
+    old_raw = (ext or {}).get(key)
+    old = str(old_raw).strip() if old_raw is not None and str(old_raw).strip() else None
+    result.data['old'] = old
+    if old == value:
+        result.data['status'] = 'already'
+        result.add('info', f'{label} already has {key}: {value} - nothing to change.')
+        return result
+    if old is not None and not replace:
+        result.data['status'] = 'needs-replace'
+        return _refuse_result(
+            result, 'needs-replace',
+            f'{label} already has {key}: {old}. If {value} is the right one, run '
+            f'`fha person set-external-id {fmt_id_display(pid)} {key} {value} --replace`. '
+            'Nothing was written.')
+
+    holder = _external_id_holder(archive_root, pid, key, value)
+    if holder is not None:
+        h_pid, h_name = holder
+        who = f'{fmt_id_display(h_pid)} ({h_name})' if h_name else fmt_id_display(h_pid)
+        return _refuse_result(
+            result, 'refused',
+            f'{key}: {value} already belongs to {who}. One profile is one person: '
+            f'if {who} and {label} are the same person, merge them with '
+            '`fha confirm merge`; if not, check the id. Nothing was written.')
+
+    lines = text.split('\n')
+    bounds = frontmatter_fence_span(lines)
+    if bounds is None:
+        return _refuse_result(
+            result, 'refused',
+            f'could not locate the frontmatter fences in {path.name} to edit safely. '
+            f'Open {path} and add {key}: {value} under external_ids: by hand. '
+            'Nothing was written.')
+    start, end = bounds
+    cr = '\r' if lines[start].endswith('\r') else ''
+    rendered = f'{key}: {yaml_inline(value)}'
+    new_lines = list(lines)
+    span = _fm_top_level_key_span(lines, start, end, 'external_ids')
+    if span is None:
+        new_lines[end:end] = [f'external_ids:{cr}', f'  {rendered}{cr}']
+    else:
+        key_line, span_end = span
+        m = re.match(r'^external_ids\s*:\s*(.*?)\r?$', lines[key_line])
+        inline = m.group(1) if m else 'x'
+        if inline and not inline.startswith('#'):
+            return _refuse_result(
+                result, 'refused',
+                f'external_ids: in {path.name} is written on one line, which this '
+                f'tool will not rewrite. Open {path} and add {key}: {value} by hand. '
+                'Nothing was written.')
+        child_indent = '  '
+        child_line = None
+        for j in range(key_line + 1, span_end):
+            if lines[j].strip():
+                child_indent = re.match(r'^(\s*)', lines[j]).group(1)
+                if re.match(rf'^{re.escape(key)}\s*:', lines[j].lstrip()):
+                    child_line = j
+                    break
+        if child_line is not None:
+            new_lines[child_line] = (
+                f'{child_indent}{key}: {yaml_inline(value)}'
+                f'{scalar_line_comment(lines[child_line].rstrip(chr(13)))}{cr}')
+        else:
+            insert_at = span_end
+            while insert_at > key_line + 1 and not lines[insert_at - 1].strip():
+                insert_at -= 1
+            new_lines.insert(insert_at, f'{child_indent}{rendered}{cr}')
+
+    new_text = '\n'.join(new_lines)
+    problem = frontmatter_edit_problem(new_text, before_meta=before_meta,
+                                       changed_keys={'external_ids'})
+    after_meta = None
+    if problem is None:
+        fm_after = FRONT_RE.match(new_text)
+        try:
+            after_meta = safe_load_yaml(fm_after.group(1)) if fm_after else None
+        except yaml.YAMLError:
+            after_meta = None
+        got = ((after_meta or {}).get('external_ids') or {}).get(key)
+        if str(got) != value:
+            problem = f'the edit would not have read back as {key}: {value}'
+    if problem is not None:
+        return _refuse_result(
+            result, 'refused',
+            f'Refusing to change {label}: {problem}, so saving could corrupt the '
+            f'record. Nothing was written. Open {path} and add {key}: {value} '
+            'under external_ids: by hand, then run `fha lint`.')
+
+    old_display = old if old else '(absent)'
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would set {label} {key}: {old_display} -> {value}.')
+        for dline in difflib.unified_diff(
+            text.splitlines(), new_text.splitlines(),
+            fromfile=f'{path} (before)', tofile=f'{path} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written. Re-run without --dry-run to apply.')
+        return result
+
+    try:
+        write_text_exact_atomic(path, reapply_newline(new_text, text))
+    except OSError as e:
+        return _refuse_result(
+            result, 'refused',
+            f'cannot write {path}: {e}. Check the file is not open elsewhere and '
+            'the folder is writable, then retry.')
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info', f'{label} now has {key}: {value} (was {old_display}).', path=path)
+    result.add('info', 'Next: run `fha index` so searches and exports see the new id.',
+               next_step='fha index')
     return result
 
 
@@ -3819,6 +4018,16 @@ def _cmd_set_sex(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_set_external_id(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha person set-external-id')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_set_external_id(
+        archive_root, person_id=args.person_id, key=args.key, value=args.value,
+        replace=bool(getattr(args, 'replace', False)),
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_promote(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha person promote')
     if archive_root is None:
@@ -3920,6 +4129,7 @@ Update a person's record directly, one field or section at a time.
   fha person promote <p-id> [--into FOLDER]
   fha person rename <p-id> "New Name" [--keep-variant]
   fha person set-living <p-id> true|false|unknown
+  fha person set-external-id <p-id> SITE ID [--replace]
   fha person relate <p-id> --parent|--child|--sibling|--spouse <p-id2>
   fha person estimate <p-id> --birth DATE --death DATE
   fha person edit <p-id> --section biography|stories|research --text TEXT
@@ -4088,6 +4298,35 @@ def _add_set_sex_arguments(sub: argparse._SubParsersAction) -> None:
     sp.add_argument('--dry-run', action='store_true', dest='dry_run',
                     help='Preview the one-line change without writing.')
     sp.set_defaults(func=_cmd_set_sex)
+
+
+def _add_set_external_id_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the set-external-id verb on a group subparser (shared by both mains)."""
+    sp = sub.add_parser(
+        'set-external-id',
+        help="Record a person's profile id on another site (WikiTree, Ancestry, ...).",
+        description='Record which profile on another site is this person\'s, so the '
+                    'next capture and the WikiTree export match the right person.\n\n'
+                    '  fha person set-external-id p-2b3c4d5e6f wikitree Hartley-6084\n\n'
+                    'Writes or replaces one key in external_ids: and nothing else. '
+                    'A key the person already has with a different id needs --replace. '
+                    'An id another person already holds is refused, naming them. '
+                    'Preview with --dry-run.',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    sp.add_argument('person_id', metavar='p-id',
+                    help='The person to update (e.g. p-2b3c4d5e6f).')
+    sp.add_argument('key', metavar='SITE',
+                    help='The site: wikitree, ancestry, familysearch, ...')
+    sp.add_argument('value', metavar='ID',
+                    help="The id as the site shows it (e.g. Hartley-6084).")
+    sp.add_argument('--replace', action='store_true',
+                    help='Replace an id the person already has for this site.')
+    sp.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                    help='Archive root (auto-detected if omitted).')
+    sp.add_argument('--dry-run', action='store_true', dest='dry_run',
+                    help='Preview the change without writing.')
+    sp.set_defaults(func=_cmd_set_external_id)
 
 
 _PROMOTE_DESCRIPTION = """\
@@ -4395,7 +4634,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p = subs.add_parser(
         'person',
         help='Change a person record: new, promote, rename, set-living, '
-             'set-profile-photo, set-sex, relate, estimate, edit, note',
+             'set-profile-photo, set-sex, set-external-id, relate, estimate, edit, note',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
@@ -4407,6 +4646,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_set_sex_arguments(sub)
+    _add_set_external_id_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)
@@ -4430,6 +4670,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     _add_set_living_arguments(sub)
     _add_set_profile_photo_arguments(sub)
     _add_set_sex_arguments(sub)
+    _add_set_external_id_arguments(sub)
     _add_relate_arguments(sub)
     _add_estimate_arguments(sub)
     _add_edit_arguments(sub)

@@ -3383,5 +3383,130 @@ class FirstNoteReplacesPlaceholderTests(unittest.TestCase):
             self.assertIn('A real story.', stripped)
 
 
+class SetExternalIdTests(unittest.TestCase):
+    """`fha person set-external-id` - after a WikiTree page is captured for
+    someone already in the archive, his record says which profile is theirs.
+    One key written or replaced in `external_ids:`, nothing else touched."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_relate_archive(Path(self._tmp.name))
+        self.stub = self.root / 'people' / 'stubs' / f'hartley__rose_{PID}.md'
+        self.curated = self.root / 'people' / f'hartley__thomas_{CURATED_PID}.md'
+        self.other = self.root / 'people' / f'cole__margaret_{TARGET_PID}.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _set(self, pid=CURATED_PID, key='wikitree', value='Hartley-6084', **kw):
+        return person.run_set_external_id(self.root, pid, key, value, **kw)
+
+    def test_a_new_key_creates_the_block_and_touches_nothing_else(self) -> None:
+        before = self.curated.read_text(encoding='utf-8')
+        result = self._set()
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'ok')
+        after = self.curated.read_text(encoding='utf-8')
+        self.assertEqual(
+            after, before.replace('tier: curated\n', 'tier: curated\n'
+                                  'external_ids:\n  wikitree: Hartley-6084\n'))
+        self.assertEqual(result.changed, [str(self.curated)])
+        self.assertIn('fha index', [m.next_step for m in result.messages if m.next_step])
+
+    def test_a_second_key_joins_the_existing_block(self) -> None:
+        self._set()
+        result = self._set(key='ancestry', value='382013742308')
+        self.assertEqual(result.data['status'], 'ok')
+        text = self.curated.read_text(encoding='utf-8')
+        self.assertIn('external_ids:\n  wikitree: Hartley-6084\n'
+                      "  ancestry: '382013742308'\n", text)
+        meta = person.safe_load_yaml(person.FRONT_RE.match(text).group(1))
+        self.assertEqual(meta['external_ids'],
+                         {'wikitree': 'Hartley-6084', 'ancestry': '382013742308'})
+
+    def test_the_same_value_again_is_a_no_op(self) -> None:
+        self._set()
+        before = self.curated.read_bytes()
+        result = self._set()
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'already')
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_different_value_asks_for_replace(self) -> None:
+        self._set()
+        before = self.curated.read_bytes()
+        result = self._set(value='Hartley-7000')
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'needs-replace')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('Hartley-6084', text)
+        self.assertIn('--replace', text)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_replace_changes_one_line(self) -> None:
+        self._set()
+        before = self.curated.read_text(encoding='utf-8')
+        result = self._set(value='Hartley-7000', replace=True)
+        self.assertEqual(result.data['status'], 'ok')
+        after = self.curated.read_text(encoding='utf-8')
+        self.assertEqual(_one_line_diff(before, after),
+                         [('  wikitree: Hartley-6084', '  wikitree: Hartley-7000')])
+
+    def test_an_id_another_person_holds_is_refused_naming_them(self) -> None:
+        self._set(pid=TARGET_PID)
+        before = self.curated.read_bytes()
+        result = self._set()   # same wikitree id onto Thomas
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        text = ' '.join(m.text for m in result.messages)
+        self.assertIn('Margaret Cole', text)
+        self.assertIn(TARGET_PID.lower(), text)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_the_same_value_on_a_different_site_key_is_fine(self) -> None:
+        self._set(pid=TARGET_PID, key='ancestry', value='Hartley-6084')
+        self.assertEqual(self._set().data['status'], 'ok')
+
+    def test_a_crlf_record_keeps_its_line_endings(self) -> None:
+        raw = CURATED.replace('\n', '\r\n').encode('utf-8')
+        self.curated.write_bytes(raw)
+        result = self._set()
+        self.assertEqual(result.data['status'], 'ok')
+        after = self.curated.read_bytes()
+        self.assertEqual(after.count(b'\n'), after.count(b'\r\n'))
+        self.assertIn(b'external_ids:\r\n  wikitree: Hartley-6084\r\n', after)
+
+    def test_dry_run_shows_the_change_and_writes_nothing(self) -> None:
+        before = self.curated.read_bytes()
+        result = self._set(dry_run=True)
+        self.assertEqual(result.data['status'], 'dry-run')
+        self.assertEqual(self.curated.read_bytes(), before)
+        self.assertTrue(any('+  wikitree: Hartley-6084' in m.text for m in result.messages))
+        self.assertEqual(result.changed, [])
+
+    def test_a_bad_key_or_value_is_refused(self) -> None:
+        before = self.curated.read_bytes()
+        for key, value in (('Wiki Tree', 'x'), ('', 'x'), ('wikitree', ''),
+                           ('wikitree', 'two words')):
+            result = self._set(key=key, value=value)
+            self.assertEqual(result.exit_code, EXIT_FAILURE, (key, value))
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_merged_tombstone_points_to_the_survivor(self) -> None:
+        tomb = _mk_merged_tombstone(self.root)
+        result = self._set(pid='P-dddddddddd')
+        self.assertEqual(result.data['status'], 'merged')
+        self.assertNotIn('external_ids', tomb.read_text(encoding='utf-8'))
+
+    def test_the_command_line_writes_it(self) -> None:
+        import fha
+        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['person', 'set-external-id', CURATED_PID, 'wikitree',
+                           'Hartley-6084', '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertIn('wikitree: Hartley-6084',
+                      self.curated.read_text(encoding='utf-8'))
+
+
 if __name__ == '__main__':
     unittest.main()

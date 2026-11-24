@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "ba7dbffa18cdfdf557eeec31c1422a61a2f58ad970995dbaf450d4509c5dea9a",
+      "sha256": "c9d8ae7ad63e63c3acd707136fc0490c9af1d3d3fd4e9529a09286570486acef",
       "spec_version": "2.29",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -253,7 +253,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "ba7dbffa18cdfdf557eeec31c1422a61a2f58ad970995dbaf450d4509c5dea9a",
+      "sha256": "c9d8ae7ad63e63c3acd707136fc0490c9af1d3d3fd4e9529a09286570486acef",
       "spec_version": "2.29"
     },
     {
@@ -863,7 +863,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "1a63730d240e53452dc553a8e6fff8db0a6d846fd18d634d7a02f398660aef5c",
+      "sha256": "24d05ff5ae040b1f4954ece537252fa95b124dd90ec25abfcda412fa893ba67a",
       "spec_version": "2.29",
       "src": "tools/person.py"
     },
@@ -1407,13 +1407,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "d758837f9653261661c111ab1d4459effdfb07e06b678df79c3500787b2d6266",
+      "sha256": "bb8941b7bdbb48c32b550c732428e764913d22b120827a501733f72d1cf5e844",
       "spec_version": "2.29"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "5cd6542bb8ca44897d9dd0e1494dfd8496c28dc5f1738465e86db6c91518ec64",
+      "sha256": "14d2ec49e16c9534882693560bec63635663f3e7ea65c398c3d347a7db02bd46",
       "spec_version": "2.29"
     },
     {
