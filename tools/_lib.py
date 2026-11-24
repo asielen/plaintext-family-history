@@ -482,7 +482,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
 #  Possible duplicate people (fha report §4b): one person entered twice, scored
-#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_NAME_RATIO: thresholds
+#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_DAY_SLACK_DAYS,
+#    DUPLICATE_NAME_RATIO: thresholds
 #    person_vital_window       : a birth or death as a year window (baptism stands in)
 #    possible_duplicate_people : ranked pairs with plain reasons; hard stops drop a pair
 #
@@ -22184,7 +22185,8 @@ def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, di
 DUPLICATE_DAY_SLACK_DAYS = 90   # how far two registers' days may disagree
 
 
-def _widened_plausibility_input(data: PlausibilityInput) -> PlausibilityInput:
+def _widened_plausibility_input(data: PlausibilityInput, *,
+                                vitals_too: bool = False) -> PlausibilityInput:
     """The same input with every date known to the day or month widened by
     DUPLICATE_DAY_SLACK_DAYS each way.
 
@@ -22194,8 +22196,13 @@ def _widened_plausibility_input(data: PlausibilityInput) -> PlausibilityInput:
     "cannot be one person" and would hide a real duplicate he then never
     merges. A date known only to the year is already a whole year wide and
     is left alone, so a wife dead in 1880 and a husband remarried in 1881
-    (two events, not one typed twice) still cannot be one woman. A widened
-    start never passes `0001-01-01`, the archive's floor."""
+    (two events, not one typed twice) still cannot be one woman. The known
+    end of an open date ("died by 10 March 1880") is widened too.
+
+    `vitals_too` also widens every birth, baptism, death and burial known
+    only to the year: two copies of one event (a death index giving the
+    year registered, 1881, and a burial register 1880) are read that way.
+    A widened start never passes `0001-01-01`, the archive's floor."""
     def shift(iso: str, days: int) -> str:
         try:
             moved = datetime.date.fromisoformat(iso) + datetime.timedelta(days=days)
@@ -22205,12 +22212,14 @@ def _widened_plausibility_input(data: PlausibilityInput) -> PlausibilityInput:
 
     def widen(c: DatedClaim) -> DatedClaim:
         if c.lo is None or c.hi is None:
-            return c
+            return dataclasses.replace(
+                c, lo=None if c.lo is None else shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                hi=None if c.hi is None else shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
         try:
             span = _iso_day_number(c.hi) - _iso_day_number(c.lo)
         except ValueError:
             return c
-        if span >= 300:
+        if span >= 300 and not (vitals_too and c.ctype in _PLAUSIBILITY_VITAL_TYPES):
             return c
         return dataclasses.replace(c, lo=shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
                                    hi=shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
@@ -22239,7 +22248,9 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
     the answer is wrong, so only a clear clash counts:
 
     - dates known to the day or month are widened by a few months before
-      the joined reading, so two sources a few days apart never count;
+      the joined reading, so two sources a few days apart never count, and
+      a clash only among births, baptisms, deaths and burials must also
+      survive their year-only dates widened (one death, two registers);
     - a problem the records already have apart does not count, and neither
       does any new one built on a claim already in such a problem: a death
       typed before the birth on one record is lint's to report there, not
@@ -22266,11 +22277,23 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
         picked_claims, persons, None, {}, statuses=statuses))
     before = {(pr.kind, tuple(a if p == b else p for p in pr.pids)) for pr in apart}
     tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
-    joined = _widened_plausibility_input(plausibility_input_from_claims(
-        picked_claims, persons, None, {b: a}, statuses=statuses))
-    return any((pr.kind, pr.pids) not in before
-               and not any(dc.claim_id in tainted for side in pr.claims for dc in side)
-               for pr in problems(joined))
+    joined_raw = plausibility_input_from_claims(
+        picked_claims, persons, None, {b: a}, statuses=statuses)
+    # A clash only between births, baptisms, deaths and burials may be one
+    # event written twice, so it must also hold with year-only dates
+    # widened; a clash with a marriage or a census is two events.
+    loose = {(pr.kind, pr.pids) for pr in problems(
+        _widened_plausibility_input(joined_raw, vitals_too=True))}
+
+    def counts(pr: PlausibilityProblem) -> bool:
+        claims_in = [dc for side in pr.claims for dc in side]
+        if (pr.kind, pr.pids) in before or any(dc.claim_id in tainted for dc in claims_in):
+            return False
+        if all(dc.ctype in _PLAUSIBILITY_VITAL_TYPES for dc in claims_in):
+            return (pr.kind, pr.pids) in loose
+        return True
+
+    return any(counts(pr) for pr in problems(_widened_plausibility_input(joined_raw)))
 
 
 def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,

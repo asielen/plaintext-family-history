@@ -510,6 +510,38 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
         self.a.parent(child, m2)
         self.assertEqual(self._pairs(self.a.scan()), [frozenset((m1, m2))])
 
+    def test_one_death_and_burial_across_new_year_still_pair(self) -> None:
+        # She died 28 Dec 1880: a death index gives the year registered,
+        # 1881, and the burial register 1880. Two copies of one event, with
+        # only the year written, and an open-ended day two days apart.
+        cases = ((('death', '1881'), ('burial', '1880')),
+                 (('death', '../1880-03-10'), ('burial', '1880-03-08/..')),
+                 (('death', '1880~'), ('burial', '1878~')))
+        for (ta, da), (tb, db) in cases:
+            with self.subTest(a=da, b=db):
+                with tempfile.TemporaryDirectory() as tmp:
+                    arc = _Archive(Path(tmp))
+                    a = arc.person('Mary Cole', sex='F')
+                    b = arc.person('Mary Cole', sex='F')
+                    arc.claim('birth', [a], date='1850')
+                    arc.claim('birth', [b], date='1850')
+                    arc.claim(ta, [a], date=da)
+                    arc.claim(tb, [b], date=db)
+                    self.assertEqual(self._pairs(arc.scan()), [frozenset((a, b))])
+
+    def test_an_open_ended_day_two_days_off_still_pairs(self) -> None:
+        # "Died by 10 Mar 1880" on one copy, "married on or after 12 Mar
+        # 1880" on the other: two days apart, the known end known to the day.
+        a = self.a.person('Mary Cole', sex='F')
+        b = self.a.person('Mary Cole', sex='F')
+        thomas = self.a.person('Thomas Hartley', sex='M')
+        self._born(a, '1850')
+        self._born(b, '1850')
+        self.a.claim('death', [a], date='../1880-03-10')
+        self.a.claim('marriage', [thomas, b], date='1880-03-12/..',
+                     roles=f'  roles:\n    spouse: [{thomas}, {b}]')
+        self.assertEqual(self._pairs(self.a.scan()), [frozenset((a, b))])
+
     def test_a_family_imported_twice_still_offers_the_mother(self) -> None:
         # Each copy of Mary has her own copy of Ada, whose day was typed
         # 2 April on one and 20 April on the other. Joining the Marys must
