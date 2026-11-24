@@ -22141,12 +22141,19 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
 # disagreement is `fha xref`'s to report.
 #
 #   PLAUSIBLE_MAX_LIFESPAN_YEARS - W164: nobody is taken to live longer
+#   PLAUSIBLE_MIN_PARENT_AGE, PLAUSIBLE_MAX_MOTHER_AGE,
+#   PLAUSIBLE_MAX_FATHER_AGE - W168: the ages a parent can be
+#   POSTHUMOUS_BIRTH_GRACE_YEARS - W167: a father's child may follow his death
+#   SIBLING_TWIN_DAYS, SIBLING_MIN_GAP_DAYS - W169: twins, and the shortest
+#                             gap between two births by one mother
 #   W165_LIFE_TYPES        - the claim types that record something a living
 #                             person did, read by W165
+#   PARENTAGE_CLAIM_TYPES  - the claim types a parent tie comes from
 #   DatedClaim             - one claim reduced to its id, type and day range
 #   FactRange              - every claim of one fact for one person, merged
-#   PlausibilityInput      - who was born, baptized, died, buried when, and
-#                             the records of their life, per person
+#   ParentEdge             - one parent tie: its natures and the claims behind it
+#   PlausibilityInput      - who was born, baptized, died, buried when, the
+#                             records of their life, marriages and parent ties
 #   PlausibilityProblem    - one conflict: its code, kind, people and claims
 #   claim_date_range       - a claim's date -> (first day, last day), open
 #                             sides None; None when undated or unreadable
@@ -22155,9 +22162,24 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
 #   plausibility_input_from_claims - raw claim dicts -> PlausibilityInput
 #   one_person_problems    - W163 (out of order), W164 (over 120 years),
 #                             W165 (a record of life after death)
+#   family_problems        - W166 (a marriage a spouse could not have had),
+#                             W167 (born after a parent died), W168 (a
+#                             parent's impossible age), W169 (two births by
+#                             one mother too close), W170 (own ancestor)
 #   plausibility_message   - the plain sentence for one problem
 
 PLAUSIBLE_MAX_LIFESPAN_YEARS = 120      # W164
+PLAUSIBLE_MIN_PARENT_AGE = 12           # W168
+PLAUSIBLE_MAX_MOTHER_AGE = 55           # W168
+PLAUSIBLE_MAX_FATHER_AGE = 80           # W168, a father or a parent not recorded F
+POSTHUMOUS_BIRTH_GRACE_YEARS = 1        # W167, a father or a parent not recorded F
+SIBLING_TWIN_DAYS = 10                  # W169: births closer than this are twins
+SIBLING_MIN_GAP_DAYS = 243              # W169: about 8 months
+# MARRIAGE_MIN_AGE (14, above) is W166's "married too young".
+
+# The claim types a parent tie comes from, the only two `fha index` derives
+# parentage from (lint's `_PARENTAGE_CLAIM_TYPES` is this tuple).
+PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
 
 # The claim types that record something the person did while alive, so a
 # date after their death means the record is about someone else (W165).
@@ -22177,6 +22199,7 @@ _LIFE_SUBJECT_ROLES = frozenset({'subject', 'head', 'household_member'})
 _LIFE_TYPE_WORDS = {'education': 'school'}
 
 _PLAUSIBILITY_VITAL_TYPES = ('birth', 'baptism', 'death', 'burial')
+_PLAUSIBILITY_COUPLE_TYPES = ('marriage', 'divorce')
 
 _EDTF_FLOOR, _EDTF_CEILING = '0001-01-01', '9999-12-31'
 
@@ -22201,6 +22224,21 @@ class FactRange:
 
 
 @dataclasses.dataclass
+class ParentEdge:
+    """One parent tie, with every nature its claims give it and their ids,
+    so a warning that doubts the tie can say which record makes it."""
+    natures: set[str]      # lower-case subtypes, '' for unset
+    claims: list[str]      # c-ids that make this tie, sorted
+
+    @property
+    def genetic(self) -> bool:
+        """At least one claim makes it a birth tie (SPEC §12.2): an
+        adoptive, step or foster parent can be younger than the child or
+        dead before the birth, so only these are read for age and death."""
+        return any(is_genetic_parent_subtype(n) for n in self.natures)
+
+
+@dataclasses.dataclass
 class PlausibilityInput:
     """What the rules know, per person (ids as the caller resolved them)."""
     sex: dict[str, str] = dataclasses.field(default_factory=dict)
@@ -22208,6 +22246,10 @@ class PlausibilityInput:
     facts: dict[str, dict[str, FactRange]] = dataclasses.field(default_factory=dict)
     # pid -> the W165_LIFE_TYPES claims they are the subject of
     life_events: dict[str, list[DatedClaim]] = dataclasses.field(default_factory=dict)
+    # every dated marriage or divorce claim, with the spouses it names
+    marriages: list[tuple[DatedClaim, list[str]]] = dataclasses.field(default_factory=list)
+    # (parent, child) -> the tie, from every claim of PARENTAGE_CLAIM_TYPES
+    parent_edges: dict[tuple[str, str], ParentEdge] = dataclasses.field(default_factory=dict)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -22318,7 +22360,10 @@ def plausibility_input_from_claims(
     `vital_subjects`, so a mother's birth is never read off her son's birth
     record. A life-event claim (`W165_LIFE_TYPES`) belongs to its subject:
     its only person, or the people under `subject`, `head` or
-    `household_member` (SPEC §8.3).
+    `household_member` (SPEC §8.3). A marriage or divorce belongs to the
+    couple `vital_subjects` reads (parents named on the licence are not
+    spouses). Parent ties come from `claim_parentage_pids`, the rule `fha
+    index` derives them by, and need no date.
 
     Every person id passes through `survivors` ({merged id: survivor}), so a
     merged record's claims count for the person it was merged into. The same
@@ -22342,9 +22387,22 @@ def plausibility_input_from_claims(
         if str(claim.get('negated')).strip().lower() == 'true':
             continue
         ctype = str(claim.get('type', '')).strip().lower()
-        if ctype not in _PLAUSIBILITY_VITAL_TYPES and ctype not in W165_LIFE_TYPES:
-            continue
         cid = normalize_id(str(claim.get('id') or ''))
+        if ctype in PARENTAGE_CLAIM_TYPES:
+            children, parents = claim_parentage_pids(claim, alias_map)
+            nature = str(claim.get('subtype') or '').strip().lower()
+            for child in {survivors.get(p, p) for p in children}:
+                for parent in {survivors.get(p, p) for p in parents}:
+                    if parent == child:
+                        continue
+                    edge = data.parent_edges.setdefault(
+                        (parent, child), ParentEdge(natures=set(), claims=[]))
+                    edge.natures.add(nature)
+                    if cid and cid not in edge.claims:
+                        edge.claims.append(cid)
+        if (ctype not in _PLAUSIBILITY_VITAL_TYPES and ctype not in W165_LIFE_TYPES
+                and ctype not in _PLAUSIBILITY_COUPLE_TYPES):
+            continue
         span = claim_date_range(claim)
         if not cid or span is None:
             continue
@@ -22354,6 +22412,12 @@ def plausibility_input_from_claims(
             subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
         pairs = resolve_claim_persons_with_roles(claim, alias_map)
         named = list(dict.fromkeys(p for p, _role in pairs))
+        if ctype in _PLAUSIBILITY_COUPLE_TYPES:
+            couple = list(dict.fromkeys(
+                survivors.get(p, p) for p in (vital_subjects(ctype, pairs) or [])))
+            if len(couple) >= 2:
+                data.marriages.append((dated, couple))
+            continue
         if ctype in _PLAUSIBILITY_VITAL_TYPES:
             subjects = vital_subjects(ctype, pairs)
             if subjects is None:
@@ -22370,6 +22434,8 @@ def plausibility_input_from_claims(
                 data.life_events.setdefault(pid, []).append(dated)
     for pid, by_type in raw_facts.items():
         data.facts[pid] = {t: merge_fact_range(cs) for t, cs in by_type.items()}
+    for edge in data.parent_edges.values():
+        edge.claims.sort()
     return data
 
 
@@ -22457,6 +22523,248 @@ def one_person_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
     return problems
 
 
+def _couple_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """W166: a marriage or divorce one spouse could not have had.
+
+    It ends before that spouse's earliest possible birth, begins after their
+    latest possible death (or burial), or, for a marriage, the spouse was
+    certainly under MARRIAGE_MIN_AGE. Filed on that spouse."""
+    problems: list[PlausibilityProblem] = []
+    for dated, couple in sorted(data.marriages, key=lambda m: (m[0].claim_id, m[1])):
+        for spouse in sorted(couple):
+            others = tuple(p for p in couple if p != spouse)
+            pids = (spouse, *others)
+            numbers = {'sexes': tuple(data.sex.get(p, '') for p in pids)}
+            bounds = _plausibility_bounds(data.facts.get(spouse, {}))
+            born_lo, born_from = bounds['born_lo']
+            died_hi, died_from = bounds['died_hi']
+            if born_lo is not None and dated.hi is not None:
+                if dated.hi < born_lo:
+                    problems.append(PlausibilityProblem(
+                        'W166', 'married-before-born', pids,
+                        ((dated,), tuple(born_from.claims)), numbers))
+                elif (dated.ctype == 'marriage'
+                      and dated.hi < iso_plus_years(born_lo, MARRIAGE_MIN_AGE)):
+                    problems.append(PlausibilityProblem(
+                        'W166', 'married-young', pids,
+                        ((dated,), tuple(born_from.claims)),
+                        {**numbers, 'age': _whole_years_between(born_lo, dated.hi)}))
+            if died_hi is not None and dated.lo is not None and dated.lo > died_hi:
+                problems.append(PlausibilityProblem(
+                    'W166', 'married-after-death', pids,
+                    (tuple(died_from.claims), (dated,)), numbers))
+    return problems
+
+
+def _parent_child_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """W167 and W168, over birth ties only (`ParentEdge.genetic`).
+
+    W167: a child born certainly after the mother died (a parent recorded
+    `sex: F`), or more than POSTHUMOUS_BIRTH_GRACE_YEARS after the father
+    died (any other parent). W168: a parent born after the child, certainly
+    under PLAUSIBLE_MIN_PARENT_AGE, or certainly over the mother's or
+    father's ceiling at the birth. Filed on the child."""
+    problems: list[PlausibilityProblem] = []
+    for (parent, child), edge in sorted(data.parent_edges.items()):
+        if not edge.genetic:
+            continue
+        pb = _plausibility_bounds(data.facts.get(parent, {}))
+        cb = _plausibility_bounds(data.facts.get(child, {}))
+        mother = data.sex.get(parent, '') == 'F'
+        numbers = {'ties': tuple(edge.claims),
+                   'sexes': (data.sex.get(child, ''), data.sex.get(parent, ''))}
+        pids = (child, parent)
+        child_lo, child_birth = cb['born_lo']
+        child_hi, child_hi_from = cb['born_hi']
+        died_hi, died_from = pb['died_hi']
+        if child_lo is not None and died_hi is not None:
+            if mother and child_lo > died_hi:
+                problems.append(PlausibilityProblem(
+                    'W167', 'born-after-mother-died', pids,
+                    (tuple(child_birth.claims), tuple(died_from.claims)), numbers))
+            elif not mother and child_lo > iso_plus_years(
+                    died_hi, POSTHUMOUS_BIRTH_GRACE_YEARS):
+                problems.append(PlausibilityProblem(
+                    'W167', 'born-after-father-died', pids,
+                    (tuple(child_birth.claims), tuple(died_from.claims)), numbers))
+        parent_lo, parent_birth = pb['born_lo']
+        if parent_lo is not None and child_hi is not None:
+            if parent_lo > child_hi:
+                problems.append(PlausibilityProblem(
+                    'W168', 'parent-born-after-child', pids,
+                    (tuple(child_hi_from.claims), tuple(parent_birth.claims)), numbers))
+            elif child_hi < iso_plus_years(parent_lo, PLAUSIBLE_MIN_PARENT_AGE):
+                problems.append(PlausibilityProblem(
+                    'W168', 'parent-too-young', pids,
+                    (tuple(child_hi_from.claims), tuple(parent_birth.claims)),
+                    {**numbers, 'age': _whole_years_between(parent_lo, child_hi)}))
+        parent_hi, parent_hi_from = pb['born_hi']
+        if child_lo is not None and parent_hi is not None:
+            # The youngest the parent can have been; over the ceiling only
+            # when even that is too old.
+            age = _whole_years_between(parent_hi, child_lo)
+            ceiling = PLAUSIBLE_MAX_MOTHER_AGE if mother else PLAUSIBLE_MAX_FATHER_AGE
+            if age > ceiling:
+                problems.append(PlausibilityProblem(
+                    'W168', 'mother-too-old' if mother else 'father-too-old', pids,
+                    (tuple(child_birth.claims), tuple(parent_hi_from.claims)),
+                    {**numbers, 'age': age}))
+    return problems
+
+
+def _sibling_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """W169: two births by one mother certainly more than SIBLING_TWIN_DAYS
+    and less than SIBLING_MIN_GAP_DAYS apart.
+
+    Children are grouped by each birth-tie parent recorded `sex: F`, and by
+    the same two birth-tie parents when neither is recorded F (full siblings
+    share a mother). Only birth claims count, so year-only dates never fire
+    it. Every pair within reach is compared, not only neighbours in birth
+    order, so a loosely dated third child sorting between two exact births
+    cannot hide them. Filed on the later child."""
+    parents_of: dict[str, set[str]] = {}
+    for (parent, child), edge in data.parent_edges.items():
+        if edge.genetic:
+            parents_of.setdefault(child, set()).add(parent)
+    groups: dict[tuple[str, ...], set[str]] = {}
+    for child, parents in parents_of.items():
+        mothers = [p for p in parents if data.sex.get(p, '') == 'F']
+        for mother in mothers:
+            groups.setdefault((mother,), set()).add(child)
+        if not mothers and len(parents) == 2:
+            groups.setdefault(tuple(sorted(parents)), set()).add(child)
+    problems: list[PlausibilityProblem] = []
+    seen: set[frozenset[str]] = set()
+    for key in sorted(groups):
+        born = []
+        for child in groups[key]:
+            birth = data.facts.get(child, {}).get('birth')
+            if birth and birth.lo is not None and birth.hi is not None:
+                born.append((birth.lo, birth.hi, child, birth))
+        born.sort(key=lambda b: b[:3])
+        days = [(_iso_day_number(lo), _iso_day_number(hi)) for lo, hi, _, _ in born]
+        for i, (a_lo_day, a_hi_day) in enumerate(days):
+            a_lo, a_hi, a, a_birth = born[i]
+            for j in range(i + 1, len(born)):
+                b_lo_day, b_hi_day = days[j]
+                # Sorted by earliest day: once b's earliest day is a full
+                # SIBLING_MIN_GAP_DAYS past a's latest, no later b can fire.
+                if b_lo_day - a_hi_day >= SIBLING_MIN_GAP_DAYS:
+                    break
+                b_lo, b_hi, b, b_birth = born[j]
+                pair = frozenset((a, b))
+                if pair in seen or a_hi > b_lo:
+                    continue
+                min_gap = b_lo_day - a_hi_day
+                max_gap = b_hi_day - a_lo_day
+                if min_gap > SIBLING_TWIN_DAYS and max_gap < SIBLING_MIN_GAP_DAYS:
+                    seen.add(pair)
+                    pids = (b, a, *key)
+                    problems.append(PlausibilityProblem(
+                        'W169', 'siblings-too-close', pids,
+                        (tuple(b_birth.claims), tuple(a_birth.claims)),
+                        {'min_gap': min_gap, 'max_gap': max_gap,
+                         'sexes': tuple(data.sex.get(p, '') for p in pids)}))
+    return problems
+
+
+def _pedigree_loops(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """W170: someone recorded as their own ancestor, through any parent tie.
+
+    Each strongly connected group of two or more people in the parent ->
+    child graph is one problem, told as the shortest loop through its
+    smallest id. Iterative (Tarjan, then a breadth-first walk), because a
+    long line must not run out of stack."""
+    graph: dict[str, list[str]] = {}
+    for parent, child in data.parent_edges:
+        if parent != child:
+            graph.setdefault(parent, []).append(child)
+            graph.setdefault(child, [])
+    for kids in graph.values():
+        kids.sort()
+    index: dict[str, int] = {}
+    low: dict[str, int] = {}
+    stack: list[str] = []
+    on_stack: set[str] = set()
+    components: list[list[str]] = []
+    for root in sorted(graph):
+        if root in index:
+            continue
+        index[root] = low[root] = len(index)
+        stack.append(root)
+        on_stack.add(root)
+        work = [(root, iter(graph[root]))]
+        while work:
+            node, kids = work[-1]
+            descended = False
+            for nxt in kids:
+                if nxt not in index:
+                    index[nxt] = low[nxt] = len(index)
+                    stack.append(nxt)
+                    on_stack.add(nxt)
+                    work.append((nxt, iter(graph[nxt])))
+                    descended = True
+                    break
+                if nxt in on_stack:
+                    low[node] = min(low[node], index[nxt])
+            if descended:
+                continue
+            work.pop()
+            if work:
+                up = work[-1][0]
+                low[up] = min(low[up], low[node])
+            if low[node] == index[node]:
+                component = []
+                while True:
+                    member = stack.pop()
+                    on_stack.discard(member)
+                    component.append(member)
+                    if member == node:
+                        break
+                if len(component) > 1:
+                    components.append(component)
+    problems: list[PlausibilityProblem] = []
+    for component in components:
+        members = set(component)
+        start = min(component)
+        came_from: dict[str, str | None] = {start: None}
+        queue, at, end = [start], 0, None
+        while end is None and at < len(queue):
+            node = queue[at]
+            at += 1
+            for nxt in graph[node]:
+                if nxt == start:
+                    end = node
+                    break
+                if nxt in members and nxt not in came_from:
+                    came_from[nxt] = node
+                    queue.append(nxt)
+        loop: list[str] = []
+        node = end
+        while node is not None:
+            loop.append(node)
+            node = came_from[node]
+        loop.reverse()
+        ties: list[str] = []
+        for i, parent in enumerate(loop):
+            child = loop[(i + 1) % len(loop)]
+            ties.extend(c for c in data.parent_edges[(parent, child)].claims if c not in ties)
+        problems.append(PlausibilityProblem(
+            'W170', 'own-ancestor', tuple(loop), (),
+            {'ties': tuple(ties), 'sexes': tuple(data.sex.get(p, '') for p in loop)}))
+    return sorted(problems, key=lambda p: p.pids[0])
+
+
+def family_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+    """The rules across a family, each firing only when it holds for every
+    date the claims allow: W166 (couples), W167 and W168 (a parent and a
+    child, birth ties only), W169 (two births by one mother), W170 (a loop
+    in the parent ties). Mother or father rules read the parent's `sex:`;
+    a parent not recorded F gets the father's, more generous, rule."""
+    return (_couple_problems(data) + _parent_child_problems(data)
+            + _sibling_problems(data) + _pedigree_loops(data))
+
+
 def _plausibility_side(claims: tuple[DatedClaim, ...], ref) -> str:
     """'1850 (c-… (file))', two readings joined by 'or', then 'and N more'."""
     shown = [f'{humanize_edtf(c.date)} ({ref(c.claim_id)})' for c in claims[:2]]
@@ -22469,6 +22777,23 @@ def _plausibility_side(claims: tuple[DatedClaim, ...], ref) -> str:
 def _plausibility_verb(claims: tuple[DatedClaim, ...], birth_word: str, bapt_word: str) -> str:
     """The word for a side read from births or (when none) baptisms."""
     return bapt_word if claims and claims[0].ctype == 'baptism' else birth_word
+
+
+def _plausibility_refs(claim_ids, ref, cap: int = 2) -> str:
+    """'c-1 (file) and c-2 (file)', then ', and N more' past `cap`."""
+    if not claim_ids:
+        return 'a claim with no id'
+    shown = [ref(c) for c in list(claim_ids)[:cap]]
+    text = ' and '.join(shown) if len(shown) < 3 else (
+        ', '.join(shown[:-1]) + ' and ' + shown[-1])
+    if len(claim_ids) > cap:
+        text += f', and {len(claim_ids) - cap} more'
+    return text
+
+
+_PLAUSIBILITY_THEIR = {'F': 'her', 'M': 'his'}
+_PLAUSIBILITY_CHILD_WORD = {'F': 'daughter', 'M': 'son'}
+_PLAUSIBILITY_PARENT_WORD = {'F': 'mother', 'M': 'father'}
 
 
 def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
@@ -22514,6 +22839,87 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
                 "record's date is when it was written down rather than when it happened. "
                 'Open both records; if the later one is about someone else, fix its people, '
                 "and if its date is a recording date, put the event's own date in the claim.")
+    sexes = problem.numbers.get('sexes', ())
+    their = _PLAUSIBILITY_THEIR.get(sexes[0] if sexes else '', 'their')
+    their_p = _PLAUSIBILITY_THEIR.get(sexes[1] if len(sexes) > 1 else '', 'their')
+    ties = _plausibility_refs(problem.numbers.get('ties', ()), ref)
+    if kind in ('married-before-born', 'married-after-death', 'married-young'):
+        spouse = ' and '.join(who(p) for p in problem.pids[1:])
+        if kind == 'married-before-born':
+            verb = 'divorcing' if problem.claims[0][0].ctype == 'divorce' else 'marrying'
+            return (f'{name} is recorded as {verb} {spouse} {side[0]}, before {their} own '
+                    f'birth, {side[1]}. Both cannot be true. The marriage may belong to a '
+                    'parent or grandparent of the same name, or the wrong person is linked '
+                    'as the spouse. Open both records and compare.')
+        if kind == 'married-after-death':
+            verb = 'divorcing' if problem.claims[1][0].ctype == 'divorce' else 'marrying'
+            died = 'was buried' if problem.claims[0][0].ctype == 'burial' else 'died'
+            return (f'{name} {died} {side[0]}, but is recorded as {verb} {spouse} '
+                    f'{side[1]}. Both cannot be true. Often the marriage belongs to a son or '
+                    'namesake, or the wrong person is linked as the spouse. Open both records '
+                    'and compare.')
+        return (f'{name} was at most {problem.numbers["age"]} at the marriage to {spouse} '
+                f'{side[0]}, going by the birth recorded {side[1]}. Marriage that young is '
+                'very rare, so one of the dates, or the person linked, may be wrong. Open '
+                'both records and compare.')
+    if kind in ('born-after-mother-died', 'born-after-father-died', 'parent-born-after-child',
+                'parent-too-young', 'mother-too-old', 'father-too-old'):
+        parent = who(problem.pids[1])
+        psex = sexes[1] if len(sexes) > 1 else ''
+        parent_word = _PLAUSIBILITY_PARENT_WORD.get(psex, 'parent')
+        child_word = _PLAUSIBILITY_CHILD_WORD.get(sexes[0] if sexes else '', 'child')
+        if kind == 'born-after-mother-died':
+            died = 'was buried' if problem.claims[1][0].ctype == 'burial' else 'died'
+            return (f'{name} is recorded as born {side[0]}, but {their} mother {parent} '
+                    f'{died} {side[1]}. Both cannot be true. Often the wrong woman is linked '
+                    'as the mother (two people with one name, or a merge), or a date was '
+                    f'misread. The mother tie comes from {ties}. Open the records and compare.')
+        if kind == 'born-after-father-died':
+            died = 'was buried' if problem.claims[1][0].ctype == 'burial' else 'died'
+            linked = 'the wrong man' if psex == 'M' else 'the wrong person'
+            return (f'{name} is recorded as born {side[0]}, more than a year after {their} '
+                    f'{parent_word} {parent} {died} {side[1]}. Both cannot be true. Often '
+                    f'{linked} is linked as the {parent_word}, or a date was misread. The '
+                    f'{parent_word} tie comes from {ties}. Open the records and compare.')
+        if kind == 'parent-born-after-child':
+            born = _plausibility_verb(problem.claims[0], 'born', 'baptized')
+            return (f'{name} is recorded as {born} {side[0]}, before {their} {parent_word} '
+                    f'{parent} was born, {side[1]}. Both cannot be true. The parent tie '
+                    f'({ties}) may name the wrong person, often a son or daughter of the same '
+                    'name. Open the records and compare.')
+        born = _plausibility_verb(problem.claims[0], 'born', 'baptized')
+        own = _plausibility_verb(problem.claims[1], 'birth', 'baptism')
+        age = problem.numbers['age']
+        if kind == 'parent-too-young':
+            return (f'{parent} was at most {age} when {their_p} {child_word} {name} was '
+                    f'{born} {side[0]}, going by {their_p} own {own} recorded {side[1]}. That '
+                    f'is too young to be a parent, so the parent tie ({ties}) or one of the '
+                    'dates is probably wrong. Open the records and compare.')
+        return (f'{parent} was at least {age} when {their_p} {child_word} {name} was '
+                f'{born} {side[0]}, going by {their_p} own {own} recorded {side[1]}. That is '
+                f'older than a {parent_word} can be, so the parent tie ({ties}) may name the '
+                'wrong person, often a grandparent of the same name. Open the records and '
+                'compare.')
+    if kind == 'siblings-too-close':
+        other = who(problem.pids[1])
+        parents = problem.pids[2:]
+        hers = 'hers' if len(parents) == 1 else "one mother's"
+        return (f'{name} ({side[0]}) and {other} ({side[1]}) are both recorded as children '
+                f'of {" and ".join(who(p) for p in parents)}, born between '
+                f'{problem.numbers["min_gap"]} and {problem.numbers["max_gap"]} days apart. '
+                f'Two births that close cannot both be {hers} unless they were twins. One of '
+                'the children may belong to another family, or a date was misread. Open the '
+                'records and compare.')
+    if kind == 'own-ancestor':
+        loop = problem.pids
+        chain = ', '.join(f'{who(p)} is the parent of {who(loop[(i + 1) % len(loop)])}'
+                          for i, p in enumerate(loop))
+        all_ties = problem.numbers.get('ties', ())
+        return (f'{name} is recorded as {their} own ancestor: {chain}. Somewhere in this '
+                'loop a parent tie names the wrong person, often a father and son of the '
+                f'same name. The ties come from {_plausibility_refs(all_ties, ref, cap=6)}. '
+                'Open those records and fix the one that is wrong; until then the family '
+                'tree cannot show this line correctly.')
     raise ValueError(f'unknown plausibility problem kind {kind!r}')
 
 
