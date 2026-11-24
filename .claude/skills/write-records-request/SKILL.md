@@ -32,7 +32,7 @@ A record that exists only on paper at a county office or a state archive has to 
    ```
    fha repositories --place <l-id> --year <year> --record <type>
    ```
-   (`--country "United States"` for a place not registered yet.) Read the log first as well (`fha find` on the person, and `notes/research-log.md`): if he already wrote to this office, say so and when, and ask whether this is a second try. Pick the office from the lines that say **by letter**, and say which one you chose and why. If none says by letter, say so, name the nearest that does, and offer that one. A repository line you got from the tool carries its own "(check this)"; one you know only from general knowledge is offered as a guess to confirm.
+   (`--country "United States"` for a place not registered yet.) Read the log first as well (`fha find` on the person, and `notes/research-log.md`): if he already wrote to this office, say so and when, and ask whether this is a second try. The tool lists ten lines at a time, online sites first, so add `--access paid` or `--limit 20` to see the rest. Pick the office from the lines whose access reads "by letter" (for example "in person or by letter"), and say which one you chose and why. If none says by letter, say so, name the nearest that does, and offer that one. A repository line you got from the tool carries its own "(check this)"; one you know only from general knowledge is offered as a guess to confirm.
 
 2. **Gather the facts, and show him the list before drafting.**
    ```

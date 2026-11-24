@@ -181,7 +181,7 @@
     {
       "path": ".agents/skills/write-records-request/SKILL.md",
       "category": "operating",
-      "sha256": "91e41c83e9cb62f608e00f169260421231fdeb92800b1abd63c0de8bbfcbb606",
+      "sha256": "4e1afb844572b7c0a7318db09ee331e131e28f970a4b1d95a4c56cdfcb9e0ab7",
       "spec_version": "2.29",
       "src": ".claude/skills/write-records-request/SKILL.md"
     },
@@ -338,7 +338,7 @@
     {
       "path": ".claude/skills/write-records-request/SKILL.md",
       "category": "operating",
-      "sha256": "91e41c83e9cb62f608e00f169260421231fdeb92800b1abd63c0de8bbfcbb606",
+      "sha256": "4e1afb844572b7c0a7318db09ee331e131e28f970a4b1d95a4c56cdfcb9e0ab7",
       "spec_version": "2.29"
     },
     {
