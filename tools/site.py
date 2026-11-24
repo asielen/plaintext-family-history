@@ -4543,6 +4543,10 @@ class _SiteBuilder:
         # treat these as intentionally private too - otherwise the deceased
         # person's facts would publish through a redacted citation.
         self.restricted_person_sources: set[str] = set()
+        # Sources that name a living person and get a page only because a
+        # claim on them is kept (SPEC §21): never in the search file, so a
+        # title naming the living person cannot be searched for.
+        self._sources_naming_living: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
         # What a shared build does with each claim, by who it names
         # (`_lib.claim_people_verdict`): only the claims it holds back or
@@ -4808,6 +4812,8 @@ class _SiteBuilder:
                 if (self._claim_verdicts.get(row['id']) == CLAIM_UNWORDED
                         and normalize_id(str(row['id'])) not in restricted_claim_ids
                         and row['source_id'] not in self.restricted_person_sources):
+                    if row['source_id'] in source_living:
+                        self._sources_naming_living.add(row['source_id'])
                     source_living.discard(row['source_id'])
         verdicts = self._claim_verdicts
         self.conn.create_function('fha_claim_withheld', 1,
@@ -10681,6 +10687,11 @@ class _SiteBuilder:
         sources = []
         for sid in sorted(self.source_pages):
             if not source_public(sid):
+                continue
+            # A census kept for a dead grandfather whose living grandson is
+            # in it has a page, linked from the grandfather's, but its title
+            # may name the grandson: search never finds him through it.
+            if shared and sid in self._sources_naming_living:
                 continue
             row = self.source_meta[sid]
             title = row['title'] or fmt_id_display(sid)

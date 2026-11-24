@@ -409,6 +409,19 @@ class SharedSiteTests(_SiteBase):
             if rel != 'sources/s-8888888888.html':
                 self.assertNotIn('Pip', text, rel)
 
+    def test_search_never_finds_the_living_grandson_through_the_census_title(self):
+        # The census page exists and its title is shown as written (owner,
+        # 2026-11-23), but the search box must not find a living person.
+        self.census()
+        self.conn.execute("UPDATE sources SET title = '1940 census, Calvin and Pip Hartley' "
+                          "WHERE id = 's-8888888888'")
+        self.build()
+        search = self.page('data/search-data.js')
+        self.assertNotIn('Pip', search)
+        self.assertNotIn('s-8888888888', search)
+        self.assertIn('Calvin Hartley', search)
+        self.assertTrue((self.out / 'sources' / 's-8888888888.html').exists())
+
     def test_a_photograph_naming_a_living_grandson_stays_home(self):
         # A snapshot of Grandpa with his living grandson is a picture of the
         # grandson, not a record printing his name: SPEC §21 withholds the
