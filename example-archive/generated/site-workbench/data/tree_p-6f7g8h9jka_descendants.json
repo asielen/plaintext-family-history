@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "seed": "p-6f7g8h9jka",
   "mode": "descendants",
   "nodes": [
@@ -11,7 +12,8 @@
         "death": null
       },
       "url": "p-6f7g8h9jka.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": null
     },
     {
       "p_id": "p-5e6f7g8h9j",
@@ -22,7 +24,8 @@
         "death": null
       },
       "url": "p-5e6f7g8h9j.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "medium"
     },
     {
       "p_id": "p-2b3c4d5e6f",
@@ -33,7 +36,8 @@
         "death": "2015-11-03"
       },
       "url": "p-2b3c4d5e6f.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "medium"
     },
     {
       "p_id": "p-0a1b2c3d4e",
@@ -44,7 +48,8 @@
         "death": null
       },
       "url": "p-0a1b2c3d4e.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "medium"
     }
   ],
   "edges": [
@@ -56,6 +61,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "medium",
       "dates": {
         "start": null,
         "end": null
@@ -69,6 +75,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "high",
       "dates": {
         "start": null,
         "end": null
@@ -82,6 +89,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "high",
       "dates": {
         "start": null,
         "end": null

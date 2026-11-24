@@ -174,6 +174,7 @@
     }
 
     var s = svg('svg', { 'class': 'fha-tree-svg', 'preserveAspectRatio': 'xMidYMid meet' });
+    if (options.chartName) s.setAttribute('data-fha-chart', options.chartName);   // Save this chart
     s.style.width = '100%';
     s.style.height = VH + 'px';
     s.style.display = 'block';
@@ -421,6 +422,9 @@
       var width = Math.max(leaves * COL_W, COL_W);
       var height = (depth + 1) * ROW_H;
       contentW = width; contentH = height;
+      // Save this chart (fha-save-chart.js) saves the whole tree as drawn,
+      // not the zoomed view the reader is looking at.
+      s.setAttribute('data-fha-save-viewbox', '0 0 ' + width + ' ' + height);
 
       while (content.firstChild) content.removeChild(content.firstChild);
 
