@@ -287,6 +287,7 @@ import posixpath
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -300,6 +301,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    anchor_seconds,
     claim_date_order_sql,
     place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
@@ -382,7 +384,9 @@ from _lib import (
     Result,
     site_picture_job,
     split_log_entries,
+    link_field_refs,
     link_parts,
+    resolve_typed_ref,
     strip_link_wrapper,
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
@@ -412,6 +416,25 @@ _REQUIRED_TABLES = (
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
+
+# A family recording plays in the browser when it is one of these (SPEC §19).
+# The type goes on the <source> tag so the browser need not guess.
+_AUDIO_TYPES = {'.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
+                '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
+                '.opus': 'audio/ogg; codecs=opus', '.flac': 'audio/flac'}
+# Every audio or video file is a recording under SPEC §19, whatever role its
+# `files:` entry gives it, so a voice the rule holds back is never named on
+# the shared site. Kept the same as `media.MEDIA_EXTENSIONS` (tools never
+# import tools; tests/test_site_recordings.py checks the two agree).
+_RECORDING_SUFFIXES = {
+    '.aac', '.aif', '.aiff', '.amr', '.flac', '.m4a', '.m4b', '.mp3', '.oga',
+    '.ogg', '.opus', '.wav', '.wma',
+    '.3gp', '.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm',
+    '.wmv',
+}
+# What the shared site shows for a recording it may not play (TOOLING §12):
+# no file name, since the name often names the person interviewed.
+_RECORDING_KEPT_LABEL = 'a recording, kept in the archive'
 
 # `fha photoindex reconcile` keeps a vanished photo's catalog row under the
 # synthetic key 'MISSING:' + its last known path, so the caption, keywords and
@@ -4653,6 +4676,21 @@ class _SiteBuilder:
         # title naming the living person cannot be searched for.
         self._sources_naming_living: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
+        # A family recording plays on the shared site only when SPEC §19
+        # allows it: sid -> {'speakers': [pid], 'recording_ok': bool,
+        # 'public': bool}, for every source holding a recording
+        # (`_load_recordings`). `recording_hrefs` remembers the page-relative
+        # player href made for each (sid, file path), so a later page can
+        # reuse the same copy.
+        self.recordings: dict[str, dict] = {}
+        self.recording_hrefs: dict[tuple[str, str], str] = {}
+        # sid -> that source's recordings in `files:` order, each
+        # {'path', 'original_filename', 'entry'} (its Files-list entry), for
+        # matching a claim's anchor to the recording it was said on.
+        self.recording_files: dict[str, list[dict]] = {}
+        self._ffmpeg: str | None = None
+        self._ffmpeg_looked = False
+        self._recordings_without_ffmpeg = 0
         # What a shared build does with each claim, by who it names
         # (`_lib.claim_people_verdict`): only the claims it holds back or
         # shows without their wording are listed. Empty in a linked build.
@@ -4950,6 +4988,8 @@ class _SiteBuilder:
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
+        self._load_recordings()
+
         # linked-or-workbench (build_person_page): parsing/indexing every
         # open question is skipped entirely on a standalone (public) build,
         # where the section never renders. A `## Q:` block still carries no
@@ -5124,6 +5164,256 @@ class _SiteBuilder:
                 cid = normalize_id(str(claim.get('id', '')))
                 if cid and _is_restricted_value(claim.get('restricted')):
                     self.restricted_claims.add(cid)
+
+    def _load_recordings(self) -> None:
+        """Decide, once per build, which family recordings may play on the
+        shared site, so a voice that could name a living relative never
+        leaves the archive (SPEC §19, Recordings).
+
+        Reads every source holding an audio or video file. A recording is
+        public only when all of these hold: the source has a page here;
+        `rights: recording_ok` is YAML `true`; `speakers:` lists at least one
+        person and every one is in the index and not withheld
+        (`_person_is_redacted`: living, unknown or restricted, merges
+        followed both ways); and nobody else the source names, on `people:`
+        or on any of its claims (whatever their status), is withheld or
+        unresolved. A name that resolves to nobody counts as living (SPEC
+        A.10). A claim on the source marked `restricted` also holds the
+        recording back: the recording is that fact's evidence, and playing
+        it would publish what the marker keeps home. A record that cannot be
+        read shares nothing. The linked preview and the workbench are the
+        owner's own copies and play everything, so they need no verdict."""
+        sids = sorted({
+            row['source_id'] for row in self.conn.execute(
+                'SELECT source_id, path FROM source_files WHERE path IS NOT NULL')
+            if row['source_id'] in self.source_meta
+            and Path(row['path']).suffix.lower() in _RECORDING_SUFFIXES})
+        for sid in sids:
+            info = {'speakers': [], 'recording_ok': False, 'public': False}
+            self.recordings[sid] = info
+            row = self.source_meta[sid]
+            if not row['path']:
+                continue
+            try:
+                rec = read_record(self.archive_root / row['path'],
+                                  on_decode_error=_raise_friendly_decode_error)
+            except Exception:   # noqa: BLE001 - unreadable means nothing is shared
+                continue
+            if rec['parse_errors']:
+                continue
+            meta = rec['meta']
+            rights = meta.get('rights')
+            # The archive's YAML reader keeps scalars as written, so YAML
+            # `true` arrives as the text "true" (index.py reads
+            # `publication_ok` the same way). "yes" or anything else is no.
+            ok = rights.get('recording_ok') if isinstance(rights, dict) else None
+            info['recording_ok'] = ok is True or ok in ('true', 'True', 'TRUE')
+            speakers, unknown_speakers = self._resolve_person_refs(meta.get('speakers'))
+            info['speakers'] = speakers
+            if self.linked:
+                continue
+            for ref in unknown_speakers:
+                self.messages.append(
+                    f'WARNING: {row["path"]} lists speaker {ref}, who is not in the index; '
+                    f'its recording is not shared on this site. Check the ID with '
+                    f'`fha find {ref}`.')
+            info['public'] = (
+                sid in self.source_pages and info['recording_ok']
+                and bool(speakers) and not unknown_speakers
+                and self._recording_names_only_the_shareable(sid, meta, rec['claims'], speakers))
+
+    def _resolve_person_refs(self, value) -> tuple[list[str], list[str]]:
+        """(person ids found in the index, references that found nobody) for
+        a people-valued field: bare ids, `[[p-…|Name]]` or `[[Name]]`."""
+        found: list[str] = []
+        missing: list[str] = []
+        for ref in link_field_refs(value):
+            pid = resolve_typed_ref(ref, self.alias_map, want='P')
+            pid = normalize_id(pid) if pid else None
+            if pid and pid in self.person_meta:
+                if pid not in found:
+                    found.append(pid)
+            elif ref not in missing:
+                missing.append(ref)
+        return found, missing
+
+    def _recording_names_only_the_shareable(self, sid: str, meta: dict, claims: list,
+                                            speakers: list[str]) -> bool:
+        """True when every person this recording's source names (speakers,
+        `people:`, and everyone on its claims, as written in the record and
+        as the index resolved them) can be shown on the shared site, and
+        no claim on it is marked restricted."""
+        refs: list = [meta.get('people')]
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            if _is_restricted_value(claim.get('restricted')):
+                return False
+            refs.append(claim.get('persons'))
+            roles = claim.get('roles')
+            if isinstance(roles, dict):
+                refs.extend(roles.values())
+        named = list(speakers)
+        for value in refs:
+            found, missing = self._resolve_person_refs(value)
+            if missing:
+                return False
+            named.extend(found)
+        for (pid,) in self.conn.execute(
+                'SELECT person_id FROM source_people WHERE source_id = ? UNION '
+                'SELECT cp.person_id FROM claim_persons cp JOIN claims c ON c.id = cp.claim_id '
+                'WHERE c.source_id = ?', (sid, sid)):
+            named.append(pid)
+        for (cid,) in self.conn.execute('SELECT id FROM claims WHERE source_id = ?', (sid,)):
+            if normalize_id(str(cid)) in self.restricted_claims:
+                return False
+        for pid in named:
+            row = self.person_meta.get(pid)
+            if row is None or self._person_is_redacted(row):
+                return False
+        return True
+
+    def _recording_is_public(self, sid: str) -> bool:
+        """Whether this source's recordings may play on this build: always in
+        the owner's linked preview and workbench, and on the shared site
+        only under SPEC §19 (`_load_recordings`)."""
+        return self.linked or bool(self.recordings.get(sid, {}).get('public'))
+
+    def _ffmpeg_path(self) -> str | None:
+        """ffmpeg, looked up once per build; None when it is not installed."""
+        if not self._ffmpeg_looked:
+            self._ffmpeg_looked = True
+            self._ffmpeg = shutil.which('ffmpeg')
+        return self._ffmpeg
+
+    def _audio_dest(self, alias_path: str, sid: str) -> Path:
+        """Where the shared copy of a recording goes: media/{sid}/, named like
+        the web pictures (`_media_dest`) but keeping the recording's type."""
+        norm = alias_path.replace('\\', '/')
+        digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
+        return self.media_dir / sid / f'{Path(norm).stem}_{digest}{Path(norm).suffix.lower()}'
+
+    def _remux_audio(self, src: Path, dest: Path) -> bool:
+        """Make the copy of a recording the shared site plays. A phone writes
+        the place and the device into a recording, as a camera does into a
+        photo, so originals never leave: ffmpeg copies the sound without
+        re-encoding and drops every tag, chapter and attached picture.
+        `bitexact` keeps the bytes the same from build to build. False when
+        ffmpeg fails; the caller then lists the file without a player."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [self._ffmpeg or 'ffmpeg', '-nostdin', '-loglevel', 'error', '-y',
+               '-i', str(src), '-map', '0:a', '-c', 'copy',
+               '-map_metadata', '-1', '-map_chapters', '-1',
+               '-fflags', '+bitexact', '-flags:a', '+bitexact', str(dest)]
+        try:
+            done = subprocess.run(cmd, capture_output=True, timeout=600, check=False)
+            ok = done.returncode == 0 and dest.is_file() and dest.stat().st_size > 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
+            with contextlib.suppress(OSError):
+                dest.unlink()
+        return ok
+
+    def _recording_entry(self, sid: str, f: sqlite3.Row, page_dir: Path) -> dict:
+        """One recording's line in a source page's Files list.
+
+        Shared site: a recording SPEC §19 holds back shows only
+        `_RECORDING_KEPT_LABEL`, never its file name. One it allows gets a
+        player on a stripped copy (`_remux_audio`) when the browser can play
+        its type; without ffmpeg, or when the copy fails, it is listed as
+        kept in the archive. A video is listed as before, with no player.
+        Linked preview and workbench: a player on the real file."""
+        # A video kept under the photos root can carry a person tag in the
+        # photo catalog; one naming a living person stays home too.
+        if not self._recording_is_public(sid) or (
+                not self.linked and self._is_living_tagged_photo(f['path'])):
+            return {'label': _RECORDING_KEPT_LABEL, 'note': None,
+                    'link_href': None, 'thumb_href': None}
+        entry = self._file_entry(f['path'], f['role'], f['copy'], f['date_edtf'], page_dir)
+        suffix = Path(f['path']).suffix.lower()
+        if suffix not in _AUDIO_TYPES:
+            return entry
+        if self.linked:
+            if entry.get('link_href'):
+                entry.update(audio_href=entry['link_href'], audio_type=_AUDIO_TYPES[suffix])
+            return entry
+        try:
+            resolved = resolve_path(f['path'], self.fha_config, self.archive_root)
+        except Exception:   # noqa: BLE001 - _file_entry has already said why
+            return entry
+        if not resolved.is_file():
+            return entry
+        role_note = _role_note(f['role'], f['copy'], f['date_edtf'])
+        if not self._ffmpeg_path():
+            self._recordings_without_ffmpeg += 1
+            entry['note'] = _with_role_note(
+                'recording kept in the archive (install ffmpeg to share recordings on the site)',
+                role_note)
+            return entry
+        dest = self._audio_dest(f['path'], normalize_id(sid))
+        if not self._remux_audio(resolved, dest):
+            self.messages.append(
+                f'WARNING: could not make a shareable copy of the recording {f["path"]} '
+                '(ffmpeg could not read it); the site lists it as kept in the archive.')
+            entry['note'] = _with_role_note('recording kept in the archive', role_note)
+            return entry
+        entry.update(audio_href=_rel_href(dest, page_dir), audio_type=_AUDIO_TYPES[suffix],
+                     note=role_note)
+        return entry
+
+    def _recording_for_anchor(self, label: str | None, recordings: list[dict]) -> dict | None:
+        """Which of a source's recordings (all of them, in `files:` order) a
+        claim's anchor time is in, or None when that cannot be told for sure.
+
+        One recording on the source: that one. Otherwise the anchor's label
+        ("cars-whisper") must name exactly one: its words `whisper`, `app`
+        and `transcript` are dropped, and what is left must end the
+        recording's file name (less its s-id and an `-audio`/`-recording`
+        role) or the name it had before processing. Anything else gets no
+        link, rather than a link to the wrong minute of the wrong tape."""
+        if len(recordings) == 1:
+            return recordings[0]
+        if not label:
+            return None
+        noise = {'whisper', 'app', 'transcript', ''}
+        words = re.split(r'[-_\s]+', label.lower())
+        while words and words[0] in noise:
+            words.pop(0)
+        while words and words[-1] in noise:
+            words.pop()
+        key = '-'.join(words)
+        if not key:
+            return None
+
+        def names(r: dict) -> list[str]:
+            stem = Path(r['path']).stem.lower()
+            stem = re.sub(r'_s-[0-9a-z]+$', '', stem)
+            stem = re.sub(r'-(audio|recording)$', '', stem)
+            out = [stem]
+            if r.get('original_filename'):
+                out.append(Path(str(r['original_filename'])).stem.lower())
+            return out
+
+        hits = [r for r in recordings
+                if any(n == key or n.endswith('-' + key) for n in names(r))]
+        return hits[0] if len(hits) == 1 else None
+
+    def _play_link(self, anchor: str | None, recordings: list[dict]) -> dict | None:
+        """A "play from 14:32" link for a claim whose anchor gives a time in a
+        recording that plays on this page; None otherwise."""
+        parsed = anchor_seconds(anchor)
+        if parsed is None:
+            return None
+        label, seconds = parsed
+        rec = self._recording_for_anchor(label, recordings)
+        if rec is None or not rec['entry'].get('audio_id'):
+            return None
+        h, rest = divmod(seconds, 3600)
+        m, s = divmod(rest, 60)
+        shown = f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+        return {'href': rec['entry']['audio_href'], 'audio_id': rec['entry']['audio_id'],
+                'seconds': seconds, 'label': shown}
 
     def _load_open_questions(self) -> None:
         """Index every OPEN '## Q:' block by the person id(s) its `refs:`
@@ -6482,9 +6772,10 @@ class _SiteBuilder:
         status_filter = '' if self.linked else "AND status = 'accepted'"
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         claims = []
+        anchors: list[str | None] = []    # each claim's anchor, for its play-from link
         for c in self.conn.execute(
             'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence, '
-            'reviewed FROM claims c '
+            'reviewed, anchor FROM claims c '
             f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
             f"{claim_date_order_sql('c')}",
             (sid,),
@@ -6536,8 +6827,14 @@ class _SiteBuilder:
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
             })
+            anchors.append(c['anchor'])
 
         files, portrait_entry = self._source_file_entries(sid, page_dir)
+        # "play from 14:32" beside a fact taken from a recording that plays
+        # on this page (a withheld recording has no player, so no link).
+        recordings = self.recording_files.get(sid, [])
+        for claim, anchor in zip(claims, anchors):
+            claim['play'] = self._play_link(anchor, recordings) if recordings else None
         # The record-head thumbnail (win 2): the same href the Files entry
         # already resolved, just framed as a portrait plate with its own
         # caption - never a second derivative, never a second privacy check.
@@ -6562,6 +6859,8 @@ class _SiteBuilder:
                                    if c['status'] == 'suggested' and not c['parked']),
             'notes_html': notes_html,
             'notes_entries': notes_entries,
+            'has_play': any(c['play'] for c in claims),
+            'has_recordings': any(f.get('audio_href') for f in files),
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
@@ -6588,11 +6887,22 @@ class _SiteBuilder:
         so a missing/omitted image degrades identically in both places."""
         entries: list[dict] = []
         candidates: list[tuple[int, dict]] = []   # (rank, entry) for resolvable images
+        recordings: list[dict] = []
         for f in self.conn.execute(
-            'SELECT path, role, copy, date_edtf, is_primary FROM source_files WHERE source_id = ? '
-            'ORDER BY rowid', (sid,)
+            'SELECT path, role, copy, date_edtf, is_primary, original_filename '
+            'FROM source_files WHERE source_id = ? ORDER BY rowid', (sid,)
         ):
             if not f['path']:
+                continue
+            # A recording first, before anything reads its name: on the
+            # shared site one SPEC §19 holds back is never named.
+            if Path(f['path']).suffix.lower() in _RECORDING_SUFFIXES:
+                entry = self._recording_entry(sid, f, page_dir)
+                if self.linked:
+                    entry['path'] = f['path']
+                entries.append(entry)
+                recordings.append({'path': f['path'], 'original_filename': f['original_filename'],
+                                   'entry': entry})
                 continue
             # Standalone: skip images co-tagged to a living person in the photo catalog.
             # Same bug shape as _file_entry/_standalone_image_entry's fallback
@@ -6631,6 +6941,15 @@ class _SiteBuilder:
                 # living-person gate at the top of this loop.
                 self._warn_if_published_photo_went_unchecked()
         portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
+        # Players are numbered in file order, so a link from another page
+        # (`#play-rec-1-872`) always finds the same recording.
+        n = 0
+        for rec in recordings:
+            if rec['entry'].get('audio_href'):
+                n += 1
+                rec['entry']['audio_id'] = f'rec-{n}'
+                self.recording_hrefs[(sid, rec['path'])] = rec['entry']['audio_href']
+        self.recording_files[sid] = recordings
         return entries, portrait
 
     # - person page -
@@ -11226,6 +11545,11 @@ class _SiteBuilder:
         self._copy_assets()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
+        if self._recordings_without_ffmpeg:
+            self.messages.append(
+                f'NOTE: {self._recordings_without_ffmpeg} recording(s) were left off the '
+                'shareable site because ffmpeg is not installed. Install ffmpeg (it comes '
+                'with ffprobe), then run fha site again.')
         for pid in sorted(self.person_pages):
             self.build_person_page(pid)
         for lid in sorted(self.place_pages):

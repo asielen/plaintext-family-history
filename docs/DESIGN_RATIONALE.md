@@ -29,6 +29,7 @@ Contents:
 19. Calendar conversion is a tool
 20. The tree fades a weak line, from the tie outward
 21. Importing a newer download of the same tree
+22. A recording plays on the shared site only on an explicit yes
 
 ---
 
@@ -481,3 +482,15 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Matching by name and birth year alone.** Two cousins of one name are common in a family tree; the result would be a silent wrong merge.
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
+
+## 22. A recording plays on the shared site only on an explicit yes
+
+**The rule.** A recording plays on the shared site only when the owner wrote `rights: recording_ok: true` on its source, everyone heard on it is listed in `speakers:` and has died, and nobody else the source names is living, unknown or private. Anything else shows "a recording, kept in the archive", with no file name. The site plays a copy ffmpeg makes with every tag dropped, never the original.
+
+**Why.** A name on a page can be left out; a voice on a tape cannot. An hour-long interview with a grandfather names his living children and grandchildren, their towns and their troubles, and no tool can hear which minutes are safe. So the deceased-speaker test is not enough by itself: the owner has listened, and says so per source. A file name such as `margaret-1998.m4a` names the person interviewed, so a recording held back is not named either. A phone writes the place and the device into a recording, as a camera does into a photo, so only a stripped copy leaves.
+
+**Rejected.**
+
+- **Playing every recording whose speakers have died.** It would publish what they said about the living.
+- **Cutting the living out of a recording.** No tool can find every mention by ear, and a cut tape misleads.
+- **Copying the original file.** It carries the phone's location and device tags.
