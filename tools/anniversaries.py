@@ -274,22 +274,28 @@ _WALL_CSS = """
 """
 
 
-def _wall_names(ev: dict) -> str:
-    names = [html.escape(p['name'] or '') for p in ev['people']]
+def _wall_names(ev: dict, person=None) -> str:
+    """The people an event is about. `person` turns one of them into HTML
+    (the family site passes a linked name with a face); the private view
+    prints bare names."""
+    names = [person(p) if person else html.escape(p['name'] or '') for p in ev['people']]
     return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
 
 
-def _wall_line(ev: dict) -> str:
+def _wall_line(ev: dict, person=None) -> str:
     """One event as `b. Thomas Hartley (1840)`: what, who, which year. A
     29 February moved to the 28th says so after the name; an event resting
     only on a suggested claim says it is not yet reviewed."""
     moved = ' (29 February)' if ev.get('leap_moved') else ''
     review = '' if ev.get('accepted', True) else ' (not yet reviewed)'
-    return (f"{_WALL_ABBREV.get(ev['type'], ev['word'])} {_wall_names(ev)}"
+    return (f"{_WALL_ABBREV.get(ev['type'], ev['word'])} {_wall_names(ev, person)}"
             f"{moved} ({ev['year']}){review}")
 
 
-def _wall_month(year: int, entry: dict) -> str:
+def _wall_month(year: int, entry: dict, person=None) -> str:
+    """One month's grid, legend and lists as HTML. The family site's wall
+    calendar calls this too, with `person` set, so both calendars lay a month
+    out the same way."""
     month = entry['month']
     name = _stdcal.month_name[month]
     out = ['<section class="wall-month-block">', f'<h2>{name} {year}</h2>',
@@ -305,7 +311,7 @@ def _wall_month(year: int, entry: dict) -> str:
             events = entry['days'].get(day, [])
             cell = [f'<span class="day-num">{day}</span>']
             for ev in events[:_WALL_LINES_PER_DAY]:
-                cell.append(f'<span class="wall-line">{_wall_line(ev)}</span>')
+                cell.append(f'<span class="wall-line">{_wall_line(ev, person)}</span>')
             if len(events) > _WALL_LINES_PER_DAY:
                 cell.append('<span class="wall-line">and '
                             f'{len(events) - _WALL_LINES_PER_DAY} more</span>')
@@ -316,11 +322,11 @@ def _wall_month(year: int, entry: dict) -> str:
         out.append(f'<p class="wall-more">All of {name}:</p><ul>')
         for day in sorted(entry['days']):
             for ev in entry['days'][day]:
-                out.append(f'<li>{day} {name}: {_wall_line(ev)}</li>')
+                out.append(f'<li>{day} {name}: {_wall_line(ev, person)}</li>')
         out.append('</ul>')
     if entry['month_only']:
         out.append(f'<p class="wall-more">Also in {name}, day not recorded:</p><ul>')
-        out += [f'<li>{_wall_line(ev)}</li>' for ev in entry['month_only']]
+        out += [f'<li>{_wall_line(ev, person)}</li>' for ev in entry['month_only']]
         out.append('</ul>')
     if not entry['days'] and not entry['month_only']:
         out.append(f'<p class="wall-more">Nothing on file for {name} yet.</p>')
