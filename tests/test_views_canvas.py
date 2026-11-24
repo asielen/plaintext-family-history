@@ -171,9 +171,12 @@ class CanvasTests(unittest.TestCase):
         self.assertTrue(lines(live_out))
 
     def test_one_person_canvas_is_named_for_their_profile(self):
-        pid = 'p-' + next(iter(sorted(
-            re.findall(r'(?m)^id: p-([0-9a-f]+)', (next(
-                (self.root / 'people' / 'stubs').glob('*.md'))).read_text(encoding='utf-8')))))
+        folder = next(f for f in views._couple_folder_dirs(self.root) if f.name.startswith('040 '))
+        conn = views._open_index_or_explain(self.root)
+        try:
+            pid = sorted(views._persons_in_folder(conn, folder))[0]
+        finally:
+            conn.close()
         result, _, _ = _run(views.run_canvas, self.root, pid)
         self.assertEqual(result.exit_code, 0)
         self.assertEqual(len(list(self.dir.glob('*.canvas'))), 1)
