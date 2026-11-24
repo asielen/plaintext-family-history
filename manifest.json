@@ -104,7 +104,7 @@
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "5d31438d9c21c2240642fc6a6d2b52a49d64e550ad9cc814e74371195605bea5",
+      "sha256": "e62229e75aca88a5178021d7db05a392758a022b2d8850a2ea56876dc2c93d29",
       "spec_version": "2.28",
       "src": ".claude/skills/research-next/SKILL.md"
     },
@@ -132,7 +132,7 @@
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
+      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
       "spec_version": "2.28",
       "src": ".claude/skills/today/SKILL.md"
     },
@@ -265,7 +265,7 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "5d31438d9c21c2240642fc6a6d2b52a49d64e550ad9cc814e74371195605bea5",
+      "sha256": "e62229e75aca88a5178021d7db05a392758a022b2d8850a2ea56876dc2c93d29",
       "spec_version": "2.28"
     },
     {
@@ -289,7 +289,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
+      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
       "spec_version": "2.28"
     },
     {
@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "68cc1718800f6b6544c5c64007f0abfc625cff95c5f2b91b2cd692266dc593e8",
+      "sha256": "0e759133d2f84a67f9c3a91a4bf5c0365392cc10e630a7c3c87c5a3b732b701f",
       "spec_version": "2.28",
       "src": "tools/_lib.py"
     },
@@ -919,7 +919,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "364d77057f25d438eea56b0e1c67ec5d977b2da45da0273695d617ffd96a71ee",
+      "sha256": "a2a4ffd7e2345b37d3a1797d5cd76092356be09cdf84231051597ca7529a86a2",
       "spec_version": "2.28",
       "src": "tools/report.py"
     },
@@ -1480,7 +1480,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "bcdd8b6f7bdef745a96dfe8b90cd0213ab3537eb802a46c344b29177e9d8afe3",
+      "sha256": "53c194628457f6113573170d7743cc082c7ee235047f4fa3ee56f95d32b25551",
       "spec_version": "2.28",
       "src": "TOOLING.md"
     },

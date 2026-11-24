@@ -424,6 +424,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    root_generation_seed_position - 'self'|'children' → the seed position (1 or 2)
 #    build_ahnentafel_map      - index BFS: {P-id → Ahnentafel position} (SPEC §12.2)
 #    ahnentafel_generation     - position → generation depth (the --generations cap)
+#    ahnentafel_path_words     - position → "mother's father's mother" from the root person
 #    couple_folder_prefix      - position → the even couple-folder number
 #    couple_folder_dirs        - digit-prefixed dirs under people/ (not stubs/connections)
 #    couple_folder_for_prefix  - canonical on-disk couple folder for a number, or None
@@ -19151,6 +19152,25 @@ def ahnentafel_generation(pos: int) -> int:
     span 2**g .. 2**(g+1)-1, so the depth is the bit length minus one - the
     arithmetic behind every `--generations N` cap."""
     return max(int(pos).bit_length() - 1, 0)
+
+
+def ahnentafel_path_words(pos: int, root_position: int = 1) -> str:
+    """How an ancestor is related to the numbered root person, in the words a
+    family uses: position 13 from root 1 is "mother's father's mother".
+
+    A grandmother's number means nothing to most people; "his father's
+    mother" does. The bits of `pos` after the bits of `root_position` read
+    left to right, 0 = father and 1 = mother. The root itself is '' (no path).
+    Raises ValueError when `pos` is not at or below `root_position` in the
+    numbering (its leading bits differ), since there is no path to describe.
+    """
+    pos, root_position = int(pos), int(root_position)
+    depth = pos.bit_length() - root_position.bit_length()
+    if root_position < 1 or depth < 0 or (pos >> depth) != root_position:
+        raise ValueError(
+            f'position {pos} is not a descendant slot of position {root_position}')
+    return "'s ".join(
+        'mother' if (pos >> i) & 1 else 'father' for i in range(depth - 1, -1, -1))
 
 
 def couple_folder_prefix(pos: int) -> int:

@@ -2121,5 +2121,213 @@ class OnThisDayTests(unittest.TestCase):
                         full.index('## 1. Review queue'))
 
 
+class LooseEndsSectionTests(unittest.TestCase):
+    """Section 3b (loose-ends): where each line of the tree stops, who is not
+    tied to the tree, and which of them share a surname with it. Computed
+    fresh each run; nothing is written."""
+
+    SID = 'S-5000000001'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        self._n = 0
+        self._claims: list[str] = []
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _person(self, name: str, sex: str = 'U', surname: str | None = None,
+                born: int | None = None) -> str:
+        self._n += 1
+        pid = f'P-5{self._n:09x}'
+        sur = f'surname: {surname}\n' if surname else ''
+        (self.root / 'people' / 'stubs' / f'p{self._n}__x_{pid}.md').write_text(
+            f'---\nid: {pid}\nname: {name}\n{sur}sex: {sex}\nliving: false\n'
+            f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
+        if born:
+            self._claim('birth', f'born {born}', [pid], date=str(born),
+                        roles=f'    child: {pid}\n')
+        return pid
+
+    def _claim(self, ctype: str, value: str, pids: list[str], *, subtype: str = '',
+               status: str = 'accepted', roles: str = '', date: str = '') -> None:
+        cid = f'C-5{len(self._claims):09x}'
+        sub = f'  subtype: {subtype}\n' if subtype else ''
+        rl = f'  roles:\n{roles}' if roles else ''
+        dt = f'  date: "{date}"\n' if date else ''
+        self._claims.append(
+            f'- value: "{value}"\n  id: {cid}\n  type: {ctype}\n{sub}'
+            f'  persons: [{", ".join(pids)}]\n{rl}{dt}'
+            f'  status: {status}\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  information: primary\n  evidence: direct\n  notes: x.\n')
+
+    def _parent(self, child: str, parent: str, status: str = 'accepted') -> None:
+        self._claim('relationship', 'child of', [child, parent], subtype='biological',
+                    status=status,
+                    roles=f'    child: {child}\n    parent: [{parent}]\n')
+
+    def _build(self, root_person: str | None, extra_cfg: str = '') -> dict:
+        cfg = (f'root_person: {root_person}\n' if root_person else '') + extra_cfg
+        (self.root / 'fha.yaml').write_text(
+            cfg + 'roots:\n  documents: documents\n', encoding='utf-8')
+        (self.root / 'sources' / 'notes' / f'rel_{self.SID.lower()}.md').write_text(
+            f'---\nid: {self.SID}\ntitle: Rel\nsource_type: other\n---\n\n'
+            f'## Claims\n```yaml\n{"".join(self._claims)}```\n', encoding='utf-8')
+        return _lib.load_fha_yaml(self.root)
+
+    def _body(self, cfg: dict) -> str:
+        result = report.run_report(self.root, cfg, full=True)
+        return '\n'.join(result['sections']['loose-ends'])
+
+    def test_registry_carries_the_3b_row(self) -> None:
+        keys = [k for k, _n, _t in report.SECTIONS]
+        self.assertIn(('loose-ends', '3b', 'Loose ends in the tree'), report.SECTIONS)
+        self.assertEqual(keys.index('loose-ends'), keys.index('vitals-gaps') + 1)
+
+    def test_end_of_the_line_lists_closest_first_with_the_path_in_words(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M', born=1850)
+        m = self._person('Mary Wells', 'F')
+        mf = self._person('Caleb Wells', 'M', born=1790)
+        mm = self._person('Ann Wells', 'F')
+        mmf = self._person('Old Man', 'M')
+        self._parent(r, f)
+        self._parent(r, m)
+        self._parent(m, mf)
+        self._parent(m, mm)
+        self._parent(mm, mmf)
+        body = self._body(self._build(r))
+        self.assertIn('**End of the line (', body)
+        names = [ln.split(' [')[0] for ln in body.splitlines()
+                 if ln.startswith('- ') and ': number ' in ln]
+        self.assertEqual(names, ['- John Hartley', '- Caleb Wells', '- Ann Wells',
+                                 '- Old Man'])
+        self.assertIn("(born 1850): number 2, Thomas Edward Hartley's father. "
+                      'No parents recorded.', body)
+        self.assertIn("number 6, Thomas Edward Hartley's mother's father.", body)
+        self.assertIn("number 7, Thomas Edward Hartley's mother's mother. "
+                      'Her mother is not recorded yet.', body)
+        self.assertNotIn('Mary Wells [', body)
+
+    def test_a_root_with_no_parents_says_so(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        body = self._body(self._build(r))
+        self.assertIn('No parents are recorded for Thomas Edward Hartley yet', body)
+
+    def test_children_root_generation_shifts_the_numbers(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        body = self._body(self._build(r, 'root_generation: children\n'))
+        self.assertIn("number 4, Thomas Edward Hartley's father", body)
+
+    def test_unset_root_person_asks_for_one_and_uses_the_largest_group(self) -> None:
+        a = self._person('Ann Hartley', 'F')
+        b = self._person('Bob Hartley', 'M')
+        c = self._person('Cal Hartley', 'M')
+        self._parent(a, b)
+        self._parent(a, c)
+        self._claim('occupation', 'miller', [self._person('Lone Stranger', 'M')])
+        body = self._body(self._build(None))
+        self.assertIn('Set root_person in fha.yaml to see where each line of the tree ends.',
+                      body)
+        self.assertIn('the largest connected family group (3 people)', body)
+        self.assertIn('Lone Stranger', body)
+
+    def test_groups_singletons_and_the_waiting_line(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        h = self._person('Ann Kowalski', 'F')
+        w = self._person('Jan Kowalski', 'M')
+        self._claim('marriage', 'Ann married Jan', [h, w],
+                    roles=f'    spouse: [{h}, {w}]\n')
+        self._claim('occupation', 'miller', [self._person('Frank S. Bradford', 'M')])
+        pa = self._person('Pa Waiting', 'M')
+        kid = self._person('Kid Waiting', 'F')
+        self._parent(kid, pa, status='suggested')
+        body = self._body(self._build(r))
+        self.assertIn('**Not connected to the tree (5 people):**', body)
+        self.assertIn('A group of 2 around', body)
+        self.assertIn('3 people on their own', body)
+        self.assertIn('Frank S. Bradford', body)
+        self.assertIn('2 of these 5 are named on family ties still waiting in the '
+                      'review queue', body)
+
+    def test_a_neighbor_tie_connects_a_person(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        n = self._person('Nell Neighbor', 'F')
+        self._claim('relationship', 'neighbors', [f, n], subtype='neighbor')
+        body = self._body(self._build(r))
+        self.assertNotIn('Nell Neighbor', body)
+        self.assertIn("Everyone is connected to Thomas Edward Hartley's family.", body)
+
+    def test_namesakes_group_by_folded_surname(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M', surname='Hartley')
+        f = self._person('John Hartley', 'M', surname='Hartley')
+        m = self._person('Hanna Wisniewska', 'F', surname='Wisniewska')
+        self._parent(r, f)
+        self._parent(r, m)
+        self._person('Ann Hartley', 'F', surname='Hartley', born=1871)
+        self._person('Hal Hartley', 'M', surname='Hartley')
+        self._person('Zed Kowalski', 'M', surname='Kowalski')
+        self._person('Halina Wiśniewska', 'F', surname='Wiśniewska')
+        body = self._body(self._build(r))
+        self.assertIn('**Same surname, not connected (2 surnames):**', body)
+        self.assertIn('Ann Hartley', body)
+        self.assertIn('(born 1871)', body)
+        self.assertIn('Hal Hartley', body)
+        self.assertIn('Halina Wiśniewska', body)
+        same = body.split('**Same surname, not connected')[1]
+        self.assertNotIn('Kowalski', same)
+
+    def test_merged_tombstones_appear_nowhere(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        ghost = self._person('Ghost Person', 'M')
+        cfg = self._build(r)
+        path = next((self.root / 'people' / 'stubs').glob(f'*{ghost}.md'))
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'tier: stub', f'tier: stub\nstatus: merged\nmerged_into: {f}'),
+            encoding='utf-8')
+        self.assertNotIn('Ghost Person', self._body(cfg))
+
+    def test_no_bucket_prints_more_than_five_lines(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        for i in range(9):
+            self._claim('occupation', 'miller', [self._person(f'Stray{i} Person', 'M')])
+        body = self._body(self._build(r))
+        self.assertLessEqual(body.count('Stray'), 5)
+        self.assertIn('9 people on their own', body)
+        self.assertIn('and 4 more', body)
+
+
+class AhnentafelPathWordsTests(unittest.TestCase):
+    """The path from the numbered person to an ancestor, in the words a
+    family uses ("father's mother's father")."""
+
+    def test_table(self) -> None:
+        w = _lib.ahnentafel_path_words
+        self.assertEqual(w(2, 1), 'father')
+        self.assertEqual(w(3, 1), 'mother')
+        self.assertEqual(w(8, 1), "father's father's father")
+        self.assertEqual(w(13, 1), "mother's father's mother")
+        self.assertEqual(w(4, 2), 'father')
+        self.assertEqual(w(5, 2), 'mother')
+        self.assertEqual(w(1, 1), '')
+
+    def test_not_a_descendant_slot_raises(self) -> None:
+        with self.assertRaises(ValueError):
+            _lib.ahnentafel_path_words(3, 2)
+
+
 if __name__ == '__main__':
     unittest.main()
