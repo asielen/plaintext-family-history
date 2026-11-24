@@ -16,7 +16,7 @@ There is no app installer. You set up an archive with one command (`fha install`
 
 Those are genealogy applications. They're good ones, but your data lives in their database or on their service. Here the archive is plain files you own. A genealogy program can still be fed from it with a GEDCOM export, so if you like another program's tree view, export and use it; your files stay the record.
 
-It works the other way too. Coming from Ancestry or any other program, download your tree as a GEDCOM file and `fha gedcom import` files it: every person becomes a record and every statement in your tree becomes a suggestion for you to review, so years of work arrive ready to check.
+It works the other way too. Coming from Ancestry or any other program, download your tree as a GEDCOM file and `fha gedcom import` files it: every person becomes a record and every statement in your tree becomes a suggestion for you to review, so years of work arrive ready to check. Download the tree again next year and import the newer file: only what changed is added, and anything that disagrees with what you had becomes a question for you.
 
 ### What happens to my photos?
 

@@ -2353,7 +2353,10 @@ class _ReimportCase(_ArchiveCase):
         return found[0]
 
     def _lose_the_cache(self) -> None:
+        """Lose the cache and the import's list in notes/ too, so what is
+        left is the records alone (the harder case)."""
         shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        shutil.rmtree(self.archive / 'notes' / 'gedcom-imports', ignore_errors=True)
 
 
 class ReimportPlanTestCase(_ReimportCase):
@@ -2831,14 +2834,6 @@ class ReimportPlanTestCase(_ReimportCase):
 
     # The plan itself.
 
-    def test_apply_is_refused_and_writes_nothing(self) -> None:
-        before = _tree_digest(self.archive)
-        result, _out, err = self._run(SMALL_V2, apply=True)
-        self.assertEqual(result.exit_code, EXIT_ERRORS)
-        self.assertIn('Nothing was written', err)
-        self.assertIn('--as-new-tree', err)
-        self.assertEqual(_tree_digest(self.archive), before)
-
     def test_plan_is_the_same_text_every_time(self) -> None:
         # Two runs over the same archive and the same file print the same
         # plan, byte for byte: no id is made up for a plan that writes nothing.
@@ -2864,7 +2859,7 @@ class ReimportPlanTestCase(_ReimportCase):
                       out)
         self.assertIn('New people (1)', out)
         self.assertIn('Walter Hartley', out)
-        self.assertIn('--apply will refuse', out)
+        self.assertIn('run the same command again with --apply', out)
 
     def test_question_text_names_both_claims_and_the_person(self) -> None:
         plan = self._plan(SMALL_V2)
@@ -3135,8 +3130,9 @@ class ReimportMatchingTestCase(_ArchiveCase):
 
     def test_a_person_with_a_name_and_nothing_else(self) -> None:
         # Thomas has no statement of his own, so no claim says which record he
-        # became. The audit file knows. Without it the filed copy still says he
-        # was in the earlier download, and he is listed, not planned again.
+        # became. The import's list knows (kept in notes/, with a copy in the
+        # cache). With both gone the filed copy still says he was in the
+        # earlier download, and he is listed, not planned again.
         people = [('@I1@', 'Rose /Hartley/', 'F', '1878'),
                   ('@I2@', 'Thomas /Hartley/', 'M', '')]
         self.assertTrue(self._run(self._tree('first.ged', people), apply=True)[0].data['applied'])
@@ -3146,6 +3142,8 @@ class ReimportMatchingTestCase(_ArchiveCase):
         self.assertEqual([s.name for s in plan.stubs], ['Ada Hartley'])
 
         shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        self.assertEqual(sorted(self._plan(later).matches), ['@I1@', '@I2@'])
+        shutil.rmtree(self.archive / 'notes' / 'gedcom-imports')
         plan = self._plan(later)
         self.assertEqual(sorted(plan.matches), ['@I1@'])
         self.assertIn('does not record which person record', plan.held['@I2@'].reason)
@@ -3241,11 +3239,16 @@ class ReimportMatchingTestCase(_ArchiveCase):
         self.assertIn(john, block)
         record.write_text(text[:start] + block.replace(john, thomas) + text[end:],
                           encoding='utf-8')
-        shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
         later = self._tree('later.ged', [
             ('@I1@', 'Thomas /Hartley/', 'M', '1875'),
             ('@I2@', 'John /Hartley/', 'M', '1880', '1 OCCU Farmer'),
             ('@I3@', 'Rose /Hartley/', 'F', '1878')])
+        # The import's list still says who John's number is.
+        shutil.rmtree(self.archive / '.cache' / 'gedcom_import')
+        self.assertEqual(self._plan(later).matches['@I2@'].pid, john)
+        # With the list gone too, only the claims are left, and they no
+        # longer place John.
+        shutil.rmtree(self.archive / 'notes' / 'gedcom-imports')
         plan = self._plan(later)
         self.assertEqual(plan.matches['@I1@'].pid, thomas)
         self.assertNotIn('@I2@', plan.matches)
@@ -3497,6 +3500,500 @@ class ReimportScaleTestCase(_ArchiveCase):
         self.assertEqual(result.data['claims'], 0)
         # One walk of people/, one of sources/, and no id scan at all.
         self.assertEqual(scans, {'ids': 0, 'people': 1, 'sources': 1})
+
+
+# ── A newer download: the write (TOOLING §13a2) ──────────────────────────────
+
+def _files(root: Path) -> dict[str, bytes]:
+    return {p.relative_to(root).as_posix(): p.read_bytes()
+            for p in sorted(root.rglob('*')) if p.is_file()}
+
+
+class ReimportApplyTestCase(_ReimportCase):
+    """`--apply` on a newer download adds only what changed, and nothing he
+    already has is touched. Expectations come from the contract and the two
+    fixture files (see `_ReimportCase`), not from a run."""
+
+    def _apply(self, ged: Path = SMALL_V2, **kwargs):
+        return self._run(ged, apply=True, **kwargs)
+
+    def _new_record(self) -> Path:
+        found = [p for p in (self.archive / 'sources' / 'other').glob('*.md')
+                 if p != self.record1]
+        self.assertEqual(len(found), 1)
+        return found[0]
+
+    def _questions(self) -> str:
+        return (self.archive / 'notes' / 'questions.md').read_bytes().decode('utf-8')
+
+    def test_apply_adds_only_what_changed_and_touches_nothing_he_has(self) -> None:
+        # He reviewed one claim and wrote in one person's record first.
+        import claim as claim_mod
+        occupation = self._v1_claim('occupation', 'Thomas Hartley')
+        self.assertEqual(claim_mod.run_claim(self.archive, claim_id=occupation['id'],
+                                             status='accepted').exit_code, EXIT_CLEAN)
+        rose = self._person_path('Rose Hartley')
+        rose.write_text(rose.read_text(encoding='utf-8') + '\nShe kept the bible.\n',
+                        encoding='utf-8')
+        before = _files(self.archive)
+        result, out, _err = self._apply()
+        self.assertTrue(result.data['applied'])
+        self.assertEqual(result.data['mode'], 'update')
+        after = _files(self.archive)
+        for path, raw in before.items():
+            self.assertEqual(after[path], raw, f'{path} was changed')
+        added = sorted(set(after) - set(before))
+        new_record = self._new_record()
+        sid2 = result.data['source_id']
+        self.assertEqual(added, sorted([
+            f'.cache/gedcom_import/{hashlib.sha256(SMALL_V2.read_bytes()).hexdigest()[:12]}.csv',
+            f'documents/gedcom/small-v2_{sid2}.ged',
+            f'notes/gedcom-imports/small-v2_{sid2}.csv',
+            'notes/questions.md',
+            self._person_path('Walter Hartley').relative_to(self.archive).as_posix(),
+            new_record.relative_to(self.archive).as_posix(),
+        ]))
+        self.assertEqual(len(list((self.archive / 'people' / 'stubs').glob('*.md'))), 11)
+        record = read_record(new_record)
+        self.assertEqual(record['parse_errors'], [])
+        self.assertEqual(len(record['claims']), 8)
+        self.assertEqual({c['status'] for c in record['claims']}, {'suggested'})
+        self.assertEqual(after[f'documents/gedcom/small-v2_{sid2}.ged'], SMALL_V2.read_bytes())
+        self.assertIn('Added what changed', out)
+        self.assertNotIn('dry-run', out)
+        self.assertIn(self.sid1, new_record.read_text(encoding='utf-8'))
+
+    def test_changed_statement_contradicts_the_earlier_one_and_gets_its_question(self) -> None:
+        import index as index_mod
+        import lint as lint_mod
+        result, _out, _err = self._apply()
+        old = self._v1_claim('birth', 'Rose Hartley')
+        new = [c for c in read_record(self._new_record())['claims']
+               if c['type'] == 'birth' and 'Rose Hartley' in c['value']]
+        self.assertEqual(len(new), 1)
+        self.assertEqual(new[0]['contradicts'], [old['id']])
+        self.assertEqual(str(new[0]['date']), '1879-01-12')
+        self.assertIn(self._pid('Rose Hartley'), str(new[0]['persons'][0]))
+        blocks = [b for b in self._questions().split('## Q: ') if new[0]['id'] in b]
+        self.assertEqual(len(blocks), 1)
+        block = blocks[0]
+        self.assertTrue(block.startswith('When and where was Rose Hartley born?'))
+        self.assertIn(old['id'], block)
+        self.assertIn(self._pid('Rose Hartley'), block)
+        self.assertIn('- origin: tool', block)
+        self.assertIn('- status: open', block)
+        self.assertEqual(self._questions().count('## Q: '), 2)     # and the divorce year
+        self.assertEqual(result.data['questions'], 2)
+        # Adding detail is not a disagreement: no contradicts, no question.
+        ada = [c for c in read_record(self._new_record())['claims']
+               if c['type'] == 'birth' and 'Ada Hartley' in c['value']]
+        self.assertNotIn('contradicts', ada[0])
+        self.assertNotIn(ada[0]['id'], self._questions())
+        self.assertEqual(index_mod.build_index(self.archive, self.config).exit_code,
+                         EXIT_CLEAN)
+        n_errors, _n_warnings, _e018 = lint_mod.run_lint_silent(self.archive, self.config)
+        self.assertEqual(n_errors, 0, 'an applied update must lint with no errors (E009 too)')
+
+    def test_questions_are_added_after_the_ones_he_wrote(self) -> None:
+        notes = self.archive / 'notes'
+        notes.mkdir(exist_ok=True)
+        mine = b'# Questions\r\n\r\n## Q: Where was the farm?\r\n- origin: human\r\n- status: open\r\n'
+        (notes / 'questions.md').write_bytes(mine)
+        self._apply()
+        raw = (notes / 'questions.md').read_bytes()
+        self.assertTrue(raw.startswith(mine))
+        self.assertNotIn(b'\n', raw.replace(b'\r\n', b''))          # his line endings kept
+        self.assertEqual(raw.count(b'## Q: '), 3)
+
+    def test_a_failed_write_puts_everything_back(self) -> None:
+        notes = self.archive / 'notes'
+        notes.mkdir(exist_ok=True)
+        (notes / 'questions.md').write_bytes(b'## Q: Where was the farm?\n- status: open\n')
+        before = _tree_digest(self.archive)
+        real_write = gedcom_import._write_text
+
+        def failing_write(path, text):
+            if '.cache' in Path(path).parts:        # the very last write
+                raise OSError('disk full (injected)')
+            real_write(path, text)
+
+        with mock.patch.object(gedcom_import, '_write_text', failing_write):
+            result, _out, err = self._apply()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('rolled back', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+        self.assertTrue(self._apply()[0].data['applied'])           # and it can be run again
+
+    def test_a_failed_write_removes_a_questions_file_it_made(self) -> None:
+        before = _tree_digest(self.archive)
+        real_write = gedcom_import._write_text
+
+        def failing_write(path, text):
+            if '.cache' in Path(path).parts:
+                raise OSError('disk full (injected)')
+            real_write(path, text)
+
+        with mock.patch.object(gedcom_import, '_write_text', failing_write):
+            result, _out, _err = self._apply()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(_tree_digest(self.archive), before)
+        self.assertFalse((self.archive / 'notes' / 'questions.md').exists())
+
+    def test_a_questions_file_that_cannot_be_read_stops_before_any_write(self) -> None:
+        notes = self.archive / 'notes'
+        notes.mkdir(exist_ok=True)
+        (notes / 'questions.md').write_bytes(b'## Q: caf\xe9?\n')   # not UTF-8
+        before = _tree_digest(self.archive)
+        result, _out, err = self._apply()
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('notes/questions.md', err)
+        self.assertIn('UTF-8', err)
+        self.assertIn('Nothing was written', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_nothing_new_writes_nothing(self) -> None:
+        before = _tree_digest(self.archive)
+        result, out, _err = self._apply(self._same_tree_redownloaded())
+        self.assertEqual(result.exit_code, EXIT_WARNINGS)           # small.ged's own warnings
+        self.assertFalse(result.data['applied'])
+        self.assertEqual(result.changed, [])
+        self.assertIn('Nothing new', out)
+        self.assertIn('Nothing was written', out)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_the_same_newer_file_twice_is_refused(self) -> None:
+        self._apply()
+        before = _tree_digest(self.archive)
+        result, _out, err = self._apply()
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('already imported', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_a_third_download_builds_on_the_first_two(self) -> None:
+        sid2 = self._apply()[0].data['source_id']
+        record2 = self._new_record()
+        v1 = self._v1_claim('birth', 'Rose Hartley')
+        v2 = next(c for c in read_record(record2)['claims']
+                  if c['type'] == 'birth' and 'Rose Hartley' in c['value'])
+        third = self._edited('small-v3.ged', SMALL_V2,
+                             ('2 DATE 12 JAN 1879', '2 DATE 12 JAN 1880'),
+                             ('1 DATE 1 JUL 2027', '1 DATE 1 JUL 2028'))
+        plan = self._plan(third)
+        self.assertEqual(plan.mode, 'update')
+        self.assertEqual(plan.stubs, [])                            # Walter is known now
+        self.assertEqual(plan.held, {})
+        self.assertEqual([f.outcome for f in plan.facts if f.outcome != 'same'], ['changed'])
+        result, _out, _err = self._apply(third)
+        self.assertTrue(result.data['applied'])
+        self.assertEqual(sorted(result.data['update_of']), sorted([self.sid1, sid2]))
+        record3 = next(p for p in (self.archive / 'sources' / 'other').glob('*.md')
+                       if p not in (self.record1, record2))
+        claims = read_record(record3)['claims']
+        self.assertEqual(len(claims), 1)
+        self.assertEqual(sorted(claims[0]['contradicts']), sorted([v1['id'], v2['id']]))
+        self.assertEqual(self._questions().count(claims[0]['id']), 1)
+        self.assertEqual(len(list((self.archive / 'people' / 'stubs').glob('*.md'))), 11)
+        listing = next((self.archive / 'notes' / 'gedcom-imports').glob(
+            f'*{result.data["source_id"]}.csv')).read_text(encoding='utf-8')
+        self.assertRegex(listing, r'(?m)^# update_of: (\S+), (\S+)$')
+        self.assertIn(self.sid1, listing)
+        self.assertIn(sid2, listing)
+
+    def test_people_not_matched_for_certain_get_nothing_written(self) -> None:
+        # @I4@ was Ben Hartley and is Wilbur Hartley, born 1897, in this file.
+        reused = self._edited(
+            'reused.ged', SMALL_V2,
+            ('1 NAME Ben /Hartley/\n1 SEX M\n1 BIRT\n2 DATE INT 1902 (spring after the flood)\n',
+             '1 NAME Wilbur /Hartley/\n1 SEX M\n1 BIRT\n2 DATE 1897\n'))
+        ben = self._person_path('Ben Hartley')
+        ben_before = ben.read_bytes()
+        result, out, _err = self._apply(reused)
+        self.assertTrue(result.data['applied'])
+        self.assertEqual(len(result.data['unmatched']), 1)
+        self.assertIn('Not matched for certain', out)
+        self.assertEqual(ben.read_bytes(), ben_before)
+        text = self._new_record().read_text(encoding='utf-8')
+        self.assertNotIn('Wilbur', text)
+        self.assertNotIn(self._pid('Ben Hartley'), text)
+        names = [read_record(p)['meta']['name']
+                 for p in (self.archive / 'people' / 'stubs').glob('*.md')]
+        self.assertNotIn('Wilbur Hartley', names)
+
+    def test_working_copy_refuses_the_update_too(self) -> None:
+        (self.archive / 'WORKING_COPY').write_text('no assets here\n', encoding='utf-8')
+        before = _tree_digest(self.archive)
+        result, _out, _err = self._apply()
+        self.assertEqual(result.data['status'], 'working-copy')
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_unreachable_documents_drive_refuses_the_update(self) -> None:
+        before = _tree_digest(self.archive)
+        with mock.patch.object(gedcom_import, '_unreachable_anchor', return_value='Q:\\'):
+            result, _out, err = self._apply()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('roots:', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_three_id_scans_at_most_and_none_for_a_plan(self) -> None:
+        import _lib
+        scans = {'n': 0}
+        real = _lib.scan_ids_in_tree
+
+        def counted(*args, **kwargs):
+            scans['n'] += 1
+            return real(*args, **kwargs)
+
+        with mock.patch.object(_lib, 'scan_ids_in_tree', counted):
+            self._run(SMALL_V2)
+            self.assertEqual(scans['n'], 0)
+            self._apply()
+        self.assertEqual(scans['n'], 3)                              # source, people, claims
+
+    def test_obsidian_links_name_the_files_people_already_have(self) -> None:
+        (self.archive / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n  documents: documents\nlinks: obsidian\n',
+            encoding='utf-8')
+        self.config = load_fha_yaml(self.archive, strict=True)
+        self._apply()
+        text = self._new_record().read_text(encoding='utf-8')
+        notes = text[text.index('## Notes'):]
+        self.assertIn(f'[[{self.record1.stem}|', notes)
+
+
+class ImportListTestCase(_ReimportCase):
+    """The record-number list is kept with the records (`notes/gedcom-imports/`),
+    so it is backed up and survives a lost `.cache`."""
+
+    def _list(self, sid: str) -> str:
+        return next((self.archive / 'notes' / 'gedcom-imports').glob(
+            f'*_{sid}.csv')).read_bytes().decode('utf-8')
+
+    def _rows(self, sid: str) -> list[dict]:
+        import csv
+        body = [ln for ln in self._list(sid).splitlines() if not ln.startswith('#')]
+        return list(csv.DictReader(body))
+
+    def test_a_first_import_writes_the_list_beside_the_records(self) -> None:
+        text = self._list(self.sid1)
+        self.assertIn('# format: 2', text)
+        self.assertIn(f'# source_id: {self.sid1}', text)
+        people = [r for r in self._rows(self.sid1) if r['kind'] == 'person']
+        self.assertEqual(len(people), 10)
+        self.assertEqual({r['origin'] for r in people}, {'new'})
+        rose = next(r for r in people if r['gedcom_xref'] == '@I1@')
+        self.assertEqual(rose['minted_id'], self._pid('Rose Hartley'))
+        # The cache copy is still the last write and says the same.
+        cache = next((self.archive / '.cache' / 'gedcom_import').glob('*.csv'))
+        self.assertEqual(cache.read_bytes().decode('utf-8'), text)
+
+    def test_an_update_lists_every_person_and_how_they_were_matched(self) -> None:
+        result, _out, _err = self._run(SMALL_V2, apply=True)
+        sid2 = result.data['source_id']
+        self.assertIn(f'# update_of: {self.sid1}', self._list(sid2))
+        people = {r['gedcom_xref']: r for r in self._rows(sid2) if r['kind'] == 'person'}
+        self.assertEqual(len(people), 11)
+        self.assertEqual(people['@I1@']['origin'], 'record number')
+        self.assertEqual(people['@I1@']['minted_id'], self._pid('Rose Hartley'))
+        self.assertEqual(people['@I11@']['origin'], 'new')
+        self.assertEqual(people['@I11@']['minted_id'], self._pid('Walter Hartley'))
+
+    def test_an_older_list_without_the_new_columns_is_still_read(self) -> None:
+        import csv
+        shutil.rmtree(self.archive / 'notes' / 'gedcom-imports')
+        cache = next((self.archive / '.cache' / 'gedcom_import').glob('*.csv'))
+        old: list[str] = []
+        for line in cache.read_text(encoding='utf-8').splitlines():
+            if line.startswith(('# format', '# update_of')):
+                continue
+            if line.startswith('#'):
+                old.append(line)
+            else:
+                buf = io.StringIO()
+                csv.writer(buf, lineterminator='').writerow(next(csv.reader([line]))[:4])
+                old.append(buf.getvalue())
+        cache.write_text('\n'.join(old) + '\n', encoding='utf-8')
+        self.assertNotIn('origin', cache.read_text(encoding='utf-8'))
+        plan = self._plan(SMALL_V2)
+        self.assertEqual(len(plan.matches), 10)
+        self.assertEqual(plan.held, {})
+
+    def test_a_person_with_a_name_and_nothing_else_is_placed_without_the_cache(self) -> None:
+        # Karl has no statement of his own, so no claim says which record he
+        # became. Only the list knows, and the list is not in `.cache`.
+        lines = ['0 HEAD', '1 SOUR OtherApp', '1 CHAR UTF-8',
+                 '0 @I1@ INDI', '1 NAME Ada /Thorsson/', '1 SEX F', '1 BIRT', '2 DATE 1901',
+                 '0 @I2@ INDI', '1 NAME Karl /Thorsson/', '1 SEX M', '0 TRLR', '']
+        first = self._ged('other.ged', '\n'.join(lines))
+        self.assertTrue(self._run(first, apply=True)[0].data['applied'])
+        later = self._ged('other-later.ged', '\n'.join(
+            lines[:-2] + ['0 @I3@ INDI', '1 NAME Nils /Thorsson/', '1 SEX M', '0 TRLR', '']))
+        shutil.rmtree(self.archive / '.cache')
+        plan = self._plan(later)
+        self.assertEqual(sorted(plan.matches), ['@I1@', '@I2@'])
+        self.assertEqual(plan.matches['@I2@'].pid, self._pid('Karl Thorsson'))
+        self.assertEqual([s.name for s in plan.stubs], ['Nils Thorsson'])
+
+
+class ConfirmLikelyMatchesTestCase(_ReimportCase):
+    """A tree whose program gave everyone a new number: nobody is matched for
+    certain, each person is listed with the one they most likely are, and one
+    yes to that list places them."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.renumbered = self._ged('renumbered.ged', self._renumbered(_lf(SMALL_V2)))
+
+    def test_without_his_yes_nothing_is_written_for_them(self) -> None:
+        result, out, _err = self._run(self.renumbered, apply=True)
+        self.assertEqual(result.data['matched'], 0)
+        self.assertEqual(len(result.data['unmatched']), 10)
+        self.assertIn('--confirm-matches', out)
+        record = next(p for p in (self.archive / 'sources' / 'other').glob('*.md')
+                      if p != self.record1)
+        # Only Walter, who is new, and his own birth.
+        self.assertEqual([c['type'] for c in read_record(record)['claims']], ['birth'])
+
+    def test_the_list_is_shown_and_no_is_no(self) -> None:
+        asked: list[str] = []
+
+        def no(prompt: str) -> bool:
+            asked.append(prompt)
+            return False
+
+        before = _tree_digest(self.archive)
+        result, out, _err = self._run(self.renumbered, confirm_matches=True, confirm=no)
+        self.assertEqual(len(asked), 1)
+        self.assertIn('Rose Hartley', out)
+        self.assertIn(self._pid('Rose Hartley'), out)
+        self.assertEqual(result.data['matched'], 0)
+        self.assertEqual(result.data['confirmed'], 0)
+        self.assertEqual(_tree_digest(self.archive), before)
+
+    def test_his_yes_places_them_and_the_update_is_planned(self) -> None:
+        before = _tree_digest(self.archive)
+        result, _out, _err = self._run(self.renumbered, confirm_matches=True,
+                                       confirm=lambda prompt: True)
+        self.assertEqual(_tree_digest(self.archive), before)        # a plan still writes nothing
+        self.assertEqual(result.data['confirmed'], 10)
+        self.assertEqual(result.data['matched'], 10)
+        self.assertEqual(result.data['unmatched'], [])
+        self.assertEqual(result.data['new_people'], 1)
+        self.assertEqual(result.data['changed'], 2)
+
+    def test_his_yes_then_apply_writes_the_update_and_remembers_the_numbers(self) -> None:
+        result, _out, _err = self._run(self.renumbered, apply=True, confirm_matches=True,
+                                       confirm=lambda prompt: True)
+        self.assertTrue(result.data['applied'])
+        self.assertEqual(len(list((self.archive / 'people' / 'stubs').glob('*.md'))), 11)
+        listing = next((self.archive / 'notes' / 'gedcom-imports').glob(
+            f'*_{result.data["source_id"]}.csv')).read_bytes().decode('utf-8')
+        self.assertIn(f'@P101@,{self._pid("Rose Hartley")},person,Rose Hartley,you confirmed',
+                      listing)
+        # Next year's download keeps the new numbers: matched with no question asked.
+        third = self._ged('renumbered-again.ged', self._renumbered(_lf(SMALL_V2)).replace(
+            '1 DATE 1 JUL 2027', '1 DATE 1 JUL 2028'))
+        plan = self._plan(third)
+        self.assertEqual(len(plan.matches), 11)
+        self.assertEqual(plan.held, {})
+        self.assertEqual(plan.claims, [])
+
+    def test_no_answer_is_no(self) -> None:
+        with mock.patch('builtins.input', side_effect=EOFError):
+            result, _out, _err = self._run(self.renumbered, confirm_matches=True)
+        self.assertEqual(result.data['confirmed'], 0)
+
+    def test_the_flag_reaches_the_command_line(self) -> None:
+        with mock.patch('builtins.input', return_value='y'), \
+                contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            code = gedcom_import._standalone_main(
+                [str(self.renumbered), '--confirm-matches', '--apply',
+                 '--root', str(self.archive)])
+        self.assertEqual(code, EXIT_WARNINGS)
+        self.assertEqual(len(list((self.archive / 'people' / 'stubs').glob('*.md'))), 11)
+
+
+class OwnerDecisionsTestCase(_ArchiveCase):
+    """The owner's answers to the plan's open questions."""
+
+    _tree = ReimportMatchingTestCase._tree
+    _plan = ReimportMatchingTestCase._plan
+
+    def _first(self, *people) -> None:
+        self.assertTrue(self._run(self._tree('first.ged', list(people)),
+                                  apply=True)[0].data['applied'])
+
+    def test_same_number_and_part_of_the_name_with_no_birth_date_is_a_match(self) -> None:
+        self._first(('@I1@', 'Thomas /Hartley/', 'M', '', '1 OCCU Farmer'),
+                    ('@I2@', 'Rose /Hartley/', 'F', '1878'))
+        later = self._tree('later.ged', [
+            ('@I1@', 'Thomas Edward /Hartley/', 'M', '', '1 OCCU Farmer'),
+            ('@I2@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertEqual(sorted(plan.matches), ['@I1@', '@I2@'])
+        self.assertEqual(plan.held, {})
+        self.assertEqual(plan.stubs, [])
+        self.assertEqual(plan.claims, [])
+        # He is told the tree spells the name differently; his record keeps its name.
+        self.assertTrue(any('Thomas Edward Hartley' in line for line in plan.name_changes))
+
+    def test_a_son_moved_onto_his_undated_fathers_number_is_still_held(self) -> None:
+        # Father and son, neither dated. The father was deleted from the tree
+        # and the program closed the gap, so the son now carries his number.
+        self._first(('@I1@', 'Thomas /Hartley/', 'M', '', '1 OCCU Farmer'),
+                    ('@I2@', 'Thomas Edward /Hartley/', 'M', '', '1 OCCU Blacksmith'),
+                    ('@I3@', 'Rose /Hartley/', 'F', '1878'))
+        later = self._tree('later.ged', [
+            ('@I1@', 'Thomas Edward /Hartley/', 'M', '', '1 OCCU Blacksmith'),
+            ('@I2@', 'Rose /Hartley/', 'F', '1878')])
+        plan = self._plan(later)
+        self.assertNotIn('@I1@', plan.matches)
+        self.assertIn('@I1@', plan.held)
+        self.assertEqual(plan.claims, [])
+
+    def test_part_of_the_name_and_a_birth_date_on_one_side_only_is_still_held(self) -> None:
+        self._first(('@I1@', 'Thomas /Hartley/', 'M', '', '1 OCCU Farmer'),
+                    ('@I2@', 'Rose /Hartley/', 'F', '1878'))
+        later = self._tree('later.ged', [
+            ('@I1@', 'Thomas Edward /Hartley/', 'M', '1850', '1 OCCU Farmer'),
+            ('@I2@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertIn('@I1@', self._plan(later).held)
+
+    def test_a_wholly_different_undated_name_is_still_held(self) -> None:
+        self._first(('@I1@', 'Thomas /Hartley/', 'M', '', '1 OCCU Farmer'),
+                    ('@I2@', 'Rose /Hartley/', 'F', '1878'))
+        later = self._tree('later.ged', [('@I1@', 'Silas /Cole/', 'M', '', '1 OCCU Farmer'),
+                                         ('@I2@', 'Rose /Hartley/', 'F', '1878')])
+        self.assertIn('@I1@', self._plan(later).held)
+
+    def test_a_place_that_only_gains_parts_is_more_detail_with_no_question(self) -> None:
+        self._first(('@I1@', 'Rose /Hartley/', 'F', '', '1 BIRT', '2 DATE 12 JAN 1878',
+                     '2 PLAC Springfield, Illinois'))
+        later = self._tree('later.ged', [
+            ('@I1@', 'Rose /Hartley/', 'F', '', '1 BIRT', '2 DATE 12 JAN 1878',
+             '2 PLAC Springfield, Sangamon County, Illinois')])
+        plan = self._plan(later)
+        self.assertEqual([f.outcome for f in plan.facts], ['more detail'])
+        self.assertEqual(plan.questions, [])
+        result, _out, _err = self._run(later, apply=True)
+        self.assertTrue(result.data['applied'])
+        self.assertFalse((self.archive / 'notes' / 'questions.md').exists())
+        record = next((self.archive / 'sources' / 'other').glob('later_*.md'))
+        claim = read_record(record)['claims'][0]
+        self.assertNotIn('contradicts', claim)
+        self.assertEqual(claim['place_text'], 'Springfield, Sangamon County, Illinois')
+
+    def test_place_parts(self) -> None:
+        rel = gedcom_import._place_relation
+        self.assertEqual(rel('Springfield, Illinois', 'Springfield, Sangamon County, Illinois'),
+                         'adds')
+        self.assertEqual(rel('Springfield, Illinois', 'Springfield, Illinois, USA'), 'adds')
+        self.assertEqual(rel('Springfield, Sangamon County, Illinois', 'Springfield, Illinois'),
+                         'less')
+        # A part that changed is still a disagreement, whatever else was added.
+        self.assertEqual(rel('Springfield, Illinois', 'Springfield, Greene County, Missouri'),
+                         'conflict')
+        self.assertEqual(rel('Springfield, Illinois', 'Illinois, Springfield'), 'conflict')
 
 
 if __name__ == '__main__':
