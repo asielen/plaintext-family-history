@@ -22828,8 +22828,8 @@ def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
 # as a first name.
 _OLD_STYLE_MARKER = re.compile(
     r'\bold[\s-]?style\b'
-    r'|\bjulian\b(?=\s*(?:calendar|date|day|style|reckoning|\)))'
-    r'|\(\s*julian\b', re.IGNORECASE)
+    r'|\bjulian[\s-]*(?:calendar|date|style|reckoning)\b'
+    r'|\(\s*julian\s*\)', re.IGNORECASE)
 # O.S. with its stop: a bare "OS" is as often Ordnance Survey.
 _OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
 # 1751/52 or 1751/2, not a reference such as 11/1234/56 or 1752/09/05.
@@ -22858,7 +22858,8 @@ def calendar_conversion_shown(claim: dict) -> bool:
     value = str(claim.get('value') or '')
     notes = str(claim.get('notes') or '')
     for text in (value, notes):
-        if _OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)                 or _has_double_year(text):
+        if (_OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)
+                or _has_double_year(text)):
             return True
     date = optional_scalar(claim.get('date')) or ''
     gap = calendar_gap_of(date)
@@ -22870,7 +22871,9 @@ def calendar_conversion_shown(claim: dict) -> bool:
                  - datetime.date.fromisoformat(gap[0])).days + 1
         for match in _WRITTEN_DAY.finditer(value):
             written = normalize_date(match.group(0).replace(',', ' '))
-            if written and len(written) == 10 and                     datetime.date.fromisoformat(written) + datetime.timedelta(days=shift) == target:
+            if (written and len(written) == 10
+                    and datetime.date.fromisoformat(written)
+                    + datetime.timedelta(days=shift) == target):
                 return True
     except ValueError:
         return False

@@ -582,6 +582,8 @@ class RoleSexAndCalendarTests(_PlausibilityBase):
             ('value', 'born 5 September 1752, baptised 12 September 1752'),
             ('value', 'married 5 Sept 1752 after banns 20 Aug 1752'),
             ('notes', 'informant Julian Hartley'),
+            ('notes', 'informant (Julian Hartley)'),
+            ('notes', 'witness Julian Day'),
             ('notes', 'TNA PROB 11/1234/56'),
             ('value', 'entry dated 1752/09/05'),
         )
