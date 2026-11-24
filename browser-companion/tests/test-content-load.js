@@ -1009,3 +1009,22 @@ test('a WikiTree page that is not a profile or free-space page is refused before
   assert.strictEqual(info.ok, false);
   assert.strictEqual(page.calls.length, 0);
 });
+
+// Review of #512: when WikiTree says "slow down" on one cited file's page, the
+// rest are not asked for, and the panel is told so it backs off too.
+test('a "slow down" from WikiTree on a cited file stops the rest and is passed on', async () => {
+  const profile = JSON.parse(JSON.stringify(WT_API.profile));
+  profile[0].profile.bio = '== Sources ==\n' + Array.from({ length: 5 }, (_, i) =>
+    '* https://www.wikitree.com/photo/jpg/Hartley-Ledger-' + (i + 1)).join('\n');
+  const inner = wikitree({ profile });
+  const busy = { ok: false, status: 429, text: async () => '' };
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: async (url, init) => (/\/photo\/jpg\//.test(url) ? busy : inner(url, init)) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.slowDown, true);
+  assert.strictEqual(page.calls.filter((c) => /\/photo\/jpg\//.test(c.url)).length, 1);
+  assert.strictEqual(info.hosted.length, 5);
+  assert.match(info.hosted[0].error, /HTTP 429/);
+  assert.ok(info.hosted.slice(1).every((h) => /slow down/.test(h.error)), JSON.stringify(info.hosted));
+});

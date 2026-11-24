@@ -2440,7 +2440,8 @@
     const hostedLeft = Math.max(0, (info.hostedTotal || 0) - hosted.length);
 
     const assets = [];
-    let slowDown = false;
+    // WikiTree may already have said "slow down" while its files' pages were read.
+    let slowDown = !!info.slowDown;
     let first = true;
     const download = async (url, label) => {
       if (slowDown) return { ok: false, error: 'not tried: WikiTree asked us to slow down' };

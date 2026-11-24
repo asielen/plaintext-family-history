@@ -38,7 +38,7 @@ const ORIGINAL = (h, hh, name) => 'https://www.wikitree.com/photo.php/' + h + '/
 // content.js composes it. `bio` replaces the biography; `refused` makes the
 // API refuse (the page is read instead); `filePages` are the held files'
 // own pages ({ fileName: { caption, originalUrl } }); `photos` the getPhotos answer.
-function infoFor(tabUrl, today, { bio, refused, filePages = {}, photos = API.noPhotos, photosTotal = 0 } = {}) {
+function infoFor(tabUrl, today, { bio, refused, filePages = {}, photos = API.noPhotos, photosTotal = 0, slowDown = false } = {}) {
   const parsed = wt.wtParsePage(tabUrl);
   const json = JSON.parse(JSON.stringify(API.profile));
   if (bio !== undefined) json[0].profile.bio = bio;
@@ -70,7 +70,7 @@ function infoFor(tabUrl, today, { bio, refused, filePages = {}, photos = API.noP
     ok: true, via: api.ok ? 'api' : 'page', apiError: api.ok ? null : api.error, key: parsed.key, record,
     bioWiki: api.ok ? api.bio : null, bioText, sources, citation: wt.wtCitation(record, today),
     title: record.name + ' (' + record.wikitreeId + ') - WikiTree profile',
-    photos: wt.wtPhotosFromApi(photos), photosTotal, photosError: null, hosted, hostedTotal: hostedAll.length,
+    photos: wt.wtPhotosFromApi(photos), photosTotal, photosError: null, hosted, hostedTotal: hostedAll.length, slowDown,
   };
 }
 
@@ -259,4 +259,15 @@ test('when the API refuses, the page itself is read, and the notes say so', asyn
   const data = JSON.parse(await asset(p.written[0], 'record-data.json').blob.text());
   assert.strictEqual(data.via, 'page');
   assert.strictEqual(data.record.from, 'page');
+});
+
+// Review of #512: when WikiTree already said "slow down" while its files'
+// pages were read, the panel downloads nothing more from it in this capture.
+test('after WikiTree said "slow down" while reading, no file is downloaded and the notes say why', async () => {
+  const p = await open({ bio: HELD_BIO, filePages: FILE_PAGES, slowDown: true });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.fetched, []);
+  const cap = p.capJson(p.written[0]);
+  assert.match(cap.notes, /Hartley-6084-2\.jpg: not tried: WikiTree asked us to slow down/);
 });

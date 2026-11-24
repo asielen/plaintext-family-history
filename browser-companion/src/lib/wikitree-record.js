@@ -99,7 +99,7 @@ function wtParsePage(href) {
     return { kind: 'space', spaceName, key: 'Space:' + spaceName,
       url: WT_ORIGIN + '/wiki/Space:' + encodeURIComponent(spaceName).replace(/%2C/g, ',') };
   }
-  const p = /^(?:Profile:)?([A-Za-z][^:#?]*-\d+)$/.exec(name);
+  const p = /^(?:Profile:)?(\p{L}[^:#?]*-\d+)$/u.exec(name);
   if (!p) return null;
   return { kind: 'profile', wikitreeId: p[1], key: p[1], url: WT_ORIGIN + '/wiki/' + encodeURIComponent(p[1]) };
 }
@@ -134,7 +134,7 @@ function wtStr(v) {
   return typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';
 }
 
-// A person's name the way WikiTree shows it: "Elizabeth (Hawke) Lincoln".
+// A person's name the way WikiTree shows it: "Mary (Cole) Hartley".
 function wtFullName(p) {
   if (!p || typeof p !== 'object') return null;
   const first = wtStr(p.FirstName) || wtStr(p.RealName);
@@ -440,12 +440,12 @@ function wtEntryLinks(text) {
     const url = wtTrimUrl(m[0]);
     const h = wtHostedFromUrl(url);
     if (h) addHosted(h);
-    else addLink(url);
+    else if (!(wtParsePage(url) && wtParsePage(url).kind === 'profile')) addLink(url); // another profile is not a source elsewhere
   }
   return { links, interwiki, hosted };
 }
 
-// An uploaded file by its name ("Lincoln-7-1.jpg"): its own page is
+// An uploaded file by its name ("Hartley-6084-2.jpg"): its own page is
 // /photo/{ext}/{name less ext}.
 function wtHostedFile(name) {
   const file = String(name || '').trim().replace(/ /g, '_');
@@ -531,12 +531,13 @@ function wtSources(wikitext) {
   const head = lines.findIndex((l) => /^\s*(={2,6})\s*'*\s*sources?\s*'*\s*\1\s*$/i.test(l) ||
     /^\s*={2,6}\s*sources?\s*={2,6}\s*$/i.test(l));
   if (head >= 0) {
-    const level = (/^\s*(=+)/.exec(lines[head]) || ['', '=='])[1].length;
     let cur = null;
     for (let i = head + 1; i < lines.length; i++) {
       const line = lines[i];
       const h = /^\s*(={2,6})[^=].*?={2,6}\s*$/.exec(line);
-      if (h && h[1].length <= level) break;
+      // Any heading ends the list: a sub-heading such as Acknowledgements
+      // holds thanks and import notes, not sources (the page path stops there too).
+      if (h) break;
       const s = line.replace(/<\/?references\b[^>]*>/gi, '').trim();
       if (!s || h) {
         cur = null;

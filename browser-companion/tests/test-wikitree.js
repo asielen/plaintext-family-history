@@ -299,3 +299,35 @@ test('the cited sources list: linked ones first with where they point and what w
   ].join('\n'));
   assert.strictEqual(wt.wtCitedSourcesNotes([], [], {}), '');
 });
+
+// Review of #512: lines under a sub-heading after the Sources list
+// (Acknowledgements, the GEDCOM-import note) are not sources to find, and the
+// list reads the same whether WikiTree's data service answered or the page was read.
+test('an Acknowledgements sub-heading ends the Sources list: thank-you notes are not sources to find', () => {
+  const s = wt.wtSources([
+    '== Sources ==',
+    '<references />',
+    '* Fairview County marriage register, 1866.',
+    '=== Acknowledgements ===',
+    '* Thanks to Edith Hartley for sharing the family Bible.',
+    'This person was created through the import of Hartley_Family.ged on 21 Sep 2009.',
+  ].join('\n'));
+  assert.deepStrictEqual(s.map((e) => e.text), ['Fairview County marriage register, 1866.']);
+});
+
+// Review of #512: a full address of another WikiTree profile is not a source
+// elsewhere, the same as a [[Hartley-6083|…]] link and the page-read path.
+test('a full address of another WikiTree profile in a source is not a link to chase', () => {
+  const s = wt.wtSources('== Sources ==\n* Family letters, see https://www.wikitree.com/wiki/Hartley-6083');
+  assert.strictEqual(s.length, 1);
+  assert.deepStrictEqual(s[0].links, []);
+  assert.strictEqual(s[0].linked, false);
+});
+
+// Review of #512: a WikiTree ID can start with a letter outside A-Z.
+test('a profile whose ID starts with an accented letter is still a profile', () => {
+  assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/%C3%85berg-55').wikitreeId, 'Åberg-55');
+  assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/%C3%96berg-12').wikitreeId, 'Öberg-12');
+  assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/-12'), null);
+  assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/1890-12'), null);
+});

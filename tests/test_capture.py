@@ -1115,6 +1115,14 @@ class CaptureTestCase(unittest.TestCase):
         self.assertEqual(got['people'], [])
         self.assertEqual(capture.site_person_ids(got['external_links']), {})   # a Space page names no one person
 
+    def test_wikitree_profile_id_may_start_with_an_accented_letter(self) -> None:
+        # Review of #512: an Åberg profile is a profile, not a plain page save.
+        from capture_recipes import wikitree
+        html = '<html><head><title>WikiTree</title></head><body><h1>Anna Åberg</h1></body></html>'
+        self.assertTrue(wikitree.detect(html, 'https://www.wikitree.com/wiki/%C3%85berg-55'))
+        self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/1890-12'))
+        self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/_Hartley-12'))
+
     def test_wikitree_sources_list_puts_linked_ones_first(self) -> None:
         from capture_recipes import wikitree
         html = ('<html><body><h1>Calvin Hartley</h1><div class="body-text"><h2 id="Biography">Biography</h2>'

@@ -32,7 +32,7 @@ SOURCE_NAME = 'WikiTree'
 PRIORITY = 36
 
 _ORIGIN = 'https://www.wikitree.com'
-_PROFILE_RE = re.compile(r'^(?:Profile:)?([A-Za-z][^:#?/]*-\d+)$')
+_PROFILE_RE = re.compile(r'^(?:Profile:)?([^\W\d_][^:#?/]*-\d+)$')  # a letter first, in any alphabet (Åberg-55)
 _SPACE_RE = re.compile(r'^Space:(.+)$', re.I)
 _LABEL_RE = re.compile(r'^(see also|sources?|references?|notes?)\s*:?$', re.I)
 

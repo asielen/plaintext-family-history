@@ -3012,7 +3012,7 @@
       return { kind: 'space', spaceName, key: 'Space:' + spaceName,
         url: WT_ORIGIN + '/wiki/Space:' + encodeURIComponent(spaceName).replace(/%2C/g, ',') };
     }
-    const p = /^(?:Profile:)?([A-Za-z][^:#?]*-\d+)$/.exec(name);
+    const p = /^(?:Profile:)?(\p{L}[^:#?]*-\d+)$/u.exec(name);
     if (!p) return null;
     return { kind: 'profile', wikitreeId: p[1], key: p[1], url: WT_ORIGIN + '/wiki/' + encodeURIComponent(p[1]) };
   }
@@ -3047,7 +3047,7 @@
     return typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '';
   }
 
-  // A person's name the way WikiTree shows it: "Elizabeth (Hawke) Lincoln".
+  // A person's name the way WikiTree shows it: "Mary (Cole) Hartley".
   function wtFullName(p) {
     if (!p || typeof p !== 'object') return null;
     const first = wtStr(p.FirstName) || wtStr(p.RealName);
@@ -3353,12 +3353,12 @@
       const url = wtTrimUrl(m[0]);
       const h = wtHostedFromUrl(url);
       if (h) addHosted(h);
-      else addLink(url);
+      else if (!(wtParsePage(url) && wtParsePage(url).kind === 'profile')) addLink(url); // another profile is not a source elsewhere
     }
     return { links, interwiki, hosted };
   }
 
-  // An uploaded file by its name ("Lincoln-7-1.jpg"): its own page is
+  // An uploaded file by its name ("Hartley-6084-2.jpg"): its own page is
   // /photo/{ext}/{name less ext}.
   function wtHostedFile(name) {
     const file = String(name || '').trim().replace(/ /g, '_');
@@ -3444,12 +3444,13 @@
     const head = lines.findIndex((l) => /^\s*(={2,6})\s*'*\s*sources?\s*'*\s*\1\s*$/i.test(l) ||
       /^\s*={2,6}\s*sources?\s*={2,6}\s*$/i.test(l));
     if (head >= 0) {
-      const level = (/^\s*(=+)/.exec(lines[head]) || ['', '=='])[1].length;
       let cur = null;
       for (let i = head + 1; i < lines.length; i++) {
         const line = lines[i];
         const h = /^\s*(={2,6})[^=].*?={2,6}\s*$/.exec(line);
-        if (h && h[1].length <= level) break;
+        // Any heading ends the list: a sub-heading such as Acknowledgements
+        // holds thanks and import notes, not sources (the page path stops there too).
+        if (h) break;
         const s = line.replace(/<\/?references\b[^>]*>/gi, '').trim();
         if (!s || h) {
           cur = null;
@@ -3703,17 +3704,28 @@
   // themselves (FHA.wikitree.wtFetchFile); files held on other sites are never fetched.
   async function wtGetJson(url) {
     const r = await fetch(url, { credentials: 'omit', referrerPolicy: 'no-referrer' });
-    if (!r.ok) throw new Error('HTTP ' + r.status);
+    if (!r.ok) throw Object.assign(new Error('HTTP ' + r.status), { status: r.status });
     return JSON.parse(await r.text());
   }
 
-  async function wtHostedRead(h) {
-    const out = { n: h.n, kind: h.kind, fileName: h.fileName || null, spaceName: h.spaceName || null,
+  function wtHostedBlank(h) {
+    return { n: h.n, kind: h.kind, fileName: h.fileName || null, spaceName: h.spaceName || null,
       ext: h.ext || null, pageUrl: h.pageUrl, entries: h.entries, caption: null, originalUrl: null, text: null };
+  }
+
+  async function wtHostedRead(h) {
+    const out = wtHostedBlank(h);
     try {
       if (h.kind === 'space') {
         const parsed = wtParsePage(h.pageUrl);
-        const got = wtRecordFromApi(await wtGetJson(wtApiUrl(parsed.key)), parsed);
+        let json;
+        try {
+          json = await wtGetJson(wtApiUrl(parsed.key));
+        } catch (e) {
+          if (e && (e.status === 429 || e.status === 503)) out.slowDown = true;
+          throw e;
+        }
+        const got = wtRecordFromApi(json, parsed);
         if (!got.ok || !got.bio) {
           out.error = got.ok ? 'WikiTree shows no text on that free-space page' : got.error;
           return out;
@@ -3725,6 +3737,7 @@
       const r = await fetch(h.pageUrl, { credentials: 'omit', referrerPolicy: 'no-referrer' });
       if (!r.ok) {
         out.error = 'WikiTree did not show the file’s page (HTTP ' + r.status + ')';
+        if (r.status === 429 || r.status === 503) out.slowDown = true;
         return out;
       }
       const f = wtFileFromPage(new DOMParser().parseFromString(await r.text(), 'text/html'), h.fileName);
@@ -3772,6 +3785,9 @@
     } else {
       return { ok: false, error: (page && page.error) || apiError };
     }
+    // A "slow down" (429/503) from WikiTree stops the reads that follow, and the
+    // panel is told, so it downloads nothing more from WikiTree this time.
+    let slowDown = false;
     let photos = [];
     let photosTotal = null;
     let photosError = null;
@@ -3784,19 +3800,28 @@
           photos = wtPhotosFromApi(await wtGetJson(wtApiUrl(record.wikitreeId, 'photos')));
         } catch (e) {
           photosError = 'WikiTree’s list of photos did not come (' + ((e && e.message) || e) + ')';
+          if (e && (e.status === 429 || e.status === 503)) slowDown = true;
         }
       }
     }
     const hostedAll = wtHostedFiles(sources);
     const hosted = [];
-    for (const h of hostedAll.slice(0, WT_MAX_HOSTED)) hosted.push(await wtHostedRead(h));
+    for (const h of hostedAll.slice(0, WT_MAX_HOSTED)) {
+      if (slowDown) {
+        hosted.push(Object.assign(wtHostedBlank(h), { error: 'not tried: WikiTree asked us to slow down' }));
+        continue;
+      }
+      const got = await wtHostedRead(h);
+      if (got.slowDown) slowDown = true;
+      hosted.push(got);
+    }
     const name = record.name;
     const title = record.kind === 'space' ? name + ' - WikiTree free-space page'
       : name + ' (' + record.wikitreeId + ') - WikiTree profile';
     return {
       ok: true, via, apiError: via === 'api' ? null : apiError, key: parsed.key, record,
       bioWiki: api && api.ok ? api.bio : null, bioText, sources, citation: wtCitation(record, today), title,
-      photos, photosTotal, photosError, hosted, hostedTotal: hostedAll.length,
+      photos, photosTotal, photosError, hosted, hostedTotal: hostedAll.length, slowDown,
     };
   }
 
