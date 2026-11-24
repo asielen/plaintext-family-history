@@ -35,8 +35,13 @@ update: the people are matched to the records the earlier import made, and
 only new people and statements the tree changed are listed. A person who
 cannot be matched for certain is listed with the reason and nothing is planned
 for them. The earlier import is found from its source record and its filed
-copy, never from `.cache` alone. This plan can be read but not applied yet
-(`--apply` refuses it); see the "A newer download" section below.
+copy, never from `.cache` alone. `--apply` then adds exactly what the plan
+lists: new people's stubs, one new source record holding only the new and
+changed statements, and an open question per statement that disagrees with
+an earlier claim. Nothing already on file is edited; the one file added to
+is `notes/questions.md`. Which person each record number became is kept in
+`notes/gedcom-imports/`, with the records, so it is backed up. See the
+"A newer download" section below.
 
 The one privacy-relevant default this tool writes is the `living:` flag - see
 `living_flag_for_import` below.  Everything else enters at the stub/suggested
@@ -81,11 +86,14 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _scan_existing_persons    - dedupe candidates from people/**/*.md
 #    _birth_window             - (earliest, latest) birth year for the dedupe overlap test
 #
-#  A newer download of a tree already imported (plan only)
+#  A newer download of a tree already imported
+#    _mint_update_ids: real ids for the plan, minted only when it is written
+#    _update_notes_lead: the new record's own account of what it holds
+#    _likely_lines: the list `--confirm-matches` shows before it asks
 #    _gedcom_source_paths: the earlier imports' source records, found by what they say
 #    _read_prior_imports: each earlier import, with its people and its statements
 #    _read_filed_copy: the earlier download itself, re-read from documents/
-#    _audit_people: the cache's record-number list (fills gaps only)
+#    _audit_people: each import's record-number list (notes/gedcom-imports/, then the cache copy)
 #    _same_tree: is this file a newer download of an earlier import?
 #    _match_people: who is who (certain, or held with the reason)
 #    _number_doubt: when the same record number is not the same person
@@ -173,6 +181,9 @@ from _lib import (
     photoindex_status,
     person_alias_map,
     read_record,
+    read_text_exact,
+    reapply_newline,
+    write_text_exact_atomic,
     resolve_path,
     resolve_root_arg,
     strip_generational_suffix,
@@ -195,6 +206,10 @@ configure_utf8_stdout()
 
 _GEDCOM_DOC_SUBDIR = 'gedcom'
 _AUDIT_DIR = '.cache/gedcom_import'
+# Which person each record number of an imported file became, one list per
+# import, kept with the records so it is backed up (SPEC §12). The `.cache`
+# copy above says the same and is only the quick "this very file again" check.
+_IMPORT_LIST_DIR = 'notes/gedcom-imports'
 _PLAN_DETAIL_CAP = 20      # stubs/duplicates shown inline before "... and N more"
 _PROGRESS_EVERY = 100      # apply prints one progress line per this many stubs
 
@@ -1045,6 +1060,11 @@ class _Claim:
     # The date as the file wrote it, when it could not be read into `date`
     # ("INT 1878 (guess)"): the only way to tell two such dates apart.
     raw_date: str = ''
+    # Earlier claims this statement cannot be true together with (a newer
+    # download that changed a birth year). Written as `contradicts:`; each
+    # such statement also gets an open question, and the earlier claims are
+    # never edited.
+    contradicts: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -1101,6 +1121,13 @@ class ImportPlan:
     removed_people: list[str] = field(default_factory=list)
     name_changes: list[str] = field(default_factory=list)
     death_now: list[str] = field(default_factory=list)
+    confirmed: int = 0                     # likely matches he said yes to (`--confirm-matches`)
+    uids: dict[str, str] = field(default_factory=dict)           # record number -> the program's own id
+    # People of the file who already have a record: (record number, person id,
+    # the file's name for them, how they were matched), for the import's list.
+    placed: list[tuple[str, str, str, str]] = field(default_factory=list)
+    known_names: dict[str, str] = field(default_factory=dict)    # their records' names, by id
+    known_stems: dict[str, str] = field(default_factory=dict)    # file stems of records on file (Obsidian links)
     # "Margaret Cole is recorded as born 1871, but her mother Ann Cole died
     # 1869": dates in the file that cannot all be true, one plain sentence
     # each (TOOLING §3's W163-W170 rules, read off the file's own statements).
@@ -1607,7 +1634,8 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub],
 # * The records are the memory. Which earlier person a record number stood for
 #   is read from the earlier import's own claims (their `(GEDCOM @I1@)` and
 #   `persons:`) and from its filed copy, so it survives a lost `.cache` and a
-#   new computer. The audit CSV only fills in people who had no statement.
+#   new computer. The import's list (`notes/gedcom-imports/`, kept with the
+#   records) places the people who had no statement of their own.
 #
 # Nothing here writes, and no id is minted: the same archive and the same file
 # always give the same plan.
@@ -1867,17 +1895,30 @@ def _gedcom_source_paths(archive_root: Path) -> list[Path]:
     return out
 
 
-def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
-    """{source id: {record number: (person id, name)}} from the audit CSVs.
+def _audit_people(archive_root: Path) -> tuple[dict[str, dict[str, tuple[str, str]]],
+                                                dict[str, set[str]]]:
+    """({source id: {record number: (person id, name)}}, {source id: the
+    earlier imports it updated}) from each import's list.
 
-    The cache is a help, never the memory: it is read only to place people the
-    earlier download gave no statement of their own (a name and nothing else),
-    whom no claim can place. A missing or unreadable file is simply absent."""
+    The list in `notes/gedcom-imports/` is read first: it is kept with the
+    records, so it is there after `.cache` is lost or on a new computer. The
+    `.cache` copy fills in for an import made before the list was kept there.
+    Both are read only to place people no claim can place: someone the
+    earlier download gave a name and nothing else, and everyone a later
+    update matched without adding a statement about them. A list written
+    before the `origin` and `uid` columns existed reads the same. A missing
+    or unreadable file is simply absent.
+
+    The `update_of` line says which imports an update came after. Two
+    downloads filed the same day share one `created:` date, so this is what
+    tells the newer one from the older."""
     out: dict[str, dict[str, tuple[str, str]]] = {}
-    folder = archive_root / _AUDIT_DIR
-    if not folder.is_dir():
-        return out
-    for path in sorted(folder.glob('*.csv')):
+    earlier: dict[str, set[str]] = {}
+    paths: list[Path] = []
+    for folder in (archive_root / _IMPORT_LIST_DIR, archive_root / _AUDIT_DIR):
+        if folder.is_dir():
+            paths += sorted(folder.glob('*.csv'))
+    for path in paths:
         try:
             lines = path.read_text(encoding='utf-8').splitlines()
         except (OSError, UnicodeDecodeError):
@@ -1893,6 +1934,9 @@ def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
         sid = normalize_id(header.get('source_id', ''))
         if not sid:
             continue
+        earlier.setdefault(sid, set()).update(
+            normalize_id(part) for part in header.get('update_of', '').split(',')
+            if part.strip())
         people: dict[str, tuple[str, str]] = {}
         try:
             for row in csv.DictReader(body):
@@ -1902,8 +1946,10 @@ def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
                     people[xref] = (pid, (row.get('note') or '').strip())
         except csv.Error:
             continue
-        out[sid] = people
-    return out
+        known = out.setdefault(sid, {})
+        for xref, who in people.items():
+            known.setdefault(xref, who)
+    return out, earlier
 
 
 def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list[Path],
@@ -1920,7 +1966,7 @@ def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list
     planned again."""
     by_pid = {normalize_id(p['pid']): p for p in existing if p['pid']}
     alias_map = person_alias_map({pid: (p['path'], p['meta']) for pid, p in by_pid.items()})
-    audits = _audit_people(archive_root)
+    audits, updated = _audit_people(archive_root)
     priors: list[_PriorImport] = []
     unreadable: list[Path] = []
     for path in record_paths:
@@ -1945,7 +1991,12 @@ def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list
         priors.append(_read_prior_import(
             archive_root, fha_config, path, rec, sid, alias_map, by_pid,
             audits.get(sid, {})))
-    priors.sort(key=lambda p: (p.imported, p.sid), reverse=True)
+    # Newest first. `created:` is only a day: on the same day an update comes
+    # after every import it updated (the more it updated, the later it is),
+    # never in the order of its random id, or which download's record
+    # numbers win would be a coin toss and a match he confirmed forgotten.
+    priors.sort(key=lambda p: (p.imported, len(updated.get(p.sid, ())), p.sid),
+                reverse=True)
     return priors, unreadable
 
 
@@ -2356,8 +2407,13 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
     * same number and same name is the same person, unless the birth years
       disagree, or one side has none, and another earlier person of that
       name fits better (a father and son of one name, shifted by one);
-    * same number with part of the name changed is the same person only when
-      the birth date is unchanged (a respelled or newly found surname);
+    * same number with part of the name changed is the same person when the
+      birth date is unchanged (a respelled or newly found surname), or when
+      neither download gives a birth date at all ("Thomas Hartley" becomes
+      "Thomas Edward Hartley": the owner's decision, since Ancestry keeps a
+      person's number). The second is refused when another earlier person
+      already had the new name and may have moved here (a son of nearly the
+      same name closing the gap his deleted father left);
     * a different sex, or a wholly different name, is never the same person
       on the number alone."""
     was = f'record number {new.xref} belonged to {_who(old)} in the earlier download'
@@ -2397,6 +2453,14 @@ def _number_doubt(new: _Incoming, old: _PriorPerson,
         return ''
     if _name_shared(new, old) and new.birth and new.birth in old.births:
         return ''
+    if _name_shared(new, old) and not new.birth and not old.births:
+        for key in sorted(new.names):
+            for other in by_name.get(key, []):
+                if (other.ident != old.ident and not _sex_differs(new, other)
+                        and other.ident in moved | gone):
+                    return (f'{was}, but another earlier person of this name '
+                            f'({_who(other)}) may be this one')
+        return ''
     return f'{was} and is {new.label} in this one'
 
 
@@ -2421,8 +2485,12 @@ def _match_people(incoming: list[_Incoming],
     by_name: dict[tuple[str, ...], list[_PriorPerson]] = {}
     by_birth: dict[str, list[_PriorPerson]] = {}
     for old in people:
-        if old.xref:
-            by_xref.setdefault(old.xref, old)
+        if old.xref and (old.xref not in by_xref or (
+                by_xref[old.xref].state == 'unknown' and old.state != 'unknown')):
+            # The newest import that knows who this number became. A later
+            # import that held the person, and so placed nobody, does not
+            # hide what an earlier one knows.
+            by_xref[old.xref] = old
         if old.uid:
             by_uid.setdefault(old.uid, old)
         for key in old.names:
@@ -2619,11 +2687,27 @@ def _date_relation(old: str, new: str) -> str:
 
 
 def _place_relation(old: str, new: str) -> str:
+    """How a newer place stands to an earlier one, as `_date_relation` does
+    for dates. A place that only gains parts ("Springfield, Illinois" becomes
+    "Springfield, Sangamon County, Illinois") adds detail, and one that only
+    loses parts says no more than before. Neither is a disagreement, so a
+    winter of tidying place names does not raise a question per person. A
+    part that changed, or changed order, is a conflict."""
     old_key, new_key = _place_key(old), _place_key(new)
     if old_key == new_key:
         return 'eq'
     if not old_key or not new_key:
         return 'adds' if new_key else 'less'
+
+    def within(few: list[str], many: list[str]) -> bool:
+        rest = iter(many)
+        return all(part in rest for part in few)
+
+    old_parts, new_parts = old_key.split(', '), new_key.split(', ')
+    if within(old_parts, new_parts):
+        return 'adds'
+    if within(new_parts, old_parts):
+        return 'less'
     return 'conflict'
 
 
@@ -2746,7 +2830,8 @@ def _when_where(date: str | None, place: str | None) -> str:
 
 
 def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_PriorImport],
-                 others: list[_PriorImport], existing: list[dict]) -> None:
+                 others: list[_PriorImport], existing: list[dict], *,
+                 confirm_likely: bool = False) -> None:
     """Turn a freshly mapped plan into an update of the earlier imports in
     `lineage`, in place: match the people, keep only what is new or changed.
 
@@ -2754,9 +2839,21 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
     placeholders), `plan.claims` the statements that would be added, and
     `plan.facts` every statement of a matched or new person with its outcome.
     A statement naming anyone held or removed is left out and counted, so no
-    tie is planned to a person who may be the wrong one."""
+    tie is planned to a person who may be the wrong one.
+
+    `confirm_likely` is his yes to the likely-match list (`--confirm-matches`):
+    each person held with exactly one likely earlier person is then matched to
+    that person. Nobody else held is touched by it."""
     by_pid = {normalize_id(p['pid']): p for p in existing if p['pid']}
     matches, held = _match_people(incoming, [p for prior in lineage for p in prior.people])
+    if confirm_likely:
+        for xref, hold in list(held.items()):
+            if hold.likely is not None:
+                # One fit on both sides (`_match_people`), so no two people
+                # of the file can land on one record here.
+                matches[xref] = _Match(xref, hold.likely.pid, 'you confirmed', hold.likely)
+                del held[xref]
+                plan.confirmed += 1
     became: dict[str, str] = {}
     dropped: set[str] = set()
     for new in incoming:
@@ -2796,6 +2893,14 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
                     replace(old, key=old.orig_key, orig_only=True))
             if old.now_key is not None:
                 olds.setdefault(old.now_key, []).append(replace(old, key=old.now_key))
+    for key, same_key in olds.items():
+        # A statement of an earlier file with no claim reads as one he
+        # deleted. But an update files only what changed, so most statements
+        # of its file never had a claim in its record: an earlier import
+        # holds the claim. Where a claim says the same thing, that claim
+        # speaks, and the claim-less copy is dropped.
+        claimed = {(o.text, o.orig_parents) for o in same_key if o.cid}
+        olds[key] = [o for o in same_key if o.cid or (o.text, o.orig_parents) not in claimed]
     parents_now: dict[tuple, frozenset[str]] = {}
     for fact in facts:
         if fact.kind == 'parents':
@@ -2833,6 +2938,7 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
                 _when_where(o.date, o.place) for o in fact.was))
             fact.now = _when_where(claim.date, claim.place_text)
         if fact.outcome == 'changed':
+            claim.contradicts = [cid for cid in fact.against if cid]
             questions.append(_Question(
                 heading=heading.format(a=name_of(people[0]), b=name_of(people[-1])),
                 refs=fact.against + list(dict.fromkeys(people)),
@@ -2886,6 +2992,12 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
         f'{xref} {stub_of[xref].name or "(no name)"} (was {fmt_id_display(m.pid)})'
         for xref, m in matches.items() if m.person.state == 'removed']
     plan.name_changes, plan.death_now = name_changes, death_now
+    plan.placed = [(xref, m.pid, stub_of[xref].name or 'unknown', m.how)
+                   for xref, m in matches.items() if m.person.state == 'present']
+    plan.known_names = {pid: p['name'] for pid, p in by_pid.items()
+                        if p['name'] and p['name'] != 'unknown'}
+    plan.known_stems = {pid: p['path'].stem for pid, p in by_pid.items()}
+    plan.known_stems.update({normalize_id(p.sid): p.record_path.stem for p in lineage})
     plan.stubs = new_stubs
     # "The new record shows the most exact one" is about records the plan
     # would make: a matched person keeps the record he already has.
@@ -3410,7 +3522,7 @@ def _map_file(indis: list[_Node], fams: list[_Node], xref_pid: dict[str, str],
 
 
 def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
-               as_new_tree: bool = False) -> ImportPlan:
+               as_new_tree: bool = False, confirm_likely: bool = False) -> ImportPlan:
     """Parse the GEDCOM and plan every record to write. No filesystem writes.
 
     Guard order matters: file-exists → encoding → looks-like-GEDCOM →
@@ -3421,8 +3533,9 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
 
     A file that is a newer download of a tree already imported gets an update
     plan instead (`mode='update'`, see `_plan_update`): only the new people and
-    the statements that changed, and no ids minted. `as_new_tree` skips that
-    check and plans every person as new."""
+    the statements that changed, and no ids minted (`apply_plan` mints them,
+    when it writes). `as_new_tree` skips that check and plans every person as
+    new. `confirm_likely` is his yes to the likely-match list (`_plan_update`)."""
     if not ged_path.is_file():
         raise GedcomImportError(
             f'{ged_path} does not exist. Check the path (the file Ancestry gives '
@@ -3663,12 +3776,15 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
         joined_lines=len(joined), markup_cleaned=markup_cleaned,
         tree_note=tree_note, file_people=len(indis),
         unreadable_records=[_rel_display(path, archive_root) for path in unreadable],
+        uids={i.xref: i.child_value('_UID').strip() for i in indis
+              if i.xref and i.child_value('_UID')},
     )
     display_names = {s.xref: s.name for s in stubs if s.name}
     if update is None:
         plan.duplicates = _find_duplicates(archive_root, stubs, existing)
     else:
-        _plan_update(plan, incoming, update[0], update[1], existing or [])
+        _plan_update(plan, incoming, update[0], update[1], existing or [],
+                     confirm_likely=confirm_likely)
         # Photos are looked for only for people the plan placed: someone
         # matched for certain (under the record they already have) or someone
         # new. A person held or removed gets nothing planned, photos included.
@@ -3809,6 +3925,8 @@ def _render_claim(claim: _Claim, names: dict[str, str] | None = None) -> list[st
     lines.append('  status: suggested')
     lines.append(f'  confidence: {claim.confidence}')
     lines.append(f'  anchor: {_yaml_inline(claim.anchor)}')
+    if claim.contradicts:
+        lines.append(f'  contradicts: [{", ".join(claim.contradicts)}]')
     if claim.notes:
         lines.append(f'  notes: {_yaml_inline(claim.notes)}')
     return lines
@@ -3851,21 +3969,24 @@ def _render_source_record(plan: ImportPlan, today: str) -> str:
         '## Claims',
         '```yaml',
     ]
-    names = {normalize_id(st.pid): st.name for st in plan.stubs if st.name}
+    # A newer download's claims also name people who already have a record.
+    names = dict(plan.known_names)
+    names.update({normalize_id(st.pid): st.name for st in plan.stubs if st.name})
     for i, claim in enumerate(plan.claims):
         if i:
             lines.append('')
         lines += _render_claim(claim, names)
     lines.append('```')
-    lines += [
-        '',
-        '## Notes',
-        f'Imported from {plan.ged_path.name} with `fha gedcom import` on {today}: '
-        f'{len(plan.stubs)} individuals, {plan.family_count} families, '
-        f'{len(plan.claims)} assertions - every one filed as a suggested claim '
-        'above, citing this record with a line anchor into the filed copy. '
-        'Nothing here is a reviewed fact yet.',
-    ]
+    lines += ['', '## Notes']
+    if plan.mode == 'update':
+        lines.append(_update_notes_lead(plan, today))
+    else:
+        lines.append(
+            f'Imported from {plan.ged_path.name} with `fha gedcom import` on {today}: '
+            f'{len(plan.stubs)} individuals, {plan.family_count} families, '
+            f'{len(plan.claims)} assertions - every one filed as a suggested claim '
+            'above, citing this record with a line anchor into the filed copy. '
+            'Nothing here is a reviewed fact yet.')
     if plan.cited_sources:
         lines += [
             '',
@@ -3889,34 +4010,88 @@ def _planned_link_writer(plan: ImportPlan) -> LinkWriter:
     links = link_writer(plan.archive_root)
     if not links.obsidian:
         return links
-    return LinkWriter(plan.archive_root, links.mode,
-                      stems={s.pid: _planned_stub_path(plan, s).stem for s in plan.stubs})
+    # A newer download's record also links people and earlier imports that
+    # are already on file; their stems come from the plan's one scan.
+    stems = dict(plan.known_stems)
+    stems.update({s.pid: _planned_stub_path(plan, s).stem for s in plan.stubs})
+    return LinkWriter(plan.archive_root, links.mode, stems=stems)
+
+
+def _update_notes_lead(plan: ImportPlan, today: str) -> str:
+    """The first Notes paragraph of a newer download's record: which import it
+    adds to and what it holds, so the record explains itself to someone
+    reading it with no tools."""
+    links = _planned_link_writer(plan)
+
+    def count(outcome: str) -> int:
+        return sum(1 for f in plan.facts if f.outcome == outcome)
+
+    def some(n: int, one: str, many: str) -> str:
+        return f'{n:,} {one if n == 1 else many}'
+
+    earlier = [links.convert(f'[[{fmt_id_display(p.sid)}]]')
+               + f' (imported {p.imported or "earlier"})' for p in reversed(plan.prior)]
+    lead = (f'Imported from {plan.ged_path.name} with `fha gedcom import` on {today}. '
+            f'This is a newer download of the family tree first imported as {earlier[0]}')
+    if earlier[1:]:
+        lead += ', and added to by ' + ', '.join(earlier[1:])
+    changed = count('changed')
+    lead += ('. Only what changed since then is filed here: '
+             + some(len(plan.stubs), 'new person', 'new people') + ', '
+             + some(count('new'), 'new statement', 'new statements') + ', '
+             + some(count('more detail'), 'that adds detail', 'that add detail') + ' and '
+             + some(changed, 'that disagrees', 'that disagree')
+             + ' with what the archive had')
+    if changed:
+        lead += ('; each of those has an open question in notes/questions.md, and the '
+                 'earlier statement was left as it was')
+    lead += (f'. The {some(count("same"), "statement", "statements")} the downloads agree '
+             'on stay on the earlier source. Every statement here is a suggested claim '
+             'with a line anchor into the filed copy. Nothing here is a reviewed fact yet.')
+    return lead
 
 
 def _render_audit_csv(plan: ImportPlan, today: str) -> str:
-    """The audit CSV: sentinel + xref→minted-id mapping (final write on apply).
+    """The import's list: which record each record number in the file became.
+
+    He downloads the tree again next year, and this list is how each person
+    in the newer file is found again without a second record being made. It
+    is written twice with the same text: to `notes/gedcom-imports/`, which is
+    kept with the records and backed up, and to `.cache/gedcom_import/` as
+    the final write, where its presence is the quick "this very file was
+    already imported" check.
 
     `#`-prefixed header lines carry the file identity (name, full hash, date,
-    S-id) the re-run guard reads; body rows map every GEDCOM handle to what it
-    minted. Xrefs are file-local handles, not durable identities - this CSV is
-    their only home (they are deliberately NOT written into `external_ids:`)."""
+    S-id) and, for a newer download, the imports it adds to (newest first).
+    Body rows name every person of the file who has a record: `origin` says
+    how (`new`, `record number`, `program id`, `you confirmed`) and `uid` is
+    the program's own id for them, when the file gives one. A person held as
+    not matched for certain has no row. Record numbers are handles of one
+    file, not identities, so this list is their only home (they are
+    deliberately NOT written into `external_ids:`). A list written before
+    `# format: 2` has the first four columns only, and still reads."""
     buf = io.StringIO()
     buf.write(f'# file: {plan.ged_path.name}\n')
     buf.write(f'# sha256: {plan.ged_hash}\n')
     buf.write(f'# imported: {today}\n')
     buf.write(f'# source_id: {plan.sid}\n')
-    writer = csv.writer(buf)
-    writer.writerow(['gedcom_xref', 'minted_id', 'kind', 'note'])
-    writer.writerow(['(file)', plan.sid, 'source', plan.title])
-    for stub in plan.stubs:
-        writer.writerow([stub.xref, stub.pid, 'person', stub.name or 'unknown'])
+    buf.write('# format: 2\n')
+    if plan.prior:
+        buf.write('# update_of: ' + ', '.join(fmt_id_display(p.sid) for p in plan.prior) + '\n')
+    writer = csv.writer(buf, lineterminator='\n')
+    writer.writerow(['gedcom_xref', 'minted_id', 'kind', 'note', 'origin', 'uid'])
+    writer.writerow(['(file)', plan.sid, 'source', plan.title, 'new', ''])
+    people = list(plan.placed) + [(s.xref, s.pid, s.name or 'unknown', 'new')
+                                  for s in plan.stubs]
+    for xref, pid, name, origin in people:
+        writer.writerow([xref, pid, 'person', name, origin, plan.uids.get(xref, '')])
     fam_claims: dict[str, list[str]] = {}
     for claim in plan.claims:
         if claim.fam_xref:
             fam_claims.setdefault(claim.fam_xref, []).append(claim.cid)
     for fam_xref, cids in fam_claims.items():
         writer.writerow([fam_xref, ' '.join(cids), 'family',
-                         f'{len(cids)} claim(s) from this family record'])
+                         f'{len(cids)} claim(s) from this family record', 'new', ''])
     return buf.getvalue()
 
 
@@ -3930,7 +4105,8 @@ def _stub_plan_line(stub: _PersonStub) -> str:
     return f'{stub.xref} {stub.name or "(no name)"} ({", ".join(bits)}) -> {stub.pid}'
 
 
-def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list[str]:
+def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True,
+                asked: bool = False) -> list[str]:
     """The plan text, shared by stdout (capped) and --plan-out (full).
 
     Headline counts first, then capped detail - a 2,000-person plan must be
@@ -3938,9 +4114,12 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
     that default is the one privacy-relevant thing this import decides.
 
     A newer download of a tree already imported has its own plan text
-    (`_update_plan_lines`); the notes about the file itself are shared."""
+    (`_update_plan_lines`); the notes about the file itself are shared.
+    `asked` says `--apply` was given, which matters only when there was
+    nothing to add: the text then says nothing was written, not "would be"."""
     if plan.mode == 'update':
-        return _update_plan_lines(plan, capped=capped) + _file_note_lines(plan, capped)
+        return (_update_plan_lines(plan, capped=capped, applied=applied, asked=asked)
+                + _file_note_lines(plan, capped))
     # Uncapped means every line: one person can add several date conflicts,
     # and one new person can match several existing ones.
     cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
@@ -4055,8 +4234,18 @@ def _file_note_lines(plan: ImportPlan, capped: bool) -> list[str]:
     return lines
 
 
-def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
-    """The plan for a newer download of a tree already imported.
+def _likely_lines(plan: ImportPlan) -> list[str]:
+    """The likely-match list: each person of the newer file held with exactly
+    one earlier person their name and birth date fit. This is what
+    `--confirm-matches` shows before it asks for his yes."""
+    return [f'{h.xref} {h.label} -> {_who(h.likely)}'
+            for h in plan.held.values() if h.likely is not None]
+
+
+def _update_plan_lines(plan: ImportPlan, *, capped: bool, applied: bool = False,
+                       asked: bool = False) -> list[str]:
+    """The plan for a newer download of a tree already imported, or (with
+    `applied`) the account of what was just added.
 
     The counts come first, then what he most needs to look at: what the newer
     file says differently, then who could not be matched and why. Every list
@@ -4091,12 +4280,18 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
     people = f'  People: {matched:,} already in your archive, {len(plan.stubs):,} new'
     if plan.held:
         people += f', {len(plan.held):,} not matched for certain (listed below)'
+    if plan.confirmed:
+        people += (f'\n          ({plan.confirmed:,} of those already in your archive are '
+                   'the likely matches you said yes to)')
+    nothing = not (plan.stubs or plan.claims)
     lines = [
-        'GEDCOM import plan (dry-run: nothing is written)',
+        ('Applied GEDCOM import: a newer download, so only what changed was added'
+         if applied else 'GEDCOM import plan (dry-run: nothing is written)'),
         f'  File: {plan.ged_path.name} ({plan.line_count:,} lines, '
         f'sha256 {plan.ged_hash[:12]})',
         f'  This is a newer download of the tree you imported on {earlier}.',
-        '  Only what changed would be added. Nothing already in your archive is',
+        f'  Only what changed {"was" if applied else "would be"} added. Nothing already '
+        'in your archive is',
         '  changed, including everything you have reviewed or edited.',
         people,
         f'  Statements: {count("same"):,} the same as before (not added again)',
@@ -4107,8 +4302,8 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
     lines.append(f'              {count("new"):,} new, {count("more detail"):,} adding detail '
                  '(a place, or a more exact date)')
     lines.append(f'              {count("changed"):,} changed'
-                 + (': each would get an open question in notes/questions.md so you '
-                    'can decide' if count('changed') else ''))
+                 + (f': each {"has" if applied else "would get"} an open question in '
+                    'notes/questions.md so you can decide' if count('changed') else ''))
     if plan.held_statements:
         lines.append(f'              {plan.held_statements:,} left out because they name '
                      'someone not matched for certain, or someone you removed')
@@ -4119,20 +4314,32 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
     for alias in plan.unread_copies:
         lines.append(f'  The filed copy of the earlier download ({alias}) could not be '
                      'read, so this plan compares the newer file with your records only. '
-                     'A statement you deleted from your records may be listed as new; '
-                     'check the new statements against what you removed.')
-    if not (plan.stubs or plan.claims or plan.held):
+                     'A statement you deleted from your records may be listed as new. '
+                     'Nothing can be added until that copy is back in its place '
+                     '(restore it from your backup).')
+    wrote = 'Nothing was written.' if asked else 'Nothing would be written.'
+    if nothing and not plan.held:
         lines.append('  Nothing new: this download says the same as what your archive '
-                     'already has from this tree. Nothing would be written.')
+                     f'already has from this tree. {wrote}')
+    elif nothing:
+        lines.append('  Nothing new for the people matched for certain, and nothing is '
+                     f'added for the others (listed below). {wrote}')
     else:
+        # A plan has no source id yet, so it names the two folders.
+        slash = '' if applied else '/'
         lines += [
-            f'  Filed copy:    {plan.doc_dest_alias}/ (a copy of this file; your '
+            f'  Filed copy:    {plan.doc_dest_alias}{slash} (a copy of this file; your '
             'original is not touched)',
-            f'  Source record: {_rel_display(plan.record_path, plan.archive_root)}/ (one '
-            'new record holding only the new and changed statements)',
-            '  Adding these is not switched on in this version yet, so --apply will '
-            'refuse. This plan is for checking.',
+            f'  Source record: {_rel_display(plan.record_path, plan.archive_root)}{slash} '
+            '(one new record holding only the new and changed statements)',
         ]
+        if not applied:
+            lines.append('  To add these, run the same command again with --apply.')
+    if nothing and plan.confirmed:
+        # The yes is kept in the list an import writes, and with nothing to
+        # add no import is written: say so rather than let him think it stuck.
+        lines.append(f'  Your yes to the {plan.confirmed:,} likely matches is not kept, '
+                     'because nothing else was added: the next download will ask again.')
 
     changed = [f for f in plan.facts if f.outcome == 'changed']
     lines += section(f'Changed ({len(changed):,}):', [compared(f) for f in changed])
@@ -4154,6 +4361,12 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
             lines.append('    Most people could not be matched by their record numbers. '
                          'That usually means the program that made this file gave '
                          'everyone a new number.')
+        likely = sum(1 for h in plan.held.values() if h.likely is not None)
+        if likely:
+            lines.append(f'    For {likely:,} of them the plan names one person in your '
+                         'archive they most likely are. If those are the same people, '
+                         'run this again with --confirm-matches: it shows that list '
+                         'and asks for your yes.')
     lines += section(f'No longer in the newer file ({len(plan.gone_facts):,}), kept in '
                      'your archive as they are:', plan.gone_facts)
     lines += section(f'People no longer in the newer file ({len(plan.gone_people):,}), '
@@ -4175,8 +4388,8 @@ def _rel_display(path: Path, root: Path) -> str:
         return str(path)
 
 
-def print_plan(plan: ImportPlan, *, applied: bool) -> None:
-    for line in _plan_lines(plan, applied=applied):
+def print_plan(plan: ImportPlan, *, applied: bool, asked: bool = False) -> None:
+    for line in _plan_lines(plan, applied=applied, asked=asked):
         print(line)
     for w in plan.warnings:
         print(f'  WARNING: {w}', file=sys.stderr)
@@ -4190,8 +4403,45 @@ facts join timelines, exports, and the family tree as you accept them.
 Start close to home: "review the claims about {first_person}".
 Next: fha index, then fha lint."""
 
+_UPDATE_CLOSING = """\
+Added what changed in your newer download: {people} and {claims}, all
+'suggested'. Nothing you already had was changed.{disagree}{held}
+Next: fha index, then fha lint."""
+
 
 # ── Apply ─────────────────────────────────────────────────────────────────────
+
+def _questions_path(plan: ImportPlan) -> Path:
+    return plan.archive_root / 'notes' / 'questions.md'
+
+
+def _mint_update_ids(plan: ImportPlan) -> None:
+    """Give a newer download's plan its real ids, just before it is written.
+
+    The plan itself mints nothing, so reading it twice prints the same text.
+    Writing needs ids: one for the source, one per new person, one per
+    statement added, in three batches (one scan of the archive each). The
+    `new:@I11@` placeholders are swapped for the new people's ids wherever the
+    plan names them, and the two destinations get their file names."""
+    root = plan.archive_root
+    plan.sid = mint_ids('S', 1, root)[0]
+    became: dict[str, str] = {}
+    if plan.stubs:
+        for stub, pid in zip(plan.stubs, mint_ids('P', len(plan.stubs), root)):
+            became[stub.pid] = pid
+            stub.pid = pid
+    if plan.claims:
+        for claim, cid in zip(plan.claims, mint_ids('C', len(plan.claims), root)):
+            claim.cid = cid
+            _rename_people(claim, became)
+    for link in plan.photo_links:
+        link.pid = became.get(link.pid, link.pid)
+    for question in plan.questions:
+        question.refs = [became.get(ref, ref) for ref in question.refs]
+    name = f'{plan.slug}_{plan.sid}'
+    plan.doc_dest_path = plan.doc_dest_path / f'{name}.ged'
+    plan.doc_dest_alias = f'{plan.doc_dest_alias.rstrip("/")}/{name}.ged'
+    plan.record_path = plan.record_path / f'{name}.md'
 
 def _planned_stub_path(plan: ImportPlan, stub: _PersonStub) -> Path:
     return (plan.archive_root / 'people' / 'stubs'
@@ -4254,8 +4504,21 @@ def _preflight_apply(plan: ImportPlan) -> None:
         raise GedcomImportError(
             _already_imported(header.get('imported'), header.get('source_id')))
 
+    if plan.questions and _questions_path(plan).exists():
+        # His question log is about to be added to, so it must read cleanly
+        # first: a file that will not read cannot be put back as it was.
+        try:
+            read_text_exact(_questions_path(plan))
+        except (OSError, UnicodeDecodeError) as e:
+            raise GedcomImportError(
+                f'notes/questions.md could not be read as UTF-8 text ({e}), and this '
+                f'import needs to add {len(plan.questions):,} open question(s) to it. '
+                'Nothing was written. Open the file in a text editor, save it as '
+                'UTF-8, then run this again.')
+
     destinations = [_planned_stub_path(plan, s) for s in plan.stubs]
-    destinations += [plan.doc_dest_path, plan.record_path]
+    destinations += [plan.doc_dest_path, plan.record_path,
+                     plan.archive_root / _IMPORT_LIST_DIR / f'{plan.slug}_{plan.sid}.csv']
     conflicts = [p for p in destinations if p.exists()]
     if conflicts:
         shown = ', '.join(_rel_display(p, plan.archive_root) for p in conflicts[:5])
@@ -4307,8 +4570,22 @@ def apply_plan(plan: ImportPlan, progress=print) -> list[str]:
     record → the audit CSV LAST (so a rolled-back run leaves no re-run
     sentinel). Any exception unwinds every registered undo in reverse; the
     caller translates the failure. Returns the list of written paths for
-    Result.changed."""
+    Result.changed.
+
+    A newer download of a tree already imported writes the same things for
+    only what changed, and nothing he already has is opened for writing: new
+    people's stubs, one new source record, and the import's list. The one
+    file added to is `notes/questions.md`, which gets an open question per
+    changed statement after his own text; its undo puts back the exact bytes
+    it had (or removes it, if this import made it). With nothing to add,
+    nothing at all is written and [] is returned. The import's list goes to
+    `notes/gedcom-imports/` (kept with the records) and, last, to `.cache`."""
     root = plan.archive_root
+    if plan.mode == 'update':
+        if not (plan.stubs or plan.claims):
+            return []
+        if not plan.sid:
+            _mint_update_ids(plan)
     _preflight_apply(plan)
     today = _today()
     record_text = _render_source_record(plan, today)
@@ -4343,8 +4620,31 @@ def apply_plan(plan: ImportPlan, progress=print) -> list[str]:
                 progress(f'  wrote {i:,}/{total:,} person stubs...')
 
         write_new(plan.record_path, record_text)
-        write_new(root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv',
-                  _render_audit_csv(plan, today))
+        if plan.questions:
+            q_path = _questions_path(plan)
+            ensure_parent(q_path)
+            if q_path.exists():
+                before = q_path.read_bytes()
+                existing = read_text_exact(q_path)
+                undo.append(lambda: q_path.write_bytes(before))
+            else:
+                existing = ''
+                undo.append(lambda: q_path.unlink(missing_ok=True))
+            blocks = ''.join(
+                '\n' + _reimport_question_block(q, new_cid=q.fact.claim.cid, today=today)
+                for q in plan.questions)
+            if existing and not existing.endswith('\n'):
+                blocks = '\n' + blocks
+            if not existing:
+                blocks = blocks.lstrip('\n')
+            # His log is rewritten whole and atomically (as `fha confirm`
+            # does): a torn write must not cost him the questions he wrote.
+            # The added lines take his file's line endings; his own bytes stay.
+            write_text_exact_atomic(q_path, existing + reapply_newline(blocks, existing))
+            written.append(str(q_path))
+        listing = _render_audit_csv(plan, today)
+        write_new(root / _IMPORT_LIST_DIR / f'{plan.slug}_{plan.sid}.csv', listing)
+        write_new(root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv', listing)
     except Exception:
         for fn in reversed(undo):
             try:
@@ -4388,16 +4688,35 @@ def _write_plan_out(out_path: Path, text: str) -> None:
     out_path.write_text(text, encoding='utf-8')
 
 
+def _interactive_confirm(prompt: str) -> bool:
+    """His yes or no at the keyboard. No answer (a script, a closed input) is no."""
+    try:
+        answer = input(f'{prompt} [y/N] ').strip().lower()
+    except EOFError:
+        return False
+    return answer in ('y', 'yes')
+
+
 def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
                apply: bool = False, plan_out: str | None = None,
-               as_new_tree: bool = False) -> Result:
+               as_new_tree: bool = False, confirm_matches: bool = False,
+               confirm=None) -> Result:
     """Plan (and optionally apply) a GEDCOM import; return a Result.
 
     A newer download of a tree already imported is planned as an update: only
     the new people and the statements that changed (`data['mode'] ==
     'update'`, with the counts and plain lines listed where `data` is built).
-    That plan can be read but not applied yet: `--apply` refuses it with exit
-    2 before anything is written. `as_new_tree` plans every person as new.
+    `--apply` writes exactly that and changes nothing he already has; with
+    nothing to add it writes nothing and exits clean. `as_new_tree` plans
+    every person as new.
+
+    People the plan could not match for certain get nothing written. For
+    those it names one likely person for, `confirm_matches` is the separate
+    step that lets him say so: it prints that list and asks once (`confirm`,
+    a `(prompt) -> bool`, the keyboard by default). On his yes the plan is
+    built again with those people matched, and the run goes on as a plan or
+    an apply; on no, or no answer, nothing changes. `data['confirmed']` is
+    how many he said yes to.
 
     Like convert-mining, the plan is printed inline - the human preview IS this
     intake tool's surface - and the Result carries the structured outcome:
@@ -4451,6 +4770,31 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
     try:
         out_path = _check_plan_out(plan_out, archive_root) if plan_out else None
         plan = build_plan(archive_root, fha_config, ged_path, as_new_tree=as_new_tree)
+        if confirm_matches:
+            likely = _likely_lines(plan) if plan.mode == 'update' else []
+            if not likely:
+                print('There are no likely matches to confirm for this file.')
+            else:
+                shown = likely[:_PLAN_DETAIL_CAP]
+                print(f'{len(likely):,} people in {ged_path.name} have a different record '
+                      'number than before, or a doubt about it, and one person in your '
+                      'archive their name and birth date fit:')
+                for line in shown:
+                    print(f'  {line}')
+                if len(likely) > len(shown):
+                    print(f'  ... and {len(likely) - len(shown):,} more (run with '
+                          '--plan-out FILE, without --confirm-matches, to read them all '
+                          'first)')
+                print('If you say yes, each is treated as the person named, and what the '
+                      'newer file says about them is compared with your records. Nothing '
+                      'they already have is changed.')
+                if (confirm or _interactive_confirm)(
+                        f'Are these {len(likely):,} the same people?'):
+                    plan = build_plan(archive_root, fha_config, ged_path,
+                                      as_new_tree=as_new_tree, confirm_likely=True)
+                else:
+                    print('Left as they are: nothing is added for these people.')
+                print()
     except GedcomImportError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
@@ -4467,22 +4811,19 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             '--as-new-tree.)', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
 
-    if apply and plan.mode == 'update':
-        # The plan is safe to read; the write path for it is not built yet,
-        # and a half-built one must never touch his records.
-        earlier = plan.prior[0]
+    if apply and plan.unread_copies:
+        # Without the earlier download to compare with, a statement he
+        # deleted from his records looks new and would be written back.
         print(
-            'ERROR: this file is a newer download of a tree you already imported (on '
-            f'{earlier.imported or "an earlier date"}, {fmt_id_display(earlier.sid)}). '
-            'Adding only what changed is not switched on in this version yet. Nothing '
-            'was written. Run the same command without --apply to see what it would '
-            'add, and keep the file: a later version of the tools adds it. (To import '
-            'it as a separate tree anyway, with every person a second time, add '
-            '--as-new-tree.)', file=sys.stderr)
+            'ERROR: the filed copy of an earlier download of this tree could not be '
+            'read (' + ', '.join(plan.unread_copies) + '), so this import cannot tell '
+            'which statements you deleted from the ones that are new. Nothing was '
+            'written. Put the copy back where it was (restore it from your backup), '
+            'then run this again.', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
 
     def _plan_out_text(as_applied: bool) -> str:
-        return '\n'.join(_plan_lines(plan, applied=as_applied, capped=False)
+        return '\n'.join(_plan_lines(plan, applied=as_applied, capped=False, asked=apply)
                          + [f'WARNING: {w}' for w in plan.warnings]) + '\n'
 
     if out_path is not None:
@@ -4501,7 +4842,8 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
     if apply:
         try:
             changed = apply_plan(plan)
-            applied = True
+            # A newer download with nothing to add writes nothing at all.
+            applied = bool(changed)
         except GedcomImportError as e:
             print(f'ERROR: {e}', file=sys.stderr)
             return Result(ok=False, exit_code=EXIT_ERRORS)
@@ -4516,7 +4858,7 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
                 file=sys.stderr)
             return Result(ok=False, exit_code=EXIT_FAILURE)
 
-    print_plan(plan, applied=applied)
+    print_plan(plan, applied=applied, asked=apply)
 
     if out_path is not None:
         if applied:
@@ -4535,7 +4877,29 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
         if plan_out_warning is None:
             print(f'Full plan written: {out_path}')
 
-    if applied:
+    if applied and plan.mode == 'update':
+        n_people, n_claims, n_questions = len(plan.stubs), len(plan.claims), len(plan.questions)
+        disagree = held = ''
+        if n_questions:
+            disagree = (
+                f'\n{n_questions:,} {"statement disagrees" if n_questions == 1 else "statements disagree"}'
+                ' with what your archive had. Each has an open question in\n'
+                'notes/questions.md, and both versions stay until you decide. Start there:\n'
+                '"show me the open questions from my tree download".')
+        if plan.held:
+            held = (f'\nNothing was added for the {len(plan.held):,} '
+                    f'{"person" if len(plan.held) == 1 else "people"} not matched for '
+                    'certain (listed above).')
+        print()
+        print(_UPDATE_CLOSING.format(
+            people=f'{n_people:,} new {"person" if n_people == 1 else "people"}',
+            claims=f'{n_claims:,} {"statement" if n_claims == 1 else "statements"}',
+            disagree=disagree, held=held))
+        handoff = _photo_handoff_text(plan)
+        if handoff:
+            print()
+            print(handoff)
+    elif applied:
         first = next((s.name for s in plan.stubs if s.name), 'your closest ancestor')
         print()
         print(_CLOSING_POSTURE.format(claims=len(plan.claims), first_person=first))
@@ -4559,10 +4923,15 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             'source_id': plan.sid,
             'audit_csv': str(plan.archive_root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv'),
             'mode': plan.mode,
+            # The same list, kept with the records ('' until an id exists).
+            'import_list': (str(plan.archive_root / _IMPORT_LIST_DIR
+                                / f'{plan.slug}_{plan.sid}.csv') if plan.sid else ''),
         })
     if plan.mode == 'update':
         # In an update `persons` and `claims` above count only what would be
-        # added, and `source_id` is '' (no id is minted for a plan).
+        # added, and `source_id` is '' until an apply writes (a plan mints
+        # no id).
+        result.data['confirmed'] = plan.confirmed
         def count(outcome: str) -> int:
             return sum(1 for f in plan.facts if f.outcome == outcome)
 
@@ -4609,6 +4978,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
         archive_root, fha_config, ged_path,
         apply=bool(args.apply), plan_out=getattr(args, 'plan_out', None),
         as_new_tree=bool(getattr(args, 'as_new_tree', False)),
+        confirm_matches=bool(getattr(args, 'confirm_matches', False)),
     ).exit_code
 
 
@@ -4630,12 +5000,16 @@ the same file is refused, and a failed import cleans up after itself.
 
 Downloaded your tree again later? Run this on the newer file. The plan shows
 only what changed since the earlier download: the new people, the new
-statements, and each one the newer file says differently. People it cannot
-match for certain are listed with the reason. (This plan cannot be applied
-yet; it is for checking.)
+statements, and each one the newer file says differently. With --apply only
+those are added. Nothing you have reviewed or edited is changed, and each
+statement that disagrees with what you had gets an open question. People it
+cannot match for certain are listed with the reason, and nothing is added
+for them.
 
-  --plan-out FILE    Also write the full, uncut plan text to FILE.
-  --as-new-tree      Treat a newer download as a separate tree instead."""
+  --plan-out FILE      Also write the full, uncut plan text to FILE.
+  --confirm-matches    Show the people the plan names one likely match for,
+                       and ask whether they are the same people.
+  --as-new-tree        Treat a newer download as a separate tree instead."""
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
@@ -4650,6 +5024,11 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
                    help='Import every person as new even if this looks like a newer '
                         'download of a tree already imported. Every person arrives a '
                         'second time, which is usually not what you want.')
+    p.add_argument('--confirm-matches', action='store_true', dest='confirm_matches',
+                   help='For a newer download: show the people the plan could not '
+                        'match for certain but names one likely person for, and ask '
+                        'once whether they are the same people. On yes they are '
+                        'matched for this run; on no, nothing is added for them.')
     p.add_argument('--root', metavar='PATH',
                    help='Archive root (auto-detected if omitted).')
 

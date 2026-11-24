@@ -92,7 +92,7 @@ Use this vocabulary, and nothing else:
 Two rules follow from it. The hand-transcription test behind this skill found both being broken in real archives:
 
 - **A scribal error is transcribed as written, with `[sic]`.** It is not "corrected", and it is not recorded as a reading ambiguity. "The clerk appears to have written the wrong year" is an observation about the document; it goes in the source's `## Notes` (`fha source note`), or into a question when it contradicts a claim (step 7), never into the transcript as a fixed value. A reading ambiguity (`[Hartley?]`) says *I could not read this*. A `[sic]` says *I read it fine and the page is wrong*. Later research depends on keeping those two apart.
-- **Never expand, normalise or modernise.** Don't spell out abbreviations, convert dates to EDTF, resolve "do." or "ditto", or supply a surname the column omits. Those are readings, and readings belong in claims, where a human gates them.
+- **Never expand, normalise or modernise.** Don't spell out abbreviations, convert dates to EDTF or to today's calendar (that happens when claims are drafted, in process-source), resolve "do." or "ditto", or supply a surname the column omits. Those are readings, and readings belong in claims, where a human gates them.
 
 ### 5. Write the file, attach it, index it
 
