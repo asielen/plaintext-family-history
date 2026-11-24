@@ -86,7 +86,6 @@ Each errs safe: it refuses, keeps something private, or leaves something out.
 
 These are not fixes. Each stays here until it has a design section in `TOOLING.md`.
 
-- **"Possible duplicate people" in `fha report`.** People coming from Ancestry expect duplicate flags. `fha confirm merge` exists, but nothing surfaces candidate pairs (similar name, compatible birth years, shared places), even though the merge-identities skill speaks of "the report flagged a possible duplicate".
 - **Photo-tagging progress in the archive totals.** `fha metrics` reports people, sources, claims and searchable text, but not how many photos are still untagged ("18 photos untagged"), which would read the photo index.
 - **`fha views canvas`.** A regenerable Obsidian `.canvas` (or Mermaid) family tree drawn from relationship claims, so an Obsidian user can see the tree without leaving the vault. `fha views tree` emits JSON or DOT only.
 - **A generated family summary on the home page.** An at-a-glance panel built from the index each run, never hand-edited: how many people the archive holds, its surnames, the span of years it covers, the earliest ancestor on the main line, and a short list of recent discoveries.
