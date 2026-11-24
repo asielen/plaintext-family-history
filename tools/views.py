@@ -5515,8 +5515,10 @@ def _claim_year(claim) -> str:
 
 
 def _cite_all(fn: '_Footnotes', sources) -> str:
-    """` [3, 5]` for the records a line rests on, or ''."""
-    notes = sorted({fn.cite(sid) for sid in sources if sid})
+    """` [3, 5]` for the records a line rests on, or ''. The records are
+    numbered in id order, not in the order a set hands them over (which changes
+    from run to run), so printing the report again gives the same page."""
+    notes = sorted({fn.cite(sid) for sid in sorted(s for s in sources if s)})
     return f" [{', '.join(str(n) for n in notes)}]" if notes else ''
 
 
@@ -6293,58 +6295,111 @@ def _desc_marriage_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
     return lines
 
 
+def _desc_shown_children(rp: _ReportPrivacy, pid: str) -> tuple[list[tuple], int]:
+    """The children the report may name, in listing order (birth children
+    oldest first, undated last, then by name and id; then the adopted and
+    step children the same way), and how many living children are counted.
+    Each entry is `(nonbirth, date, name, child, info)`."""
+    listed, living_n = [], 0
+    for c, info in _desc_children(rp, pid).items():
+        state = rp.state(c)
+        if state == _PERSON_LIVING:
+            living_n += 1
+        elif state == _PERSON_SHOWN:
+            birth = _report_pick_vital(rp, c, 'birth')
+            listed.append((not _desc_is_birth(info),
+                           birth['date_min'] if birth and birth['date_min'] else '9999',
+                           rp.name(c), c, info))
+    listed.sort(key=lambda t: t[:4])
+    return listed, living_n
+
+
+def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int) -> dict[str, int]:
+    """Each shown descendant's generation by their shortest line from `root`
+    (root is 1). When cousins of different generations married, their
+    children are listed in full where that shortest line puts them, so no one
+    within `--generations` is cut off by the longer line reaching them first."""
+    nearest = {root: 1}
+    frontier = [root]
+    while frontier:
+        following = []
+        for pid in frontier:
+            depth = nearest[pid]
+            if depth >= generations:
+                continue
+            for entry in _desc_shown_children(rp, pid)[0]:
+                c = entry[3]
+                if c not in nearest:
+                    nearest[c] = depth + 1
+                    following.append(c)
+        frontier = following
+    return nearest
+
+
 def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str]:
     """The descendant report as small markdown: a title, a summary, a nested
     bullet list (two spaces per generation) and the notes."""
-    fn = _Footnotes(rp)
-    tally = _SheetTally(rp)
-    out: list[str] = []
-    seen: dict[str, str] = {}   # person -> the number they were listed under
+    nearest = _desc_nearest_generation(rp, root, generations)
 
-    def person(pid: str, number: str, depth: int, mark: str, tie_sources) -> None:
-        pad = '  ' * (depth - 1)
-        name = rp.name(pid)
-        tally.see(pid)
-        if pid in seen:
-            # Descended from two people in this report (cousins who married):
-            # listed once, with a pointer, so nothing is counted twice.
-            out.append(f'{pad}- {number} {name}{mark} (see {seen[pid]})')
-            return
-        seen[pid] = number
-        years, year_sources = _desc_years(rp, pid)
-        out.append(f'{pad}- {number} {name}{mark}{years}'
-                   f'{_cite_all(fn, set(tie_sources) | year_sources)}')
-        inner = '  ' * depth
-        for line in _desc_marriage_lines(rp, fn, tally, pid):
-            out.append(f'{inner}- {line}')
-        listed, living_n = [], 0
-        for c, info in _desc_children(rp, pid).items():
-            state = tally.see(c)
-            if state == _PERSON_LIVING:
-                living_n += 1
-            elif state == _PERSON_SHOWN:
-                birth = _report_pick_vital(rp, c, 'birth')
-                listed.append((not _desc_is_birth(info),
-                               birth['date_min'] if birth and birth['date_min'] else '9999',
-                               rp.name(c), c, info))
-        listed.sort(key=lambda t: t[:4])
-        if depth >= generations:
-            if listed or living_n:
-                out.append(f'{inner}- More descendants are not shown in this report.')
-            return
-        for k, (nonbirth, _date, _name, c, info) in enumerate(listed, 1):
-            kind = ''
-            if nonbirth:
-                kind = nonbirth_bracket_label(info['subtypes'][0]) or info['subtypes'][0]
-            person(c, f'{number}.{k}', depth + 1, f' ({kind})' if kind else '', info['sources'])
-        if living_n:
-            phrase = _living_count_phrase(living_n, 'child', 'children')
-            out.append(f"{inner}- {phrase if listed else phrase[len('and '):]}")
+    def walk(listed_at: dict[str, str]) -> tuple[list[str], _Footnotes, _SheetTally, dict, int]:
+        """One pass over the tree. A person on two lines of descent is listed
+        in full once, at their nearest generation; every other place points
+        there with `(see N)`. `listed_at` is that number for each person, from
+        an earlier pass, so a pointer met before the full entry still says
+        where to look."""
+        fn = _Footnotes(rp)
+        tally = _SheetTally(rp)
+        out: list[str] = []
+        full: dict[str, str] = {}   # person -> the number of their full entry
+        deepest = 1
 
-    person(root, '1', 1, '', ())
+        def person(pid: str, number: str, depth: int, mark: str, tie_sources) -> None:
+            nonlocal deepest
+            pad = '  ' * (depth - 1)
+            name = rp.name(pid)
+            tally.see(pid)
+            deepest = max(deepest, depth)
+            if pid in full or depth != nearest.get(pid, depth):
+                # Descended from two people in this report (cousins who
+                # married): listed in full once, with a pointer here. The
+                # pointer still cites the tie that puts them on this line.
+                where = full.get(pid) or listed_at.get(pid, '')
+                out.append(f'{pad}- {number} {name}{mark} (see {where})'
+                           f'{_cite_all(fn, set(tie_sources))}')
+                return
+            full[pid] = number
+            years, year_sources = _desc_years(rp, pid)
+            out.append(f'{pad}- {number} {name}{mark}{years}'
+                       f'{_cite_all(fn, set(tie_sources) | year_sources)}')
+            inner = '  ' * depth
+            for line in _desc_marriage_lines(rp, fn, tally, pid):
+                out.append(f'{inner}- {line}')
+            listed, living_n = _desc_shown_children(rp, pid)
+            if depth >= generations:
+                # Nobody below is on the page, so nobody below is counted.
+                if listed or living_n:
+                    out.append(f'{inner}- More descendants are not shown in this report.')
+                return
+            for k, (nonbirth, _date, _name, c, info) in enumerate(listed, 1):
+                kind = ''
+                if nonbirth:
+                    kind = nonbirth_bracket_label(info['subtypes'][0]) or info['subtypes'][0]
+                person(c, f'{number}.{k}', depth + 1, f' ({kind})' if kind else '', info['sources'])
+            if living_n:
+                for c in _desc_children(rp, pid):
+                    tally.see(c)
+                # Always "and N living ...": a line starting with a bare
+                # number would read as a person numbered N.
+                out.append(f"{inner}- {_living_count_phrase(living_n, 'child', 'children')}")
+
+        person(root, '1', 1, '', ())
+        return out, fn, tally, full, deepest
+
+    listed_at = walk({})[3]
+    out, fn, tally, _full, deepest = walk(listed_at)
     k = len(tally.living)
     summary = (f'This report names {len(tally.named)} people and shows '
-               f"{generations} generation{'' if generations == 1 else 's'}.")
+               f"{deepest} generation{'' if deepest == 1 else 's'}.")
     if k:
         summary += (f' {k} living relatives are counted but not named.' if k != 1
                     else ' 1 living relative is counted but not named.')

@@ -173,7 +173,8 @@ class DescendantPrivacyTests(_DescBase):
 
     def test_footer_counts_who_is_named_and_who_is_counted(self):
         text = self.desc_text()
-        self.assertRegex(text, r'This report names \d+ people and shows 5 generations\.')
+        # Asked for 5; the family is recorded 4 deep, and the page says so.
+        self.assertRegex(text, r'This report names \d+ people and shows 4 generations\.')
         self.assertIn('3 living relatives are counted but not named', text)
 
 
@@ -227,6 +228,93 @@ class DescendantFileTests(_DescBase):
         with contextlib.redirect_stdout(io.StringIO()):
             views.run_clean(self.root)
         self.assertEqual(list(folder.iterdir()), [])
+
+
+XV = 'p-xvxvxvxvxv'     # Xavier Hartley: child of Anna (1.1.1) and her uncle Abel (1.2)
+YV = 'p-yvyvyvyvyv'     # Yvonne Hartley: Xavier's daughter
+RL = 'p-rnrnrnrnrn'     # a living child of Rose, her only child
+
+
+class _TwoLinesBase(_DescBase):
+    """Anna married her uncle Abel: their son Xavier descends from Thomas by a
+    four-generation line (through Anna) and a three-generation line (through
+    Abel). Each parent tie is on its own record. Rose's only child is living."""
+
+    def people(self):
+        return super().people() + [
+            (XV, 'Xavier Hartley', 'M', 'false', ''),
+            (YV, 'Yvonne Hartley', 'F', 'false', ''),
+            (RL, 'Robin Hartley', 'F', 'true', ''),
+        ]
+
+    def sources(self):
+        return super().sources() + [
+            ('s-dsdsdsdsd4', 'Xavier baptism', 'Baptism of Xavier, mother Anna.',
+             R._rel('xa', XV, [G1])
+             + R._claim('c-birthXV000', 'birth', [XV], '1920', roles=f'{{child: {XV}}}'), '', None),
+            ('s-dsdsdsdsd5', 'Abel Hartley will', 'Will of Abel Hartley, naming his son Xavier.',
+             R._rel('xb', XV, [TW]), '', None),
+            ('s-dsdsdsdsd6', 'Yvonne baptism', 'Baptism of Yvonne.',
+             R._rel('yv', YV, [XV])
+             + R._claim('c-birthYV000', 'birth', [YV], '1945', roles=f'{{child: {YV}}}')
+             + R._rel('rl', RL, [GG]), '', None),
+        ]
+
+
+class DescendantReviewFixTests(_TwoLinesBase):
+    def test_summary_counts_only_people_on_the_page(self):
+        # A shortened report must not count the grandchildren it leaves off:
+        # the reader would look for people who are not there.
+        text = self.desc_text(generations=2)
+        printed = set(re.findall(r'- (?:\d+(?:\.\d+)* |Married )([A-Z][a-z]+(?: [A-Z][a-z]+)+)', text))
+        m = re.search(r'This report names (\d+) people', text)
+        self.assertEqual(int(m.group(1)), len(printed), (printed, text))
+        self.assertIn('2 living relatives are counted', text)
+
+    def test_summary_says_how_many_generations_the_page_really_shows(self):
+        # Asked for 8; the family is recorded only 4 deep (Rose's child is living).
+        text = self.desc_text(generations=8)
+        self.assertRegex(text, r'and shows 4 generations\.')
+
+    def test_a_parent_whose_only_children_are_living_gets_no_person_number(self):
+        md = self.desc_text()
+        self.assertIn('\n        - and 1 living child (not named)', md)   # under Rose (1.1.1.1)
+        self.assertNotRegex(md, r'- 1 living child')
+        html = self.desc_text(fmt='html')
+        self.assertNotRegex(html, r'report-num[^>]*>1</span> living')
+
+    def test_a_person_on_two_lines_is_expanded_at_the_shorter_line(self):
+        # Yvonne is the fourth generation through Abel: she belongs on a
+        # four-generation report even though Anna's line reaches her father later.
+        text = self.desc_text(generations=4)
+        nums = self.numbered(text)
+        self.assertIn('Yvonne Hartley', text)
+        xavier = [n for n, rest in nums.items() if rest.startswith('Xavier Hartley (born')]
+        self.assertEqual(['1.2.1'], xavier, nums)
+        self.assertTrue(nums['1.2.1.1'].startswith('Yvonne Hartley'), nums)
+        self.assertTrue(nums['1.1.1.2'].startswith('Xavier Hartley (see 1.2.1)'), nums)
+
+    def test_note_numbers_do_not_depend_on_the_order_records_arrive_in(self):
+        # A line resting on two records numbers them the same way on every
+        # run, so printing the report again gives the same page (Python's set
+        # order changes from run to run).
+        class _Rp:
+            def source_info(self, _sid):
+                return None, True
+        orders = []
+        for given in (['s-bbbbbbbbb', 's-aaaaaaaaa'], ['s-aaaaaaaaa', 's-bbbbbbbbb']):
+            fn = views._Footnotes(_Rp())
+            views._cite_all(fn, given)
+            orders.append(fn.order)
+        self.assertEqual(orders[0], orders[1])
+
+    def test_a_repeated_entry_cites_its_own_parent_tie(self):
+        text = self.desc_text()
+        see = [ln for ln in text.splitlines() if 'Xavier Hartley (see' in ln]
+        self.assertEqual(1, len(see), text)
+        self.assertRegex(see[0], r'\(see [\d.]+\) \[\d+')
+        self.assertIn('Baptism of Xavier, mother Anna.', text)
+        self.assertIn('Will of Abel Hartley, naming his son Xavier.', text)
 
 
 if __name__ == '__main__':
