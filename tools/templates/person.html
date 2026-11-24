@@ -131,6 +131,17 @@
   </script>
   {% endif %}
 
+  {% if person.lifespan %}
+  <details class="chart lifespan">
+    <summary class="chart-title">Who overlapped</summary>
+    <div class="chart-body">
+      <div class="lifespan-wrap">{{ person.lifespan.svg }}</div>
+      <p class="lifespan-key">A solid bar runs from birth to death. A hatched end is a date that is approximate or not recorded. Vertical lines mark {{ person.name }}'s birth and death.
+      {%- if person.lifespan.omitted %} {{ person.lifespan.omitted }} {{ 'person' if person.lifespan.omitted == 1 else 'people' }} without dates {{ 'is' if person.lifespan.omitted == 1 else 'are' }} not shown.{% endif %}</p>
+    </div>
+  </details>
+  {% endif %}
+
   {% if person.descendants_tree %}
   {#- #115: the interactive descendant explorer, demoted from the home page
       to a per-person opt-in link - native <details> disclosure (works with
