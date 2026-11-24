@@ -20,6 +20,9 @@
   {% if person.alt_names %}
   <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
   {% endif %}
+  {% if person.kinship %}
+  <p class="kin-line">{% if person.kinship.lead_html %}{{ person.kinship.lead_html }}{% endif %}{% if person.kinship.ahnentafel %} <span class="ahnentafel-no" title="In the family numbering each father is twice his child's number and each mother is twice plus one.">ancestor no. {{ person.kinship.ahnentafel }}</span>{% endif %}{% if person.kinship.note %} <span class="note">({{ person.kinship.note }})</span>{% endif %}</p>
+  {% endif %}
   {% if workbench and person.open_review_count %}
   <p class="wb-pointer">{{ person.open_review_count }} open review item{{ 's' if person.open_review_count != 1 else '' }} involve{{ '' if person.open_review_count != 1 else 's' }} this person -
     <a href="{{ root_prefix }}/review">open the review queue</a>.</p>
@@ -131,6 +134,20 @@
     });
   })();
   </script>
+  {% endif %}
+
+  {% if person.heritage %}
+  {#- Where the family came from (chart plan 08-12): one bar per generation,
+      computed from the same ancestors the fan shows, so a person the page may
+      not name never adds a country. Static SVG, no script. -#}
+  <details class="chart heritage-chart-wrap">
+    <summary class="chart-title">Where the family came from</summary>
+    <div class="chart-body">
+      <p class="heritage-note">Each bar is one generation. A coloured part is the share of that generation born in one country, from the birth records we have, named by today's borders (a village in Prussia in 1850 reads as the country it is in now). "Birthplace unknown" is someone shown whose birthplace is not recorded, and "Not traced" is a place in the tree nobody is recorded in yet.{% if person.heritage_repeats %} A person who appears twice in the tree is counted in both places.{% endif %}</p>
+      {{ person.heritage }}
+      <div class="chart-save" data-for="{{ person.heritage_chart }}"></div>
+    </div>
+  </details>
   {% endif %}
 
   {% if person.lifespan %}
