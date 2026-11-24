@@ -1328,7 +1328,7 @@ Enact a human-confirmed identity merge: tombstone + rename + fold + relink (SPEC
 
 ## `fha person`
 
-Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, relate, estimate, edit, note
+Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, set-external-id, relate, estimate, edit, note
 
 ```text
 Update a person's record directly, one field or section at a time.
@@ -1337,6 +1337,7 @@ Update a person's record directly, one field or section at a time.
   fha person promote <p-id> [--into FOLDER]
   fha person rename <p-id> "New Name" [--keep-variant]
   fha person set-living <p-id> true|false|unknown
+  fha person set-external-id <p-id> SITE ID [--replace]
   fha person relate <p-id> --parent|--child|--sibling|--spouse <p-id2>
   fha person estimate <p-id> --birth DATE --death DATE
   fha person edit <p-id> --section biography|stories|research --text TEXT
@@ -1536,6 +1537,27 @@ Set a person's sex: field. The numbered family-tree folders (Ahnentafel numberin
 | `SEX` | M, F, intersex, or unknown (case-insensitive). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the one-line change without writing. |
+
+### `fha person set-external-id`
+
+Record a person's profile id on another site (WikiTree, Ancestry, ...).
+
+```text
+Record which profile on another site is this person's, so the next capture and the WikiTree export match the right person.
+
+  fha person set-external-id p-2b3c4d5e6f wikitree Hartley-6084
+
+Writes or replaces one key in external_ids: and nothing else. A key the person already has with a different id needs --replace. An id another person already holds is refused, naming them. Preview with --dry-run.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person to update (e.g. p-2b3c4d5e6f). |
+| `SITE` | The site: wikitree, ancestry, familysearch, ... |
+| `ID` | The id as the site shows it (e.g. Hartley-6084). |
+| `--replace` | Replace an id the person already has for this site. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the change without writing. |
 
 ### `fha person relate`
 

@@ -506,12 +506,13 @@ The `review-claims` skill (§16) and `fha report` drive `fha claim`; the accept 
 
 ## 3c. `fha person`: person-field write-backs
 
-Safe one-line commands for the person-record fields and prose that exports and the workbench depend on. Eleven verbs.
+Safe one-line commands for the person-record fields and prose that exports and the workbench depend on. Twelve verbs.
 
 ```
 fha person set-living <p-id> true|false|unknown [--dry-run] [--root PATH]
 fha person set-profile-photo <p-id> PHOTO [--dry-run] [--root PATH]
 fha person set-sex <p-id> M|F|intersex|unknown [--dry-run] [--root PATH]
+fha person set-external-id <p-id> SITE ID [--replace] [--dry-run] [--root PATH]
 fha person new "Name" [--sex M|F|intersex|unknown] [--gender TEXT] [--birth DATE] [--death DATE] [--birth-place TEXT] [--death-place TEXT] [--surname TEXT] [--force] [--dry-run]
 fha person new --from-file PEOPLE.tsv [--force] [--dry-run]
 fha person rename <p-id> "New Name" [--keep-variant] [--surname TEXT] [--dry-run] [--root PATH]
@@ -535,6 +536,8 @@ fha person promote <p-id> [--into FOLDER] [--dry-run] [--root PATH]
 **`set-sex`.** M | F | intersex | unknown, case-folded. `sex:` drives Ahnentafel placement (§7: `F` mother/odd slot, else father/even; W120). A live change says: run `fha index`, then `fha views brackets`, `--realign` to apply; index first, since placement reads the indexed `sex:`. Workbench verb `person.set-sex`.
 
 **`set-profile-photo`.** Sets `profile_photo:` (SPEC §9). `PHOTO` (filename, path or s-id) is written as given, safely quoted, and resolved leniently at site build; unresolvable just shows no portrait.
+
+**`set-external-id`.** Writes or replaces one key of `external_ids:` (SPEC A.7), so the next capture and the WikiTree export match the right person. The site name is lower-case letters, numbers and `_`. Known sites' ids are shape-checked so a pasted web address is refused (`wikitree` Name-123, `findagrave` and `ancestry` all numbers, `familysearch` XXXX-XXX, written in capitals); other sites are taken as typed. A different id already there needs `--replace` (status `needs-replace`); a site name typed with capitals by hand is refused with a by-hand fix rather than doubled. An id another person holds (any key case, anywhere under `people/`, by file scan) is refused naming that person; a person file the scan cannot read also refuses, since it might be the holder. Guard: every other `external_ids:` entry and every other field must read back unchanged; a one-line `external_ids: {...}` is refused with a by-hand fix. Exit codes and statuses as `set-living`, plus `needs-replace`.
 
 ### `new`
 
