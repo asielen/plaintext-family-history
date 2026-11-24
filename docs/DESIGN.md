@@ -140,6 +140,8 @@ Each node (200×64) also carries a **small fixed-size portrait square** (`.fha-p
 | Legal | long dash | adoptive / step / foster / guardian / in-law | `.fha-tree-edge-legal` |
 | Other | dotted | friend / coworker / associate (affiliations) | `.fha-tree-edge-other` |
 
+A tie rated low is drawn thin and dash-dot (`.fha-tree-edge-weak`), and a person linked to the subject only through one is faded to about half strength with a dotted outline (`.fha-node-weak` on the explorer, `.ped-weak` on the family chart, `.fan-seg-weak` on the fan). The broken outline is there so the cue does not rest on fading alone. A key line (`.fha-weak-key`, `.fan-key`) under the chart says what it means.
+
 The stylesheet also keeps `.fha-tree-edge-social` as an alias for `-legal`. The legal/other split is a drawing distinction: the data model (SPEC §12.2) numbers only genetic parent edges into the pedigree and marks the rest, and "other" overlaps the affiliations model.
 
 ---

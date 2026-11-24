@@ -4373,6 +4373,68 @@ class FileOpeningLinkTargetTests(_Base):
         self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
+class TimelinePlaceHistoryTests(_Base):
+    """A reader sees, in grey, when the place a person lived at changed
+    government while they lived there: background, not a family record."""
+
+    def _seed(self, years, *, history=None):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census')
+        self.conn.execute(
+            'INSERT INTO places(id, name, hierarchy) VALUES (?,?,?)',
+            ('l-1111111111', 'Fairview', 'Fairview, Breton Co., Kansas, USA'))
+        for dmin, dmax, hier in history or (
+                ('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),
+                ('1861-01-29', '1889-12-31', 'Fairview, Breton Co., Kansas, USA'),
+                ('1890-01-01', '1899-12-31', 'Fairview, Kansas')):
+            self.conn.execute(
+                'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) '
+                'VALUES (?,?,?,?,?)', ('l-1111111111', f'{dmin}/{dmax}', dmin, dmax, hier))
+        for n, y in enumerate(years):
+            cid = f'c-{n + 1:010d}'
+            self.conn.execute(
+                'INSERT INTO claims(id, source_id, type, value, status, place_id, date_edtf, '
+                'date_min, date_max) VALUES (?,?,?,?,?,?,?,?,?)',
+                (cid, 's-1111111111', 'residence', f'Lived in Fairview {y}', 'accepted',
+                 'l-1111111111', str(y), f'{y}-01-01', f'{y}-12-31'))
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,0)',
+                (cid, 'p-aaaaaaaaaa'))
+
+    def test_changes_inside_the_stay_appear_labelled(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="tl-context"', page)
+        self.assertEqual(page.count('class="tl-context"'), 2)   # 1858 and 1861, not 1890
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', page.replace(
+            '<a href="../places/l-1111111111.html">Fairview</a>', 'Fairview'))
+        self.assertIn('From 1861, ', page)
+        self.assertIn('Place history', page)
+        self.assertIn('background about the places', page)
+
+    def test_a_single_visit_after_the_changes_gets_none(self):
+        self._seed((1871,), history=(('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),))
+        self._run(linked=True)
+        self.assertNotIn('tl-context', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_context_rows_sit_between_own_rows(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertLess(page.index('1856 - residence'), page.index('From 1858'))
+        self.assertLess(page.index('From 1861'), page.index('1875 - residence'))
+
+    def test_shared_site_shows_them_too_and_stays_the_same_build_to_build(self):
+        # Place history names no people, so a shared page may carry it.
+        self._seed((1856, 1875))
+        self._run()
+        first = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(first.count('class="tl-context"'), 2)
+        self._run()
+        self.assertEqual(first, self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,
                     alt_names=(), history=()):
@@ -5502,6 +5564,117 @@ class TreeJsonConfidenceTests(_Base):
         names = {n['name'] for n in self._tree('p-cccccccccc')['nodes']}
         self.assertEqual(names, {'Grandparent Gus', 'Parent Pat', 'Child Carl',
                                  'Minor Mina', 'Uncle Umberto'})
+
+
+    def test_a_private_card_and_its_ties_say_nothing_about_their_evidence(self):
+        # Every parent tie is a family story. Umberto, dead, is Gus's son on
+        # his own story and fades. Carl, dead, sits under Private Pat: the
+        # only ties linking him to Gus name Pat, a living woman, so they
+        # count as unrated and he is not faded. A faded Carl would tell a
+        # visitor that Pat's own parentage rests on a family story.
+        self._seed_living_family()
+        self.conn.execute("UPDATE claims SET confidence = 'low' WHERE id LIKE 'c-p%'")
+        self._run(linked=False)
+        tree = self._tree('p-cccccccccc')
+        nodes = {n['p_id']: n for n in tree['nodes']}
+        self.assertIsNone(nodes['private-1']['line_confidence'])
+        for e in tree['edges']:
+            if 'private-1' in (e['from'], e['to']):
+                self.assertIsNone(e['confidence'], e)
+        self.assertIsNone(nodes['p-aaaaaaaaaa']['line_confidence'])
+        self.assertEqual(nodes['p-dddddddddd']['line_confidence'], 'low')
+
+    def test_nobody_behind_a_private_card_fades_for_her_ties(self):
+        # Only Pat's tie to her father Gus is a family story. On dead Carl's
+        # page, Gus sits behind Private Pat on the family chart and the fan;
+        # on Gus's page, Carl sits under her in the explorer. Fading either,
+        # or printing the key, would say Pat's parentage is weak.
+        self._seed_living_family()
+        self.conn.execute(
+            "UPDATE claims SET confidence = 'low' WHERE id IN (SELECT claim_id FROM relationships"
+            " WHERE person_id = 'p-bbbbbbbbbb' AND other_id = 'p-cccccccccc')")
+        self._run(linked=False)
+        for pid in ('p-aaaaaaaaaa', 'p-cccccccccc'):
+            page = (self.out_dir / 'persons' / f'{pid}.html').read_text(encoding='utf-8')
+            self.assertIn('Private', page, pid)
+            for word in ('ped-weak', 'fan-seg-weak', 'low-confidence record'):
+                self.assertNotIn(word, page, f'{word!r} on {pid}')
+
+    def test_the_explorer_page_says_what_fading_means_only_when_someone_is_faded(self):
+        self._gus_and_pat()
+        self._parent('p-bbbbbbbbbb', 'p-cccccccccc', 'low')
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertIn('low-confidence record', page)
+        self.conn.execute("UPDATE claims SET confidence = 'high'")
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertNotIn('low-confidence record', page)
+
+
+class WeakLineDrawingTests(unittest.TestCase):
+    """Chart plan 08-7: a person linked to the subject only through a low
+    tie is drawn faded, with a broken outline so it does not rest on colour
+    alone, and a plain sentence says what that means."""
+
+    @staticmethod
+    def _labels(weak=(2, 4, 5), private_weak=()):
+        # Chart case C18: the father tie is a family story, so his whole
+        # side (slots 2, 4, 5) rests on it; the mother's side (3, 6, 7) does not.
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num in range(2, 8):
+            labels[num] = {'name': f'Person {num}', 'url': None,
+                           'line_confidence': 'low' if num in weak else 'high'}
+        for num in private_weak:
+            labels[num] = {'private': True, 'line_confidence': 'low'}
+        return labels
+
+    def test_fan_fades_the_weak_side_only(self):
+        svg = site._render_fan_svg(self._labels(), 3)
+        self.assertEqual(svg.count('fan-seg-weak'), 3)
+        for num in (2, 4, 5):
+            self.assertIn(f'Person {num}. {site._WEAK_LINE_TITLE}', svg)
+        for num in (3, 6, 7):
+            self.assertNotIn(f'Person {num}. ', svg)
+
+    def test_fan_never_fades_a_private_card(self):
+        svg = site._render_fan_svg(self._labels(weak=(), private_weak=(3,)), 3)
+        self.assertNotIn('fan-seg-weak', svg)
+
+    def test_pedigree_fades_the_weak_side_only(self):
+        svg = site._render_pedigree_svg(self._labels())
+        self.assertEqual(svg.count('ped-weak'), 3)
+        self.assertIn(site._WEAK_LINE_TITLE, svg)
+
+    def test_pedigree_never_fades_a_private_card(self):
+        svg = site._render_pedigree_svg(self._labels(weak=(), private_weak=(3,)))
+        self.assertNotIn('ped-weak', svg)
+
+    def test_the_key_is_wanted_only_when_a_drawn_cell_is_faded(self):
+        self.assertTrue(site._any_weak_slot(self._labels(), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=()), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(4,)), 1), 'slot 4 is not drawn')
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(), private_weak=(3,)), 3))
+
+    def test_the_key_sentence_explains_the_fade_in_plain_words(self):
+        self.assertIn('Faded', site._WEAK_LINE_KEY)
+        self.assertIn('low-confidence record', site._WEAK_LINE_KEY)
+        self.assertIn('dashed', site._WEAK_LINE_KEY)
+
+    def test_the_explorer_files_draw_faded_cards_and_thin_broken_edges(self):
+        vendor = ROOT / 'tools' / 'templates' / 'vendor'
+        js = (vendor / 'fha-tree.js').read_text(encoding='utf-8')
+        adapter = (vendor / 'tree-adapter.js').read_text(encoding='utf-8')
+        self.assertIn('fha-node-weak', js)
+        self.assertIn('fha-tree-edge-weak', js)
+        self.assertIn("line_confidence === 'low'", adapter)
+        self.assertIn("confidence === 'low'", adapter)
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rule in ('.fha-tree-edge-weak', '.fha-node.fha-node-weak',
+                     '.ped-node.ped-weak', '.fan-seg-weak'):
+            self.assertIn(rule, css)
+        self.assertRegex(css, r'\.fha-tree-edge-weak[^}]*stroke-dasharray')
+        self.assertRegex(css, r'\.fan-seg-weak[^}]*stroke-dasharray')
 
 
 class PedigreeGeometryGuardTests(unittest.TestCase):
