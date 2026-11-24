@@ -4293,7 +4293,8 @@ def _chart_name(who: str, kind: str) -> str:
     chart. It is built only from the name the page already shows, as a plain
     ASCII slug (never an id), so the file name tells nobody more than the
     page does. `who` empty gives just `kind`."""
-    slug = re.sub(r'[^a-z0-9]+', '-', (who or '').lower()).strip('-')
+    folded = unicodedata.normalize('NFKD', who or '').encode('ascii', 'ignore').decode('ascii')   # Józef -> Jozef
+    slug = re.sub(r'[^a-z0-9]+', '-', folded.lower()).strip('-')
     return f'{slug}-{kind}' if slug else kind
 
 

@@ -67,7 +67,9 @@
   // dropped from the copy, so the file shows what the page shows.
   function inlineStyles(live, copy, drop) {
     var cs = global.getComputedStyle(live);
-    if (cs.display === 'none') { drop.push(copy); return; }
+    if (cs.display === 'none' || cs.visibility === 'hidden' || cs.visibility === 'collapse') {
+      drop.push(copy); return;   // what the page hides stays out of the file
+    }
     var tag = (live.localName || '').toLowerCase();
     if (tag !== 'title' && tag !== 'desc' && tag !== 'defs' && tag !== 'style') {
       for (var i = 0; i < STYLE_PROPS.length; i++) {
@@ -90,9 +92,33 @@
   function cleanCopy(root) {
     var all = Array.prototype.slice.call(root.querySelectorAll('*'));
     all.unshift(root);
+    // Tooltips (<title>, <desc>), comments, scripts and styles are not part of
+    // the picture; an id stays only where the drawing points at it (the fan's
+    // curved names ride on paths by id).
+    Array.prototype.slice.call(root.querySelectorAll('title, desc, script, style, metadata')).forEach(function (el) {
+      if (el.parentNode) el.parentNode.removeChild(el);
+    });
+    (function stripComments(node) {
+      Array.prototype.slice.call(node.childNodes).forEach(function (c) {
+        if (c.nodeType === 8) node.removeChild(c);
+        else if (c.nodeType === 1) stripComments(c);
+      });
+    })(root);
+    var wanted = {};
+    all.forEach(function (el) {
+      var h = el.getAttribute('href') || el.getAttribute('xlink:href') || '';
+      if (h.charAt(0) === '#') wanted[h.slice(1)] = true;
+    });
     all.forEach(function (el) {
       Array.prototype.slice.call(el.attributes).forEach(function (a) {
-        if (a.name.indexOf('data-') === 0) el.removeAttribute(a.name);
+        var n = a.name.toLowerCase();
+        if (n.indexOf('data-') === 0 || n.indexOf('on') === 0 || n === 'aria-describedby' ||
+            n === 'aria-labelledby' || n === 'tabindex' ||
+            (el !== root && n === 'aria-label') ||
+            (n === 'id' && !wanted[a.value]) ||
+            ((n === 'href' || n === 'xlink:href') && a.value.charAt(0) !== '#')) {
+          el.removeAttribute(a.name);
+        }
       });
     });
     Array.prototype.slice.call(root.querySelectorAll('img, image')).forEach(function (el) {

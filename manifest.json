@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "77af8e4e799b6e1ad272dabfe52e70609e6699a69a19569f3fe8aca0fe9324df",
+      "sha256": "bc01c5b45671149aba76dbc5b9b2236c715ff554a38a92625fca621367d2f123",
       "spec_version": "2.32",
       "src": "tools/site.py"
     },
@@ -1310,7 +1310,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-save-chart.js",
       "category": "operating",
-      "sha256": "53c299369678d12f55c00c90de6c598459e3317cb5a25f3afb92c86ad3f09fe7",
+      "sha256": "631e795531de6a5b32e4dba1da8c999a5b8261be9ba00cded952dbd3e90998ce",
       "spec_version": "2.32",
       "src": "tools/templates/vendor/fha-save-chart.js"
     },

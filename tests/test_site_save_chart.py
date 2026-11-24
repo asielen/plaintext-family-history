@@ -55,6 +55,15 @@ class SaveChartScriptTests(unittest.TestCase):
         for needle in ("'data-'", 'unwrap', 'img, image'):
             self.assertIn(needle, self.js)
 
+    def test_saved_file_drops_tooltips_comments_hidden_nodes_and_stray_ids(self):
+        # Checked in Chrome on the example site: nothing the page hides or
+        # words only in a tooltip rides along in the saved drawing.
+        for needle in ("'title, desc, script, style, metadata'", 'nodeType === 8',
+                       "cs.visibility === 'hidden'", "cs.display === 'none'",
+                       "n === 'id' && !wanted[a.value]", "charAt(0) !== '#'",
+                       "n.indexOf('on') === 0"):
+            self.assertIn(needle, self.js)
+
     @unittest.skipUnless(shutil.which('node'), 'node is not installed')
     def test_script_parses(self):
         r = subprocess.run(['node', '--check', str(SAVE_JS)], capture_output=True, text=True)
@@ -86,7 +95,9 @@ class ChartTagTests(unittest.TestCase):
     def test_chart_name_is_a_plain_ascii_slug(self):
         self.assertEqual(site._chart_name('Margaret Cole', 'ancestor-fan'), 'margaret-cole-ancestor-fan')
         self.assertEqual(site._chart_name('', 'family-chart'), 'family-chart')
-        self.assertEqual(site._chart_name('Zoë O’Neil', 'family-chart'), 'zo-o-neil-family-chart')
+        self.assertEqual(site._chart_name('Zoë O’Neil', 'family-chart'), 'zoe-oneil-family-chart')
+        self.assertEqual(site._chart_name('Józef Kowalski', 'ancestor-fan'), 'jozef-kowalski-ancestor-fan')
+        self.assertEqual(site._chart_name('María-José Ruiz', 'ancestor-fan'), 'maria-jose-ruiz-ancestor-fan')
 
 
 class SaveChartSiteTests(unittest.TestCase):
