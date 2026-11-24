@@ -441,7 +441,8 @@
           var kind = c.edgeKind || (c.edgeGenetic === false ? 'legal' : 'genetic');
           var edgeClass = 'fha-tree-edge'
             + (kind === 'legal' ? ' fha-tree-edge-legal'
-               : kind === 'other' ? ' fha-tree-edge-other' : '');
+               : kind === 'other' ? ' fha-tree-edge-other' : '')
+            + (c.edgeWeak ? ' fha-tree-edge-weak' : '');
           var p = svg('path', {
             'class': edgeClass,
             d: 'M' + px(node) + ',' + (py(node) + NODE_H / 2) +
@@ -460,7 +461,9 @@
           x: px(node) - NODE_W / 2, y: py(node) - NODE_H / 2, width: NODE_W, height: NODE_H
         });
         var box = document.createElement('div');
-        box.className = 'fha-node' + (node.url ? '' : ' fha-node-nolink');
+        box.className = 'fha-node' + (node.url ? '' : ' fha-node-nolink')
+          + (node.weak ? ' fha-node-weak' : '');
+        if (node.weak) box.setAttribute('title', 'Linked to the first person in this tree only through a low-confidence record.');
         if (branchOf[node.id]) box.setAttribute('data-branch', branchOf[node.id]);
         var kids = node.children || [];
 

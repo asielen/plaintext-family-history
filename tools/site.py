@@ -3367,6 +3367,29 @@ def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: fl
     return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
+# A person is drawn faded when the only parent ties linking them to the chart's
+# subject are rated "low" (SPEC §8.5, chart plan 08-7). The same plain sentence
+# sits under every chart that fades someone, so a reader is never left guessing.
+_WEAK_LINE_TITLE = 'Linked to the subject only through a low-confidence record.'
+_WEAK_LINE_KEY = ('Faded names and dashed outlines are people linked to the subject '
+                  'only through a low-confidence record, often a family story; '
+                  'open a person to see the sources.')
+
+
+def _weak_slot(info: dict | None) -> bool:
+    """Whether a chart cell is drawn faded: its line to the subject is low.
+    A Private or redacted card is never faded, so a faded card could not
+    tell a visitor anything about a living person's records."""
+    return (bool(info) and not info.get('private') and not info.get('redacted')
+            and info.get('line_confidence') == 'low')
+
+
+def _any_weak_slot(labels: dict, generations: int) -> bool:
+    """Whether any cell within `generations` of the subject is drawn faded."""
+    return any(_weak_slot(info) for num, info in labels.items()
+               if 1 <= num.bit_length() - 1 <= generations)
+
+
 def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                     span_deg: int = 180) -> str:
     """Render an ancestor fan as a self-contained, print-friendly SVG string.
@@ -3449,7 +3472,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                          f'--gen-fade:{min((g - 2) * 15, 55)}%')
             else:
                 style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-            body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
+            seg_cls = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
+            body.append(f'<path class="{seg_cls}" style="{style}" d="{d}"/>')
 
         if private:
             name, surname, years = 'Private', None, ''
@@ -3525,6 +3549,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                 body.append(f'<g class="fan-private">{text}</g>')
             continue
         full = name + (f', {years}' if years else '')
+        if _weak_slot(info):
+            full += f'. {_WEAK_LINE_TITLE}'
         title = f'<title>{html.escape(full)}</title>'
         url = info.get('url')
         body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
@@ -3987,6 +4013,9 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 # the subject's own '.ped-self' styling already carries a fixed
                 # accent, and an 'Unknown' placeholder has no line to name).
                 cls += f' ped-branch-{branch}'
+            if _weak_slot(lab):
+                cls += ' ped-weak'
+                div_attrs = f' title="{html.escape(_WEAK_LINE_TITLE)}"'
             if lab.get('hypothesis'):
                 # Workbench-only (the builder only sets the flag there): an
                 # unsourced frontmatter tie fills the slot but is visibly not
@@ -6673,6 +6702,10 @@ class _SiteBuilder:
         fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees),
                                        _chart_name(name, 'ancestor-fan')))
                if len(ahnen) > 1 else None)
+        # The plain-words key goes under a chart only when that chart fades someone.
+        chart_weak_key = (_WEAK_LINE_KEY if has_pedigree and _any_weak_slot(ped_labels, 2) else None)
+        fan_weak_key = (_WEAK_LINE_KEY if fan and _any_weak_slot(ahnen, self.fan_generations)
+                        else None)
         # Descendant explorer (#115): demoted from the home page (which now
         # carries the marriage-aware ancestor pedigree instead) to a
         # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/
@@ -6698,7 +6731,9 @@ class _SiteBuilder:
             'pedigree': pedigree,
             'pedigree_chart': _chart_name(name, 'family-chart') if pedigree else None,
             'chart_title': chart_title,
+            'chart_weak_key': chart_weak_key,
             'fan': fan,
+            'fan_weak_key': fan_weak_key,
             'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
             'descendants_tree': descendants_tree,
             'summary': summary,
@@ -9851,6 +9886,14 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        # A Private card carries no detail about itself, and that includes how
+        # well its ties are proven. Those ties are claims naming a living
+        # person, so they count as unrated before the line is worked out: a
+        # dead grandchild faded only because Pat's own parentage is a family
+        # story would tell every visitor that about Pat.
+        for e in edges:
+            if e['from'].startswith('private-') or e['to'].startswith('private-'):
+                e['confidence'] = None
         lines = line_confidence(shown_id[seed], [
             (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
         nodes = []
@@ -9860,7 +9903,8 @@ class _SiteBuilder:
                         'sex': None, 'vitals': {'birth': None, 'death': None}, 'url': None}
             else:
                 node = self._tree_node(pid, page_dir)
-            node['line_confidence'] = lines.get(shown_id[pid])
+            node['line_confidence'] = (None if node.get('private')
+                                       else lines.get(shown_id[pid]))
             nodes.append(node)
         return {
             'version': 2,
@@ -10127,6 +10171,11 @@ class _SiteBuilder:
                 # claim, so the tie is unrated (it is drawn as a guess).
                 tie = (parent_rows[ppid]['confidence']
                        if ppid in parent_rows and ppid not in hyp_parents else None)
+                # A tie to or from a Private card is a claim naming a living
+                # person, so it never fades anyone: a grandparent faded behind
+                # a Private parent would tell visitors her parentage is weak.
+                if labels[num].get('private') or labels[slot_num].get('private'):
+                    tie = None
                 labels[slot_num]['tie_confidence'] = tie
                 labels[slot_num]['line_confidence'] = weaker_confidence(
                     tie, labels[num].get('line_confidence'))
@@ -10447,6 +10496,8 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
         return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption,
                 'initial_depth': initial_depth,
+                'has_weak': any(n.get('line_confidence') == 'low' for n in tree['nodes']),
+                'weak_key': _WEAK_LINE_KEY,
                 'home_id': fmt_id_display(home_id) if home_id else None,
                 'chart_name': chart_name}
 
@@ -10672,7 +10723,8 @@ class _SiteBuilder:
             hub_surname = person_surname(hub_name, self._shown_row(hub_meta)['surname']) or ''
         chart_name = _chart_name(hub_surname, 'family-tree')
         return {'svg': self._markup(_tag_chart(svg, chart_name)), 'caption': caption,
-                'note': note, 'chart_name': chart_name}
+                'note': note, 'chart_name': chart_name,
+                'weak_key': _WEAK_LINE_KEY if _any_weak_slot(ahnen, depth) else None}
 
     # - index / home page -
 
