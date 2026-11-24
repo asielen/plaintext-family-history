@@ -10305,6 +10305,20 @@ def source_record_subjects(meta: dict, read_site_data) -> set[tuple[str, int | N
     return subjects
 
 
+def source_dates_agree(a: str, b: str, year) -> bool:
+    """Two sources' dates name one event: the same year (the collection's
+    own year, for a census, when a source gives none), and the same day when
+    both give a full date. A source with no date and no collection year to
+    stand in is never matched: nothing says it is the same event."""
+    ya, yb = (str(d)[:4] if str(d)[:4].isdigit() else None for d in (a, b))
+    ya = ya or (str(year) if year else None)
+    yb = yb or (str(year) if year else None)
+    if not ya or ya != yb:
+        return False
+    full = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+    return not (full.match(str(a)) and full.match(str(b)) and str(a) != str(b))
+
+
 def same_record_subject(a: set, b: set) -> bool:
     """Whether two sources' subjects (source_record_subjects) share one entry:
     the same name and the same age. Two records that both give no age (a
