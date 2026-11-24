@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -31,7 +32,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import lint
 from _lib import load_fha_yaml
 
-PLAUSIBILITY_CODES = ('W163', 'W164', 'W165')
+PLAUSIBILITY_CODES = ('W163', 'W164', 'W165', 'W173')
 
 
 class _PlausibilityBase(unittest.TestCase):
@@ -285,6 +286,162 @@ class OnePersonDatesTests(_PlausibilityBase):
                 findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
                 self.assertEqual([f.message for f in findings
                                   if f.code in PLAUSIBILITY_CODES], [])
+
+
+
+class ProbablyNotLivingTests(_PlausibilityBase):
+    """W173: someone marked `living: unknown` (so the family site shows
+    "Living Person" in their place) whose own or relatives' records say they
+    would be over 110 today. Lint names them and the one command he runs;
+    nothing flips the flag for him. The year is pinned to 2026."""
+
+    S1, S2, S3, S4 = 'S-1111111111', 'S-2222222222', 'S-3333333333', 'S-4444444444'
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(lint, '_this_year', return_value=2026)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _parent_of(self, sid: str, cid: str, parent: str, child: str, *,
+                   subtype: str | None = None) -> None:
+        self._source(sid, self._claim(cid, 'relationship', [parent, child],
+                                      roles=f'{{child: [{child}], parent: [{parent}]}}',
+                                      subtype=subtype))
+
+    def _born(self, sid: str, cid: str, pid: str, date: str) -> None:
+        self._source(sid, self._claim(cid, 'birth', [pid], date=date))
+
+    def _father_and_son(self, son_born: str, *, subtype: str | None = None) -> None:
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN, subtype=subtype)
+        self._born(self.S2, 'C-2222222222', self.BEN, son_born)
+
+    def _w173(self) -> list:
+        return self._codes('W173')
+
+    def test_father_of_a_son_born_1871_is_suggested_and_names_the_command(self) -> None:
+        self._father_and_son('1871')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        message = found[0].message
+        self.assertTrue(message.startswith(
+            'Thomas Hartley (p-aaaaaaaaaa) is marked living: unknown, so the family site '
+            'and shared exports treat him as living and show "Living Person" in his place.'),
+            message)
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1871', message)
+        self.assertIn('c-2222222222 (sources/notes/rec_s-2222222222.md)', message)
+        self.assertIn('`fha person set-living p-aaaaaaaaaa false`', message)
+        self.assertIn('`fha person set-living p-aaaaaaaaaa true`', message)
+        self.assertEqual(Path(found[0].path).name, 'hartley__thomas_P-aaaaaaaaaa.md')
+
+    def test_son_born_1920_suggests_father_born_by_1908(self) -> None:
+        self._father_and_son('1920')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('so he was born by 1908 and would be at least 117 today', found[0].message)
+
+    def test_child_born_1925_fires_and_1930_is_silent(self) -> None:
+        for year, fires in (('1925', True), ('1930', False)):
+            with self.subTest(year=year):
+                self._father_and_son(year)
+                self.assertEqual(len(self._w173()), 1 if fires else 0)
+
+    def test_grandchild_chain_is_followed_and_explained(self) -> None:
+        # Thomas -> Ben (undated) -> Cara, born 1900: Ben born by 1888,
+        # Thomas by 1876. Ben is marked false, so only Thomas is asked about.
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Cara Hartley', sex='F')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._parent_of(self.S2, 'C-2222222222', self.BEN, self.CARA)
+        self._born(self.S3, 'C-3333333333', self.CARA, '1900')
+        found = self._w173()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        message = found[0].message
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1888, going by his '
+                      'daughter Cara Hartley (p-cccccccccc), born by 1900', message)
+        self.assertIn('c-3333333333', message)
+        self.assertIn('Nobody is a parent before 12, so he was born by 1876', message)
+
+    def test_own_census_record_counts(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1880'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('A census record names her in 1880', found[0].message)
+
+    def test_a_note_claim_does_not_count(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'note', [self.ADA], date='1880'))
+        self.assertEqual(self._w173(), [])
+
+    def test_mother_died_1890_suggests_her_undated_child(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='false')
+        self._person(self.BEN, 'Ben Hartley', sex='M', living='unknown')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1890'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('His mother Ada Hartley (p-aaaaaaaaaa) died 1890', found[0].message)
+        self.assertIn('c-2222222222', found[0].message)
+
+    def test_provisional_birth_counts(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown', extra='birth: 1840~\n')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Her record gives a birth estimate of about 1840', found[0].message)
+
+    def test_provisional_death_fires(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown', extra='death: 1990\n')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Her record gives a death estimate (1990)', found[0].message)
+
+    def test_living_true_and_false_are_never_questioned(self) -> None:
+        for living in ('true', 'false'):
+            with self.subTest(living=living):
+                self._person(self.ADA, 'Ada Hartley', living=living, extra='death: 1990\n')
+                self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA],
+                                                  date='1880'))
+                self.assertEqual(self._w173(), [])
+
+    def test_person_w136_names_is_not_repeated(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.ADA], date='1890')
+                     + self._claim('C-1111111112', 'census', [self.ADA], date='1880'))
+        self.assertEqual(len(self._codes('W136')), 1)
+        self.assertEqual(self._w173(), [])
+
+    def test_adoptive_child_does_not_age_the_parent(self) -> None:
+        self._father_and_son('1871', subtype='adoptive')
+        self.assertEqual(self._w173(), [])
+
+    def test_suggested_claims_do_not_count(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1880',
+                                          status='suggested'))
+        self.assertEqual(self._w173(), [])
+
+    def test_recent_records_are_silent(self) -> None:
+        # A 1950 census names her: she may well be alive at 76.
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1950'))
+        self.assertEqual(self._w173(), [])
+
+    def test_lint_never_writes_living(self) -> None:
+        self._father_and_son('1871')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                lint._standalone_main(['--root', str(self.root)])
+            except SystemExit:
+                pass
+        self.assertIn('W173', out.getvalue())
+        after = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(before, after)
 
 
 _GIT = shutil.which('git')

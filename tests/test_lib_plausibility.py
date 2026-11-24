@@ -187,5 +187,52 @@ class OnePersonEngineTests(unittest.TestCase):
         self.assertEqual([p.kind for p in found], ['life-after-death'])
 
 
+class BornByTests(unittest.TestCase):
+    """`born_by_estimate`, behind W173: the latest year each person can have
+    been born, from their own records and their family's."""
+
+    def test_the_import_and_lint_share_one_cutoff(self) -> None:
+        import gedcom_import
+        self.assertEqual(_lib.LIVING_CUTOFF_YEARS, 110)
+        self.assertIs(gedcom_import.LIVING_CUTOFF_YEARS, _lib.LIVING_CUTOFF_YEARS)
+
+    def test_a_deep_line_is_walked_without_recursion(self) -> None:
+        # 5,000 generations, only the last one dated: no RecursionError, and
+        # the first person is born 12 years per generation earlier.
+        depth = 5000
+        pids = [f'p-{i:010d}' for i in range(depth)]
+        children_of = {pids[i]: {pids[i + 1]} for i in range(depth - 1)}
+        parents_of = {pids[i + 1]: {pids[i]} for i in range(depth - 1)}
+        lived = {pids[-1]: [_dc('c-0000000001', '9000-01-01', '9000-12-31', 'census')]}
+        got = _lib.born_by_estimate(_lib.PlausibilityInput(), {}, parents_of,
+                                    children_of, lived)
+        self.assertEqual(got[pids[0]].year, 9000 - 12 * (depth - 1))
+
+    def test_a_loop_is_cut_not_followed_forever(self) -> None:
+        a, b = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'
+        lived = {b: [_dc('c-0000000001', '1900-01-01', '1900-12-31', 'census')]}
+        got = _lib.born_by_estimate(_lib.PlausibilityInput(), {},
+                                    {a: {b}, b: {a}}, {a: {b}, b: {a}}, lived)
+        self.assertEqual(got[b].year, 1900)
+        self.assertEqual(got[a].year, 1888)
+
+    def test_a_sourced_birth_supersedes_the_provisional_estimate(self) -> None:
+        a = 'p-aaaaaaaaaa'
+        data = plausibility_input_from_claims(
+            [{'id': 'c-0000000001', 'type': 'birth', 'persons': [a], 'date': '1950',
+              'status': 'accepted'}], {a: {'birth': '1840'}}, {})
+        got = _lib.born_by_estimate(data, {a: {'birth': '1840'}}, {}, {}, {})
+        self.assertEqual((got[a].year, got[a].evidence[0]), (1950, 'birth'))
+
+    def test_two_birth_readings_are_not_read_as_the_earlier(self) -> None:
+        a = 'p-aaaaaaaaaa'
+        claims = [{'id': f'c-000000000{i}', 'type': 'birth', 'persons': [a], 'date': d,
+                   'status': 'accepted'} for i, d in ((1, '1850'), (2, '1950'))]
+        data = plausibility_input_from_claims(claims, {a: {}}, {})
+        lived = _lib.lived_claims_from_claims(claims, {})
+        self.assertEqual(lived, {})
+        self.assertEqual(_lib.born_by_estimate(data, {a: {}}, {}, {}, lived)[a].year, 1950)
+
+
 if __name__ == '__main__':
     unittest.main()

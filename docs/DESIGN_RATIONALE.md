@@ -371,6 +371,8 @@ Other limits:
 - **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
 - **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
 
+**Probably not living (W173).** Lint also names someone still marked `living: unknown` whose records put their birth more than 110 years ago: their own records, their children's births (a parent is at least 12), or a parent's death. The cutoff is 110, not the 130 that `fha metrics` uses, because the two answer different questions. 130 decides on its own that a missing death is a gap, so it has to be certain. 110 only asks: the message names `fha person set-living … false` and he runs it, so his yes is the gate. 110 is also the age `fha gedcom import` already uses for the same flag, so one archive gives one answer. At 130, most undated great-grandparents would stay hidden as "Living Person" on the site. Rejected: flipping the flag automatically, because SPEC §19 keeps `unknown` as the safe default so a mistake over-hides and never shows a living person; and a `living_confirmed:` field, turned down under §5.
+
 ## 16. Search links on the workbench person page
 
 **The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
