@@ -40,8 +40,8 @@
         <td>{{ c.date }}</td>
         <td>{{ c.place }}</td>
         <td>{{ c.persons_html }}</td>
-        <td><span class="status status-{{ c.status }}">{% if c.parked %}not sure yet{% else %}{{ c.status }}{% endif %}</span>{% if c.status == 'accepted' and c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
-        {% if source.has_play %}<td>{% if c.play %}<a class="play-from" href="{{ c.play.href }}#t={{ c.play.seconds }}" data-audio="{{ c.play.audio_id }}" data-t="{{ c.play.seconds }}">play from {{ c.play.label }}</a>{% endif %}</td>{% endif %}
+        <td><span class="status status-{{ c.status }}">{% if c.parked %}not sure yet{% else %}{{ c.status }}{% endif %}</span>{% if c.status == 'accepted' and c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>{% if source.has_play %}
+        <td>{% if c.play %}<a class="play-from" href="{{ c.play.href }}#t={{ c.play.seconds }}" data-audio="{{ c.play.audio_id }}" data-t="{{ c.play.seconds }}">play from {{ c.play.label }}</a>{% endif %}</td>{% endif %}
         {% if workbench %}
         <td class="wb-actions">
           {% if c.status == 'suggested' %}
@@ -73,15 +73,12 @@
   <h2>Files</h2>
   <ul class="files">
     {% for f in source.files %}
-    {% if f.audio_href %}
-    <li class="recording-item">
+    {% if f.audio_href %}<li class="recording-item">
       <figure class="recording">
         <audio id="{{ f.audio_id }}" controls preload="metadata"><source src="{{ f.audio_href }}" type="{{ f.audio_type }}">Your browser cannot play this recording. <a href="{{ f.audio_href }}">Download it</a>.</audio>
         <figcaption>{{ f.label }}{% if f.note %} <span class="note">{{ f.note }}</span>{% endif %}{% if workbench and f.path %} <a class="wb-fix" href="#" data-wb-open-file="{{ f.path }}">open</a>{% endif %}</figcaption>
       </figure>
-    </li>
-    {% else %}
-    <li>
+    </li>{% else %}<li>
       {% if f.thumb_href %}
       <a href="{{ f.link_href }}" target="_blank" rel="noopener"><img class="thumb" src="{{ f.thumb_href }}" alt="{{ f.label }}"></a>
       <span>{{ f.label }}</span>
@@ -90,12 +87,11 @@
       {% else %}{{ f.label }}{% endif %}
       {% if f.note %}<span class="note">{{ f.note }}</span>{% endif %}
       {% if workbench and f.path %}<a class="wb-fix" href="#" data-wb-open-file="{{ f.path }}">open</a>{% endif %}
-    </li>
-    {% endif %}
+    </li>{% endif %}
     {% endfor %}
   </ul>
-  {% endif %}
-  {% if source.has_recordings %}{% include "_recording_script.html" %}{% endif %}
+  {% endif %}{% if source.has_recordings %}
+  {% include "_recording_script.html" %}{% endif %}
 
   {% if workbench %}
   <h2>Research Notes

@@ -1316,7 +1316,7 @@
     {
       "path": ".fha/tools/templates/source.html",
       "category": "operating",
-      "sha256": "5c749e4c8ffde68a6fca759bd56b46c5cedc62ffd8a15557dbbbc1d32e391be3",
+      "sha256": "a9667b42224fbb28bf1f17d2d7bfdca3eb9e81a0dd8cb44cd769199788757e3e",
       "spec_version": "2.40",
       "src": "tools/templates/source.html"
     },
