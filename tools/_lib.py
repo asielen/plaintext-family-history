@@ -24349,6 +24349,37 @@ def family_calendar_week(
     return events
 
 
+def family_calendar_year(
+    conn: sqlite3.Connection, year: int, statuses: tuple[str, ...] = ('accepted',),
+) -> list[dict]:
+    """A whole year of family events for a printed wall calendar: twelve
+    `{month, days: {day: [events]}, month_only: [events]}` entries, January
+    first.
+
+    Only dates recorded to the month or day are placed, as `family_calendar_events`
+    says; a year alone never appears. An event known only to its month goes in
+    `month_only`, so the calendar can list it under the grid instead of
+    guessing a day. In a year with no 29 February, a 29 February event moves
+    to the 28th and carries `leap_moved: True`, so the page can say so beside
+    the name. Privacy is the caller's, as for `family_calendar_events`."""
+    months = []
+    for month in range(1, 13):
+        days: dict[int, list[dict]] = {}
+        month_only: list[dict] = []
+        for ev in family_calendar_events(conn, month=month, statuses=statuses,
+                                         this_year=year):
+            if ev['day'] is None:
+                month_only.append(ev)
+                continue
+            day = ev['day']
+            if month == 2 and day == 29 and not calendar.isleap(year):
+                day = 28
+                ev = {**ev, 'leap_moved': True}
+            days.setdefault(day, []).append(ev)
+        months.append({'month': month, 'days': days, 'month_only': month_only})
+    return months
+
+
 def calendar_years_ago_phrase(years_ago: int) -> str:
     """How long ago a calendar event was, in words: "146 years ago", "1 year
     ago", "this year". A date after this year is a mistake in the record,
