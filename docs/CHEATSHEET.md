@@ -42,6 +42,7 @@ fha process "inbox/Trip/IMG_0001.jpg" --type photo --dest "Trip"   # a photo, in
 fha report                    # the review queue and research leads
 fha find --text "Rose Hartley"   # search everything
 fha find --sounds-like "Hartley"   # names that sound alike, every spelling
+fha find --spelling-groups         # surnames that probably belong together
 fha doctor                    # health check: run this when stuck
 fha lint                      # "is my archive shaped right?"
 fha lint --changed            # quick check before a commit: only what changed since the last one

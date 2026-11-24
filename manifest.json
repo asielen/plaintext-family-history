@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b6fe79093cee9d664a09034dc7205865d6eca2c983b71a50acbea8850366fa3d",
+      "sha256": "ccef42c7b0da1763303084063bacf263b4aa94cd1b26402b827df1252665f7f1",
       "spec_version": "2.29",
       "src": "tools/_lib.py"
     },
@@ -793,7 +793,7 @@
     {
       "path": ".fha/tools/find.py",
       "category": "operating",
-      "sha256": "f930331e147c7801a0f72733cf94329ceced52c21704813d766d1e8f7dc34745",
+      "sha256": "5aee7a3dd2701e3e6f4b3239a133714077bac4eb403673771ab438f711e1babd",
       "spec_version": "2.29",
       "src": "tools/find.py"
     },
@@ -1395,7 +1395,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "d24875c74c3d8899553966678c123abedfaef80ac16a592584570753c32edd28",
+      "sha256": "10ba1aafb2f013b7ae7cc9c40d0d346802afa18e5b86900046c6e9494a5e6307",
       "spec_version": "2.29"
     },
     {
@@ -1414,13 +1414,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "441a4543f3ffbe9a1a2f2e446db4f548f14541446879acd27bb7ed5314c854da",
+      "sha256": "9aabb3d0e0a2d6e0374dab426eab58aa9d2775399ec391f45dbedc45d771e8c3",
       "spec_version": "2.29"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "d0e0d4d16dd9eb720df6a472a372d189c3ca67f4c8a6992ff1b47947ca88b0fd",
+      "sha256": "f317873add4df1d2fe4bd5b74fd0d7394798f2b18de7408eca69943a20616bf8",
       "spec_version": "2.29"
     },
     {
@@ -1438,7 +1438,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "adbd0c5a2e66219325b1ca05627a4ee42be5264eb6e0ed8d17989837125a58fa",
+      "sha256": "8017239906a1d15df580cd825d93d2437d5937b6929eb652f00b72e95a6c2d97",
       "spec_version": "2.29"
     },
     {
@@ -1487,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "760d7e356bfa1b8239b462a1cbbb3cd14d186b181be5510cf807cd3da0b0dce7",
+      "sha256": "6d2e8c86c5eed5a4d7ee9822d9c3f56e7fb2836dd410125f725cbd9233b9be31",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
