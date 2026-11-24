@@ -417,6 +417,29 @@ class SeveralRoutesTests(unittest.TestCase):
         self.assertEqual((answer['relationship'], answer['double']),
                          ('double first cousin', True))
 
+    def test_a_sure_line_leads_a_may_be_half_line_at_one_degree(self):
+        # Two brothers married two sisters; the brothers' mother is not
+        # recorded. The sisters' parents make A and B surely first cousins,
+        # so the headline is that sure line with no "may be half" note,
+        # whatever the IDs, and the brothers' father's line follows as the
+        # one that may be half.
+        for gf in ('g-1', 'g-9'):
+            people = {p: {'name': p, 'sex': s} for p, s in
+                      ((gf, 'M'), ('g-2', 'M'), ('g-3', 'F'), ('h1', 'M'), ('h2', 'M'),
+                       ('w1', 'F'), ('w2', 'F'), ('a', 'M'), ('b', 'F'))}
+            parents = [('h1', gf, None), ('h2', gf, None), ('w1', 'g-2', None),
+                       ('w1', 'g-3', None), ('w2', 'g-2', None), ('w2', 'g-3', None),
+                       ('a', 'h1', None), ('a', 'w1', None), ('b', 'h2', None),
+                       ('b', 'w2', None)]
+            g = KinshipGraph.from_edges(people, parent_edges=parents)
+            answer = blood_answer(g, 'a', 'b')
+            with self.subTest(gf=gf):
+                self.assertEqual([r['common_ancestors'] for r in answer['routes']],
+                                 [['g-2', 'g-3'], [gf]])
+                self.assertEqual((answer['relationship'], answer['half'], answer['note']),
+                                 ('first cousin', False, None))
+                self.assertIsNone(answer['routes'][1]['half'])
+
     def test_couple_grouping_needs_shared_child(self):
         # g1 and g2 are each a grandparent of both cousins, at the same
         # distance, but through different children: two separate lines, not

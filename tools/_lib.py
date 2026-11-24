@@ -19866,8 +19866,12 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
             'half': half,
             'half_relationship': kinship_word(ga, gb, sex, half=True) if half is None else None,
         })
+    # At one degree a sure full line leads, then one that may be half, then
+    # a half one: the headline (and its note) never says "may be half" when
+    # another line makes the tie certain, whatever the IDs happen to be.
+    certainty = {False: 0, None: 1, True: 2}
     routes.sort(key=lambda r: (max(r['gens_a'], r['gens_b']), r['gens_a'] + r['gens_b'],
-                               r['common_ancestors']))
+                               certainty[r['half']], r['common_ancestors']))
     return routes
 
 

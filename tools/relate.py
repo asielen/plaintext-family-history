@@ -200,8 +200,8 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
 # spaces), so Blood, By marriage and Path read down one edge.
 _LABEL = 14
 
-# Three routes in all (the Blood line and two "and also" lines) before the
-# rest are only counted: enough to show a cousin marriage, few enough to read.
+# The Blood line and at most two "and also" lines before the rest are only
+# counted: enough to show a cousin marriage, few enough to read.
 _MAX_EXTRA_ROUTES = 2
 
 
