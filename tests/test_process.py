@@ -3500,6 +3500,162 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(by_original['record.jpg']['role'], 'record')
         self.assertTrue(files_carry_searchable_text([(f['role'], f['file']) for f in files]))
 
+    # ── a bundle whose notes say which source its files join (attach_to) ──
+
+    def _film_bundle(self, number: int, extra_meta: str = '') -> Path:
+        """One FamilySearch film image capture of a deed, as ingest files it."""
+        bundle = self.archive / 'inbox' / f'deeds-image-{number}'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\n'
+            f'title: Deeds, 1785-1851, image {number}\n'
+            f'{extra_meta}'
+            'source_type: land-record\n'
+            f'citation: \'"Deeds, 1785-1851," images, FamilySearch; image {number} of 689.\'\n'
+            'files:\n'
+            '  - file: record.jpg\n'
+            '    role: record\n'
+            '    is_primary: true\n'
+            '  - file: record-data.json\n'
+            '    role: site-data\n'
+            '---\n'
+            f'Image {number} of the deed of Samuel Hartley to Thomas Hartley.\n',
+            encoding='utf-8')
+        (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff image %d' % number)
+        (bundle / 'record-data.json').write_text('{"image": {"imageNumber": %d}}\n' % number, encoding='utf-8')
+        return bundle
+
+    def _filed_film_source(self) -> tuple[Path, str]:
+        """Image 11 of the deed, already filed: the source the next image joins."""
+        self.assertEqual(self._run([str(self._film_bundle(11))]), EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'land-record').glob('*_s-*.md'))
+        return record, read_record(record)['meta']['id']
+
+    def test_attach_to_adds_the_bundle_to_the_source_he_said_it_belongs_to(self) -> None:
+        # He said yes to "you already have image 11 of this film; add this
+        # image to it?": image 12 of the same deed joins that source, so the
+        # deed is one source, not two.
+        record, sid = self._filed_film_source()
+        before = record.read_text(encoding='utf-8')
+        bundle = self._film_bundle(12, f'attach_to: {sid}   # add these files to that source\n')
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self._run([str(bundle)]), EXIT_CLEAN)
+        self.assertFalse(bundle.exists(), 'the bundle is dissolved')
+        self.assertEqual(list((self.archive / 'sources').rglob('*_s-*.md')), [record], 'no new source')
+        self.assertIn(sid, out.getvalue())
+        after = record.read_text(encoding='utf-8')
+        self.assertTrue(after.startswith(before.split('\n---\n', 1)[0].rsplit('\nfiles:', 1)[0]),
+                        'what the record said is kept')
+        files = read_record(record)['meta']['files']
+        self.assertEqual(len(files), 4)
+        mains = [f for f in files if f.get('is_primary') in (True, 'true')]
+        self.assertEqual(len(mains), 1, 'image 11 stays the main image')
+        self.assertIn('image-11', mains[0]['file'])
+        added = {f['original_filename']: f for f in files if 'image-12' in f['file']}
+        self.assertEqual(sorted(added), ['record-data.json', 'record.jpg'])
+        self.assertEqual(added['record.jpg']['role'], 'record')
+        self.assertEqual(added['record-data.json']['role'], 'site-data')
+        for f in added.values():
+            self.assertTrue(f['file'].endswith(f'_{sid}' + Path(f['file']).suffix), f)
+            self.assertTrue(f['file'].startswith('documents/land-record/'), f)
+            self.assertTrue((self.archive / f['file']).is_file(), f)
+        notes = after.split('## Notes', 1)[1]
+        self.assertIn('Image 11 of the deed', notes)
+        self.assertIn('Image 12 of the deed', notes)
+        self.assertIn('Deeds, 1785-1851, image 12', notes)
+
+    def test_attach_to_dry_run_says_where_the_files_go_and_writes_nothing(self) -> None:
+        record, sid = self._filed_film_source()
+        bundle = self._film_bundle(12, f'attach_to: {sid}\n')
+        before = self._snapshot_tree(self.archive)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(self._run([str(bundle), '--dry-run']), EXIT_CLEAN)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertIn(f'Would add 2 files from bundle {bundle.name} to {sid}', out.getvalue())
+        self.assertNotIn('Would mint', out.getvalue())
+
+    def test_attach_to_a_source_that_is_not_there_changes_nothing_and_says_what_to_do(self) -> None:
+        bundle = self._film_bundle(12, 'attach_to: s-0a1b2c3d4e\n')
+        before = self._snapshot_tree(self.archive)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self._run([str(bundle)]), EXIT_ERRORS)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        text = err.getvalue()
+        self.assertIn('s-0a1b2c3d4e', text)
+        self.assertIn('fha find s-0a1b2c3d4e', text)
+        self.assertIn('attach_to', text)
+
+    def test_attach_to_that_is_not_a_source_id_is_refused_before_anything_moves(self) -> None:
+        bundle = self._film_bundle(12, 'attach_to: the deed before\n')
+        before = self._snapshot_tree(self.archive)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self._run([str(bundle)]), EXIT_ERRORS)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertIn('s-0a1b2c3d4e', err.getvalue())  # what a source id looks like
+
+    def test_attach_to_with_type_or_date_is_refused(self) -> None:
+        # --type and --date describe a NEW source; the one these files join
+        # already has its own, so a flag that would be ignored is refused.
+        record, sid = self._filed_film_source()
+        bundle = self._film_bundle(12, f'attach_to: {sid}\n')
+        before = self._snapshot_tree(self.archive)
+        for flags in (['--type', 'probate'], ['--date', '1790']):
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(self._run([str(bundle), *flags]), EXIT_ERRORS, flags)
+            self.assertIn('attach_to', err.getvalue())
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+
+    def test_attach_to_a_name_already_taken_files_under_a_free_name(self) -> None:
+        # He captured image 12 twice and said yes both times: the second copy
+        # is filed beside the first under its own name, never over it.
+        record, sid = self._filed_film_source()
+        self.assertEqual(self._run([str(self._film_bundle(12, f'attach_to: {sid}\n'))]), EXIT_CLEAN)
+        again = self._film_bundle(12, f'attach_to: {sid}\n')
+        self.assertEqual(self._run([str(again)]), EXIT_CLEAN)
+        files = [f['file'] for f in read_record(record)['meta']['files']]
+        self.assertEqual(len(files), 6)
+        self.assertEqual(len(set(f.lower() for f in files)), 6)
+        for f in files:
+            self.assertTrue((self.archive / f).is_file(), f)
+
+    def test_attach_to_in_a_lone_notes_file_is_refused_not_ignored(self) -> None:
+        # Only a bundle folder's notes.md is read for attach_to; a lone notes
+        # file saying it would otherwise quietly make a new source.
+        scan = self.archive / 'inbox' / 'deed-page.jpg'
+        scan.parent.mkdir(parents=True, exist_ok=True)
+        scan.write_bytes(b'\xff\xd8\xff image')
+        scan.with_name('deed-page.notes.md').write_text(
+            '---\nattach_to: s-0a1b2c3d4e\nsource_type: land-record\n---\nPage two.\n', encoding='utf-8')
+        before = self._snapshot_tree(self.archive)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self._run([str(scan)]), EXIT_ERRORS)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertIn('--more', err.getvalue())
+        self.assertIn('attach_to', err.getvalue())
+
+    def test_attach_to_rolls_back_whole_when_the_record_cannot_be_written(self) -> None:
+        record, sid = self._filed_film_source()
+        before_record = record.read_bytes()
+        bundle = self._film_bundle(12, f'attach_to: {sid}\n')
+        bundle_before = sorted(p.name for p in bundle.iterdir())
+
+        def refuse(path, text):
+            raise OSError('simulated: the disk is full')
+
+        with unittest.mock.patch.object(process, 'write_text_exact_atomic', refuse), \
+                contextlib.redirect_stderr(io.StringIO()):
+            self.assertEqual(self._run([str(bundle)]), EXIT_FAILURE)
+        self.assertEqual(record.read_bytes(), before_record)
+        self.assertEqual(sorted(p.name for p in bundle.iterdir()), bundle_before)
+        self.assertEqual([p.name for p in (self.archive / 'documents' / 'land-record').iterdir()
+                          if 'image-12' in p.name], [])
+
     def test_bundle_keeps_the_portrait_as_main_image_not_its_envelope(self) -> None:
         # #209 review: once the parser stopped splitting words off names,
         # both files read as plain scans and '-' sorts before '.', so the

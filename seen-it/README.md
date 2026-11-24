@@ -115,6 +115,8 @@ A page image or scan is marked saved only when the image itself is: the capture 
 
 Then the scan stays "not saved", so the capture add-on still downloads it next time.
 
+A FamilySearch film image the capture add-on saved without a record behind it (a deed found by paging a film) is also known by where it sits: its film and its image number. The capture add-on asks about the images either side of the one being captured, so it can offer to add a deed's next page to the source that already holds the first.
+
 A Find a Grave memorial counts as "linked" rather than "captured" when its photos did not all save, or when it is known only by its address (a capture whose memorial data is missing, an inbox note, a source that mentions it). Each memorial photo whose file is saved is remembered on its own, so the capture add-on does not download that photo again. A download that stopped part-way counts for nothing until it finishes.
 
 A folder can be a full path (an external drive) or a path relative to the archive. If a drive is not connected, the window says which folder it could not reach rather than showing zero, and what that folder held the last time it was read stays marked until it can be read again.

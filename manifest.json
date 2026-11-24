@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "0e5bc2e63ce96ff902c79b0ed10a176d7f452e2afe70305ff218a4eaa896947d",
+      "sha256": "82ce96d8e81cfc3b3ed0b6b452d33d578e90c0f64261c08404d88a1f96d28094",
       "spec_version": "2.33",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -267,7 +267,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "0e5bc2e63ce96ff902c79b0ed10a176d7f452e2afe70305ff218a4eaa896947d",
+      "sha256": "82ce96d8e81cfc3b3ed0b6b452d33d578e90c0f64261c08404d88a1f96d28094",
       "spec_version": "2.33"
     },
     {
@@ -392,7 +392,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "ba872fba3669ee4f16841b208a92c53b0f6e8924e9325ad73b6c8d9d7dac7b7e",
+      "sha256": "95f67b2e08c2c85121ca600fa16587699c4efbe1eaa7cbae55883dca39505fbd",
       "spec_version": "2.33",
       "src": "browser-companion/manifest.json"
     },
@@ -462,14 +462,14 @@
     {
       "path": ".fha/browser-companion/src/lib/capture-json-pure.js",
       "category": "operating",
-      "sha256": "0d32c35eaffe553a425a2e54b61409b6b03adf618160d4e185bfed202e1a095f",
+      "sha256": "f42876e5ee450f434984d90f38647fa1532f7208011cf4ea807a05e2eeb8a24b",
       "spec_version": "2.33",
       "src": "browser-companion/src/lib/capture-json-pure.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/capture-json.js",
       "category": "operating",
-      "sha256": "976ece592f730e3ae80739ab6d5d6671af441fc30e8eb36aace6e512ff501b3a",
+      "sha256": "eaa55eeed160a64163d903498ed464a12e1be33f6e5ad00bfa01035f727d1027",
       "spec_version": "2.33",
       "src": "browser-companion/src/lib/capture-json.js"
     },
@@ -560,21 +560,21 @@
     {
       "path": ".fha/browser-companion/src/panel.css",
       "category": "operating",
-      "sha256": "9ad64a6407cbc9bc5640a66810a89dcdc5c2d5ab7d685fa49e4d6295ad6081bc",
+      "sha256": "aa47ae03a2c9f6f9616fd3ec8c01775a8e829d22261b2823cd4e7467c3abd598",
       "spec_version": "2.33",
       "src": "browser-companion/src/panel.css"
     },
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "50df6d074fe2c3f44cbf7c943f6e72e672f4009658d0fbeb4c32663d8a671bb0",
+      "sha256": "999edb7746e9df7ca3742dde7bb239a2fb3072455a5c1a44064f18ef7ec15e38",
       "spec_version": "2.33",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "e55078847455c4cb1eb112b3b0ca2e90340a2fe5d87a276df4d65dabead7cc1e",
+      "sha256": "fe3dc2320d13c51ef53a918f6e93c8aa39ee405e71a1d671b4999ad5e868eefe",
       "spec_version": "2.33",
       "src": "browser-companion/src/panel.js"
     },
@@ -714,7 +714,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "5312b78d6864e54b635e872fd9346c4b7517f92a5a2e315505cad7f6110f1a01",
+      "sha256": "b8ae65bbbe37bdb48d6d7d0416ecf16d003f8eae39743543afb4c78295e71df3",
       "spec_version": "2.33",
       "src": "tools/capture.py"
     },
@@ -924,7 +924,7 @@
     {
       "path": ".fha/tools/process.py",
       "category": "operating",
-      "sha256": "f6dfdf5016a8bacc23e6e9402a588fe9841be752473d8aa10079626de9f6b647",
+      "sha256": "8bc50f4809439c0385010033b71033390826cb9ad76a39139eaa5636d4806781",
       "spec_version": "2.33",
       "src": "tools/process.py"
     },
