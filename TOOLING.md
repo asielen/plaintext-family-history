@@ -1146,6 +1146,24 @@ Engine: `_lib.family_calendar_events`, the shared engine the site's month panel 
 
 **The guides.** `tools/research_guides/{stem}.md` are the autoresearch guides as prose (when civil registration began, which census years survive, which office holds what), each starting with a comment naming the project, file, commit and the date that project last checked it, with the "AI accessibility" lines removed. The licence text sits beside them in `LICENSE-autoresearch-genealogy.txt`. Like `record_collections.json`, both ship with the tools (§13c) and are never edited by hand.
 
+**The command.**
+
+```
+fha repositories [--place l-id|TOWN | --country NAME|CC] [--year YYYY]
+                 [--record birth|baptism|marriage|death|burial|grave|census|military|immigration|probate|land|newspaper|church]
+                 [--topic jewish|african-american] [--access free|paid|any] [--limit N] [--json] [--root PATH]
+```
+
+Read-only. It answers "what holds death records for Fairview in 1911?" from the list above. The index is needed only for `--place`; `--country` works anywhere. `--place` takes an `l-` id or a name or alternate name (several matches are refused, each with its own `--place l-…` command to run).
+
+**Then and now.** SPEC A.9 keeps a place's history as dated hierarchies, so a Kansas Territory birth and a State of Kansas death are looked up under different governments. `_lib.place_hierarchy_at(conn, place_id, date_min, date_max)` returns the hierarchy written for a period only when that period wholly covers the date range (a `1855/1865` claim is not inside `1858/1861`); the narrowest covering period wins, a place with no history of its own follows `within:`, and `place_hierarchy_in_year` is the one-year form. With `--year` the command reads the country from the hierarchy in force that year (`then`) and from the place's present `hierarchy:` (`now`), and searches the list for both. When they differ, each line says whether it holds "records made by the government of the day", "where the records are likely kept today", or both; when they agree the command says nothing extra. The country is the last part of the hierarchy that the command knows by name (a U.S. state or Canadian province counts as its country; "Kansas Territory" counts through "Kansas"; the Russian Empire is `RU`, Prussia `DE`, Austria-Hungary `AT` and `HU`). A name it does not know, or one that means two places such as a bare "Georgia", is said plainly with the fix: run it again with `--country`.
+
+**Ranking.** Rows that name the country come before worldwide ones; then rows whose `years` hold the year, before rows with no years listed (rows whose years do not hold it are dropped); then `free`, `free_account`, `mixed`, `request`, `paid`; then by name. `--record` keeps rows that hold the matching kind (`death` also reads church, grave and newspaper rows); `--access free` keeps `free` and `free_account`, `--access paid` keeps `paid` and `mixed`; topic lists (Jewish, African American) are listed only with `--topic`. `--limit` defaults to 10.
+
+**Output.** Every line says what it costs and how to reach it, quotes the project that listed it and the date it checked, and ends "(check this)", then one closing line that hours, fees and addresses change. Country guides for the rows shown are named by archive-relative path (`tools/research_guides/…`, `.fha/tools/research_guides/…` in an installed archive), never absolute. `--json` carries `place`, `year`, `then`, `now` (each with `hierarchy`, `period`, `countries`), `repositories` (the list row plus `serves`, `access_words`, `channel_words`) and `guides`.
+
+**Exit codes.** 0 rows listed; 1 nothing matched (the message names a broader command: drop `--record`, drop `--year`, or use `--country`); 2 bad arguments (two places match, an unknown country or record kind, nothing to look up); 3 tool failure (the list is missing, or `--place` has no index to read: run `fha index` or `fha update-tools`).
+
 ---
 
 ## 8. `fha packet`: person data dump
@@ -1920,6 +1938,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha relate <p-a> <p-b>` (T C) | "How are these two related?" The blood relationship (cousin/removal, half), the tie by marriage when there is no blood tie (brother-in-law, stepmother, uncle by marriage) and the shortest social path between any two people, derived from accepted relationship claims. |
 | `fha metrics [<p-id>]` (T C) | "Who still lacks a birth record, a census, a marriage record?" Five completeness checks per person, the direct line by generation, and archive totals (§7a). `--include-suggested` counts suggested claims too. |
 | `fha calendar [WHEN]` (T C) | "What happened in the family this month?" Births, marriages, deaths and arrivals on a day, in a month, or in the week ahead (§7b). |
+| `fha repositories [--place l-id] [--year Y] [--record TYPE]` (T C) | "What holds death records for Fairview in 1911?" Archives and record sites for the place, year and kind of record, under the government that held the place then and the country it is in now; cost and how to reach it on every line (§7c). |
 
 ### Occasional (setup, migration, publication moments)
 
