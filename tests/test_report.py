@@ -2298,6 +2298,58 @@ class LooseEndsSectionTests(unittest.TestCase):
             encoding='utf-8')
         self.assertNotIn('Ghost Person', self._body(cfg))
 
+    def test_a_shared_ancestor_is_not_reported_as_having_no_parents(self) -> None:
+        # Cousins married: both of the root's parents descend from one man, so
+        # the numbering holds him once. His grandchildren still have a recorded
+        # father; neither may be told "No parents recorded".
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        m = self._person('Mary Hartley', 'F')
+        g = self._person('Grand Hartley', 'M')
+        self._parent(r, f)
+        self._parent(r, m)
+        h = self._person('Granny Hartley', 'F')
+        for child in (f, m):
+            self._parent(child, g)
+            self._parent(child, h)
+        body = self._body(self._build(r))
+        self.assertIn('**End of the line (2)', body)
+        self.assertNotIn('John Hartley [', body.split('**End of the line')[1])
+        self.assertNotIn('Mary Hartley [', body.split('**End of the line')[1])
+        self.assertIn('Grand Hartley', body)
+
+    def test_unknown_sex_parent_is_not_called_a_father(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'U')
+        g = self._person('Old Hartley', 'U')
+        self._parent(r, f)
+        self._parent(f, g)
+        body = self._body(self._build(r))
+        self.assertIn('probably Thomas Edward Hartley\'s father\'s father', body)
+        self.assertIn('is a guess', body)
+
+    def test_disagreeing_birth_years_show_the_span_not_a_midpoint(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        self._claim('birth', 'born 1871', [f], date='1871', roles=f'    child: {f}\n')
+        self._claim('birth', 'born 1881', [f], date='1881', roles=f'    child: {f}\n')
+        body = self._body(self._build(r))
+        self.assertIn('(born between 1871 and 1881)', body)
+        self.assertNotIn('1876', body)
+
+    def test_a_witness_on_a_waiting_claim_is_not_counted(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        a = self._person('Ann Waiting', 'F')
+        b = self._person('Bob Waiting', 'M')
+        w = self._person('Walt Witness', 'M')
+        self._claim('marriage', 'Ann married Bob', [a, b, w], status='suggested',
+                    roles=f'    spouse: [{a}, {b}]\n    witness: {w}\n')
+        body = self._body(self._build(r))
+        self.assertIn('2 of these 3 are named on family ties', body)
+
     def test_no_bucket_prints_more_than_five_lines(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')
         f = self._person('John Hartley', 'M')

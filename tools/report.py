@@ -138,6 +138,10 @@ from _lib import (
     is_valid_edtf,
     PARKED_CLAIM_SQL as _PARKED_SQL,
     claim_role_pairs,
+    parentage_parties,
+    relationship_claim_parties,
+    spouse_parties,
+    SOCIAL_PARENT_SUBTYPES,
     format_date_spread,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -1542,8 +1546,11 @@ def _tree_components(conn, people: set[str]) -> list[set[str]]:
 
 
 def _loose_birth_phrase(ctx: dict, pid: str) -> str:
-    """` (born 1815)` or ` (born about 1810)` from accepted birth claims, or ''
-    when no accepted claim dates it."""
+    """` (born 1815)` or, when accepted birth claims give a span or disagree,
+    ` (born between 1871 and 1881)`; '' when no accepted claim dates it.
+
+    Never a midpoint: two records that disagree must not become a third year
+    nobody recorded."""
     years_lo, years_hi = [], []
     for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',)):
         if c['y_lo'] is not None:
@@ -1553,24 +1560,72 @@ def _loose_birth_phrase(ctx: dict, pid: str) -> str:
     if not years_lo or not years_hi:
         return ''
     lo, hi = min(years_lo), max(years_hi)
-    return f' (born {lo})' if lo == hi else f' (born about {(lo + hi) // 2})'
+    return f' (born {lo})' if lo == hi else f' (born between {lo} and {hi})'
+
+
+def _genetic_parent_sexes(conn, pid: str) -> list[str]:
+    """Sex ('M', 'F' or 'U') of each recorded genetic parent of `pid`, from the
+    accepted parent edges - the same edges `build_ahnentafel_map` climbs, but
+    counting people, not numbering slots, so a shared ancestor (cousins who
+    married) still counts as a parent of both."""
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    rows = conn.execute(
+        f"""SELECT DISTINCT r.other_id, p.sex FROM relationships r
+            JOIN persons p ON r.other_id = p.id
+            LEFT JOIN claims c ON r.claim_id = c.id
+            WHERE r.person_id = ? AND r.rel = 'parent'
+              AND COALESCE(LOWER(c.subtype), '') NOT IN ({','.join('?' * len(social))})""",
+        (pid, *social)).fetchall()
+    return [str(r[1] or 'U').upper() for r in rows]
+
+
+def _path_is_guessed(pos: int, root_position: int, pos_to_pid: dict[int, str],
+                     persons: dict) -> bool:
+    """True when someone on the line from the root down to `pos` has no
+    recorded sex (or a sex that disagrees with the slot): the numbering gave
+    them a father/mother slot by default, so the words are a guess."""
+    while pos > root_position:
+        person = persons.get(pos_to_pid.get(pos, ''))
+        sex = str((person or {}).get('sex') or '').upper()
+        if sex != ('F' if pos % 2 else 'M'):
+            return True
+        pos //= 2
+    return False
 
 
 def _unconnected_waiting(conn, unconnected: set[str]) -> int:
-    """How many unconnected people are named on a still-`suggested` family-tie
-    claim (relationship, birth or marriage) that names two or more people:
-    reviewing it would probably connect them."""
+    """How many unconnected people are a real party to a still-`suggested`
+    family-tie claim (relationship, birth or marriage): accepting it would tie
+    them to someone. A witness or informant named on the claim is not a party,
+    and a negated claim creates no tie, so neither counts (the same party rules
+    the index uses when it derives the tree)."""
     waiting: set[str] = set()
-    for row in conn.execute(
-            "SELECT cp.person_id FROM claim_persons cp "
-            "JOIN claims c ON c.id = cp.claim_id "
-            "WHERE c.status = 'suggested' "
-            "AND c.type IN ('relationship', 'birth', 'marriage') "
-            "AND cp.claim_id IN (SELECT claim_id FROM claim_persons "
-            "                    GROUP BY claim_id HAVING COUNT(DISTINCT person_id) >= 2)"):
-        pid = normalize_id(str(row[0]))
-        if pid in unconnected:
-            waiting.add(pid)
+    claims = conn.execute(
+        "SELECT id, type, subtype FROM claims WHERE status = 'suggested' "
+        "AND COALESCE(negated, 0) = 0 "
+        "AND type IN ('relationship', 'birth', 'marriage')").fetchall()
+    for cid, ctype, subtype in claims:
+        pairs = claim_role_pairs(conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
+            'ORDER BY position', (cid,)))
+        party_groups: list[list[str]] = []
+        if ctype == 'relationship':
+            for kind, parties in relationship_claim_parties(pairs, subtype):
+                if kind == 'parentage':
+                    party_groups.append(list(parties[0]) + list(parties[1]))
+                elif kind in ('spouse', 'social'):
+                    party_groups.append(list(parties))
+                else:
+                    party_groups.append([x for t in parties for x in (t[0], t[2])])
+        elif ctype == 'birth':
+            children, parents = parentage_parties(pairs)
+            party_groups.append(list(children) + list(parents))
+        else:
+            party_groups.append(list(spouse_parties(pairs)))
+        for group in party_groups:
+            names = {normalize_id(str(p)) for p in group}
+            if len(names) >= 2:
+                waiting.update(p for p in names if p in unconnected)
     return len(waiting)
 
 
@@ -1608,27 +1663,33 @@ def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
         lines.append(f'No parents are recorded for {root_name} yet, so the tree has '
                      'no lines to follow.')
     else:
-        used = set(pid_to_pos.values())
+        parent_sexes = {pid: _genetic_parent_sexes(conn, pid)
+                        for pid in pid_to_pos if pid in persons}
         ends = sorted(
             (pos, pid) for pid, pos in pid_to_pos.items()
             if pos > root_position and pid in persons
-            and (2 * pos not in used or 2 * pos + 1 not in used))
+            and len(parent_sexes[pid]) < 2)
+        pos_to_pid = {pos: pid for pid, pos in pid_to_pos.items()}
         if ends:
             lines.append(
                 f'**End of the line ({len(ends)}):** the earliest ancestor on record on '
                 'each line. These are where research can go back further.')
             for pos, pid in ends[:_LOOSE_SHOWN]:
-                has_father, has_mother = 2 * pos in used, 2 * pos + 1 in used
-                if not has_father and not has_mother:
+                known = parent_sexes[pid]
+                if not known:
                     gap = 'No parents recorded.'
                 else:
                     pron = {'F': 'Her', 'M': 'His'}.get(
                         str(persons[pid].get('sex') or '').upper(), 'Their')
-                    gap = f'{pron} {"father" if not has_father else "mother"} ' \
-                          'is not recorded yet.'
+                    word = {'M': 'mother', 'F': 'father'}.get(known[0], 'other parent')
+                    gap = f'{pron} {word} is not recorded yet.'
+                path = f"{root_name}'s {ahnentafel_path_words(pos, root_position)}"
+                if _path_is_guessed(pos, root_position, pos_to_pid, persons):
+                    path = (f'probably {path} (someone on this line has no sex '
+                            'recorded, so father or mother is a guess)')
                 lines.append(
                     f'- {label(pid)}{_loose_birth_phrase(ctx, pid)}: number {pos}, '
-                    f"{root_name}'s {ahnentafel_path_words(pos, root_position)}. {gap}")
+                    f'{path}. {gap}')
             if len(ends) > _LOOSE_SHOWN:
                 lines.append(f'- … and {len(ends) - _LOOSE_SHOWN} more')
 
