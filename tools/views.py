@@ -174,6 +174,7 @@ from _lib import (
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
     is_placeholder_name,
+    _chart_year,
     line_confidence,      # each person's weakest tie on their best route to the seed,  # 'unknown'/'None'/'' - never written into a folder name,
     folder_name_text,     # a name made safe for a folder name on every OS,
     load_fha_yaml,
@@ -3875,31 +3876,163 @@ def _tree_to_json(
     return json.dumps(out, indent=2, ensure_ascii=False)
 
 
+def _fill_family_ties(conn: sqlite3.Connection, nodes: dict, edges: dict) -> None:
+    """A drawn family shows both parents. A descendants walk follows a child
+    from the parent it came down through, so the other parent (a spouse
+    leaf) has no tie to the child yet: add every parent or child tie that
+    joins two people already in the drawing, so a couple's children hang from
+    the couple, not from one of them."""
+    for pid in list(nodes):
+        for edge in _collect_edges(conn, pid, ['parent', 'child']):
+            if edge['to'] in nodes:
+                _merge_edge(edges, edge)
+
+
+def _dot_quote(text) -> str:
+    """One DOT string, quoted: a name with a quote mark, a backslash or a line
+    break in it must not break the picture's file."""
+    flat = ' '.join(str(text).split())
+    return '"' + flat.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def _dot_years(vitals: dict) -> str:
+    """The years under a name in the drawing: '1840-1941', 'b. 1840',
+    'd. 1941' or '' (charts print years only, SPEC §12)."""
+    born = _chart_year(vitals.get('birth')).replace('–', '-')
+    died = _chart_year(vitals.get('death')).replace('–', '-')
+    if born and died:
+        return f'{born}-{died}'
+    if born:
+        return f'b. {born}'
+    return f'd. {died}' if died else ''
+
+
+def _dot_birth_key(node: dict) -> tuple:
+    """Brothers and sisters left to right: dated ones by birth year, undated
+    ones after them, the id last so the order is always the same."""
+    m = re.search(r'\d{4}', str((node.get('vitals') or {}).get('birth') or ''))
+    return (0, int(m.group(0)), node['p_id']) if m else (1, 0, node['p_id'])
+
+
 def _tree_to_dot(nodes: dict, edges: dict) -> str:
-    """Serialize the traversal result to GraphViz DOT format.
+    """Serialize the traversal result to GraphViz DOT, drawn as a family chart.
 
-    Node label: "{name}\\n({birth}–{death})" where absent dates render as
-    empty string (not 'None').  Edge labels are the relationship type string.
-    The \\n in label strings is the DOT escape for a line break in the
-    rendered graph, not a Python newline - hence the double backslash.
+    A genealogist who feeds this to Graphviz sees each family the way a family
+    chart draws it: the two parents meet at a small point, one line drops to
+    a bar, and the children hang from the bar. A tie that is not by birth
+    (adopted, step, foster) hangs from a dashed line, a friend or neighbour
+    is a dotted line, and a tie resting on a family story is drawn thin. The
+    file names everyone, living people included (views are private research
+    companions, SPEC §21 scope), so it says so in its first lines.
+
+    One union point per family key (the sorted parents' ids), a bar only
+    when the family has children. Output is sorted throughout, ids last in
+    every sort key, so the same archive always gives the same file.
+    The union-and-bar shape and the edge weights follow kingraph's family
+    graphs (https://github.com/rstacruz/kingraph, MIT); written fresh.
     """
-    lines = ['digraph {', '  rankdir=TB;']
-
-    for node in nodes.values():
-        pid = node['p_id']
-        name = (node['name'] or pid).replace('"', '\\"')
-        birth = node['vitals'].get('birth') or ''
-        death = node['vitals'].get('death') or ''
-        label = f'{name}\\n({birth}–{death})'
-        lines.append(f'  "{pid}" [label="{label}"];')
-
+    by_id = {node['p_id']: node for node in nodes.values()}
+    ties: dict[tuple[str, str], dict] = {}       # (parent, child) -> {genetic, low}
+    spouses: dict[tuple[str, str], bool] = {}    # sorted pair -> tie is low confidence
+    social: set[tuple[str, str, str]] = set()
     for edge in edges.values():
-        from_pid = nodes[edge['from']]['p_id']
-        to_pid = nodes[edge['to']]['p_id']
-        lines.append(f'  "{from_pid}" -> "{to_pid}" [label="{edge["type"]}"];')
+        a, b = nodes[edge['from']]['p_id'], nodes[edge['to']]['p_id']
+        kind = edge['type']
+        low = edge.get('confidence') == 'low'
+        if kind in ('parent', 'child'):
+            parent, child = (b, a) if kind == 'parent' else (a, b)
+            if parent == child:
+                continue
+            tie = ties.setdefault((parent, child), {'genetic': False, 'low': True})
+            # Two records of one tie: it is as sure, and as blood, as the better one.
+            tie['genetic'] = tie['genetic'] or edge.get('genetic', True)
+            tie['low'] = tie['low'] and low
+        elif kind == 'spouse':
+            if a != b:
+                pair = tuple(sorted((a, b)))
+                spouses[pair] = spouses.get(pair, True) and low
+        else:
+            social.add((kind,) + tuple(sorted((a, b))))
 
-    lines.append('}')
-    return '\n'.join(lines) + '\n'
+    # Each child hangs from its birth parents' family and, apart from it, from
+    # its adoptive, step or foster parents' family.
+    families: dict[tuple[str, ...], dict] = {}
+
+    def family(key: tuple[str, ...]) -> dict:
+        return families.setdefault(key, {'children': {}, 'low': False})
+
+    parents_of: dict[tuple[str, bool], list[str]] = {}
+    for (parent, child), tie in ties.items():
+        parents_of.setdefault((child, tie['genetic']), []).append(parent)
+    for (child, genetic), parents in sorted(parents_of.items()):
+        key = tuple(sorted(parents))
+        low = any(ties[(p, child)]['low'] for p in key)
+        family(key)['children'][child] = {'genetic': genetic, 'low': low}
+    for pair, low in sorted(spouses.items()):
+        family(pair)['low'] = low
+
+    def union_id(key) -> str:
+        return 'u_fam:' + '+'.join(key)
+
+    def bar_id(key) -> str:
+        return 'k_fam:' + '+'.join(key)
+
+    out = [
+        'digraph family {',
+        '  // Private research companion: names everyone, living people included.',
+        '  // Not for sharing. `fha site`, `fha packet` and `fha gedcom` leave the',
+        '  // living out.',
+        '  rankdir=TB; splines=ortho; nodesep=0.4; ranksep=0.5;',
+        '  node [shape=box, style=filled, fillcolor=white, color="#cccccc", fontname="Helvetica"];',
+        '  edge [dir=none, color="#888888"];',
+        '',
+    ]
+    for node in sorted(by_id.values(), key=lambda n: ((n['name'] or '').lower(), n['p_id'])):
+        label = _dot_quote(node['name'] or node['p_id'])[:-1]
+        years = _dot_years(node['vitals'])
+        label += (r'\n' + years if years else '') + '"'
+        out.append(f'  {_dot_quote(node["p_id"])} [label={label}];')
+
+    for key in sorted(families):
+        fam = families[key]
+        if any(p not in by_id for p in key):
+            continue
+        union = _dot_quote(union_id(key))
+        out.append('')
+        out.append(f'  {union} [shape=point, width=0.08, label=""];')
+        low_pair = fam['low'] and len(key) > 1
+        for parent in key:
+            attrs = 'weight=2' + (', penwidth=0.5, tooltip="low confidence"' if low_pair else '')
+            out.append(f'  {_dot_quote(parent)} -> {union} [{attrs}];')
+        out.append('  {rank=same; ' + '; '.join(
+            _dot_quote(x) for x in (key[:1] + (union_id(key),) + key[1:])) + ';}')
+        kids = [c for c in fam['children'] if c in by_id]
+        if not kids:
+            continue
+        bar = _dot_quote(bar_id(key))
+        out.append(f'  {bar} [shape=box, label="", height=0.01, width=0.2, penwidth=0, '
+                   'style=filled, fillcolor="#888888"];')
+        out.append(f'  {union} -> {bar} [weight=3];')
+        kids.sort(key=lambda c: _dot_birth_key(by_id[c]))
+        for child in kids:
+            info = fam['children'][child]
+            attrs = ['weight=2'] if info['genetic'] else ['style=dashed']
+            if info['low']:
+                attrs += ['penwidth=0.5', 'tooltip="low confidence"']
+            out.append(f'  {bar} -> {_dot_quote(child)} [{", ".join(attrs)}];')
+        genetic_kids = [c for c in kids if fam['children'][c]['genetic']]
+        if len(genetic_kids) > 1:
+            out.append('  {rank=same; ' + '; '.join(_dot_quote(c) for c in genetic_kids) + ';}')
+            for left, right in zip(genetic_kids, genetic_kids[1:]):
+                out.append(f'  {_dot_quote(left)} -> {_dot_quote(right)} [style=invis];')
+
+    for kind, a, b in sorted(social):
+        out.append('')
+        out.append(f'  {_dot_quote(a)} -> {_dot_quote(b)} '
+                   f'[style=dotted, constraint=false, xlabel={_dot_quote(kind)}];')
+
+    out.append('}')
+    return '\n'.join(out) + '\n'
 
 
 def run_tree(
@@ -3965,6 +4098,8 @@ def run_tree(
             print(f'ERROR: person {seed_pid!r} not found in index.', file=sys.stderr)
             return _views_result(EXIT_WARNINGS)
         nodes, edges = _traverse_tree(conn, seed_pid, mode, max_hops)
+        if fmt == 'dot':
+            _fill_family_ties(conn, nodes, edges)
     finally:
         conn.close()
 
@@ -7258,7 +7393,11 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         # (the HTML tree arrives with the site's full-tree feature) instead of
         # a bare argparse choices error.
         '--format', choices=['json', 'dot', 'html'], default='json', dest='format',
-        help='Output format (default: json). html is not available here; run '
+        help='Output format (default: json). dot is a family chart for Graphviz: '
+             'each family a union point and a sibling bar, adopted or step ties '
+             'dashed, friends dotted. Both formats name everyone, living people '
+             'included (private research use); to share a tree use `fha site`, '
+             '`fha packet` or `fha gedcom`. html is not available here; run '
              '`fha site` for a browsable tree.',
     )
     tr.add_argument('--out', metavar='FILE', help='Write output to FILE instead of stdout.')
