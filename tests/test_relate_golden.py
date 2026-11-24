@@ -53,21 +53,24 @@ def _relate_every_pair() -> dict[str, dict[str, str]]:
         finally:
             conn.close()
         out: dict[str, dict[str, str]] = {}
-        for a in pids:
-            for b in pids:
-                result = relate.run_relate(root, cfg, a, b)
-                text, js = io.StringIO(), io.StringIO()
-                with contextlib.redirect_stdout(text):
-                    relate._cmd_relate(result, use_json=False)
-                with contextlib.redirect_stdout(js):
-                    relate._cmd_relate(result, use_json=True)
-                # The temp path never appears today; replace it anyway so a
-                # future message naming the root cannot make the test flaky.
-                js_bytes = js.getvalue().replace(str(root), '<ROOT>').encode('utf-8')
-                out[f'{a} {b}'] = {
-                    'text': text.getvalue().replace(str(root), '<ROOT>'),
-                    'json_sha256': hashlib.sha256(js_bytes).hexdigest(),
-                }
+        # Each pair, then each person's `--all` list (key "<a> --all"), so the
+        # reunion list cannot drift from the pair answer's words either.
+        asks = [(a, b, f'{a} {b}', {}) for a in pids for b in pids]
+        asks += [(a, None, f'{a} --all', {'everyone': True}) for a in pids]
+        for a, b, key, kw in asks:
+            result = relate.run_relate(root, cfg, a, b, **kw)
+            text, js = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(text):
+                relate._cmd_relate(result, use_json=False)
+            with contextlib.redirect_stdout(js):
+                relate._cmd_relate(result, use_json=True)
+            # The temp path never appears today; replace it anyway so a
+            # future message naming the root cannot make the test flaky.
+            js_bytes = js.getvalue().replace(str(root), '<ROOT>').encode('utf-8')
+            out[key] = {
+                'text': text.getvalue().replace(str(root), '<ROOT>'),
+                'json_sha256': hashlib.sha256(js_bytes).hexdigest(),
+            }
         return out
 
 

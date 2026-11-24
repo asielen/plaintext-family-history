@@ -1,4 +1,8 @@
 {
+ "p-075114a0f8 --all": {
+  "json_sha256": "7702a7e9f366f30e946a942edbc82d35141ca26ed90e728492718dba23991d87",
+  "text": "Everyone related to [[p-075114a0f8|Caleb Comstock Hartley]] in the recorded tree: 13 people\n\nBlood relatives (9), nearest first\n  [[p-de957bcda1|Thomas Edward Hartley]]  son\n  [[p-fa7541e871|Calvin George Hartley]]  grandson\n  [[p-c4b26bb4bc|Ethel Hartley]]          granddaughter\n  [[p-83e768cacb|Frances Hartley]]        granddaughter\n  [[p-htyn3mpg9g|Ada Jane Hartley]]       great-granddaughter\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]  great-grandson\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]   great-great-granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]  great-great-great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]    great-great-great-great-grandchild\n\nRelated by marriage (4)\n  [[p-cd795c61e0|Margaret A. Cole]]      daughter-in-law\n  [[p-8h9jkambne|Harriet Frances Webb]]  granddaughter-in-law\n  [[p-nf819w33dy|Louisa May Denton]]     granddaughter-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-great-great-granddaughter-in-law\n"
+ },
  "p-075114a0f8 p-075114a0f8": {
   "json_sha256": "bd5750a5d8dbe09319b1c2ad10b9fdf6e25f184908458a5b36fa32aad8c366b6",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Caleb Comstock Hartley is Caleb Comstock Hartley's the same person  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         the same person\n"
@@ -78,6 +82,10 @@
  "p-075114a0f8 p-s5a8g87at3": {
   "json_sha256": "ee9c2cc97fe00f33085589d6afff5f6ba38d4b2f0d719419c7bd3da0baccb1b9",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-0a1b2c3d4e --all": {
+  "json_sha256": "96c9f709efef8b0c32a6f689f6e55428a45de72117fdd2a3c297f86c9638e881",
+  "text": "Everyone related to [[p-0a1b2c3d4e|Alex James Bradford]] in the recorded tree: 16 people\n\nBlood relatives (15), nearest first\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]      mother\n  [[p-2b3c4d5e6f|James Robert Bradford]]   father\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    grandmother\n  [[p-4d5e6f7g8h|George Arthur Bradford]]  grandfather\n  [[p-7g8h9jkamb|Clara Mabel Frost]]       great-grandmother\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   great-grandfather\n  [[p-fa7541e871|Calvin George Hartley]]   great-great-grandfather\n  [[p-8h9jkambne|Harriet Frances Webb]]    great-great-grandmother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        half great-great-aunt\n  [[p-cd795c61e0|Margaret A. Cole]]        great-great-great-grandmother\n  [[p-de957bcda1|Thomas Edward Hartley]]   great-great-great-grandfather\n  [[p-c4b26bb4bc|Ethel Hartley]]           great-great-great-aunt\n  [[p-83e768cacb|Frances Hartley]]         great-great-great-aunt\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-great-great-great-grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-great-great-great-grandmother\n\nRelated by marriage (1)\n  [[p-nf819w33dy|Louisa May Denton]]  great-great-grandfather's wife\n"
  },
  "p-0a1b2c3d4e p-075114a0f8": {
   "json_sha256": "a9dbc8728b97353e26782e537f76c989aade014b255df0c96d26aeacf92f35bf",
@@ -159,6 +167,10 @@
   "json_sha256": "20c038e1c7c814cb92fc1662b277342b6aca48c2d21a62669e51aa83b0e58f3d",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-2b3c4d5e6f --all": {
+  "json_sha256": "13d89f1fea6aeef45cdd4ad7482151b7f21693d4169a6fd64d846df948a407f8",
+  "text": "Everyone related to [[p-2b3c4d5e6f|James Robert Bradford]] in the recorded tree: 16 people\n\nBlood relatives (14), nearest first\n  [[p-0a1b2c3d4e|Alex James Bradford]]     child\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    mother\n  [[p-4d5e6f7g8h|George Arthur Bradford]]  father\n  [[p-7g8h9jkamb|Clara Mabel Frost]]       grandmother\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   grandfather\n  [[p-fa7541e871|Calvin George Hartley]]   great-grandfather\n  [[p-8h9jkambne|Harriet Frances Webb]]    great-grandmother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        half great-aunt\n  [[p-cd795c61e0|Margaret A. Cole]]        great-great-grandmother\n  [[p-de957bcda1|Thomas Edward Hartley]]   great-great-grandfather\n  [[p-c4b26bb4bc|Ethel Hartley]]           great-great-aunt\n  [[p-83e768cacb|Frances Hartley]]         great-great-aunt\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-great-great-grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-great-great-grandmother\n\nRelated by marriage (2)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]  wife\n  [[p-nf819w33dy|Louisa May Denton]]   great-grandfather's wife\n"
+ },
  "p-2b3c4d5e6f p-075114a0f8": {
   "json_sha256": "2aa433ff690f41e7ea8129048de6c87c75325965bcd34fc66fde97ec72b8741a",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        James Robert Bradford is Caleb Comstock Hartley's great-great-great-grandson  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nDNA:          The Shared cM Project chart gives no figure for this relationship.\n              Figures: Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.\nPath:         your mother's father's father's father's father\n"
@@ -238,6 +250,10 @@
  "p-2b3c4d5e6f p-s5a8g87at3": {
   "json_sha256": "212f31f7d52e28c2a6c3f9d108d5b71bacfd8cabf82c85ca81cac0813bece884",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-3c4d5e6f7g --all": {
+  "json_sha256": "77aec4dbdae7fd484589bc3fe8039fe316bdb4c0ead512fdff22c148b8e716f2",
+  "text": "Everyone related to [[p-3c4d5e6f7g|Carol Anne Simmons]] in the recorded tree: 15 people\n\nBlood relatives (1), nearest first\n  [[p-0a1b2c3d4e|Alex James Bradford]]  child\n\nRelated by marriage (14)\n  [[p-2b3c4d5e6f|James Robert Bradford]]   husband\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    mother-in-law\n  [[p-4d5e6f7g8h|George Arthur Bradford]]  father-in-law\n  [[p-7g8h9jkamb|Clara Mabel Frost]]       grandmother-in-law\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   grandfather-in-law\n  [[p-fa7541e871|Calvin George Hartley]]   great-grandfather-in-law\n  [[p-8h9jkambne|Harriet Frances Webb]]    great-grandmother-in-law\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        great-aunt by marriage\n  [[p-cd795c61e0|Margaret A. Cole]]        great-great-grandmother-in-law\n  [[p-de957bcda1|Thomas Edward Hartley]]   great-great-grandfather-in-law\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-great-great-grandfather-in-law\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-great-great-grandmother-in-law\n  [[p-c4b26bb4bc|Ethel Hartley]]           great-great-aunt by marriage\n  [[p-83e768cacb|Frances Hartley]]         great-great-aunt by marriage\n"
  },
  "p-3c4d5e6f7g p-075114a0f8": {
   "json_sha256": "c95660452c848a691eac7da7aa71f257e047b46232b7c91c3305cb63bac8b75f",
@@ -319,6 +335,10 @@
   "json_sha256": "a160e7928a625a1d8791d384f58062158aff2e16599d0b4e93f8255fcb890465",
   "text": "[[p-3c4d5e6f7g|Carol Anne Simmons]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-3kq9v8x2m1 --all": {
+  "json_sha256": "c4ffe818f02bced6765588b9b71fe82b3bf77bbcf415d6721a12d4681ac70c9f",
+  "text": "Nobody in the recorded tree is related to Caesar yet. Record a parent, child or spouse (a relationship claim, or `fha person relate` for a guess), then run `fha index`.\n"
+ },
  "p-3kq9v8x2m1 p-075114a0f8": {
   "json_sha256": "e687cbbfd5096af669af35f9ce20581580046ea5e57a6cb8bfe96369cb3310c9",
   "text": "[[p-3kq9v8x2m1|Caesar]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
@@ -398,6 +418,10 @@
  "p-3kq9v8x2m1 p-s5a8g87at3": {
   "json_sha256": "1cad11002a026b1458c9df969393e7eaf607f35b7ca44c737bf9ab85c1907d75",
   "text": "[[p-3kq9v8x2m1|Caesar]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-4d5e6f7g8h --all": {
+  "json_sha256": "35ef00ecef5e286795e700831a389fd16c14afe438391a6f2d6267933aa7d4ad",
+  "text": "Everyone related to [[p-4d5e6f7g8h|George Arthur Bradford]] in the recorded tree: 3 people\n\nBlood relatives (2), nearest first\n  [[p-2b3c4d5e6f|James Robert Bradford]]  son\n  [[p-0a1b2c3d4e|Alex James Bradford]]    grandchild\n\nRelated by marriage (1)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]  daughter-in-law\n"
  },
  "p-4d5e6f7g8h p-075114a0f8": {
   "json_sha256": "8063239e77ef3cc9d02e2cbbcb49d8c859e42a89bca60c45409b3d21d2cd371f",
@@ -479,6 +503,10 @@
   "json_sha256": "459206647a1ec0b52b2c79b4d11df3f0c1ef79d01c4e40a0ef91413da7b941a3",
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-5e6f7g8h9j --all": {
+  "json_sha256": "107db4a0db2903f2d4780010418446333e7ab617ebc0a215794396c67d8a8861",
+  "text": "Everyone related to [[p-5e6f7g8h9j|Edith Louise Hartley]] in the recorded tree: 15 people\n\nBlood relatives (13), nearest first\n  [[p-7g8h9jkamb|Clara Mabel Frost]]       mother\n  [[p-2b3c4d5e6f|James Robert Bradford]]   son\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   father\n  [[p-0a1b2c3d4e|Alex James Bradford]]     grandchild\n  [[p-fa7541e871|Calvin George Hartley]]   grandfather\n  [[p-8h9jkambne|Harriet Frances Webb]]    grandmother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        half-aunt\n  [[p-cd795c61e0|Margaret A. Cole]]        great-grandmother\n  [[p-de957bcda1|Thomas Edward Hartley]]   great-grandfather\n  [[p-c4b26bb4bc|Ethel Hartley]]           great-aunt\n  [[p-83e768cacb|Frances Hartley]]         great-aunt\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-great-grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-great-grandmother\n\nRelated by marriage (2)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]  daughter-in-law\n  [[p-nf819w33dy|Louisa May Denton]]   grandfather's wife\n"
+ },
  "p-5e6f7g8h9j p-075114a0f8": {
   "json_sha256": "7d3d4c7945eff5b99f6ad37e952ad1d9f61da27c77e524d30920d752a718b17f",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Edith Louise Hartley is Caleb Comstock Hartley's great-great-granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nDNA:          The Shared cM Project chart gives no figure for this relationship.\n              Figures: Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.\nPath:         your father's father's father's father\n"
@@ -558,6 +586,10 @@
  "p-5e6f7g8h9j p-s5a8g87at3": {
   "json_sha256": "fcad39a77ec2df72bcad09d4a55f268bd5ce61606ae4dc9679bf17b627ff65e4",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-6f7g8h9jka --all": {
+  "json_sha256": "13088b70ce9382be1cc1ca2702d9507a362288d188813c3771d0ae590137ca83",
+  "text": "Everyone related to [[p-6f7g8h9jka|Warren Calvin Hartley]] in the recorded tree: 14 people\n\nBlood relatives (12), nearest first\n  [[p-fa7541e871|Calvin George Hartley]]   father\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    daughter\n  [[p-8h9jkambne|Harriet Frances Webb]]    mother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        half-sister\n  [[p-2b3c4d5e6f|James Robert Bradford]]   grandson\n  [[p-cd795c61e0|Margaret A. Cole]]        grandmother\n  [[p-de957bcda1|Thomas Edward Hartley]]   grandfather\n  [[p-c4b26bb4bc|Ethel Hartley]]           aunt\n  [[p-83e768cacb|Frances Hartley]]         aunt\n  [[p-0a1b2c3d4e|Alex James Bradford]]     great-grandchild\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-grandmother\n\nRelated by marriage (2)\n  [[p-nf819w33dy|Louisa May Denton]]   stepmother (dates not all recorded)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]  granddaughter-in-law\n"
  },
  "p-6f7g8h9jka p-075114a0f8": {
   "json_sha256": "c51b4331c5f24f0df730822815366ec8ab08ec3ceb2ebfb503975dcb082e2ca7",
@@ -639,6 +671,10 @@
   "json_sha256": "29874e963dab11908489de2ebbde99b7562bf55295601a8679557b6447e1a057",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-7g8h9jkamb --all": {
+  "json_sha256": "07c2eb9c87aefbe531f08e3a58a35db5d29393da8c1f404418d6cb51ee7504b0",
+  "text": "Everyone related to [[p-7g8h9jkamb|Clara Mabel Frost]] in the recorded tree: 4 people\n\nBlood relatives (3), nearest first\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]   daughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]  grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]    great-grandchild\n\nRelated by marriage (1)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]  granddaughter-in-law\n"
+ },
  "p-7g8h9jkamb p-075114a0f8": {
   "json_sha256": "9c6d028bbf9a62ce75ca1995ec55390f54e24b9a296bfc29c2812abc7ea94e19",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's father's father's father's father\n"
@@ -718,6 +754,10 @@
  "p-7g8h9jkamb p-s5a8g87at3": {
   "json_sha256": "db0f149bd14c6c125c91ac0916510eaa158f82e923c6410570fcbbdac109103f",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-83e768cacb --all": {
+  "json_sha256": "c7c7cb4f3779efb47debf3dff43c80adca15c2b17a94646d98f547a7b38d3620",
+  "text": "Everyone related to [[p-83e768cacb|Frances Hartley]] in the recorded tree: 14 people\n\nBlood relatives (11), nearest first\n  [[p-cd795c61e0|Margaret A. Cole]]        mother\n  [[p-de957bcda1|Thomas Edward Hartley]]   father\n  [[p-fa7541e871|Calvin George Hartley]]   brother\n  [[p-c4b26bb4bc|Ethel Hartley]]           sister\n  [[p-075114a0f8|Caleb Comstock Hartley]]  grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   grandmother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        niece\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   nephew\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    great-niece\n  [[p-2b3c4d5e6f|James Robert Bradford]]   great-great-nephew\n  [[p-0a1b2c3d4e|Alex James Bradford]]     great-great-great-niece or great-great-great-nephew\n\nRelated by marriage (3)\n  [[p-8h9jkambne|Harriet Frances Webb]]  sister-in-law\n  [[p-nf819w33dy|Louisa May Denton]]     sister-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-great-niece by marriage\n"
  },
  "p-83e768cacb p-075114a0f8": {
   "json_sha256": "6bda881fc7597050c074c3ec65a092ccb597406c7e062d6085581769eaee9f45",
@@ -799,6 +839,10 @@
   "json_sha256": "d2d9f5e22b8524d8e86f51e594c9ca947b39d78f339ddc68f589ef1318c43b84",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-8h9jkambne --all": {
+  "json_sha256": "b7f4616abb1ad4856d3125d33c1e1ae31db91bbe438b93a7085349241807f607",
+  "text": "Everyone related to [[p-8h9jkambne|Harriet Frances Webb]] in the recorded tree: 13 people\n\nBlood relatives (4), nearest first\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]  son\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]   granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]  great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]    great-great-grandchild\n\nRelated by marriage (9)\n  [[p-fa7541e871|Calvin George Hartley]]   husband\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        stepdaughter (dates not all recorded)\n  [[p-cd795c61e0|Margaret A. Cole]]        mother-in-law\n  [[p-de957bcda1|Thomas Edward Hartley]]   father-in-law\n  [[p-075114a0f8|Caleb Comstock Hartley]]  grandfather-in-law\n  [[p-d00c678c1a|Chastina Augusta Reed]]   grandmother-in-law\n  [[p-c4b26bb4bc|Ethel Hartley]]           sister-in-law\n  [[p-83e768cacb|Frances Hartley]]         sister-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]      great-granddaughter-in-law\n"
+ },
  "p-8h9jkambne p-075114a0f8": {
   "json_sha256": "b0ba44d5b5595da18a4f483abe51c0fb2a73c98d9ab81360118c58c0d552cac4",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Harriet Frances Webb is Caleb Comstock Hartley's granddaughter-in-law  (Caleb Comstock Hartley's grandson's wife)\nPath:         your husband's father's father\n"
@@ -878,6 +922,10 @@
  "p-8h9jkambne p-s5a8g87at3": {
   "json_sha256": "1fe8f59b3b3ea525377ddedb1e9c89c83de5ad2477a58d20df8f8a630185638e",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-ajnng40q36 --all": {
+  "json_sha256": "147ba19d41d35d5128b3508d76465a1a7e80b874d34f1c56cf236d89b5516fa0",
+  "text": "Nobody in the recorded tree is related to Charley Layng yet. Record a parent, child or spouse (a relationship claim, or `fha person relate` for a guess), then run `fha index`.\n"
  },
  "p-ajnng40q36 p-075114a0f8": {
   "json_sha256": "dd334cc18917a8790b77ba3ee25c55e07df83924217c296897670fa0f6fe9b2c",
@@ -959,6 +1007,10 @@
   "json_sha256": "18c5e48f022f5b515e2c0e297ab5cfffd88998a386f5960533a5b3f547b5512e",
   "text": "[[p-ajnng40q36|Charley Layng]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-c4b26bb4bc --all": {
+  "json_sha256": "0b82ada3d7e3a4459d1553b8fb08678d0b10370ba1ca38d77a474eb7f63b27b7",
+  "text": "Everyone related to [[p-c4b26bb4bc|Ethel Hartley]] in the recorded tree: 14 people\n\nBlood relatives (11), nearest first\n  [[p-cd795c61e0|Margaret A. Cole]]        mother\n  [[p-de957bcda1|Thomas Edward Hartley]]   father\n  [[p-fa7541e871|Calvin George Hartley]]   brother\n  [[p-83e768cacb|Frances Hartley]]         sister\n  [[p-075114a0f8|Caleb Comstock Hartley]]  grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   grandmother\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        niece\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   nephew\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    great-niece\n  [[p-2b3c4d5e6f|James Robert Bradford]]   great-great-nephew\n  [[p-0a1b2c3d4e|Alex James Bradford]]     great-great-great-niece or great-great-great-nephew\n\nRelated by marriage (3)\n  [[p-8h9jkambne|Harriet Frances Webb]]  sister-in-law\n  [[p-nf819w33dy|Louisa May Denton]]     sister-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-great-niece by marriage\n"
+ },
  "p-c4b26bb4bc p-075114a0f8": {
   "json_sha256": "475280e0b0a75488118ea09007252758327f6cb761aba51a838d2af4ffab7543",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Ethel Hartley is Caleb Comstock Hartley's granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nDNA:          a grandparent and grandchild share about 1,754 cM on average; nearly all share between 984 and 2,462 cM.\n              Figures: Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.\nPath:         your father's father\n"
@@ -1038,6 +1090,10 @@
  "p-c4b26bb4bc p-s5a8g87at3": {
   "json_sha256": "7413c39df58491fc44ba500c5b13a21d184b81e951ac86296cc5ca209fdda879",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-cd795c61e0 --all": {
+  "json_sha256": "8dbabe5cc6dc6d3e02bd9b70804b6a7c244490fa2396c5bb96fe867d60596f94",
+  "text": "Everyone related to [[p-cd795c61e0|Margaret A. Cole]] in the recorded tree: 14 people\n\nBlood relatives (8), nearest first\n  [[p-fa7541e871|Calvin George Hartley]]  son\n  [[p-c4b26bb4bc|Ethel Hartley]]          daughter\n  [[p-83e768cacb|Frances Hartley]]        daughter\n  [[p-htyn3mpg9g|Ada Jane Hartley]]       granddaughter\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]  grandson\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]   great-granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]  great-great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]    great-great-great-grandchild\n\nRelated by marriage (6)\n  [[p-de957bcda1|Thomas Edward Hartley]]   husband\n  [[p-075114a0f8|Caleb Comstock Hartley]]  father-in-law\n  [[p-d00c678c1a|Chastina Augusta Reed]]   mother-in-law\n  [[p-8h9jkambne|Harriet Frances Webb]]    daughter-in-law\n  [[p-nf819w33dy|Louisa May Denton]]       daughter-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]      great-great-granddaughter-in-law\n"
  },
  "p-cd795c61e0 p-075114a0f8": {
   "json_sha256": "82394b92ba39ba8cf982d67a6bb75f54a56483f9814d56522bd3eb342537f638",
@@ -1119,6 +1175,10 @@
   "json_sha256": "4d7868e02c1a56c69be557b578458dd36fdbc4c952b89353edd9c39fe4875ce1",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-d00c678c1a --all": {
+  "json_sha256": "e1dbf7d2409897ccc7a587463b3208a1bc372b79023fc6e760e0db6153a858ad",
+  "text": "Everyone related to [[p-d00c678c1a|Chastina Augusta Reed]] in the recorded tree: 13 people\n\nBlood relatives (9), nearest first\n  [[p-de957bcda1|Thomas Edward Hartley]]  son\n  [[p-fa7541e871|Calvin George Hartley]]  grandson\n  [[p-c4b26bb4bc|Ethel Hartley]]          granddaughter\n  [[p-83e768cacb|Frances Hartley]]        granddaughter\n  [[p-htyn3mpg9g|Ada Jane Hartley]]       great-granddaughter\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]  great-grandson\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]   great-great-granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]  great-great-great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]    great-great-great-great-grandchild\n\nRelated by marriage (4)\n  [[p-cd795c61e0|Margaret A. Cole]]      daughter-in-law\n  [[p-8h9jkambne|Harriet Frances Webb]]  granddaughter-in-law\n  [[p-nf819w33dy|Louisa May Denton]]     granddaughter-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-great-great-granddaughter-in-law\n"
+ },
  "p-d00c678c1a p-075114a0f8": {
   "json_sha256": "aaa2181e8e850c32e19b42793250c7e5f338219f3ba2601404408a94e84da9cf",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's father\n"
@@ -1198,6 +1258,10 @@
  "p-d00c678c1a p-s5a8g87at3": {
   "json_sha256": "e00a36ea653e10a46261c07ea0798a30fce203f9c96354f5941b2e6ace06e76b",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-de957bcda1 --all": {
+  "json_sha256": "1b4ab466ed755289b0eff2b4ddf59cd51c6d6d90fab680c8f0b2ee1e15fc0c1e",
+  "text": "Everyone related to [[p-de957bcda1|Thomas Edward Hartley]] in the recorded tree: 14 people\n\nBlood relatives (10), nearest first\n  [[p-075114a0f8|Caleb Comstock Hartley]]  father\n  [[p-fa7541e871|Calvin George Hartley]]   son\n  [[p-d00c678c1a|Chastina Augusta Reed]]   mother\n  [[p-c4b26bb4bc|Ethel Hartley]]           daughter\n  [[p-83e768cacb|Frances Hartley]]         daughter\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        granddaughter\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   grandson\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    great-granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]   great-great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]     great-great-great-grandchild\n\nRelated by marriage (4)\n  [[p-cd795c61e0|Margaret A. Cole]]      wife\n  [[p-8h9jkambne|Harriet Frances Webb]]  daughter-in-law\n  [[p-nf819w33dy|Louisa May Denton]]     daughter-in-law\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-great-granddaughter-in-law\n"
  },
  "p-de957bcda1 p-075114a0f8": {
   "json_sha256": "8a8fb89f400cf738c20bc903747941f44ef80b9c882cdadf77d9d6dde2d4df2b",
@@ -1279,6 +1343,10 @@
   "json_sha256": "dea695da664aecafe719714e6f9a8a563d3237d96eb71d97571db8e3bb58a1c4",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-fa7541e871 --all": {
+  "json_sha256": "dc5201aa5a57741c39b9260c39ad00a9fc63f435a174893d1edc1dcd5b9443ef",
+  "text": "Everyone related to [[p-fa7541e871|Calvin George Hartley]] in the recorded tree: 14 people\n\nBlood relatives (11), nearest first\n  [[p-htyn3mpg9g|Ada Jane Hartley]]        daughter\n  [[p-cd795c61e0|Margaret A. Cole]]        mother\n  [[p-de957bcda1|Thomas Edward Hartley]]   father\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   son\n  [[p-c4b26bb4bc|Ethel Hartley]]           sister\n  [[p-83e768cacb|Frances Hartley]]         sister\n  [[p-075114a0f8|Caleb Comstock Hartley]]  grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   grandmother\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    granddaughter\n  [[p-2b3c4d5e6f|James Robert Bradford]]   great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]     great-great-grandchild\n\nRelated by marriage (3)\n  [[p-8h9jkambne|Harriet Frances Webb]]  wife\n  [[p-nf819w33dy|Louisa May Denton]]     wife\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-granddaughter-in-law\n"
+ },
  "p-fa7541e871 p-075114a0f8": {
   "json_sha256": "5449e72ba8dd441e48ad0d0e9760259a7eff57f258d263aa93a4682f803ea6ab",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Calvin George Hartley is Caleb Comstock Hartley's grandson  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nDNA:          a grandparent and grandchild share about 1,754 cM on average; nearly all share between 984 and 2,462 cM.\n              Figures: Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.\nPath:         your father's father\n"
@@ -1358,6 +1426,10 @@
  "p-fa7541e871 p-s5a8g87at3": {
   "json_sha256": "51af9029ce6eb04c1f1f79f7bd73df914f1f66d431a73d2f0fb22498a302f6ca",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-htyn3mpg9g --all": {
+  "json_sha256": "4b2c76573ffc21740117ebbcbfac1ef2006abc9ddaefb1e4bd7c8342c01b950a",
+  "text": "Everyone related to [[p-htyn3mpg9g|Ada Jane Hartley]] in the recorded tree: 14 people\n\nBlood relatives (12), nearest first\n  [[p-fa7541e871|Calvin George Hartley]]   father\n  [[p-nf819w33dy|Louisa May Denton]]       mother\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   half-brother\n  [[p-cd795c61e0|Margaret A. Cole]]        grandmother\n  [[p-de957bcda1|Thomas Edward Hartley]]   grandfather\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    half-niece\n  [[p-c4b26bb4bc|Ethel Hartley]]           aunt\n  [[p-83e768cacb|Frances Hartley]]         aunt\n  [[p-075114a0f8|Caleb Comstock Hartley]]  great-grandfather\n  [[p-d00c678c1a|Chastina Augusta Reed]]   great-grandmother\n  [[p-2b3c4d5e6f|James Robert Bradford]]   half great-nephew\n  [[p-0a1b2c3d4e|Alex James Bradford]]     half great-great-niece or half great-great-nephew\n\nRelated by marriage (2)\n  [[p-8h9jkambne|Harriet Frances Webb]]  stepmother (dates not all recorded)\n  [[p-3c4d5e6f7g|Carol Anne Simmons]]    great-niece by marriage\n"
  },
  "p-htyn3mpg9g p-075114a0f8": {
   "json_sha256": "534173ad68d051118528ca4eeddc4ea551a815a3638c3bdc14a4bf9b16c39f55",
@@ -1439,6 +1511,10 @@
   "json_sha256": "b6761df02d09f6a96ac43f5528bfc43b2d054a988889ca74ceee000dd6b2fd6e",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
+ "p-nf819w33dy --all": {
+  "json_sha256": "73c74d9f265053d3d8457aad593dfc3904cf9592088f981f0e3533a57efa6e89",
+  "text": "Everyone related to [[p-nf819w33dy|Louisa May Denton]] in the recorded tree: 12 people\n\nBlood relatives (1), nearest first\n  [[p-htyn3mpg9g|Ada Jane Hartley]]  daughter\n\nRelated by marriage (11)\n  [[p-fa7541e871|Calvin George Hartley]]   husband\n  [[p-cd795c61e0|Margaret A. Cole]]        mother-in-law\n  [[p-de957bcda1|Thomas Edward Hartley]]   father-in-law\n  [[p-6f7g8h9jka|Warren Calvin Hartley]]   stepson (dates not all recorded)\n  [[p-075114a0f8|Caleb Comstock Hartley]]  grandfather-in-law\n  [[p-d00c678c1a|Chastina Augusta Reed]]   grandmother-in-law\n  [[p-5e6f7g8h9j|Edith Louise Hartley]]    husband's granddaughter\n  [[p-c4b26bb4bc|Ethel Hartley]]           sister-in-law\n  [[p-83e768cacb|Frances Hartley]]         sister-in-law\n  [[p-2b3c4d5e6f|James Robert Bradford]]   husband's great-grandson\n  [[p-0a1b2c3d4e|Alex James Bradford]]     husband's great-great-grandchild\n"
+ },
  "p-nf819w33dy p-075114a0f8": {
   "json_sha256": "d4c60a393684d5f461be4f7505b1e29052b54316b46b54e39b49c01b92c69245",
   "text": "[[p-nf819w33dy|Louisa May Denton]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Louisa May Denton is Caleb Comstock Hartley's granddaughter-in-law  (Caleb Comstock Hartley's grandson's wife)\nPath:         your husband's father's father\n"
@@ -1518,6 +1594,10 @@
  "p-nf819w33dy p-s5a8g87at3": {
   "json_sha256": "066d38638fc32fe72a078fae0305b350a0a965867b90ad2a6a47ca420bcc952c",
   "text": "[[p-nf819w33dy|Louisa May Denton]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
+ },
+ "p-s5a8g87at3 --all": {
+  "json_sha256": "f491ebf6575c0ac36a8825cc4b3754aa43c308755e89d5cae44f03bb2529e0f5",
+  "text": "Nobody in the recorded tree is related to Susan Cole yet. Record a parent, child or spouse (a relationship claim, or `fha person relate` for a guess), then run `fha index`.\n"
  },
  "p-s5a8g87at3 p-075114a0f8": {
   "json_sha256": "10f38a5950b589b10d54e897a22774dfbea1a905b8870f2789770e35ddd62046",
