@@ -107,6 +107,7 @@ Records disagree all the time: a census age is rounded, a death certificate's in
    fha confirm draft <s-id> --dry-run
    fha confirm draft <s-id>
    ```
+   Until then the site leaves the argument out, and a family packet (`fha packet`) carries it with a README note that it is an unreviewed draft; if he wants to share it, accept it first.
    If he decides a weighed claim is wrong, that decision is made in `review-claims` (reject or dispute, never delete), not here.
 
 9. **Close out.**

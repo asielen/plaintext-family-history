@@ -2,8 +2,9 @@
 test_weigh_evidence.py - the weigh-evidence skill's machine-checkable parts.
 
 When two records disagree, the skill drafts a written argument he rules on.
-Until he accepts it, none of that argument may reach the shared site or an
-export as if it were his. A marker covers only the text back to the previous
+Until he accepts it, none of that argument may reach the shared site as if it
+were his. (A family packet ships source records whole and its README names
+any that still hold draft text; test_packet covers that.) A marker covers only the text back to the previous
 marker or `##` heading (SPEC §16c), so the skill ends each of the four
 sections it writes with its own marker; these tests show that four markers
 withhold all four sections and that one marker at the end would not.

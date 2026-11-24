@@ -174,7 +174,7 @@
     {
       "path": ".agents/skills/weigh-evidence/SKILL.md",
       "category": "operating",
-      "sha256": "9ad7bfd6903a97fcd2d74324a6259618d7782e05d34608c7ac7299ba55e3693f",
+      "sha256": "b40d40c5ccf9fec4c5564afee62daf36f69c07fe774737f48c64d44254197014",
       "spec_version": "2.31",
       "src": ".claude/skills/weigh-evidence/SKILL.md"
     },
@@ -339,7 +339,7 @@
     {
       "path": ".claude/skills/weigh-evidence/SKILL.md",
       "category": "operating",
-      "sha256": "9ad7bfd6903a97fcd2d74324a6259618d7782e05d34608c7ac7299ba55e3693f",
+      "sha256": "b40d40c5ccf9fec4c5564afee62daf36f69c07fe774737f48c64d44254197014",
       "spec_version": "2.31"
     },
     {
@@ -896,7 +896,7 @@
     {
       "path": ".fha/tools/packet.py",
       "category": "operating",
-      "sha256": "1afe52bbad140b529e5263562004926a7a269f6531ccdedac86c558daca51adb",
+      "sha256": "5ed34af2b4903430745828ad9a953d984aea895167a0e5cafb01b84c5ace6384",
       "spec_version": "2.31",
       "src": "tools/packet.py"
     },
