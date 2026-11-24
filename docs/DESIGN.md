@@ -139,6 +139,8 @@ Each node (200×64) also carries a **small fixed-size portrait square** (`.fha-p
 | Legal | long dash | adoptive / step / foster / guardian / in-law | `.fha-tree-edge-legal` |
 | Other | dotted | friend / coworker / associate (affiliations) | `.fha-tree-edge-other` |
 
+A tie rated low is drawn thin and dash-dot (`.fha-tree-edge-weak`), and a person linked to the subject only through one is faded to about half strength with a dotted outline (`.fha-node-weak` on the explorer, `.ped-weak` on the family chart, `.fan-seg-weak` on the fan). The broken outline is there so the cue does not rest on fading alone. A key line (`.fha-weak-key`, `.fan-key`) under the chart says what it means.
+
 The stylesheet also keeps `.fha-tree-edge-social` as an alias for `-legal`. The legal/other split is a drawing distinction: the data model (SPEC §12.2) numbers only genetic parent edges into the pedigree and marks the rest, and "other" overlaps the affiliations model.
 
 ---
@@ -146,6 +148,8 @@ The stylesheet also keeps `.fha-tree-edge-social` as an alias for `-legal`. The 
 ## Print
 
 Every site page has print styles (`styles.css` section 10), so a relative can print a page and get the page. The menu, search box and zoom buttons are left off the paper, and so are the workbench's bar and its edit and add links. Charts and lists folded shut on screen are opened for the printer (the calendar's whole year prints under its "All months" heading), and a chart zoomed or dragged on screen prints whole (`vendor/fha-site.js` does both, then puts the page back). Colours that carry meaning, such as the branch colours on the family chart, print. The interactive descendant explorer is screen-only, because it draws itself only when opened on screen. A line at the foot says which site the page was printed from. Single-file views (`view.css`) print on white with the private banner kept, so a printed copy left on a table still says it is private.
+
+Each chart has "Save as a picture (PNG)" and "Save as a drawing (SVG)" under it (`vendor/fha-save-chart.js`). Pictures of people are left out of the saved file, and so are links and page data; a private card stays "Private". The saved chart is the whole chart, not the zoomed view. The buttons are left off the paper.
 
 ## Accessibility floor
 

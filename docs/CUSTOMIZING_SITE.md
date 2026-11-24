@@ -79,7 +79,7 @@ Or ask your assistant to open the stylesheet for you.
 
 ### 4. The facts themselves: your records
 
-Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history. That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
+Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history (a person who lived there while it changed hands gets a grey "Place history" line on their timeline). That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
 
 ### 5. A page about a family name: `notes/surnames/`
 
