@@ -714,7 +714,9 @@ def gather_review(state: ServeState) -> dict:
     reads - xref.run_xref and cooccur.run_cooccur - so detection is never
     reinvented. Returns {'items': [...], 'sources': [...], 'persons': [...]} where
     each item is a self-contained dict the template renders and whose action
-    buttons carry the /api/run verb + fixed args."""
+    buttons carry the /api/run verb + fixed args. Also carries 'remembered':
+    the not-connected / not-the-same-person pairs, each with its Undo; they
+    are not review items and do not change the count."""
     root = state.archive_root
     items: list[dict] = []
     sources: dict[str, str] = {}
@@ -940,8 +942,34 @@ def gather_review(state: ServeState) -> dict:
         finally:
             conn2.close()
 
+    # The pairs he told the archive to remember (not connected, not the same
+    # person), so a wrong click can be undone. Never part of `items`: the
+    # review count stays what is waiting on his judgment.
+    remembered: dict = {'not_connected': [], 'not_same_person': []}
+    try:
+        remembered = confirm.run_list_dismissed(root).data
+    except Exception:
+        pass
+    # A person deleted since the decision has no page: show the id unlinked
+    # rather than a link that lands on "Not found". Undo still works.
+    known: set[str] = set()
+    conn3 = open_index_db(root, ('persons',), strict=False)
+    if conn3 is not None:
+        try:
+            known = {r[0].lower() for r in conn3.execute('SELECT id FROM persons')}
+        except Exception:
+            pass
+        finally:
+            conn3.close()
+    for entries in remembered.values():
+        for e in entries if isinstance(entries, list) else []:
+            if isinstance(e, dict):
+                e['has_page_a'] = str(e.get('person_a', '')).lower() in known
+                e['has_page_b'] = str(e.get('person_b', '')).lower() in known
+
     return {
         'items': items,
+        'remembered': remembered,
         'sources': [{'id': sid, 'title': t} for sid, t in sources.items()],
         'persons': [{'id': pid, 'name': n,
                      'has_page': person_rows.get(pid, {}).get('has_page', False),
@@ -1284,11 +1312,27 @@ def _echo_cooccur(kw):
 def _verb_dismiss(state, kw, dry_run):
     return confirm.run_dismiss(
         state.archive_root, person_a=kw.get('person_a', ''),
-        person_b=kw.get('person_b', ''), dry_run=dry_run)
+        person_b=kw.get('person_b', ''),
+        not_same_person=bool(kw.get('not_same_person', False)), dry_run=dry_run)
 
 
 def _echo_dismiss(kw):
-    return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}'
+    flag = ' --not-same-person' if kw.get('not_same_person') else ''
+    return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}{flag}'
+
+
+def _verb_undismiss(state, kw, dry_run):
+    # Undo a wrong "not connected" / "not the same person" click: the pair goes
+    # back so the report may suggest it again. Only on his click.
+    return confirm.run_undismiss(
+        state.archive_root, person_a=kw.get('person_a', ''),
+        person_b=kw.get('person_b', ''),
+        not_same_person=bool(kw.get('not_same_person', False)), dry_run=dry_run)
+
+
+def _echo_undismiss(kw):
+    flag = ' --not-same-person' if kw.get('not_same_person') else ''
+    return f'fha confirm undismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}{flag}'
 
 
 def _verb_search(state, kw, dry_run):
@@ -1945,13 +1989,18 @@ VERBS: dict[str, dict] = {
     'confirm.cooccur': {'schema': {'person_a': 'str', 'person_b': 'str', 'source_id': 'str',
                                   'subtype': 'str', 'accept': 'bool'},
                         'run': _verb_cooccur, 'echo': _echo_cooccur, 'reindex': 'source'},
-    'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str'},
+    'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str',
+                                  'not_same_person': 'bool'},
                         'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
     # The workbench's "Nothing found" after a search-link click. The writer puts
     # its own search_log row in the index, as capture does, so no rebuild.
     'confirm.search': {'schema': {'person_id': 'str', 'repository': 'str', 'terms': 'str',
                                   'result': 'str'},
                        'run': _verb_search, 'echo': _echo_search, 'reindex': 'none'},
+    'confirm.undismiss': {'schema': {'person_a': 'str', 'person_b': 'str',
+                                    'not_same_person': 'bool'},
+                          'run': _verb_undismiss, 'echo': _echo_undismiss,
+                          'reindex': 'none'},
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
     'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
