@@ -1163,7 +1163,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "6cd8f099ada6f7c1a6d48666c913cb21bab562992f1592a2eb01d70c9ae8245f",
+      "sha256": "ca82b00e612b83b127b9f255d7c0086832c672cf342d7a83e11975ddc683e294",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1217,6 +1217,13 @@
       "src": "tools/templates/gallery.html"
     },
     {
+      "path": ".fha/tools/templates/graves.html",
+      "category": "operating",
+      "sha256": "0aada4a225cb5696c55b41d77fe7faeb1f848f77f3ba9f845a70e217baec08b7",
+      "spec_version": "2.31",
+      "src": "tools/templates/graves.html"
+    },
+    {
       "path": ".fha/tools/templates/inbox.html",
       "category": "operating",
       "sha256": "b3b7797a9214e9f9f4bc34dc99a0cc36cb2f35dba496115abd38e92a929a1a17",
@@ -1226,7 +1233,7 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "d1af8497d8a35b4a139023f0f292b22f8bb5a341746693264dbbb51cc91912a4",
+      "sha256": "80f1e9cf7435182583e2561f99a055276523d10003a460a9405275d64f5c0e8d",
       "spec_version": "2.31",
       "src": "tools/templates/index.html"
     },
@@ -1254,7 +1261,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "be781ad9e61e5bd5a9bbae26cf09e79f18a44fe686e8a14ca083cf60c23bbf8f",
+      "sha256": "2fbfffb0c9086eec57f55a6ca7d9c3ff2b79c035fde3c09ab0cc9c8f6afde212",
       "spec_version": "2.31",
       "src": "tools/templates/person.html"
     },
@@ -1514,7 +1521,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "13e3cdb53350b10a5c75c65345be7b7b8d3f7c6e972e0e2f977e0524e3a82746",
+      "sha256": "5c8cf7eb3e51ede55765b46fee71165b570962851bb7060ae3a170518cf3166e",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
