@@ -19495,8 +19495,11 @@ def build_ahnentafel_map(
             # fits their own recorded sex, so a hidden father never pushes an
             # unsexed mother into his number. Otherwise (a hidden DNA father
             # outranked the legal one, or pushed him into the mother's number)
-            # they take the slot the shown parents alone would give them, so
-            # the number never hints that a hidden parent exists.
+            # they take the slot the shown parents alone would give them. The
+            # folders' number wins where the two pull apart (an unsexed parent
+            # beside a hidden father keeps no. 3), so a rare mix of three or
+            # more genetic parents can still number differently from a tree
+            # without the hidden one.
             def _fits(e: tuple[str, str, int, bool]) -> bool:
                 return {'M': e[2] % 2 == 0, 'F': e[2] % 2 == 1}.get(e[1], True)
             kept = [e for e in slots if e[0] in allowed and _fits(e)]
