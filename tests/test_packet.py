@@ -1837,6 +1837,38 @@ class PacketTests(unittest.TestCase):
         # ...and the always-on privacy caution names the unredacted risk too.
         self.assertIn('not redacted', readme)
 
+    def test_source_copy_with_draft_marker_gets_readme_caution(self):
+        # A cousin handed a packet before he has read the AI's written proof
+        # argument (weigh-evidence) must be told those sections are an
+        # unreviewed draft, not his conclusion. Source records ship whole,
+        # like research, so the README says so in one plain line.
+        self._seed_person()
+        src = self._seed_source('s-aaaaaaaaaa', 'When Test Person was born')
+        src.write_text(
+            src.read_text(encoding='utf-8')
+            + '\n## Conclusion\n\nAbout 1840.\n'
+            '<!-- AI-DRAFT 2026-11-24 test - proof argument (conclusion) -->\n',
+            encoding='utf-8')
+        clean = self._seed_source('s-bbbbbbbbbb', 'A plain record')
+        self._commit_fresh()
+
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True)
+        self.assertEqual(result['status'], 'ok')
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertIn('unreviewed draft text', readme)
+        self.assertIn('s-aaaaaaaaaa.md', readme)
+        self.assertNotIn(clean.name + ' may', readme)
+
+    def test_source_copy_without_draft_marker_has_no_draft_caution(self):
+        self._seed_person()
+        self._seed_source('s-bbbbbbbbbb', 'A plain record')
+        self._commit_fresh()
+        result = packet.run_packet(self.archive_root, 'p-aaaaaaaaaa', self.out_dir,
+                                   no_photos=True)
+        readme = (result['packet_dir'] / 'README.txt').read_text(encoding='utf-8')
+        self.assertNotIn('unreviewed draft text', readme)
+
     def test_research_copy_always_warns_it_is_unredacted(self):
         # Research ships byte-for-byte (not run through the restricted/deadname
         # redaction the profile and sources get), so ANY --include-research must
