@@ -358,6 +358,43 @@ class SeveralRoutesTests(unittest.TestCase):
                 self.assertEqual(len(_lib.blood_routes(g, 'h', 'u')), 1)
                 self.assertEqual(len(_lib.blood_routes(g, 'h', 'w')), 1)
 
+    def test_further_line_is_named_by_its_own_length(self):
+        # Harold (h) married W, his first cousin once removed. h's brother u
+        # is their child c's uncle, and through W also her first cousin
+        # twice removed: that line runs g1 -> s -> x -> W -> c, one
+        # generation longer than the way down through Harold.
+        people = {p: {'name': p, 'sex': 'M'} for p in
+                  ('g1', 'g2', 'f', 'fm', 's', 'sm', 'x', 'xm', 'h', 'u', 'w', 'c')}
+        parents = [('f', 'g1', None), ('f', 'g2', None), ('s', 'g1', None),
+                   ('s', 'g2', None), ('h', 'f', None), ('h', 'fm', None),
+                   ('u', 'f', None), ('u', 'fm', None), ('x', 's', None),
+                   ('x', 'sm', None), ('w', 'x', None), ('w', 'xm', None),
+                   ('c', 'h', None), ('c', 'w', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        routes = _lib.blood_routes(g, 'u', 'c')
+        self.assertEqual([(r['relationship'], r['common_ancestors'], r['gens_a'], r['gens_b'])
+                          for r in routes],
+                         [('uncle', ['f', 'fm'], 1, 2),
+                          ('first cousin twice removed', ['g1', 'g2'], 2, 4)])
+
+    def test_further_line_through_one_ancestor_can_be_half(self):
+        # The double-cousin family, but the grandmothers p2 and q2 share only
+        # one grandparent z, and their parents y1, y2 have different recorded
+        # other parents: the further line is certainly half.
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2',
+                   'z', 'za', 'zb', 'y1', 'y2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None),
+                   ('y1', 'z', None), ('y1', 'za', None), ('y2', 'z', None),
+                   ('y2', 'zb', None), ('p2', 'y1', None), ('q2', 'y2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        third = blood_answer(g, 'c1', 'c2')['routes'][2]
+        self.assertEqual((third['common_ancestors'], third['relationship'], third['half']),
+                         (['z'], 'half third cousin', True))
+
     def test_double_cousins_with_a_further_line_stay_double(self):
         # Double first cousins whose two grandmothers were first cousins: the
         # grandmothers' shared grandparents are a third, further line. They

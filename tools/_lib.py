@@ -19717,12 +19717,15 @@ def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int]
 
 def _kin_separate_lines(graph: KinshipGraph, d: str, a: str, b: str,
                         anc_a: dict[str, int], anc_b: dict[str, int]
-                        ) -> tuple[set[str], set[str]] | None:
-    """The children of common ancestor `d` that start a line to A and a
-    line to B which share no one below `d`, as (A-side, B-side) sets, or
-    None when every pair of lines meets again (then `d` is only the way up
-    to a nearer common ancestor). Lines run down genetic edges through A's
-    and B's own ancestors."""
+                        ) -> tuple[str, str, int, int] | None:
+    """A line to A and a line to B from common ancestor `d` that leave it
+    through different children and share no one below it, as (A-side child,
+    B-side child, generations from d to A, generations from d to B), the
+    nearest such pair; or None when every pair of lines meets again (then
+    `d` is only the way up to a nearer common ancestor). The generations
+    are counted along these lines, not along the shortest way up, which may
+    run through the nearer ancestor. Lines run down genetic edges through
+    A's and B's own ancestors."""
     kids_a = {k for k in graph.genetic_children(d) if k in anc_a}
     kids_b = {k for k in graph.genetic_children(d) if k in anc_b}
     if len(kids_a | kids_b) < 2:
@@ -19732,33 +19735,40 @@ def _kin_separate_lines(graph: KinshipGraph, d: str, a: str, b: str,
         # Everyone on some line from k down to the person `anc` belongs to.
         return {n for n in anc if k in graph.ancestors(n)}
 
-    def reaches(k: str, target: str, anc: dict[str, int], avoid: set[str]) -> bool:
-        seen, todo = set(), [k]
+    def steps(k: str, target: str, anc: dict[str, int], avoid: set[str]) -> int | None:
+        # Shortest line from k down to target that avoids `avoid`.
+        seen, todo = {k}, deque([(k, 0)])
         while todo:
-            n = todo.pop()
-            if n in avoid or n in seen or n not in anc:
+            n, dist = todo.popleft()
+            if n in avoid or n not in anc:
                 continue
             if n == target:
-                return True
-            seen.add(n)
-            todo.extend(graph.genetic_children(n))
-        return False
+                return dist
+            for child in graph.genetic_children(n):
+                if child not in seen:
+                    seen.add(child)
+                    todo.append((child, dist + 1))
+        return None
 
-    side_a: set[str] = set()
-    side_b: set[str] = set()
-    for ka in kids_a:
+    found: list[tuple[int, int, str, str, int, int]] = []
+    for ka in sorted(kids_a):
         line = on_line(ka, anc_a)
-        for kb in kids_b - {ka}:
-            if reaches(kb, b, anc_b, line):
-                side_a.add(ka)
-                side_b.add(kb)
-    for kb in kids_b:
+        for kb in sorted(kids_b - {ka}):
+            n = steps(kb, b, anc_b, line)
+            if n is not None:
+                ga, gb = anc_a[ka] + 1, n + 1
+                found.append((max(ga, gb), ga + gb, ka, kb, ga, gb))
+    for kb in sorted(kids_b):
         line = on_line(kb, anc_b)
-        for ka in kids_a - {kb}:
-            if ka not in side_a and reaches(ka, a, anc_a, line):
-                side_a.add(ka)
-                side_b.add(kb)
-    return (side_a, side_b) if side_a else None
+        for ka in sorted(kids_a - {kb}):
+            n = steps(ka, a, anc_a, line)
+            if n is not None:
+                ga, gb = n + 1, anc_b[kb] + 1
+                found.append((max(ga, gb), ga + gb, ka, kb, ga, gb))
+    if not found:
+        return None
+    _, _, ka, kb, ga, gb = min(found)
+    return ka, kb, ga, gb
 
 
 def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
@@ -19793,10 +19803,13 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     # nearer common ancestor, yet a second line runs down from them. A
     # covered ancestor is a route of its own when lines to A and to B leave
     # it through different children and never meet again below it.
+    gens = {c: (anc_a[c], anc_b[c]) for c in lines}
     for d in covered & common:
         split = _kin_separate_lines(graph, d, a, b, anc_a, anc_b)
         if split:
-            lines[d] = split
+            ka, kb, ga, gb = split
+            lines[d] = ({ka}, {kb})
+            gens[d] = (ga, gb)
     minimal = sorted(lines)
 
     # Group the minimal ancestors into couples: the same generations from
@@ -19811,7 +19824,7 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
 
     for i, c1 in enumerate(minimal):
         for c2 in minimal[i + 1:]:
-            if ((anc_a[c1], anc_b[c1]) == (anc_a[c2], anc_b[c2])
+            if (gens[c1] == gens[c2]
                     and lines[c1][0] & lines[c2][0] and lines[c1][1] & lines[c2][1]):
                 r1, r2 = find(c1), find(c2)
                 if r1 != r2:
@@ -19823,7 +19836,7 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     sex = graph.people.get(a, {}).get('sex', '')
     routes = []
     for group in groups.values():
-        ga, gb = anc_a[group[0]], anc_b[group[0]]
+        ga, gb = gens[group[0]]
         half = _kin_half_state(graph, group, anc_a, anc_b, lines[group[0]])
         routes.append({
             'relationship': kinship_word(ga, gb, sex, half=half is True),
