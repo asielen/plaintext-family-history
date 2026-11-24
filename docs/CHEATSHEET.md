@@ -57,8 +57,10 @@ fha metrics "Ann Smith"       # one person's checks in detail, by name or p-id
 fha calendar today            # who in the family was born, married or died on this day?
 fha person new "Ann Smith" --sex F   # add one new person (refuses a name already on file)
 fha person new --from-file people.tsv   # add a list at once: name, sex, surname per line, tab-separated
+fha person set-external-id p-aaaa wikitree Hartley-6084   # note which WikiTree (or ancestry, familysearch) profile is this person's
 fha views timeline p-aaaa --format html   # a printable one-page timeline (lands in generated/views/)
 fha views family-sheet p-aaaa --format html   # a family group sheet to print for a relative (lands in generated/views/)
+fha views ahnentafel p-aaaa --format html   # a numbered list of his ancestors to print (lands in generated/views/)
 fha photoindex gallery --person p-aaaa    # a clickable page of someone's photos; double-click to open (lands in generated/gallery/)
 ```
 

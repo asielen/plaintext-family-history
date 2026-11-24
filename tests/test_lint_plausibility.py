@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import lint
 from _lib import load_fha_yaml
 
-PLAUSIBILITY_CODES = ('W163', 'W164', 'W165')
+PLAUSIBILITY_CODES = ('W163', 'W164', 'W165', 'W166', 'W167', 'W168', 'W169', 'W170')
 
 
 class _PlausibilityBase(unittest.TestCase):
@@ -287,6 +287,138 @@ class OnePersonDatesTests(_PlausibilityBase):
                                   if f.code in PLAUSIBILITY_CODES], [])
 
 
+class FamilyDatesTests(_PlausibilityBase):
+    """W166-W170: dates across a family that cannot all be true."""
+
+    S1, S2, S3 = 'S-1111111111', 'S-2222222222', 'S-3333333333'
+
+    def _tie(self, cid: str, parent: str, child: str, subtype: str | None = None) -> str:
+        return self._claim(cid, 'relationship', [parent, child], subtype=subtype,
+                           roles=f'{{parent: [{parent}], child: [{child}]}}')
+
+    def test_born_after_mother_died_names_the_tie_claim(self) -> None:
+        # The plan's sentence: Margaret born 1871, her mother died 1869.
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W167')
+        message = found.message
+        self.assertTrue(message.startswith(
+            'Margaret Cole (p-bbbbbbbbbb) is recorded as born 1871 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but her mother Ann Cole (p-aaaaaaaaaa) '
+            'died 1869 (c-2222222222 (sources/notes/rec_s-2222222222.md))'), message)
+        self.assertIn('Both cannot be true', message)
+        self.assertIn('The mother tie comes from c-3333333333 '
+                      '(sources/notes/rec_s-3333333333.md)', message)
+        self.assertEqual(Path(found.path).name, 'cole__margaret_P-bbbbbbbbbb.md')
+
+    def test_adoptive_mother_dead_before_birth_is_silent(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN, subtype='adoptive'))
+        self.assertEqual(self._codes('W167'), [])
+
+    def test_parent_tie_from_a_birth_claims_roles_counts(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim(
+            'C-1111111111', 'birth', [self.BEN, self.ADA], date='1871',
+            roles=f'{{child: [{self.BEN}], parent: [{self.ADA}]}}'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1880'))
+        (found,) = self._codes('W168')
+        self.assertIn('before her mother Ann Cole (p-aaaaaaaaaa) was born, 1880', found.message)
+        self.assertIn('The parent tie (c-1111111111 (sources/notes/rec_s-1111111111.md))',
+                      found.message)
+
+    def test_mother_too_old_says_her_age(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Ben Cole', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1870'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1800'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W168')
+        self.assertTrue(found.message.startswith(
+            'Ann Cole (p-aaaaaaaaaa) was at least 69 when her son Ben Cole (p-bbbbbbbbbb) '
+            'was born 1870'), found.message)
+        self.assertIn('older than a mother can be', found.message)
+        self.assertEqual(Path(found.path).name, 'cole__ben_P-bbbbbbbbbb.md')
+
+    def test_marriage_after_spouse_died(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ben Hartley (p-bbbbbbbbbb) died 1860 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but is recorded as marrying Ada Hartley '
+            '(p-aaaaaaaaaa) 1865'), found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__ben_P-bbbbbbbbbb.md')
+
+    def test_divorce_after_spouse_died_says_divorcing(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'divorce', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertIn('but is recorded as divorcing Ada Hartley', found.message)
+
+    def test_marriage_parents_named_on_the_licence_are_not_spouses(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Carl Moss', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.CARA], date='1850'))
+        self._source(self.S2, self._claim(
+            'C-2222222222', 'marriage', [self.ADA, self.BEN, self.CARA], date='1865',
+            roles=f'{{spouse: [{self.ADA}, {self.BEN}], parent: [{self.CARA}]}}'))
+        self.assertEqual(self._codes('W166'), [])
+
+    def test_married_young(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1872'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) was at most 12 at the marriage to Ben Hartley'),
+            found.message)
+
+    def test_siblings_too_close(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Cara Hartley')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1850-01')
+                     + self._claim('C-1111111112', 'birth', [self.CARA], date='1850-06'))
+        self._source(self.S2, self._tie('C-2222222221', self.ADA, self.BEN)
+                     + self._tie('C-2222222222', self.ADA, self.CARA))
+        (found,) = self._codes('W169')
+        self.assertTrue(found.message.startswith(
+            'Cara Hartley (p-cccccccccc) (June 1850'), found.message)
+        self.assertIn('children of Ada Hartley (p-aaaaaaaaaa), born between 121 and 180 '
+                      'days apart', found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__cara_P-cccccccccc.md')
+
+    def test_own_ancestor_loop_is_reported_once(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._tie('C-1111111111', self.ADA, self.BEN)
+                     + self._tie('C-1111111112', self.BEN, self.ADA))
+        (found,) = self._codes('W170')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) is recorded as her own ancestor: Ada Hartley '
+            '(p-aaaaaaaaaa) is the parent of Ben Hartley (p-bbbbbbbbbb), Ben Hartley '
+            '(p-bbbbbbbbbb) is the parent of Ada Hartley (p-aaaaaaaaaa).'), found.message)
+        self.assertIn('c-1111111111 (sources/notes/rec_s-1111111111.md)', found.message)
+        self.assertIn('c-1111111112', found.message)
+
+
 _GIT = shutil.which('git')
 
 
@@ -315,6 +447,117 @@ class ChangedScopeTests(_PlausibilityBase):
             lint._standalone_main(['--root', str(self.root), '--changed'])
         w163 = [line for line in out.getvalue().splitlines() if line.startswith('W W163 ')]
         self.assertEqual(len(w163), 1, out.getvalue())
+
+
+class LeadsToCheckTests(_PlausibilityBase):
+    """Things worth a look that are not errors. They print after the findings
+    and never move the exit code, because a correct record can carry each one."""
+
+    def _margarets(self, women: int, men: int = 0, *, unknown: int = 0) -> None:
+        n = 0
+        for count, sex in ((women, 'F'), (men, 'M'), (unknown, 'unknown')):
+            for _ in range(count):
+                n += 1
+                pid = f'P-{n:010d}'
+                # Each gets her own surname so lint's same-name warning (W112)
+                # stays out of the way of what these tests are about.
+                surname = 'Hartley' + ''.join(chr(97 + int(d)) for d in str(n))
+                self._person(pid, f'Margaret {surname}', sex=sex)
+
+    def _unsexed(self, sex: str | None, name: str = 'Margaret Cole') -> str:
+        pid = 'P-zzzzzzzzzz'
+        self._person(pid, name, sex=sex)
+        return pid
+
+    def _leads(self) -> list[str]:
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        return result.data['leads']
+
+    def test_sex_lead_fires_at_19_of_20_and_says_find_a_record(self) -> None:
+        self._margarets(19, 1)
+        pid = self._unsexed(None)
+        leads = self._leads()
+        self.assertEqual(len(leads), 1, leads)
+        self.assertIn('19 of 20', leads[0])
+        self.assertIn(f'fha person set-sex {pid.lower()} F', leads[0])
+        # SPEC 9: sex is birth-assigned where a record states it, never
+        # taken from name statistics, so the lead sends him to a record first.
+        self.assertIn('record that states', leads[0])
+
+    def test_sex_lead_never_prints_a_restricted_persons_name(self) -> None:
+        # A restricted person's name stays off lint's informational lists; the
+        # lead still helps him, by id, without the name or the given name.
+        self._margarets(20)
+        pid = 'P-zzzzzzzzzz'
+        self._person(pid, 'Margaret Quillfeather', sex=None, extra='restricted: true\n')
+        leads = self._leads()
+        self.assertEqual(len(leads), 1, leads)
+        self.assertNotIn('Quillfeather', leads[0])
+        self.assertNotIn('Margaret', leads[0])
+        self.assertIn(f'fha person set-sex {pid.lower()} F', leads[0])
+
+    def test_sex_lead_silent_at_90_percent(self) -> None:
+        self._margarets(18, 2)
+        self._unsexed(None)
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_silent_below_five_people(self) -> None:
+        self._margarets(4)
+        self._unsexed(None)
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_silent_for_a_stated_unknown(self) -> None:
+        self._margarets(20)
+        self._unsexed('unknown')
+        self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_fires_for_a_blank_sex(self) -> None:
+        self._margarets(20)
+        self._unsexed('')
+        self.assertEqual(len(self._leads()), 1)
+
+    def test_sex_lead_silent_for_a_sex_written_as_a_word(self) -> None:
+        # He wrote `sex: male` (W141 asks him to spell it M); the lead must not
+        # call that "no sex recorded" and steer him to the name's F.
+        for written in ('male', 'Male', 'f', 'female'):
+            with self.subTest(written=written):
+                self._margarets(20)
+                self._unsexed(written)
+                self.assertEqual(self._leads(), [])
+
+    def test_sex_lead_skips_titled_wife_names(self) -> None:
+        self._margarets(20)
+        self._unsexed(None, name='Mrs. Doe')
+        self.assertEqual(self._leads(), [])
+
+    def test_leads_are_left_out_with_changed(self) -> None:
+        self._margarets(20)
+        self._unsexed(None)
+        subprocess.run([_GIT, 'init', '-q'], cwd=self.root, check=True, capture_output=True)
+        subprocess.run([_GIT, '-c', 'user.name=Test', '-c', 'user.email=t@example.com',
+                        '-c', 'commit.gpgsign=false', 'add', '-A'],
+                       cwd=self.root, check=True, capture_output=True)
+        subprocess.run([_GIT, '-c', 'user.name=Test', '-c', 'user.email=t@example.com',
+                        '-c', 'commit.gpgsign=false', 'commit', '-q', '-m', 'start'],
+                       cwd=self.root, check=True, capture_output=True)
+        touched = next((self.root / 'people').glob('cole__*'))
+        touched.write_text(touched.read_text(encoding='utf-8') + '\nA note.\n',
+                           encoding='utf-8')
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            lint._standalone_main(['--root', str(self.root), '--changed'])
+        self.assertNotIn('Leads to check', out.getvalue())
+
+    def test_leads_never_move_the_exit_code(self) -> None:
+        self._margarets(20)
+        self._unsexed(None)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = lint._standalone_main(['--root', str(self.root)])
+        self.assertIn('Leads to check', out.getvalue())
+        result = lint.run_lint(self.root, load_fha_yaml(self.root))
+        self.assertEqual(code, result.exit_code)
+        self.assertEqual(code, lint.EXIT_CLEAN, out.getvalue())
 
 
 if __name__ == '__main__':
