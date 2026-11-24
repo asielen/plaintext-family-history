@@ -14,6 +14,7 @@ answers come from the rules in TOOLING §15a's 4b row, never from the code's
 current output. Temp fixtures throughout; never the real archive.
 """
 
+import random
 import sqlite3
 import sys
 import tempfile
@@ -415,6 +416,115 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
         result = self.a.scan()
         self.assertEqual(self._pairs(result), [frozenset((a, b))])
         self.assertEqual(result['impossible_hidden'], 0)
+
+    def test_a_typo_on_one_record_does_not_hide_her_through_the_other(self) -> None:
+        # b's death was typed 1840, before her 1850 birth: lint already says
+        # so on b alone. a's ordinary 1880 census must not turn that old typo
+        # into "cannot be one person" and hide a real duplicate.
+        a = self.a.person('Ellen Hartley', sex='F')
+        b = self.a.person('Ellen Hartley', sex='F')
+        self._born(a, '1850')
+        self._born(b, '1850')
+        self.a.claim('death', [b], date='1840')
+        self.a.claim('census', [a], date='1880')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        self.assertEqual(result['impossible_hidden'], 0)
+
+    def test_a_typo_renamed_by_the_join_does_not_hide_the_pair(self) -> None:
+        # b's burial typed 1840 (before her birth) becomes "buried before
+        # she died" once a's death joins: the same typo, not new evidence.
+        a = self.a.person('Ellen Hartley', sex='F')
+        b = self.a.person('Ellen Hartley', sex='F')
+        self._born(a, '1850')
+        self._born(b, '1850')
+        self.a.claim('death', [a], date='1900')
+        self.a.claim('burial', [b], date='1840')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+
+    def test_two_registers_a_few_days_apart_still_pair(self) -> None:
+        # One person from two sources that disagree by days: a civil birth
+        # and a parish baptism two days "earlier", a death and a burial two
+        # days "before" it, a death and her child's birth in one week.
+        cases = (
+            (('birth', '1850-03-10'), ('baptism', '1850-03-08')),
+            (('death', '1900-01-05'), ('burial', '1900-01-03')),
+        )
+        for (ta, da), (tb, db) in cases:
+            with self.subTest(a=ta, b=tb):
+                with tempfile.TemporaryDirectory() as tmp:
+                    arc = _Archive(Path(tmp))
+                    a = arc.person('Margaret Cole', sex='F')
+                    b = arc.person('Margaret Cole', sex='F')
+                    caleb = arc.person('Caleb Cole', sex='M')
+                    if ta != 'birth':
+                        arc.claim('birth', [a], date='1830')
+                        arc.claim('birth', [b], date='1830')
+                    arc.claim(ta, [a], date=da)
+                    arc.claim(tb, [b], date=db)
+                    arc.parent(a, caleb)
+                    arc.parent(b, caleb)
+                    result = arc.scan()
+                    self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        m1 = self.a.person('Mary Cole', sex='F')
+        m2 = self.a.person('Mary Cole', sex='F')
+        self._born(m1, '1850')
+        self._born(m2, '1850')
+        self.a.claim('death', [m1], date='1880-03-01')
+        child = self.a.person('Ada Hartley', sex='F')
+        self._born(child, '1880-03-05')
+        self.a.parent(child, m2)
+        self.assertEqual(self._pairs(self.a.scan()), [frozenset((m1, m2))])
+
+    def test_a_family_imported_twice_still_offers_the_mother(self) -> None:
+        # Each copy of Mary has her own copy of Ada, whose day was typed
+        # 2 April on one and 20 April on the other. Joining the Marys must
+        # not read as two births 18 days apart.
+        m1 = self.a.person('Mary Cole', sex='F')
+        m2 = self.a.person('Mary Cole', sex='F')
+        self._born(m1, '1850')
+        self._born(m2, '1850')
+        c1 = self.a.person('Ada Hartley', sex='F')
+        c2 = self.a.person('Ada Hartley', sex='F')
+        self._born(c1, '1875-04-02')
+        self._born(c2, '1875-04-20')
+        self.a.parent(c1, m1)
+        self.a.parent(c2, m2)
+        self.assertIn(frozenset((m1, m2)), self._pairs(self.a.scan()))
+
+    def test_a_big_family_imported_twice_is_checked_quickly(self) -> None:
+        # One father entered twice with 250 children each entered twice: the
+        # father's claims must not be re-read for every child pair.
+        fathers = [self.a.person('Tom Hartley', sex='M') for _ in range(2)]
+        for f in fathers:
+            self._born(f, '1800')
+        rnd = random.Random(7)
+
+        def word() -> str:
+            return ''.join(rnd.choice('bcdfghjklmnprstvwz') + rnd.choice('aeiou')
+                           for _ in range(4)).title()
+
+        for k in range(250):
+            name = f'{word()} {word()}'
+            for f in fathers:
+                c = self.a.person(name, sex='U')
+                self._born(c, f'{1825 + k % 20}')
+                self.a.parent(c, f)
+        (self.a.root / 'sources' / 'notes' / 'claims_s-0000000000.md').write_text(
+            '---\nid: S-0000000000\ntitle: Claims\nsource_type: other\n---\n\n'
+            '## Claims\n```yaml\n' + ''.join(self.a._claims) + '```\n', encoding='utf-8')
+        index_mod.build_index(self.a.root, _lib.load_fha_yaml(self.a.root))
+        conn = _lib.open_index_db(self.a.root, ('persons', 'claims'))
+        try:
+            ctx = _lib.completeness_context(conn)
+            start = time.monotonic()
+            result = _lib.possible_duplicate_people(conn, ctx, set())
+            elapsed = time.monotonic() - start
+        finally:
+            conn.close()
+        self.assertEqual(len(result['pairs']), 251)
+        self.assertLess(elapsed, 5.0)
 
     def test_dates_that_fit_together_still_pair(self) -> None:
         a = self.a.person('Margaret Cole', sex='F')

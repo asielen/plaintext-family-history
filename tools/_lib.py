@@ -22181,33 +22181,77 @@ def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, di
     return out
 
 
+def _widened_plausibility_input(data: PlausibilityInput, years: int) -> PlausibilityInput:
+    """The same input with every date widened by `years` each way.
+
+    Two records of one person usually come from two sources, and two sources
+    disagree by days: a civil birth on the 10th and a baptism "on the 8th",
+    a death and a burial typed two days apart. Read at face value those say
+    "cannot be one person" and would hide a real duplicate he then never
+    merges. Widened by the same slack the scan allows approximate dates,
+    only a clash of years survives (a wife dead in 1880 marrying in 1885)."""
+    def widen(c: DatedClaim) -> DatedClaim:
+        return dataclasses.replace(
+            c, lo=None if c.lo is None else iso_plus_years(c.lo, -years),
+            hi=None if c.hi is None else iso_plus_years(c.hi, years))
+
+    out = PlausibilityInput(sex=dict(data.sex), parent_edges=data.parent_edges)
+    out.facts = {pid: {t: merge_fact_range([widen(c) for c in fr.claims])
+                       for t, fr in by_type.items()}
+                 for pid, by_type in data.facts.items()}
+    out.life_events = {pid: [widen(c) for c in cs] for pid, cs in data.life_events.items()}
+    out.marriages = [(widen(c), couple) for c, couple in data.marriages]
+    return out
+
+
 def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
-                            kin: set[str], statuses: tuple[str, ...]) -> bool:
+                            kin: set[str], statuses: tuple[str, ...],
+                            kin_vitals: dict[str, list[str]]) -> bool:
     """Would reading records a and b as one person give that person dates
     that cannot all be true? A widower's two wives of one name: the first
     died in 1880, the second married him in 1885, so one woman would marry
     after her own death.
 
     The question goes to the same rules `fha lint` runs (W163 to W170), over
-    the claims naming the two people and their parents, children and spouses
-    (`kin`), first as they stand and then with b read as a. Only a problem
-    the joining makes counts: a bad date one record already has on its own
-    is lint's to report there, and is no evidence against the pair."""
+    every claim naming the two people plus the births, baptisms, deaths and
+    burials of their parents, children and spouses (`kin`), first as they
+    stand and then with b read as a. Hiding a pair hides a real duplicate if
+    the answer is wrong, so only a clear clash counts:
+
+    - dates are widened by DUPLICATE_DATE_SLACK_YEARS before the joined
+      reading, so two sources a few days apart never count;
+    - a problem the records already have apart does not count, and neither
+      does any new one built on a claim already in such a problem: a death
+      typed before the birth on one record is lint's to report there, not
+      a reason the other record cannot be her.
+
+    `kin_vitals` caches each relative's own vital claims across pairs, so a
+    father of hundreds is read once, not once per child pair."""
     wanted = {a, b} | kin
     picked = list(dict.fromkeys(
-        cid for pid in sorted(wanted)
+        cid for pid in (a, b)
         for cid in ctx['person_claims'].get(pid, ()) if cid in claims))
+    for pid in sorted(kin):
+        if pid not in kin_vitals:
+            kin_vitals[pid] = [cid for cid, _c in _own_vital_claims(
+                ctx, pid, statuses, _PLAUSIBILITY_VITAL_TYPES) if cid in claims]
+        picked.extend(cid for cid in kin_vitals[pid] if cid not in picked)
     picked_claims = [claims[cid] for cid in picked]
     persons = {pid: ctx['persons'].get(pid) or {} for pid in wanted}
 
-    def problems(survivors: dict[str, str]) -> set[tuple]:
-        data = plausibility_input_from_claims(
-            picked_claims, persons, None, survivors, statuses=statuses)
-        return {(pr.kind, pr.pids) for pr in one_person_problems(data) + family_problems(data)}
+    def problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+        return one_person_problems(data) + family_problems(data)
 
-    before = {(kind, tuple(a if p == b else p for p in pids))
-              for kind, pids in problems({})}
-    return bool(problems({b: a}) - before)
+    apart = problems(plausibility_input_from_claims(
+        picked_claims, persons, None, {}, statuses=statuses))
+    before = {(pr.kind, tuple(a if p == b else p for p in pr.pids)) for pr in apart}
+    tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
+    joined = _widened_plausibility_input(plausibility_input_from_claims(
+        picked_claims, persons, None, {b: a}, statuses=statuses),
+        DUPLICATE_DATE_SLACK_YEARS)
+    return any((pr.kind, pr.pids) not in before
+               and not any(dc.claim_id in tainted for side in pr.claims for dc in side)
+               for pr in problems(joined))
 
 
 def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
@@ -22367,6 +22411,7 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
         return None
 
     claim_dicts: dict[str, dict] | None = None   # built when the first pair needs it
+    kin_vitals: dict[str, list[str]] = {}          # each relative's own vitals, read once
 
     seen_pairs: set[tuple[str, str]] = set()
     kept: list[dict] = []
@@ -22453,7 +22498,8 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 for pid in pair:
                     kin |= parents.get(pid, set()) | children.get(pid, set())
                     kin |= spouses.get(pid, set())
-                if _merge_makes_impossible(ctx, claim_dicts, a, b, kin - {a, b}, statuses):
+                if _merge_makes_impossible(ctx, claim_dicts, a, b, kin - {a, b}, statuses,
+                                           kin_vitals):
                     impossible += 1
                     continue
                 kept.append({
