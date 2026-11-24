@@ -29,7 +29,9 @@ current folder.
 - [`fha search`](#fha-search)
 - [`fha relate`](#fha-relate)
 - [`fha metrics`](#fha-metrics)
+- [`fha compare`](#fha-compare)
 - [`fha calendar`](#fha-calendar)
+- [`fha date`](#fha-date)
 - [`fha repositories`](#fha-repositories)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
@@ -200,6 +202,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -358,6 +361,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
+### `fha views ahnentafel`
+
+Print a numbered list of a person's ancestors, each fact with its source.
+
+```text
+Write a printed Ahnentafel report to generated/views/: the person is
+number 1, then 2 his father, 3 his mother, 4 his father's father, and
+so on, with dates, places and a note for each fact. A living relative
+is shown as "A living relative (not named)"; private records are left
+out. The numbering starts at 1 for the person asked about, whatever
+root_generation says.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person whose ancestors are listed (a living person is allowed). |
+| `--generations` `N` | How many generations to print, the person being the first (default 6, most 12). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
 ### `fha views clean`
 
 Delete every generated view file (companion .md + generated/views/ HTML); they regenerate with `fha views refresh`.
@@ -479,14 +503,17 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
+  fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
 A read-only view over accepted relationship claims: nothing is written.
 ```
 
 | Argument | What it does |
 |---|---|
-| `P-A` | First person: ID or full name |
-| `P-B` | Second person: ID or full name |
+| `[P-A]` | First person: ID or full name |
+| `[P-B]` | Second person: ID or full name |
+| `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 
@@ -520,6 +547,34 @@ nothing is written.
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
+## `fha compare`
+
+Every record about one fact of one person, side by side.
+
+```text
+Every record about one fact, side by side.
+
+  fha compare p-xxxxxxxxxx               Which facts of this person have records that disagree
+  fha compare "Mary Smith" --fact birth  Every birth or baptism record in one table: what it says,
+                                         when it was written, who told it, firsthand or not, and
+                                         which records are copies of one another
+  fha compare p-xxxxxxxxxx --fact death  death, marriage, parents, name, residence, or any claim type
+  fha compare p-xxxxxxxxxx --accepted-only   Leave out records not yet reviewed
+  fha compare p-xxxxxxxxxx --include-rejected   Also show rejected and superseded records
+  fha compare p-xxxxxxxxxx --json        The same answer as machine-readable JSON
+
+Read-only: nothing is written.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person, by ID or by full name |
+| `--fact` `FACT` | birth, death, marriage, parents, name, residence or any claim type (default: list the facts whose records disagree) |
+| `--accepted-only` | Only accepted claims (default also shows suggested and disputed) |
+| `--include-rejected` | Also show rejected and superseded claims |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
+
 ## `fha calendar`
 
 What happened in the family this month, or on this day?
@@ -546,6 +601,55 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
+
+## `fha date`
+
+Convert a date from the old calendar, a church feast or the Hebrew calendar
+
+```text
+Dates written in another calendar: the old (Julian) calendar, a church feast,
+or the Hebrew calendar. Prints the same day in today's calendar, its weekday,
+and the lines to put in a claim.
+
+  fha date convert "11 Feb 1731/32" --from julian
+  fha date convert 1918-02-14 --from gregorian
+  fha date convert "15 Nisan 5650" --from hebrew
+  fha date feast Michaelmas 1850
+  fha date feast Pokrov 1880 --church orthodox
+
+Pure arithmetic: nothing in the archive is read or written.
+```
+
+### `fha date convert`
+
+Convert a date from the old, today's or the Hebrew calendar
+
+```text
+Convert one date. Julian or Gregorian: 1732-02-11, "11 Feb 1732", "February 11, 1732", "Feb 1732", 1732, and a double year such as "11 Feb 1731/32". Hebrew: "15 Nisan 5650", "14 Adar II 5784".
+```
+
+| Argument | What it does |
+|---|---|
+| `DATE` | The date as the record writes it |
+| `--from` `{julian,gregorian,hebrew}` | The calendar the record uses: julian (the old calendar, "Old Style"), gregorian (today's) or hebrew |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
+
+### `fha date feast`
+
+The day a church feast or fast fell on in one year
+
+```text
+The day a church feast or fast fell on in one year. Names are matched exactly (accents and case aside): "Michaelmas", "St Stephen", "Easter Monday", "Pokrov". An unknown name lists the ones known.
+```
+
+| Argument | What it does |
+|---|---|
+| `NAME` | The feast, as the record names it |
+| `YEAR` | The year, e.g. 1850 |
+| `--church` `{western,orthodox}` | western (Catholic and Protestant, the default) or orthodox (kept in the old calendar) |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
 
 ## `fha repositories`
 
@@ -1284,11 +1388,11 @@ Append a dated entry to notes/discoveries.md
 
 ### `fha confirm draft`
 
-Accept AI-DRAFT prose markers in a person profile
+Accept AI-DRAFT prose markers in a person profile or a source record
 
 | Argument | What it does |
 |---|---|
-| `p-id` | The person whose profile to accept drafts in. |
+| `p-id|s-id` | The person profile or source record (a proof argument) whose drafts to accept. |
 | `--dry-run` | Preview the change without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -1306,7 +1410,7 @@ Enact a human-confirmed identity merge: tombstone + rename + fold + relink (SPEC
 
 ## `fha person`
 
-Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, relate, estimate, edit, note
+Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, set-external-id, relate, estimate, edit, note
 
 ```text
 Update a person's record directly, one field or section at a time.
@@ -1315,6 +1419,7 @@ Update a person's record directly, one field or section at a time.
   fha person promote <p-id> [--into FOLDER]
   fha person rename <p-id> "New Name" [--keep-variant]
   fha person set-living <p-id> true|false|unknown
+  fha person set-external-id <p-id> SITE ID [--replace]
   fha person relate <p-id> --parent|--child|--sibling|--spouse <p-id2>
   fha person estimate <p-id> --birth DATE --death DATE
   fha person edit <p-id> --section biography|stories|research --text TEXT
@@ -1515,6 +1620,27 @@ Set a person's sex: field. The numbered family-tree folders (Ahnentafel numberin
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the one-line change without writing. |
 
+### `fha person set-external-id`
+
+Record a person's profile id on another site (WikiTree, Ancestry, ...).
+
+```text
+Record which profile on another site is this person's, so the next capture and the WikiTree export match the right person.
+
+  fha person set-external-id p-2b3c4d5e6f wikitree Hartley-6084
+
+Writes or replaces one key in external_ids: and nothing else. A key the person already has with a different id needs --replace. An id another person already holds is refused, naming them. Preview with --dry-run.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person to update (e.g. p-2b3c4d5e6f). |
+| `SITE` | The site: wikitree, ancestry, familysearch, ... |
+| `ID` | The id as the site shows it (e.g. Hartley-6084). |
+| `--replace` | Replace an id the person already has for this site. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the change without writing. |
+
 ### `fha person relate`
 
 Jot an unsourced family-tie belief (parent/child/sibling/spouse).
@@ -1671,6 +1797,7 @@ Change a source record: note (append), edit-note (rewrite one), extract (PDF tex
 Update a source record directly, one field or section at a time, or merge
 two records of one piece of evidence into one.
 
+  fha source new --type proof-argument --title "..." [--people p-...]
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
@@ -1678,7 +1805,8 @@ two records of one piece of evidence into one.
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
   fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
-note appends a hand-written paragraph to a source's ## Notes section;
+new starts a written proof argument as a source record with no file; note
+appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
 text) and leaves the rest untouched; extract dumps the source PDF's embedded
 text layer into a derived [Page N]-labeled companion file (needs the pypdf
@@ -1714,6 +1842,31 @@ Preview the change first with --dry-run.
 | `--text` `TEXT` | The note to add, in your own words. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the change without writing. |
+
+### `fha source new`
+
+Start a written proof argument as a source record (no file needed).
+
+```text
+Start a written proof argument as a source record.
+
+  fha source new --type proof-argument --title "When Thomas Edward Hartley was born" \
+      [--people p-de957bcda1,p-075114a0f8] [--date 2026-11-22]
+
+Writes sources/proofs/{title}_{s-id}.md with the question, evidence, reasoning
+and conclusion headings empty, ready to write in. It is the one kind of source
+made without a file. Other kinds start from a document or a photo: put the file
+in the inbox and run `fha process <file>`. Preview with --dry-run.
+```
+
+| Argument | What it does |
+|---|---|
+| `--type` `TYPE` | Only proof-argument starts without a file. |
+| `--title` `TITLE` | What the argument settles, e.g. "When Thomas Edward Hartley was born". |
+| `--people` `P-IDS` | Comma-separated p-ids the argument is about. |
+| `--date` `EDTF` | When it was written (default: today). |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the path and file text without writing. |
 
 ### `fha source edit-note`
 

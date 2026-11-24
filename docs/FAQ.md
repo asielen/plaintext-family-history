@@ -104,4 +104,4 @@ When someone's living status changes (a relative dies, or a record turns out to 
 
 ### Does this manage my DNA matches and triangulation?
 
-No. The archive stores DNA *conclusions* ("these two people are related, and here's the proof") as ordinary claims and proof-argument sources, always kept private. Manage raw matches, shared centimorgans and triangulation in the tools built for that (Ancestry, GEDmatch, DNA Painter), then bring the conclusion back here as a claim.
+No. The archive stores DNA *conclusions* ("these two people are related, and here's the proof") as ordinary claims and proof-argument sources, always kept private. Manage raw matches, shared centimorgans and triangulation in the tools built for that (Ancestry, GEDmatch, DNA Painter), then bring the conclusion back here as a claim. The one exception is a lookup: `fha relate --cm 450` lists which relationships 450 shared centimorgans fits, and `fha relate A B` says how much DNA two people in your tree usually share. It stores nothing and never gives a percentage. The figures are from The Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.

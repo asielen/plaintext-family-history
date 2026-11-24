@@ -629,3 +629,235 @@ class FamilySheetReviewFixTests(_SheetBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+TFF = 'p-rrrrrrrrrr'   # Henry Hartley, John's father
+TFM = 'p-ssssssssss'   # Ruth Hartley, John's mother
+WF = 'p-tttttttttt'    # Amos Cole, father of the living Walter
+HID = 'p-uuuuuuuuuu'   # a great-grandfather behind a restricted record
+S_PAR_TF, S_PAR_W, S_MARR_TF, S_PAR_HID = 's-hhhhhhhhhh', 's-iiiiiiiiii', 's-jjjjjjjjjj', 's-kkkkkkkkk1'
+
+
+class AhnentafelTests(_SheetBase):
+    """`fha views ahnentafel`: his ancestors numbered the way genealogy books
+    print them (1 him, 2 his father, 3 his mother, 4 his father's father...),
+    each fact with a note, living relatives never named."""
+
+    def people(self):
+        return super().people() + [
+            (TFF, 'Henry Hartley', 'M', 'false', ''),
+            (TFM, 'Ruth Hartley', 'F', 'false', ''),
+            (WF, 'Amos Cole', 'M', 'false', ''),
+            (HID, 'Silas Hartley', 'M', 'false', ''),
+        ]
+
+    def sources(self):
+        return super().sources() + [
+            (S_PAR_TF, 'John parentage proof', 'Hartley Bible, John page.',
+             _rel('c-parTF00000', TF, [TFF, TFM]), '', None),
+            (S_PAR_W, 'Walter parentage proof', 'Cole Bible.',
+             _rel('c-parW000000', MF, [WF]), '', None),
+            (S_MARR_TF, 'Hartley marriage 1838', 'Breton County Marriage Book A, p. 1.',
+             _claim('c-marrTF0000', 'marriage', [TF, TM], '1838-04-10',
+                    roles=f'{{spouse: [{TF}, {TM}]}}', place='Fairview'), '', None),
+            (S_PAR_HID, 'DNA parentage', 'A DNA company report.',
+             _rel('c-parHID0000', TFF, [HID]), 'restricted: true\n', None),
+        ]
+
+    def run_ahn(self, pid=T, generations=6, fmt='md'):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = views.run_ahnentafel(self.root, pid, generations, fmt)
+        return result, out.getvalue(), err.getvalue()
+
+    def text(self, pid=T, generations=6, fmt='md') -> str:
+        result, out, err = self.run_ahn(pid, generations, fmt)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, out + err)
+        return Path(result.changed[0]).read_text(encoding='utf-8')
+
+    def test_numbers_follow_the_father_mother_slots(self):
+        text = self.text()
+        self.assertIn('# Ancestors of Thomas Edward Hartley', text)
+        self.assertRegex(text, r'(?m)^\*\*1\.\*\* Thomas Edward Hartley$')
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* John Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*3\.\*\* Ann Price \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*4\.\*\* Henry Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*5\.\*\* Ruth Hartley \[\d+\]$')
+        self.assertIn('## Generation 1', text)
+        self.assertIn('## Generation 2: parents', text)
+        self.assertIn('## Generation 3: grandparents', text)
+
+    def test_facts_carry_notes_and_the_marriage_prints_once(self):
+        text = self.text()
+        self.assertIn('- Born: 14 June 1840, Fairview, Breton County, Ohio [', text)
+        self.assertIn('- Died: 3 March 1941, Elm Creek, Kansas [', text)
+        self.assertEqual(text.count('Married: Ann Price, 10 April 1838, Fairview ['), 1)
+        self.assertNotIn('Married: John Hartley', text)
+        self.assertIn('Married: Margaret Cole, 2 May 1866, Fairview [', text)
+
+    def test_a_restricted_record_cuts_the_branch_above_it(self):
+        text = self.text()
+        self.assertNotIn('Silas Hartley', text)
+        self.assertNotIn('DNA', text)
+
+    def test_a_living_parent_is_a_label_and_her_parents_still_print(self):
+        text = self.text(M)
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* A living relative \(not named\) \[\d+\]$')
+        self.assertNotIn('Walter', text)
+        self.assertRegex(text, r'(?m)^\*\*3\.\*\* Sarah Cole \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*4\.\*\* Amos Cole \[\d+\]$')
+        self.assertIn('1 living relative is counted but not named', text)
+
+    def test_a_living_subject_prints_as_the_label_and_the_line_continues(self):
+        text = self.text(MF)
+        self.assertRegex(text, r'(?m)^\*\*1\.\*\* A living relative \(not named\)$')
+        self.assertIn('# Ancestors of a living relative', text)
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* Amos Cole \[\d+\]$')
+        self.assertNotIn('Walter', text)
+
+    def test_nobody_shown_is_refused(self):
+        # Ruth is living and her only parent on record is living too.
+        mother = 'p-rrrrrrrr01'
+        (self.root / 'people' / 'stubs' / f'x__{mother}.md').write_text(
+            _person(mother, 'Rose Elder', 'F', 'true'), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_ruth.md').write_text(
+            _source('s-ruth000001', 'Ruth parentage', 'Bible.',
+                    _rel('c-parRuth000', LIVSPOUSE, [mother])), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        result, _out, err = self.run_ahn(LIVSPOUSE)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('Everyone this report would list is living or private, '
+                      'so there is nothing to print.', err)
+        self.assertEqual(result.changed, [])
+
+    def test_a_living_subject_with_no_parents_is_told_so(self):
+        result, _out, err = self.run_ahn(LIVSPOUSE)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('no birth parent it can show', err)
+        self.assertNotIn('adoptive', err)
+
+    def test_restricted_subject_is_refused_without_a_name(self):
+        result, _out, err = self.run_ahn(CR)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertNotIn('Hidden', err)
+
+    def test_generations_stops_at_the_requested_depth(self):
+        text = self.text(T, 2)
+        self.assertIn('Ann Price', text)
+        self.assertNotIn('Henry Hartley', text)
+        self.assertNotIn('Generation 3', text)
+
+    def test_too_many_generations_is_clamped_with_a_note(self):
+        result, out, _err = self.run_ahn(T, 13)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('Showing 12 generations, the most a printed report goes to.', out)
+
+    def test_notes_are_listed_and_html_renders_people_not_a_notes_list(self):
+        text = self.text(fmt='html')
+        self.assertIn('Ancestors of Thomas Edward Hartley', text)
+        self.assertEqual(text.count('<ol class="report-notes">'), 1)
+        self.assertIn('<sup class="note">', text)
+        self.assertIn('Henry Hartley', text)
+        self.assertNotIn('<li value="4">Henry', text)
+
+    def test_rewrite_is_byte_identical(self):
+        first = self.text()
+        second = self.text()
+        self.assertEqual(first, second)
+
+    def test_a_person_met_twice_is_not_expanded_again(self):
+        # Ann Price is also made the mother of John: she sits at two numbers.
+        (self.root / 'sources' / 'vital-record' / 'x_loop.md').write_text(
+            _source('s-loop000001', 'Loop proof', 'Bible.',
+                    _rel('c-parTFloop0', TF, [TFF, TM])), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text()
+        self.assertIn('(also no. 3)', text)
+
+    def test_numbers_survive_a_markdown_preview(self):
+        # A preview renumbers a markdown list with gaps (4, 6, 7 shows as
+        # 1, 2, 3), so a person line must not be a list item.
+        text = self.text()
+        people_part = text.split('## Notes')[0]
+        self.assertNotRegex(people_part, r'(?m)^\d+\. ')
+        self.assertNotRegex(people_part, r'(?m)^ {1,3}\S')
+
+    def test_an_unreadable_file_is_named_before_nothing_to_print(self):
+        # Amos's file has a typo, which cuts off the only deceased line above
+        # the living Walter: he must be told which file, not just "private".
+        path = self.root / 'people' / 'stubs' / f'x__{WF}.md'
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'tier: stub\n', 'tier: stub\nnotes: [unclosed\n'), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        result, _out, err = self.run_ahn(MF)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn(f'x__{WF}.md', err)
+        self.assertIn('fha index', err)
+        self.assertIn('nothing to print', err)
+
+    def test_a_second_marriage_met_at_a_second_number_still_prints(self):
+        # George's son by Alice married George's daughter by Betty: George is
+        # no. 4 beside Alice and no. 6 beside Betty, and both weddings print.
+        gg, ga, gb, fr, ma, sam = ('p-gggggggg01', 'p-gggggggg02', 'p-gggggggg03',
+                                   'p-gggggggg04', 'p-gggggggg05', 'p-gggggggg06')
+        for pid, name, sex in ((gg, 'George Grand', 'M'), (ga, 'Alice First', 'F'),
+                               (gb, 'Betty Second', 'F'), (fr, 'Fred Grand', 'M'),
+                               (ma, 'Mary Grand', 'F'), (sam, 'Sam Grand', 'M')):
+            (self.root / 'people' / 'stubs' / f'x__{pid}.md').write_text(
+                _person(pid, name, sex, 'false'), encoding='utf-8')
+        claims = (_rel('c-grFred0001', fr, [gg, ga]) + _rel('c-grMary0001', ma, [gg, gb])
+                  + _rel('c-grSam00001', sam, [fr, ma])
+                  + _claim('c-grMarA0001', 'marriage', [gg, ga], '1880',
+                           roles=f'{{spouse: [{gg}, {ga}]}}', place='Fairview')
+                  + _claim('c-grMarB0001', 'marriage', [gg, gb], '1890',
+                           roles=f'{{spouse: [{gg}, {gb}]}}', place='Fairview'))
+        (self.root / 'sources' / 'vital-record' / 'x_grand.md').write_text(
+            _source('s-grand00001', 'Grand family Bible', 'Bible.', claims), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text(sam)
+        self.assertIn('(also no. 4)', text)
+        self.assertEqual(text.count('Married: Alice First, 1880'), 1)
+        self.assertEqual(text.count('Married: Betty Second, 1890'), 1)
+
+    def test_number_ones_wives_print_in_marriage_order(self):
+        # His second wife's record id sorts before his first wife's: the
+        # weddings must still read in the order they happened.
+        early = 'p-aaaaaaaaab'
+        (self.root / 'people' / 'stubs' / f'x__{early}.md').write_text(
+            _person(early, 'Edna Early', 'F', 'false'), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_marr_e.md').write_text(
+            _source('s-marrE00001', 'Second marriage', 'Marriage Book C.',
+                    _claim('c-marrE00000', 'marriage', [T, early], '1890',
+                           roles=f'{{spouse: [{T}, {early}]}}', place='Fairview')),
+            encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text()
+        self.assertLess(text.index('Married: Margaret Cole'), text.index('Married: Edna Early'))
+
+    def _adopted_only(self, child, living):
+        (self.root / 'people' / 'stubs' / f'x__{child}.md').write_text(
+            _person(child, 'Adam Adopted', 'M', living), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_adopt.md').write_text(
+            _source('s-adopt00001', 'Adoption decree', 'Breton County Probate Court.',
+                    _claim('c-adopt00000', 'relationship', [child, T, M], '',
+                           roles=f'{{child: {child}, parent: [{T}, {M}]}}',
+                           subtype='adoptive')), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def test_a_living_son_with_only_adoptive_parents_is_told_why(self):
+        # Not "living or private": his adoptive parents are neither.
+        self._adopted_only('p-adadad0001', 'true')
+        result, _out, err = self.run_ahn('p-adadad0001')
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertNotIn('living or private', err)
+        self.assertIn('no birth parent it can show', err)
+        self.assertIn('adoptive', err)
+
+    def test_the_printed_page_never_hints_at_an_adoptive_or_withheld_parent(self):
+        # The reason is for him at the keyboard; a relative reading the page
+        # must not learn that an adoption, or a withheld parent, is on file.
+        self._adopted_only('p-adadad0002', 'false')
+        text = self.text('p-adadad0002')
+        self.assertNotIn('Thomas Edward Hartley', text)
+        self.assertNotIn('adoptive', text)
+        self.assertNotIn('birth parent', text)

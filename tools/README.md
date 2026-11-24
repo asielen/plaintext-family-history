@@ -28,9 +28,11 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `backup.py` | fha backup: a dated zip snapshot of the archive |
 | `capture.py` | fha capture: bring web records into the inbox (TOOLING §13b) |
 | `claim.py` | fha claim: human-directed claim review + minting (AGENTS.md, SPEC §8) |
+| `compare.py` | fha compare: every record about one fact of one person, side by side (TOOLING §7d). Flags: `--fact`, `--accepted-only`, `--include-rejected`, `--json`, `--root` all ✓ implemented; read-only, so no `--dry-run`. Exit codes 0 shown, 1 no such person or no records for that fact, 2 bad ID or a name that matches several people, 3 index missing |
 | `confirm.py` | fha confirm: human-directed write-back for detection candidates |
 | `convert_mining.py` | fha convert-mining: convert an older transcript-mining output into sources and claims |
 | `cooccur.py` | fha cooccur: connection candidate detection over the claim index |
+| `dates.py` | fha date: convert old-calendar, feast and Hebrew dates (TOOLING §4b) |
 | `doctor.py` | fha doctor: archive health check |
 | `fha.py` | the `fha` dispatcher |
 | `find.py` | fha find: the universal locator |
@@ -43,7 +45,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `metrics.py` | fha metrics: person completeness checks and archive totals (TOOLING §7a) |
 | `normalize_links.py` | fha normalize-links: settle citations to their canonical form |
 | `packet.py` | fha packet: build a person data-export packet |
-| `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c) |
+| `person.py` | fha person: deterministic person-field write-backs (TOOLING §3c). `set-external-id`: `--replace`, `--dry-run`, `--root` all ✓ implemented |
 | `photoindex.py` | fha photoindex: photo metadata catalog |
 | `places.py` | fha places: place registry hygiene, recurrence detection, linking claims to registered places and registering a backlog in one reviewed batch, geocoding from GeoNames (one reviewed batch) and human-directed edits |
 | `process.py` | fha process: Stage A of the intake pipeline |
