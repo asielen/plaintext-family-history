@@ -102,7 +102,8 @@
   {% if person.pedigree %}
   <details class="chart" open>
     <summary class="chart-title">{{ person.chart_title }}</summary>
-    <div class="chart-body">{{ person.pedigree }}</div>
+    <div class="chart-body">{{ person.pedigree }}
+      <div class="chart-save" data-for="{{ person.pedigree_chart }}"></div></div>
   </details>
   {% endif %}
 
@@ -114,7 +115,8 @@
       there, and the wrap runs on a click, after the page has loaded. -#}
   <details class="chart">
     <summary class="chart-title">Ancestor fan</summary>
-    <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div></div>
+    <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div>
+      <div class="chart-save" data-for="{{ person.fan_chart }}"></div></div>
   </details>
   {% if not person.descendants_tree %}<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>{% endif %}
   <script>
@@ -293,7 +295,7 @@
   {% if person.research_living %}<details class="wb-research"><summary>This person may still be living. Open the searches</summary>{% endif %}
   <p class="wb-later">{% if person.research_living %}Only the name goes into these searches: no dates, places or relatives, because this person may be alive.{% else %}Each link opens that website's own search, filled in from this page: name, years give or take two, places, and the names of parents and spouse who have died.{% endif %} Nothing is sent to a website until you click its link.</p>
   <ul class="wb-research-links">
-    {% for l in person.research_links %}<li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-wb-search="{{ l.key }}">{{ l.label }}</a> <span class="wb-later">{{ l.note }}</span></li>
+    {% for l in person.research_links %}<li><a href="{{ l.url }}" target="_blank" rel="noopener noreferrer" referrerpolicy="no-referrer" data-wb-search="{{ l.key }}" data-wb-search-args='{{ l.args | tojson }}'>{{ l.label }}</a> <span class="wb-later">{{ l.note }}</span>{% if l.searched %} <span class="wb-searched">{{ l.searched }}</span>{% endif %}</li>
     {% endfor %}
   </ul>
   {% if person.research_living %}</details>{% endif %}
