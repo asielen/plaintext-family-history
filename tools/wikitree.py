@@ -131,6 +131,10 @@ from _lib import (
     normalize_id,
     open_index_db,
     carried_living_message,
+    CLAIM_SHOWN,
+    CLAIM_UNWORDED,
+    CLAIM_WITHHELD,
+    indexed_claim_verdict,
     person_is_living,
     person_merge_chain,
     person_restricted_names,
@@ -1042,10 +1046,13 @@ def _render_templates(
 ) -> list[str]:
     """Render infobox templates for the subject from the claim-type hooks file.
 
-    Skips any claim naming a record-restricted person (same
-    `_claim_names_restricted_person` guard as the Research Notes items - a
+    Judged by who each claim names (`_claim_verdict`, the shared rule the
+    site and GEDCOM read): a claim about a living or possibly-living person,
+    or naming a record-restricted one, is skipped; a claim about the
+    deceased subject that also names a living godparent or witness is kept
+    with its `value` text left out, since that wording usually names him. A
     template field can carry a claim's value/place text, and this generated
-    surface is never seen by the body-prose privacy scans).
+    surface is never seen by the body-prose privacy scans.
 
     Negated claims are excluded (COALESCE(c.negated, 0) = 0), same as
     `_spacetime_index`: an infobox template ({{Birth|place=...}}) is a
@@ -1084,8 +1091,9 @@ def _render_templates(
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
     person_cache: dict[str, bool] = {}
-    rows = [r for r in rows
-            if not _claim_names_restricted_person(conn, archive_root, r['id'], person_cache)]
+    verdicts = {r['id']: _claim_verdict(conn, archive_root, r['id'], r['type'], person_cache)
+                for r in rows}
+    rows = [r for r in rows if verdicts[r['id']] != CLAIM_WITHHELD]
     out: list[str] = []
     for c in rows:
         spec = templates.get(c['type'])
@@ -1098,6 +1106,8 @@ def _render_templates(
         parts = [str(name)]
         if isinstance(fields, dict):
             for wt_field, claim_attr in fields.items():
+                if str(claim_attr) == 'value' and verdicts[c['id']] == CLAIM_UNWORDED:
+                    continue
                 val = _claim_attr(conn, c, str(claim_attr))
                 if val:
                     parts.append(f'{wt_field}={val}')
@@ -1107,12 +1117,15 @@ def _render_templates(
     return out
 
 
-def _claim_names_restricted_person(
-    conn: sqlite3.Connection, archive_root: Path, claim_id: str,
+def _claim_verdict(
+    conn: sqlite3.Connection, archive_root: Path, claim_id: str, claim_type: str | None,
     cache: dict[str, bool],
-) -> bool:
-    """True when any person named on the claim carries a record-file
-    `restricted` marker (any value, including by-request).
+) -> str:
+    """What WikiTree may do with one claim, by who it names: the shared
+    rule (`_lib.claim_people_verdict`, SPEC §21) with WikiTree's own
+    readers. Living means `person_is_living` (living or unknown, merges
+    followed); restricted means any person named on the claim carries a
+    record-file `restricted` marker (any value, including by-request).
 
     The index has no person-level restricted column (same constraint
     `_restricted_person_refs` documents), so each named person's record is
@@ -1129,11 +1142,11 @@ def _claim_names_restricted_person(
     """
     # Merges followed (#237): a claim naming an old merged id names the
     # survivor, so the survivor's marker withholds it (`_chain_flagged_record`).
-    for row in conn.execute('SELECT person_id FROM claim_persons WHERE claim_id = ?',
-                            (claim_id,)).fetchall():
-        if _chain_flagged_record(conn, archive_root, row['person_id'], cache=cache) is not None:
-            return True
-    return False
+    return indexed_claim_verdict(
+        conn, claim_id, claim_type,
+        withheld=lambda pid: person_is_living(conn, pid),
+        restricted=lambda pid: _chain_flagged_record(
+            conn, archive_root, pid, cache=cache) is not None)
 
 
 def _research_notes_lines(
@@ -1154,18 +1167,20 @@ def _research_notes_lines(
     Privacy mirrors `_render_templates`' source guards (restricted / DNA /
     publication_ok:false withhold the item entirely - the claim's wording
     likely derives from the withheld source), plus: a restricted claim
-    never exports, a claim naming any living or possibly-living person is
-    withheld (the subject is already confirmed deceased by the export's
-    refusal gate, but a parked claim can name others), and a claim naming a
-    person whose RECORD carries a restricted marker - deceased by-request
-    people included - is withheld via `_claim_names_restricted_person`
-    (the body-prose restricted scans never see these generated items, so
-    the guard lives here). Sources are named in plain text, not via the
+    never exports, and only a claim naming nobody withheld exports
+    (`_claim_verdict` says `CLAIM_SHOWN`). A claim naming any living or
+    possibly-living person is withheld, even one the site keeps without
+    its wording: the subject is already confirmed deceased by the export's
+    refusal gate, but this item IS the claim's wording and its source's
+    title, which name the others. A claim naming a person whose RECORD
+    carries a restricted marker, deceased by-request people included, is
+    withheld too (the body-prose restricted scans never see these
+    generated items, so the guard lives here). Sources are named in plain text, not via the
     <ref> machinery - that stays reserved for cited facts.
     """
     rows = conn.execute(
         f"""
-        SELECT DISTINCT c.id, c.value, c.date_edtf, c.date_min, s.title AS source_title
+        SELECT DISTINCT c.id, c.type, c.value, c.date_edtf, c.date_min, s.title AS source_title
         FROM claim_persons cp
         JOIN claims c ON cp.claim_id = c.id
         LEFT JOIN sources s ON s.id = c.source_id
@@ -1177,16 +1192,14 @@ def _research_notes_lines(
         """,
         (pid,),
     ).fetchall()
-    # A claim naming anyone living is withheld, merges followed: a claim
-    # written with a merged duplicate's old id names the survivor (#237).
-    rows = [r for r in rows if not any(
-        person_is_living(conn, p['person_id']) for p in conn.execute(
-            'SELECT person_id FROM claim_persons WHERE claim_id = ?', (r['id'],)))]
     if restricted_claims:
         rows = [r for r in rows if normalize_id(str(r['id'])) not in restricted_claims]
+    # A claim naming anyone living or restricted is withheld, merges
+    # followed: a claim written with a merged duplicate's old id names the
+    # survivor (#237).
     person_cache: dict[str, bool] = {}
     rows = [r for r in rows
-            if not _claim_names_restricted_person(conn, archive_root, r['id'], person_cache)]
+            if _claim_verdict(conn, archive_root, r['id'], r['type'], person_cache) == CLAIM_SHOWN]
     items: list[str] = []
     for r in rows:
         line = f"* Unconfirmed: {r['value']}"

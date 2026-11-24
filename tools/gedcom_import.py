@@ -5,6 +5,7 @@ gedcom_import.py - fha gedcom import: import a family tree file such as an Ances
   fha gedcom import <file.ged> [--root PATH]              Dry-run: print the import plan
   fha gedcom import <file.ged> --apply [--root PATH]      Write the records
   fha gedcom import <file.ged> --plan-out FILE            Also write the FULL plan text
+  fha gedcom import <file.ged> --as-new-tree              A newer download as a separate tree
 
 Someone leaves Ancestry (or any genealogy program) with a `.ged` file holding
 years of work, and the archive's answer must not be "start over."  This tool
@@ -27,6 +28,15 @@ failed apply leaves zero trace.  The audit CSV
 (`.cache/gedcom_import/{sha12}.csv`) is the FINAL write: it is both the
 xref-to-minted-id mapping and the re-run sentinel, so a rolled-back run leaves
 no sentinel and a completed run can never be applied twice.
+
+A newer download of a tree already imported is not imported again from
+scratch, which would make every person a second time. It is planned as an
+update: the people are matched to the records the earlier import made, and
+only new people and statements the tree changed are listed. A person who
+cannot be matched for certain is listed with the reason and nothing is planned
+for them. The earlier import is found from its source record and its filed
+copy, never from `.cache` alone. This plan can be read but not applied yet
+(`--apply` refuses it); see the "A newer download" section below.
 
 The one privacy-relevant default this tool writes is the `living:` flag - see
 `living_flag_for_import` below.  Everything else enters at the stub/suggested
@@ -65,10 +75,25 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #
 #  Mapping
 #    build_plan                - parse + mint + map everything (no writes)
+#    _map_file: every INDI then every FAM of one file (no ids minted)
 #    _map_individual           - one INDI → stub fields + claims
 #    _map_family               - one FAM → marriage/divorce/relationship claims
 #    _scan_existing_persons    - dedupe candidates from people/**/*.md
 #    _birth_window             - (earliest, latest) birth year for the dedupe overlap test
+#
+#  A newer download of a tree already imported (plan only)
+#    _gedcom_source_paths: the earlier imports' source records, found by what they say
+#    _read_prior_imports: each earlier import, with its people and its statements
+#    _read_filed_copy: the earlier download itself, re-read from documents/
+#    _audit_people: the cache's record-number list (fills gaps only)
+#    _same_tree: is this file a newer download of an earlier import?
+#    _match_people: who is who (certain, or held with the reason)
+#    _number_doubt: when the same record number is not the same person
+#    _new_fact / _old_fact: one statement in its comparison shape
+#    _judge: same / decided / new / more detail / changed
+#    _date_relation / _place_relation: the two comparisons "changed" turns on
+#    _plan_update: turn a mapped plan into "only what changed"
+#    _reimport_question_block: the questions.md entry a changed statement gets
 #
 #  Rendering
 #    _person_stub_text / _person_filename
@@ -76,6 +101,8 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #
 #  Plan/apply + CLI
 #    _plan_lines / print_plan
+#    _update_plan_lines: the plan text for a newer download
+#    _duplicate_lines / _file_note_lines: plan parts both kinds of plan share
 #    _missing_ancestors / _unreachable_anchor - dead-drive-safe parent walks
 #    _preflight_apply          - sentinel/collision/reachability refusals, pre-write
 #    _require_valid_frontmatter - render guard: never write a corrupt record
@@ -98,7 +125,7 @@ import shutil
 import sqlite3
 import sys
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
@@ -120,6 +147,9 @@ from _lib import (
     EXIT_WARNINGS,
     FhaConfigError,
     Result,
+    claim_person_pids,
+    claim_role_pids,
+    claim_spouse_pids,
     configure_utf8_stdout,
     edtf_bounds,
     fmt_id_display,
@@ -133,9 +163,11 @@ from _lib import (
     load_fha_yaml,
     mint_ids,
     normalize_date,
+    normalize_place_text,
     parse_filename,
     path_to_alias,
     photoindex_status,
+    person_alias_map,
     read_record,
     resolve_path,
     resolve_root_arg,
@@ -144,6 +176,7 @@ from _lib import (
     shell_quote,
     fha_launcher,
     sqlite_readonly_uri,
+    through_survivors,
     yaml_inline,
 )
 
@@ -995,6 +1028,15 @@ class _Claim:
     roles: dict | None = None      # {'spouse': [..]} / {'child': pid, 'parent': [..]}
     notes: str | None = None
     fam_xref: str = ''             # '' for INDI-derived claims
+    # A statement without the people's names or the record number ("born 12
+    # JAN 1878, Springfield, Illinois", "married 5 JUN 1897, Fairview"); ''
+    # on parent-child claims. A newer download's statement is compared with
+    # the earlier one's by these words, so a renamed or renumbered person, or
+    # a spouse whose name the tree respelled, still said the same thing.
+    said: str = ''
+    # The date as the file wrote it, when it could not be read into `date`
+    # ("INT 1878 (guess)"): the only way to tell two such dates apart.
+    raw_date: str = ''
 
 
 @dataclass
@@ -1028,6 +1070,29 @@ class ImportPlan:
     markup_cleaned: int = 0                # values that had web-page codes cleaned
     photo_links: list['_PhotoLink'] = field(default_factory=list)  # photos the old program linked
     photo_catalog: str = 'ready'           # 'ready' or why the photo catalog could not be used
+    # 'update' when the file is a newer download of a tree already imported.
+    # Then `stubs` holds only the people who are new and `claims` only the
+    # statements that would be added; no id is minted (new people carry a
+    # `new:@I11@` placeholder, `sid` is '' and the two destination paths name
+    # their folders only), so the same archive and file always give the same
+    # plan. Everything below is empty in a first import.
+    mode: str = 'new'
+    tree_note: str = ''                    # first import beside an earlier one: why it is not an update
+    file_people: int = 0                   # individuals in the file
+    prior: list['_PriorImport'] = field(default_factory=list)    # newest first
+    other_copies: list[str] = field(default_factory=list)        # same tree, kept as a separate copy
+    unread_copies: list[str] = field(default_factory=list)       # earlier filed copies not readable
+    unreadable_records: list[str] = field(default_factory=list)  # earlier import records not readable
+    matches: dict[str, '_Match'] = field(default_factory=dict)   # by the newer file's record number
+    held: dict[str, '_Held'] = field(default_factory=dict)       # not matched for certain, with the reason
+    facts: list['_Fact'] = field(default_factory=list)           # every statement of matched and new people
+    questions: list['_Question'] = field(default_factory=list)   # one per changed statement
+    held_statements: int = 0               # statements left out with a held or removed person
+    gone_facts: list[str] = field(default_factory=list)          # plain lines, as are the four below
+    gone_people: list[str] = field(default_factory=list)
+    removed_people: list[str] = field(default_factory=list)
+    name_changes: list[str] = field(default_factory=list)
+    death_now: list[str] = field(default_factory=list)
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -1038,7 +1103,15 @@ def _event_value(display: str, verb: str, node: _Node, xref: str) -> str:
     The date goes in AS WRITTEN (SPEC §11: the value keeps the source's
     wording; `date:` carries the best EDTF), so an unparseable `AFT 1900` or
     interpreted date is preserved even when the date field is omitted."""
-    head = f'{display}: {verb}' if display else verb
+    words = _event_words(verb, node)
+    head = f'{display}: {words}' if display else words
+    return f'{head} (GEDCOM {xref})'
+
+
+def _event_words(verb: str, node: _Node) -> str:
+    """What one event line says, without the person's name: the verb, the
+    line's own value, the date as written and the place."""
+    head = verb
     if node.value.strip() and node.value.strip().upper() != 'Y':
         head += f' {node.value.strip()}'
     date_raw = node.child_value('DATE')
@@ -1048,7 +1121,7 @@ def _event_value(display: str, verb: str, node: _Node, xref: str) -> str:
     bits = [head]
     if place:
         bits.append(place)
-    return f'{", ".join(bits)} (GEDCOM {xref})'
+    return ', '.join(bits)
 
 
 def _source_citation_bits(node: _Node, sour_titles: dict[str, str],
@@ -1150,6 +1223,8 @@ def _map_individual(
             place_text=node.child_value('PLAC') or None,
             confidence='medium' if cites else 'low',
             anchor=f'line {node.line}', subtype=subtype, notes=notes,
+            said=_event_words(verb, node),
+            raw_date=date_raw if date_raw and not edtf else '',
         )
 
     for node in indi.children:
@@ -1182,6 +1257,7 @@ def _map_individual(
                 persons=[pid], date=None, place_text=None,
                 confidence='low', anchor=f'line {node.line}',
                 notes=rest.strip().replace('\n', ' ') or None,
+                said=text,
             ))
             continue
         if tag in _EVENT_MAP:
@@ -1324,6 +1400,8 @@ def _map_family(
             roles={'spouse': list(spouse_pids[:2])},
             notes=f'GEDCOM cites: {"; ".join(cites)}' if cites else None,
             fam_xref=fam.xref,
+            said=_event_words(phrase, node),
+            raw_date=date_raw if date_raw and not edtf else '',
         ))
 
     marr = fam.child('MARR')
@@ -1433,11 +1511,16 @@ def _scan_existing_persons(archive_root: Path) -> list[dict]:
             'birth_window': _birth_window(meta.get('birth')),
             'birth_raw': str(meta.get('birth') or ''),
             'path': path,
+            # Read by the newer-download plan, which matches people by sex
+            # too and follows a merged record to its survivor.
+            'sex': str(meta.get('sex') or '').strip().upper(),
+            'meta': meta,
         })
     return out
 
 
-def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
+def _find_duplicates(archive_root: Path, stubs: list[_PersonStub],
+                     existing: list[dict] | None = None) -> list[str]:
     """Report lines for incoming people who look like someone already filed.
 
     Match rule (plan §dedupe): normalized name tokens equal AND birth windows
@@ -1445,8 +1528,12 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
     absent and the names match exactly. Two plain years therefore still match
     within ±2, as before. Import
     proceeds regardless; merging identities is a human decision (the
-    merge-identities skill, and plan 16's confirmed write-back)."""
-    existing = _scan_existing_persons(archive_root)
+    merge-identities skill, and plan 16's confirmed write-back).
+
+    `existing` is a people scan the caller already made (the newer-download
+    plan reads people/ once and shares it)."""
+    if existing is None:
+        existing = _scan_existing_persons(archive_root)
     if not existing:
         return []
     by_key: dict[tuple[str, ...], list[dict]] = {}
@@ -1486,6 +1573,1336 @@ def _find_duplicates(archive_root: Path, stubs: list[_PersonStub]) -> list[str]:
     return lines
 
 
+# ── A newer download of a tree already imported ───────────────────────────────
+#
+# He downloads his tree again a year later, after a winter of adding cousins.
+# Importing that file the way the first one was imported would make every
+# person a second time. So a newer download is planned as an update: who in
+# the file is already a record here, who is new, and which statements the
+# newer file makes that the archive does not already have.
+#
+# Three rules shape all of it:
+#
+# * Show, never guess. A person is matched only on evidence that cannot
+#   reasonably point at someone else (see `_match_people`). Everyone else is
+#   listed with the reason, and nothing is planned for them: no second record,
+#   no statement attached to a person who may be the wrong one.
+# * What he did stands. The comparison is download against download: a
+#   statement the newer file words exactly as the earlier one did is never
+#   planned again, whatever he has since done with it here (corrected its
+#   date, reworded it, rejected it, deleted it). Only a statement the tree
+#   itself changed is looked at, and then against the archive as it is now.
+# * The records are the memory. Which earlier person a record number stood for
+#   is read from the earlier import's own claims (their `(GEDCOM @I1@)` and
+#   `persons:`) and from its filed copy, so it survives a lost `.cache` and a
+#   new computer. The audit CSV only fills in people who had no statement.
+#
+# Nothing here writes, and no id is minted: the same archive and the same file
+# always give the same plan.
+
+_GEDCOM_TAIL_RE = re.compile(r'\s*\(GEDCOM (@[^@\s]+@)\)\s*$')
+_GEDCOM_SUBTYPE_RE = re.compile(rb'^subtype:[ \t]*[\'"]?gedcom\b', re.M | re.I)
+_SINGLE_TYPES = frozenset({'birth', 'death', 'burial'})     # one per person
+_COUPLE_TYPES = frozenset({'marriage', 'divorce'})          # one per couple
+_FAMILY_TYPES = _COUPLE_TYPES | {'relationship'}            # value ends in a FAM number
+_SETTLED_STATUSES = frozenset({'rejected', 'superseded'})   # he already decided these
+_SAME_TREE_SHARE = 0.5     # share of an earlier import's people a newer download must hold
+_NEW_PERSON = 'new:'       # stands in for the id of a person the plan would add
+_OLD_PERSON = 'old:'       # stands in for a person of an earlier file until the records name them
+_US_NAMES = frozenset({'us', 'usa', 'u.s.', 'u.s.a.', 'united states',
+                       'united states of america'})
+_QUESTION_HEADINGS = {
+    'birth': 'When and where was {a} born?',
+    'death': 'When and where did {a} die?',
+    'burial': 'When and where was {a} buried?',
+    'marriage': 'When and where did {a} and {b} marry?',
+    'divorce': 'When did {a} and {b} divorce?',
+}
+_PARENT_HEADINGS = {'adoptive': 'Who adopted {a}?', 'foster': 'Who fostered {a}?'}
+
+
+def _already_imported(imported: str | None, sid: str | None) -> str:
+    """The one refusal for a file the archive already holds byte for byte."""
+    return (f'this GEDCOM was already imported on {imported or "an earlier date"} as '
+            f'{sid or "a source record"}. Importing the same file again would add '
+            'nothing. If you have downloaded a newer copy of your tree, run the import '
+            'on that file: the plan shows only what changed.')
+
+
+@dataclass(eq=False)
+class _PriorPerson:
+    """One person of an earlier download, and what the archive says became of them.
+
+    `state` is 'present' (the record is on file, or its merge survivor is),
+    'removed' (he deleted the record), 'unknown' (no statement says which
+    record this person became) or 'split' (the earlier statements about this
+    record number now name more than one person). Only a present or removed
+    person can be matched; the other two are reported.
+
+    Names, sexes and births hold everything known: what the earlier download
+    said and what the record says today. A name he corrected by hand must not
+    cost the person their match, and neither must a name the tree still spells
+    the old way."""
+
+    sid: str
+    xref: str                      # '' when only a family statement names them
+    pid: str                       # '' for 'unknown' and 'split'
+    state: str
+    label: str                     # the name to show: the record's, else the file's
+    names: set[tuple[str, ...]] = field(default_factory=set)
+    labels: list[str] = field(default_factory=list)      # names as written, for wording
+    sexes: set[str] = field(default_factory=set)
+    births: list[str] = field(default_factory=list)      # as stored (EDTF or as typed)
+    windows: list[tuple[int, int]] = field(default_factory=list)
+    uid: str = ''
+    note: str = ''                 # 'split': the ids the statements name
+
+    @property
+    def ident(self) -> str:
+        return self.pid or f'{self.sid}:{self.xref}'
+
+
+@dataclass(eq=False)
+class _OldFact:
+    """One statement the earlier download made, as the archive holds it now.
+
+    `text` and `orig_parents` are the tree's own words (taken from the filed
+    copy when it can be read), while `date`, `place` and `parents` are the
+    record's fields today, hand edits included. `live` is False for a claim he
+    rejected or superseded, and for a statement of the earlier file that has no
+    claim any more because he deleted it (`cid` is '' then)."""
+
+    kind: str                      # 'single' | 'couple' | 'parents' | 'multi'
+    key: tuple
+    text: str
+    date: str
+    place: str
+    live: bool
+    cid: str
+    people: frozenset[str]
+    value: str = ''
+    parents: frozenset[str] = frozenset()
+    orig_parents: frozenset[str] = frozenset()
+    joined: bool = False           # tied to its line in the filed copy
+    # The key under the people the filed copy named, when he has since
+    # re-pointed the claim to someone else (a corrected spouse, a statement
+    # moved to a brother). A newer file that repeats the tree's old words is
+    # found by it and judged by those words only, never by the fields of a
+    # claim that is now about someone else.
+    orig_key: tuple | None = None
+    orig_only: bool = False        # this copy is filed under `orig_key`
+    # A repeatable statement (an occupation, a residence) he reworded: also
+    # filed under its wording now, so a tree that makes the same correction
+    # is not planned as a second claim.
+    now_key: tuple | None = None
+    raw_date: str = ''             # the filed copy's unread date wording
+
+
+@dataclass(eq=False)
+class _PriorImport:
+    """One earlier `fha gedcom import` of this archive, read from its source record."""
+
+    sid: str
+    record_path: Path
+    file_name: str                 # the download's own name
+    file_alias: str                # the filed copy, alias form
+    imported: str                  # the record's created: date
+    people: list[_PriorPerson]
+    facts: list[_OldFact]
+    copy_read: bool                # the filed copy was there to compare with
+    copy_hash: str                 # its sha256, '' when unreadable
+    # The folder the filed copy lives in, when that whole folder is not here
+    # (a documents drive not plugged in), as opposed to the copy alone being
+    # gone. '' otherwise.
+    copy_folder_missing: str = ''
+
+
+@dataclass
+class _Incoming:
+    """One person of the newer file, as matching sees them."""
+
+    xref: str
+    label: str
+    names: set[tuple[str, ...]]
+    sex: str
+    birth: str | None
+    window: tuple[int, int] | None
+    uid: str
+
+
+@dataclass
+class _Match:
+    xref: str
+    pid: str
+    how: str                       # 'record number' | 'program id'
+    person: _PriorPerson
+
+
+@dataclass
+class _Held:
+    """A person of the newer file who could not be matched for certain.
+
+    Nothing is planned for them. `likely` is the one earlier person the name
+    and birth date fit, when exactly one does. `resembles` says they look like
+    someone of the earlier download at all, which is what tells a renumbered
+    copy of the same tree from a different tree."""
+
+    xref: str
+    label: str
+    reason: str
+    likely: _PriorPerson | None = None
+    about: list[str] = field(default_factory=list)       # ids the reason names
+    resembles: bool = True
+
+
+@dataclass(eq=False)
+class _Fact:
+    """One statement of the newer file about people who are matched or new."""
+
+    claim: _Claim
+    kind: str
+    key: tuple
+    text: str
+    parents: frozenset[str] = frozenset()
+    outcome: str = ''              # 'same' | 'decided' | 'new' | 'more detail' | 'changed'
+    against: list[str] = field(default_factory=list)     # earlier claims it disagrees with
+    was: list[_OldFact] = field(default_factory=list)    # what it was judged against
+    # Plain words for a changed or fuller statement, by the names his records
+    # use: "Rose Hartley, birth", what the archive has, what the newer file says.
+    subject: str = ''
+    before: str = ''
+    now: str = ''
+    # A couple's statement with the spouses' names in it, for an earlier
+    # claim whose filed copy could not be read (its words carry the names).
+    named_text: str = ''
+    # Parents of a tie he rejected or deleted, left out of the planned tie.
+    turned_down: frozenset[str] = frozenset()
+
+
+@dataclass(eq=False)
+class _Question:
+    """The open question a changed statement will get (SPEC §17b).
+
+    Planned here and written by the apply step. The new claim has no id until
+    then, so `refs` holds the earlier claims and the people only."""
+
+    heading: str
+    refs: list[str]
+    fact: _Fact
+    new_file: str
+
+
+# ── Reading the earlier imports ──────────────────────────────────────────────
+
+def _name_key(name: str) -> tuple[str, ...]:
+    """`_norm_name_key`, with a nameless person reading as the empty key.
+
+    A person the file gave no NAME is written to the archive as "unknown", so
+    both spellings of "no name" compare equal."""
+    key = _norm_name_key(name)
+    return () if key == ('unknown',) else key
+
+
+def _norm_text(text: object) -> str:
+    return ' '.join(str(text or '').casefold().split())
+
+
+def _statement_text(value: object, labels: list[str] | tuple[str, ...] = ()) -> str:
+    """A claim value as plain comparable words: no trailing `(GEDCOM @x@)`,
+    and no leading `Name: ` when the name is one the person is known by."""
+    text = _GEDCOM_TAIL_RE.sub('', str(value or ''))
+    for label in sorted(labels, key=len, reverse=True):
+        if label and text.startswith(f'{label}: '):
+            text = text[len(label) + 2:]
+            break
+    return _norm_text(text)
+
+
+def _place_key(text: object) -> str:
+    """A place for comparison: `normalize_place_text`, with the spellings of
+    the United States as a last part counted as one. Nothing else is dropped
+    or reordered, so "Springfield, Illinois" and "Springfield, Ohio" differ."""
+    key = normalize_place_text(str(text or ''))
+    if not key:
+        return ''
+    parts = [p.strip() for p in key.split(',')]
+    if parts[-1] in _US_NAMES:
+        parts[-1] = 'usa'
+    return ', '.join(parts)
+
+
+def _gedcom_source_paths(archive_root: Path) -> list[Path]:
+    """Source records an earlier `fha gedcom import` wrote.
+
+    Found by what the record says (`subtype: gedcom`), with a byte check first
+    so a large archive's other sources are not parsed. The caller confirms each
+    one with a full read."""
+    root = archive_root / 'sources'
+    if not root.is_dir():
+        return []
+    out: list[Path] = []
+    for path in sorted(root.rglob('*.md')):
+        try:
+            raw = path.read_bytes()
+        except OSError:
+            continue
+        if _GEDCOM_SUBTYPE_RE.search(raw):
+            out.append(path)
+    return out
+
+
+def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
+    """{source id: {record number: (person id, name)}} from the audit CSVs.
+
+    The cache is a help, never the memory: it is read only to place people the
+    earlier download gave no statement of their own (a name and nothing else),
+    whom no claim can place. A missing or unreadable file is simply absent."""
+    out: dict[str, dict[str, tuple[str, str]]] = {}
+    folder = archive_root / _AUDIT_DIR
+    if not folder.is_dir():
+        return out
+    for path in sorted(folder.glob('*.csv')):
+        try:
+            lines = path.read_text(encoding='utf-8').splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        header: dict[str, str] = {}
+        body: list[str] = []
+        for line in lines:
+            if line.startswith('#'):
+                key, _, value = line.lstrip('# ').partition(':')
+                header[key.strip()] = value.strip()
+            elif line.strip():
+                body.append(line)
+        sid = normalize_id(header.get('source_id', ''))
+        if not sid:
+            continue
+        people: dict[str, tuple[str, str]] = {}
+        try:
+            for row in csv.DictReader(body):
+                xref = (row.get('gedcom_xref') or '').strip()
+                pid = normalize_id(row.get('minted_id') or '')
+                if (row.get('kind') or '').strip() == 'person' and xref and pid:
+                    people[xref] = (pid, (row.get('note') or '').strip())
+        except csv.Error:
+            continue
+        out[sid] = people
+    return out
+
+
+def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list[Path],
+                        existing: list[dict]) -> tuple[list[_PriorImport], list[Path]]:
+    """(every earlier GEDCOM import on file, newest first; records not readable).
+
+    `existing` is the one scan of people/ the plan makes. It says which
+    records are still here and which were merged, so a claim naming a merged
+    record reads as its survivor (SPEC §9) the way `fha index` reads it.
+
+    A record that will not read, or whose claims will not parse, is returned
+    in the second list so the plan can say so: skipped silently, the tree it
+    holds would look like one never imported and every person in it would be
+    planned again."""
+    by_pid = {normalize_id(p['pid']): p for p in existing if p['pid']}
+    alias_map = person_alias_map({pid: (p['path'], p['meta']) for pid, p in by_pid.items()})
+    audits = _audit_people(archive_root)
+    priors: list[_PriorImport] = []
+    unreadable: list[Path] = []
+    for path in record_paths:
+        try:
+            rec = read_record(path)
+        except Exception:
+            unreadable.append(path)
+            continue
+        meta = rec.get('meta') or {}
+        sid = normalize_id(str(meta.get('id') or ''))
+        if rec.get('parse_errors') and (not meta or not rec.get('claims')):
+            unreadable.append(path)
+            continue
+        if (str(meta.get('source_type') or '').strip().lower() != 'other'
+                or str(meta.get('subtype') or '').strip().lower() != 'gedcom'):
+            continue
+        if not sid:
+            # Its id line lost in a hand edit: still an earlier import of a
+            # tree, and skipped quietly its people would all be planned again.
+            unreadable.append(path)
+            continue
+        priors.append(_read_prior_import(
+            archive_root, fha_config, path, rec, sid, alias_map, by_pid,
+            audits.get(sid, {})))
+    priors.sort(key=lambda p: (p.imported, p.sid), reverse=True)
+    return priors, unreadable
+
+
+def _read_filed_copy(archive_root: Path, fha_config: dict,
+                     file_alias: str) -> tuple[str, list[_Node], _Mapped] | None:
+    """The earlier download itself: (sha256, its INDI records, its statements).
+
+    The filed copy is byte for byte what he downloaded then, so it says what
+    the tree said, whatever has been edited here since. People carry `old:@I1@`
+    placeholders until the records say who they became. None when the copy
+    cannot be read (a documents drive not plugged in, a working copy)."""
+    if not file_alias:
+        return None
+    try:
+        raw = resolve_path(file_alias, fha_config, archive_root).read_bytes()
+        text = _decode_gedcom_bytes(raw, Path(file_alias))
+    except (OSError, GedcomImportError):
+        return None
+    records, _malformed, _joined = parse_gedcom(text)
+    _clean_vendor_markup(text, records)
+    indis = [r for r in records if r.tag == 'INDI' and r.xref]
+    if len({i.xref for i in indis}) != len(indis):
+        return None
+    fams = [r for r in records if r.tag == 'FAM']
+    mapped = _map_file(indis, fams, {i.xref: _OLD_PERSON + i.xref for i in indis}, {}, set())
+    return hashlib.sha256(raw).hexdigest(), indis, mapped
+
+
+def _read_prior_import(archive_root: Path, fha_config: dict, path: Path, rec: dict,
+                       sid: str, alias_map, by_pid: dict[str, dict],
+                       audit: dict[str, tuple[str, str]]) -> _PriorImport:
+    """One earlier import: its people (who each record number became) and its
+    statements, each tied to its line in the filed copy when that can be read."""
+    meta = rec.get('meta') or {}
+    claims = [c for c in (rec.get('claims') or []) if isinstance(c, dict)]
+    file_alias = file_name = ''
+    for entry in (meta.get('files') or []):
+        if isinstance(entry, dict) and entry.get('file'):
+            file_alias = str(entry['file']).strip()
+            file_name = str(entry.get('original_filename') or '').strip() \
+                or Path(file_alias).name
+            break
+    copy = _read_filed_copy(archive_root, fha_config, file_alias)
+    copy_hash, old_indis, old = copy if copy else ('', [], None)
+    folder_missing = ''
+    if copy is None and file_alias:
+        try:
+            folder = resolve_path(file_alias, fha_config, archive_root).parent
+            if not folder.is_dir():
+                folder_missing = str(folder)
+        except Exception:
+            pass
+    old_stubs = {s.xref: s for s in old.stubs} if old else {}
+    old_uids = {i.xref: i.child_value('_UID') for i in old_indis}
+
+    def _type(claim: dict) -> str:
+        return str(claim.get('type') or '').strip().lower()
+
+    def _anchor(claim: dict) -> str:
+        return str(claim.get('anchor') or '').strip()
+
+    # A person's own statement in the filed copy sits on its own line, so
+    # (line, type) finds it again whatever the claim's wording says today.
+    old_own = {(c.anchor, c.claim_type): c for c in (old.claims if old else [])
+               if not c.fam_xref}
+
+    # Which person each record number became: read from every statement the
+    # earlier import filed about that number. The number is written at the end
+    # of the value, and the line in the filed copy says it again.
+    seen: dict[str, set[str]] = {}
+    raw_of: dict[str, set[str]] = {}    # the records the claims name, before merges
+    joined: dict[int, _Claim] = {}
+    order: list[str] = [i.xref for i in old_indis] + list(audit)
+    for i, claim in enumerate(claims):
+        if _type(claim) in _FAMILY_TYPES:
+            continue
+        tail = _GEDCOM_TAIL_RE.search(str(claim.get('value') or ''))
+        own = old_own.get((_anchor(claim), _type(claim)))
+        by_tail = tail.group(1) if tail else ''
+        by_line = own.persons[0][len(_OLD_PERSON):] if own else ''
+        if by_tail and by_line and by_tail != by_line:
+            continue        # its words and its line disagree about whose it is
+        if own:
+            joined[i] = own
+        pids = claim_person_pids(claim, alias_map)
+        if (by_tail or by_line) and pids:
+            seen.setdefault(by_tail or by_line, set()).add(pids[0])
+            raw = claim_person_pids(claim)
+            raw_of.setdefault(by_tail or by_line, set()).add(raw[0] if raw else pids[0])
+            order.append(by_tail or by_line)
+
+    # One record named by the statements of two record numbers: he moved a
+    # statement from one person to another (an occupation that was really the
+    # brother's). The record is the person whose name it carries in the
+    # earlier download; the other number is not known to be anyone, so it is
+    # never matched to that record. Without the filed copy's names, neither is.
+    owners: dict[str, list[str]] = {}
+    for xref, pids in seen.items():
+        if len(pids) == 1:
+            owners.setdefault(next(iter(pids)), []).append(xref)
+    for pid, xrefs in owners.items():
+        if len(xrefs) < 2:
+            continue
+        raws = [raw_of.get(x, set()) for x in xrefs]
+        if all(not (a & b) for i, a in enumerate(raws) for b in raws[i + 1:]):
+            continue        # each number's own record, merged here into one: fine
+        record = by_pid.get(pid)
+        names = ({_name_key(n) for n in [record['name']] + record['variants']}
+                 if record else set())
+        keep = [x for x in xrefs if x in old_stubs and names & {
+            _name_key(n) for n in [old_stubs[x].name] + old_stubs[x].variants}]
+        for xref in xrefs:
+            if keep != [xref]:
+                seen[xref] = set()
+
+    people: list[_PriorPerson] = []
+    for xref in dict.fromkeys(order):
+        pids = seen.get(xref, set())
+        audit_pid, audit_name = audit.get(xref, ('', ''))
+        note = ''
+        if len(pids) > 1:
+            pid, state = '', 'split'
+            note = ', '.join(fmt_id_display(p) for p in sorted(pids))
+        else:
+            pid = next(iter(pids), '') or (through_survivors(audit_pid, alias_map)
+                                           if audit_pid else '')
+            state = 'unknown' if not pid else ('present' if pid in by_pid else 'removed')
+        people.append(_prior_person(sid, xref, pid, state, note, old_stubs.get(xref),
+                                    audit_name, by_pid.get(pid), old_uids.get(xref, '')))
+    # People only a family statement names (a spouse or child the tree gave a
+    # name and nothing else). Their record number is not written anywhere in
+    # the records, so they can be suggested as a likely match, never matched.
+    named = {p.pid for p in people if p.pid}
+    for claim in claims:
+        if _type(claim) not in _FAMILY_TYPES:
+            continue
+        for pid in claim_person_pids(claim, alias_map):
+            if pid not in named:
+                named.add(pid)
+                people.append(_prior_person(
+                    sid, '', pid, 'present' if pid in by_pid else 'removed', '',
+                    None, '', by_pid.get(pid), ''))
+
+    # The earlier file's statements now name real people where the records say
+    # who they are, and each claim finds the statement it was made from.
+    labels = {p.pid: p.labels for p in people if p.pid}
+    old_fam: dict[tuple, _Claim] = {}
+    if old:
+        became = {_OLD_PERSON + p.xref: p.pid for p in people if p.xref and p.pid}
+        for old_claim in old.claims:
+            _rename_people(old_claim, became)
+            if old_claim.claim_type == 'relationship':
+                old_fam[(old_claim.anchor, 'relationship', old_claim.roles['child'])] = old_claim
+            elif old_claim.fam_xref:
+                old_fam[(old_claim.anchor, old_claim.claim_type)] = old_claim
+    facts: list[_OldFact] = []
+    used: set[int] = set()
+    for i, claim in enumerate(claims):
+        ctype = _type(claim)
+        if ctype == 'relationship':
+            child = sorted(claim_role_pids(claim, 'child', alias_map))
+            source = old_fam.get((_anchor(claim), ctype, child[0])) if len(child) == 1 else None
+        elif ctype in _COUPLE_TYPES:
+            source = old_fam.get((_anchor(claim), ctype))
+        else:
+            source = joined.get(i)
+        fact = _old_fact(claim, alias_map, labels, source)
+        if fact is None:
+            continue
+        if source is not None:
+            used.add(id(source))
+        facts.append(fact)
+    for old_claim in (old.claims if old else []):
+        # A statement of the earlier file with no claim today: he deleted it.
+        # It is remembered as settled, so the newer file cannot bring it back.
+        if id(old_claim) in used or any(p.startswith(_OLD_PERSON) for p in old_claim.persons):
+            continue
+        new = _new_fact(old_claim)
+        facts.append(_OldFact(
+            kind=new.kind, key=new.key, text=new.text, date=old_claim.date or '',
+            place=old_claim.place_text or '', live=False, cid='',
+            people=frozenset(old_claim.persons), value=old_claim.value,
+            parents=new.parents, orig_parents=new.parents, joined=True,
+            raw_date=old_claim.raw_date))
+
+    return _PriorImport(
+        sid=sid, record_path=path, file_name=file_name or path.name, file_alias=file_alias,
+        imported=str(meta.get('created') or '').strip(), people=people, facts=facts,
+        copy_read=old is not None, copy_hash=copy_hash, copy_folder_missing=folder_missing)
+
+
+def _prior_person(sid: str, xref: str, pid: str, state: str, note: str,
+                  old_stub: _PersonStub | None, audit_name: str,
+                  record: dict | None, uid: str) -> _PriorPerson:
+    """Gather what is known of one earlier person: the earlier file's words,
+    the audit's name, and the record as it reads today."""
+    person = _PriorPerson(sid=sid, xref=xref, pid=pid, state=state, label='',
+                          uid=uid.strip(), note=note)
+
+    def add_name(name: str) -> None:
+        person.names.add(_name_key(name))
+        if name and name != 'unknown' and name not in person.labels:
+            person.labels.append(name)
+
+    def add_birth(raw: object) -> None:
+        text = str(raw or '').strip()
+        window = _birth_window(text)
+        if text and text not in person.births:
+            person.births.append(text)
+        if window is not None and window not in person.windows:
+            person.windows.append(window)
+
+    if record is not None:
+        for name in [record['name']] + record['variants']:
+            add_name(name)
+        if record['sex'] in ('M', 'F'):
+            person.sexes.add(record['sex'])
+        add_birth(record['birth_raw'])
+    if old_stub is not None:
+        for name in [old_stub.name] + old_stub.variants:
+            add_name(name)
+        if old_stub.sex:
+            person.sexes.add(old_stub.sex)
+        add_birth(old_stub.birth)
+    if audit_name:
+        add_name(audit_name)
+    person.label = person.labels[0] if person.labels else '(no name)'
+    return person
+
+
+def _rename_people(claim: _Claim, became: dict[str, str]) -> None:
+    """Swap placeholder people for the ids the plan settled on, in place."""
+    claim.persons = [became.get(p, p) for p in claim.persons]
+    if claim.roles:
+        claim.roles = {
+            role: ([became.get(p, p) for p in who] if isinstance(who, list)
+                   else became.get(who, who))
+            for role, who in claim.roles.items()}
+
+
+def _new_fact(claim: _Claim) -> _Fact:
+    """The comparison shape of one mapped statement.
+
+    Birth, death and burial are one per person, marriage and divorce one per
+    couple, and a child's parents one set per kind of tie; a newer download
+    that says one of these differently disagrees with the earlier one. Every
+    other statement (a residence, an occupation, a note) can be made many
+    times, so it is told apart by its own words."""
+    ctype = claim.claim_type
+    if ctype == 'relationship':
+        return _Fact(claim, 'parents', (claim.roles['child'], _norm_text(claim.subtype)),
+                     text='', parents=frozenset(claim.roles['parent']))
+    if ctype in _COUPLE_TYPES:
+        return _Fact(claim, 'couple', (ctype, frozenset(claim.roles['spouse'])),
+                     text=_norm_text(claim.said), named_text=_statement_text(claim.value))
+    text = _norm_text(claim.said)
+    if ctype in _SINGLE_TYPES:
+        return _Fact(claim, 'single', (ctype, claim.persons[0]), text=text)
+    return _Fact(claim, 'multi', (ctype, claim.persons[0], _norm_text(claim.subtype), text),
+                 text=text)
+
+
+def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
+              source: _Claim | None) -> _OldFact | None:
+    """One claim of an earlier import in the same shape as `_new_fact`.
+
+    `source` is the statement of the filed copy the claim was made from, when
+    that is known: its words are what the tree said, so a claim he has reworded
+    still compares as what it was. None for a claim that names nobody."""
+    ctype = str(claim.get('type') or '').strip().lower()
+    status = str(claim.get('status') or '').strip().lower()
+    persons = claim_person_pids(claim, alias_map)
+    subtype = _norm_text(claim.get('subtype'))
+    value = str(claim.get('value') or '')
+    parents = orig_parents = frozenset()
+    orig_key: tuple | None = None
+    now_key: tuple | None = None
+    if ctype == 'relationship':
+        child = sorted(claim_role_pids(claim, 'child', alias_map))
+        if len(child) != 1:
+            return None
+        parents = frozenset(claim_role_pids(claim, 'parent', alias_map))
+        orig_parents = frozenset(source.roles['parent']) if source else parents
+        # Biological is the unwritten default, so a hand-written
+        # `subtype: biological` is the same tie.
+        tie = '' if subtype == 'biological' else subtype
+        kind, key, text = 'parents', (child[0], tie), ''
+        if source is not None:
+            orig_tie = _norm_text(source.subtype)
+            orig_key = (source.roles['child'], '' if orig_tie == 'biological' else orig_tie)
+        people = frozenset(child) | parents
+    elif ctype in _COUPLE_TYPES:
+        spouses = frozenset(claim_spouse_pids(claim, alias_map))
+        if not spouses:
+            return None
+        kind, key, people = 'couple', (ctype, spouses), spouses
+        # The filed copy's words leave the spouses' names out, as the newer
+        # file's do; without the copy only the claim's own value is left.
+        text = _norm_text(source.said) if source else _statement_text(value)
+        if source is not None:
+            orig_key = (ctype, frozenset(source.roles['spouse']))
+    else:
+        if not persons:
+            return None
+        who = persons[0]
+        if source is not None:
+            text = _norm_text(source.said)
+        else:
+            text = _statement_text(value, labels.get(who, []))
+            if ctype == 'note' and claim.get('notes'):
+                text = _norm_text(f'{text} {claim.get("notes")}')
+        people = frozenset(persons)
+        if ctype in _SINGLE_TYPES:
+            kind, key = 'single', (ctype, who)
+        else:
+            kind, key = 'multi', (ctype, who, subtype, text)
+            if source is not None:
+                now = _statement_text(value, labels.get(who, []))
+                if ctype == 'note' and claim.get('notes'):
+                    now = _norm_text(f'{now} {claim.get("notes")}')
+                if now != text:
+                    now_key = (ctype, who, subtype, now)
+        if source is not None:
+            orig_key = (key[:1] + (source.persons[0],)
+                        + ((_norm_text(source.subtype), text) if kind == 'multi' else ()))
+    if orig_key == key or (orig_key is not None and any(
+            isinstance(p, str) and p.startswith(_OLD_PERSON)
+            for part in orig_key for p in (part if isinstance(part, frozenset) else [part]))):
+        orig_key = None             # not re-pointed, or no record says who they became
+    return _OldFact(
+        kind=kind, key=key, text=text, date=str(claim.get('date') or '').strip(),
+        place=str(claim.get('place_text') or '').strip(),
+        live=status not in _SETTLED_STATUSES,
+        cid=normalize_id(str(claim.get('id') or '')), people=people, value=value,
+        parents=parents, orig_parents=orig_parents, joined=source is not None,
+        orig_key=orig_key, now_key=now_key,
+        raw_date=source.raw_date if source is not None else '')
+
+
+# ── Who is who ───────────────────────────────────────────────────────────────
+
+def _incoming_people(indis: list[_Node], stubs: list[_PersonStub]) -> list[_Incoming]:
+    out: list[_Incoming] = []
+    for indi, stub in zip(indis, stubs):
+        out.append(_Incoming(
+            xref=stub.xref, label=stub.name or '(no name)',
+            names={_name_key(n) for n in [stub.name] + stub.variants},
+            sex=stub.sex, birth=stub.birth, window=_birth_window(stub.birth),
+            uid=indi.child_value('_UID')))
+    return out
+
+
+def _who(person: _PriorPerson) -> str:
+    """An earlier person in plain words: the name, the record id, and whether
+    he has since removed the record."""
+    name = 'a person with no name' if person.label == '(no name)' else person.label
+    if not person.pid:
+        return name
+    removed = ', a record you removed' if person.state == 'removed' else ''
+    return f'{name} ({fmt_id_display(person.pid)}{removed})'
+
+
+def _sex_differs(new: _Incoming, old: _PriorPerson) -> bool:
+    return bool(new.sex and old.sexes and new.sex not in old.sexes)
+
+
+def _birth_differs(new: _Incoming, old: _PriorPerson) -> bool:
+    """Both dated, and more than `_DEDUPE_YEAR_SLACK` years apart whichever of
+    the earlier dates (the file's, the record's) is used."""
+    if new.window is None or not old.windows:
+        return False
+    lo, hi = new.window
+    return all(lo - _DEDUPE_YEAR_SLACK > w[1] or w[0] > hi + _DEDUPE_YEAR_SLACK
+               for w in old.windows)
+
+
+def _birth_fits(new: _Incoming, old: _PriorPerson) -> bool:
+    """Both dated, and within `_DEDUPE_YEAR_SLACK` years of each other."""
+    return new.window is not None and bool(old.windows) and not _birth_differs(new, old)
+
+
+def _stays(new: _Incoming, old: _PriorPerson) -> bool:
+    """The person at this number shows they are the one who was: a name they
+    had, the sex not differing, and a birth that agrees outright (or is
+    missing on both sides)."""
+    return bool(new.names & old.names) and not _sex_differs(new, old) and (
+        _birth_fits(new, old) or (new.window is None and not old.windows))
+
+
+def _name_shared(new: _Incoming, old: _PriorPerson) -> bool:
+    """Part of the name is the same: the first given name or the last word."""
+    return any(a and b and (a[0] == b[0] or a[-1] == b[-1])
+               for a in new.names for b in old.names)
+
+
+def _number_doubt(new: _Incoming, old: _PriorPerson,
+                  by_name: dict[tuple[str, ...], list[_PriorPerson]],
+                  moved: frozenset[str] = frozenset(),
+                  gone: frozenset[str] = frozenset()) -> str:
+    """Why the person holding this record number may not be the same person,
+    or '' when they certainly are.
+
+    Ancestry keeps a person's number for good, but other programs renumber
+    everyone on export or hand a deleted person's number to the next one
+    added, often a brother or sister with the same surname. So the number
+    counts only with the name behind it:
+
+    * same number and same name is the same person, unless the birth years
+      disagree, or one side has none, and another earlier person of that
+      name fits better (a father and son of one name, shifted by one);
+    * same number with part of the name changed is the same person only when
+      the birth date is unchanged (a respelled or newly found surname);
+    * a different sex, or a wholly different name, is never the same person
+      on the number alone."""
+    was = f'record number {new.xref} belonged to {_who(old)} in the earlier download'
+    if _sex_differs(new, old):
+        return f'{was}, and the sex recorded here differs'
+    if new.names & old.names:
+        # Another earlier person of this name fits better when the births
+        # here disagree and theirs does not, or when a birth is missing on one
+        # side here and their own number is now held by someone else (an
+        # undated father whose number his dated son now carries). A cousin
+        # still at his own number, one deleted from the tree, or one who never
+        # had a number is no rival. A dated newcomer needs their birth to agree.
+        apart = _birth_differs(new, old)
+        if apart or not _birth_fits(new, old):
+            # A namesake could have moved here when someone else now holds
+            # their number, or when their number is gone from this file and
+            # nothing here shows this is the person who was at this number.
+            could_move = moved | (frozenset() if _stays(new, old) else gone)
+            for key in sorted(new.names):
+                for other in by_name.get(key, []):
+                    if other.ident == old.ident or _sex_differs(new, other):
+                        continue
+                    if apart:
+                        rival = not _birth_differs(new, other)
+                    elif new.window is not None:
+                        rival = _birth_fits(new, other) and other.ident in could_move
+                    else:
+                        # Undated here: nothing can show which of the two he
+                        # is, so a namesake who could have moved is doubt.
+                        rival = other.ident in could_move
+                    if rival:
+                        return (f'{was}, but another earlier person of this name '
+                                f'({_who(other)}) may be this one'
+                                if new.window is None else
+                                f'{was}, but the birth year here fits '
+                                f'{_who(other)} better')
+        return ''
+    if _name_shared(new, old) and new.birth and new.birth in old.births:
+        return ''
+    return f'{was} and is {new.label} in this one'
+
+
+def _match_people(incoming: list[_Incoming],
+                  people: list[_PriorPerson]) -> tuple[dict[str, _Match], dict[str, _Held]]:
+    """Match the newer file's people to the earlier download's, or say why not.
+
+    Certain, in this order: the same record number with the name behind it
+    (`_number_doubt`), then the same program id (`_UID`, which a program gives
+    one person for good). Nothing else is a match.
+
+    Everyone left is looked up by name and birth among the earlier people
+    nobody matched: the same name with birth years that do not disagree, or
+    part of the name with the very same birth date. One fit on both sides is
+    reported as the likely person; more than one is reported as such. Neither
+    is acted on. A person who fits nobody and whose number is unused is new.
+
+    `people` is ordered newest import first, so a number or id two imports
+    both know is read from the newer one."""
+    by_xref: dict[str, _PriorPerson] = {}
+    by_uid: dict[str, _PriorPerson] = {}
+    by_name: dict[tuple[str, ...], list[_PriorPerson]] = {}
+    by_birth: dict[str, list[_PriorPerson]] = {}
+    for old in people:
+        if old.xref:
+            by_xref.setdefault(old.xref, old)
+        if old.uid:
+            by_uid.setdefault(old.uid, old)
+        for key in old.names:
+            by_name.setdefault(key, []).append(old)
+        for birth in old.births:
+            by_birth.setdefault(birth, []).append(old)
+
+    found: dict[str, tuple[_PriorPerson, str]] = {}
+    doubts: dict[str, tuple[str, _PriorPerson]] = {}
+    # Earlier people still at their own number, under a name they had.
+    # Moved: earlier people whose number someone in this file holds without
+    # showing they are them. Gone: earlier people whose number is not in this
+    # file at all (deleted, or shifted past its end).
+    moved = frozenset(by_xref[n.xref].ident for n in incoming
+                      if n.xref in by_xref and not _stays(n, by_xref[n.xref]))
+    here = {n.xref for n in incoming}
+    gone = frozenset(old.ident for xref, old in by_xref.items() if xref not in here)
+    for new in incoming:
+        old = by_xref.get(new.xref)
+        if old is not None:
+            doubt = _number_doubt(new, old, by_name, moved, gone)
+            if not doubt and new.uid and old.uid and new.uid != old.uid:
+                # The program's own id for a person never changes; a number
+                # can. When they disagree, the number is not trusted.
+                doubt = (f'record number {new.xref} belonged to {_who(old)} in the '
+                         'earlier download, but the program\'s own id for this person '
+                         'is a different one')
+            if not doubt:
+                found[new.xref] = (old, 'record number')
+                continue
+            doubts[new.xref] = (doubt, old)
+        same_id = by_uid.get(new.uid) if new.uid else None
+        if same_id is not None and not _sex_differs(new, same_id):
+            found[new.xref] = (same_id, 'program id')
+            doubts.pop(new.xref, None)
+
+    matches: dict[str, _Match] = {}
+    held: dict[str, _Held] = {}
+    labels = {n.xref: n.label for n in incoming}
+    # Counted by record, not by earlier entry: two earlier imports, or two
+    # numbers of one import, can lead to the same record.
+    claimed = Counter(old.ident for old, _how in found.values())
+    for xref, (old, how) in found.items():
+        if claimed[old.ident] > 1:
+            held[xref] = _Held(xref, labels[xref],
+                               f'{claimed[old.ident]} people in the newer file both fit '
+                               f'{_who(old)}, so more than one person could be this one',
+                               about=[old.pid] if old.pid else [])
+        elif old.state == 'split':
+            held[xref] = _Held(xref, labels[xref],
+                               f'the earlier download\'s statements about {old.xref} now '
+                               f'name more than one person in your archive ({old.note})',
+                               about=old.note.split(', '))
+        elif old.state == 'unknown':
+            doubts[xref] = (f'{old.label} was in the earlier download, but your archive '
+                            'does not record which person record that became', old)
+        else:
+            matches[xref] = _Match(xref, old.pid, how, old)
+
+    # The likely person, for everyone not matched: looked for among earlier
+    # people who have a record id and whom nobody matched for certain.
+    taken = {m.pid for m in matches.values()}
+
+    def fits(new: _Incoming) -> list[_PriorPerson]:
+        out: dict[str, _PriorPerson] = {}
+        for key in sorted(new.names):
+            for old in by_name.get(key, []):
+                if not _birth_differs(new, old):
+                    out.setdefault(old.pid, old)
+        for old in (by_birth.get(new.birth, []) if new.birth else []):
+            if _name_shared(new, old):
+                out.setdefault(old.pid, old)
+        return [old for pid, old in out.items()
+                if pid and pid not in taken and not _sex_differs(new, old)]
+
+    open_people = [n for n in incoming if n.xref not in matches and n.xref not in held]
+    candidates = {n.xref: fits(n) for n in open_people}
+    rivals = Counter(old.pid for found_for in candidates.values() for old in found_for)
+    for new in open_people:
+        doubt, doubted = doubts.get(new.xref, ('', None))
+        about = [doubted.pid] if doubted is not None and doubted.pid else []
+        fit = candidates[new.xref]
+        if len(fit) == 1 and rivals[fit[0].pid] == 1:
+            lead = doubt or 'it has a different record number in this download'
+            what = 'The name' if new.names & fit[0].names else 'Part of the name'
+            held[new.xref] = _Held(
+                new.xref, new.label,
+                f'{lead}. {what} and the birth date fit {_who(fit[0])}',
+                likely=fit[0], about=about + [fit[0].pid])
+        elif fit:
+            shown = ', '.join(_who(old) for old in fit[:3])
+            more = f', and {len(fit) - 3} more' if len(fit) > 3 else ''
+            why = ((f'more than one person in your archive fits this name'
+                    f'{" and birth date" if new.birth else ""}')
+                   if len(fit) > 1 else
+                   'more than one person in the newer file fits the same record')
+            lead = f'{doubt}. Also, ' if doubt else ''
+            held[new.xref] = _Held(new.xref, new.label, f'{lead}{why} ({shown}{more})',
+                                   about=about + [old.pid for old in fit])
+        elif doubt:
+            held[new.xref] = _Held(
+                new.xref, new.label,
+                f'{doubt}. This may be the same person renamed, or someone new '
+                'given a used number' if doubted is not None and doubted.state != 'unknown'
+                else doubt,
+                about=about,
+                resembles=doubted is not None and doubted.state == 'unknown')
+    return matches, held
+
+
+def _same_tree(incoming: list[_Incoming], priors: list[_PriorImport],
+               ) -> tuple[list[_PriorImport], list[_PriorImport], str]:
+    """(the earlier imports this file updates, same-tree copies set aside, note).
+
+    The file is a newer download of an earlier import's tree when at least half
+    of that import's people are in it: matched, or at least recognisable by
+    name and birth date (which is all a renumbered copy offers). Half is enough
+    because a tree only grows or is pruned between downloads, while a different
+    family's tree shares almost nobody.
+
+    Earlier imports that share people (a first download and its later updates)
+    are read together. An import of the same tree made as a separate copy
+    (`--as-new-tree`) shares no person with them; the newest is used and the
+    rest are named in the plan. The note explains a first import beside an
+    earlier one: why it is not being treated as an update."""
+    qualifying: list[_PriorImport] = []
+    share: dict[int, int] = {}
+    closest: tuple[float, int, int, _PriorImport] | None = None
+    for prior in priors:
+        matches, held = _match_people(incoming, prior.people)
+        fits = len(matches) + sum(1 for h in held.values() if h.resembles)
+        size = (len({p.xref for p in prior.people if p.xref})
+                or len({p.pid for p in prior.people if p.pid}))
+        if not size:
+            continue
+        if fits and fits >= _SAME_TREE_SHARE * size:
+            qualifying.append(prior)
+            share[id(prior)] = fits
+        if closest is None or fits / size > closest[0]:
+            closest = (fits / size, fits, size, prior)
+    if not qualifying:
+        if closest is None:
+            return [], [], ''
+        _share, fits, size, prior = closest
+        return [], [], (
+            f'This does not look like a newer download of a tree you imported before '
+            f'({fits:,} of the {size:,} people from {prior.file_name}, '
+            f'{fmt_id_display(prior.sid)}, are in this file), so every person is '
+            'planned as new.')
+    # The newest import first. `created:` is a day, so two copies filed the
+    # same day are told apart by how many of this file's people each one
+    # holds, never by their random ids.
+    first = max(qualifying, key=lambda p: (p.imported, share[id(p)]))
+    lineage = [first]
+    pids = {p.pid for p in first.people if p.pid}
+    grew = True
+    while grew:
+        grew = False
+        for prior in qualifying:
+            if prior not in lineage and pids & {p.pid for p in prior.people if p.pid}:
+                lineage.append(prior)
+                pids |= {p.pid for p in prior.people if p.pid}
+                grew = True
+    lineage = [p for p in priors if p in lineage]
+    return lineage, [p for p in qualifying if p not in lineage], ''
+
+
+# ── What changed ─────────────────────────────────────────────────────────────
+
+def _date_relation(old: str, new: str) -> str:
+    """How a newer date stands to an earlier one: 'eq', 'adds' (fills a gap or
+    narrows it: about 1878 to 12 Jan 1878), 'less' (says no more than before)
+    or 'conflict' (the two cannot both be right, or cannot be compared)."""
+    if not old or not new:
+        return 'eq' if old == new else ('adds' if new else 'less')
+    if old == new:
+        return 'eq'
+    spans = []
+    for raw in (old, new):
+        edtf = raw if is_valid_edtf(raw) else normalize_date(raw)
+        if not edtf or not is_valid_edtf(edtf):
+            return 'conflict'
+        spans.append(edtf_bounds(edtf))
+    (old_lo, old_hi), (new_lo, new_hi) = spans
+    if (old_lo, old_hi) == (new_lo, new_hi):
+        return 'eq'
+    if new_hi < old_lo or old_hi < new_lo:
+        return 'conflict'
+    if old_lo <= new_lo and new_hi <= old_hi:
+        return 'adds'
+    if new_lo <= old_lo and old_hi <= new_hi:
+        return 'less'
+    return 'conflict'
+
+
+def _place_relation(old: str, new: str) -> str:
+    old_key, new_key = _place_key(old), _place_key(new)
+    if old_key == new_key:
+        return 'eq'
+    if not old_key or not new_key:
+        return 'adds' if new_key else 'less'
+    return 'conflict'
+
+
+def _fields_relation(old: _OldFact, claim: _Claim) -> str:
+    """'changed', 'more detail' or 'same' for a newer statement against one the
+    archive holds, by date and place as the record reads today."""
+    relations = (_date_relation(old.date, claim.date or ''),
+                 _place_relation(old.place, claim.place_text or ''))
+    if (old.joined and not old.date and not claim.date and old.raw_date and claim.raw_date
+            and _norm_text(old.raw_date) != _norm_text(claim.raw_date)):
+        # Neither date could be read, and the wording changed: it cannot be
+        # compared, so it goes to him as a change rather than being lost.
+        # (Without the filed copy the earlier wording is not known.)
+        return 'changed'
+    if (old.joined and not old.date and not old.raw_date and claim.raw_date
+            and 'conflict' not in relations):
+        return 'more detail'        # a date wording where there was none
+    if 'conflict' in relations:
+        return 'changed'
+    return 'more detail' if 'adds' in relations else 'same'
+
+
+def _judge(fact: _Fact, olds: list[_OldFact], parents_now: frozenset[str]) -> None:
+    """Decide what one statement of the newer file is, against what the earlier
+    downloads said about the same thing (`olds`, same key).
+
+    First the tree's own words. If an earlier download said exactly this, the
+    tree has not changed and nothing is planned: 'same' while a claim for it is
+    live, 'decided' when he rejected, superseded or deleted it. This comes
+    before any look at dates, so a date he corrected by hand is never argued
+    with by a download that only repeats what it said last year.
+
+    Only a statement the tree changed is compared with the archive as it reads
+    now: 'same' if the archive already says it (he made the same correction
+    himself), 'changed' if it cannot be true together with a live claim (it
+    will `contradicts:` those and get one question), 'more detail' if it only
+    fills in or narrows, 'new' if nothing live speaks to it.
+
+    `parents_now` is every parent the newer file gives this child in this kind
+    of tie, across all its families: a parent the earlier download named is
+    only contradicted when the newer file no longer names them at all.
+
+    A claim he re-pointed to someone else is in `olds` twice: under its people
+    now, and (`orig_only`) under the people the tree named. The second copy
+    counts only for the tree's own words, so the tree repeating what it said
+    is not planned again, and a claim now about someone else is never argued
+    with by dates that were not about them."""
+    live = [o for o in olds if o.live]
+    settled = [o for o in olds if not o.live]
+    if fact.kind == 'multi':
+        fact.outcome = 'same' if live else ('decided' if settled else 'new')
+        return
+    if fact.kind == 'parents':
+        def said(o: _OldFact) -> bool:
+            return o.orig_parents == fact.parents
+
+        def turned_down(o: _OldFact) -> bool:
+            named = o.orig_parents if o.orig_only else o.parents
+            return bool(named) and named <= fact.parents
+
+        if any(said(o) or (not o.orig_only and o.parents >= fact.parents
+                           and not o.parents - parents_now) for o in live):
+            fact.outcome = 'same'
+        elif any(said(o) or (not o.orig_only and o.parents == fact.parents) for o in settled):
+            fact.outcome = 'decided'
+        elif any(turned_down(o) for o in settled):
+            # Every parent of a tie he rejected or deleted is named again, now
+            # beside a parent the tree added. Those parents stay turned down;
+            # only the parents left are judged (and, if new, planned).
+            gone = frozenset().union(*((o.orig_parents if o.orig_only else o.parents)
+                                       for o in settled if turned_down(o)))
+            fact.turned_down |= gone
+            fact.parents = fact.parents - gone
+            if not fact.parents:
+                fact.outcome = 'decided'
+                return
+            _judge(fact, olds, parents_now)
+        else:
+            live = [o for o in live if not o.orig_only]
+            against = [o for o in live if o.parents - parents_now]
+            fact.outcome = 'changed' if against else 'new'
+            fact.was = against
+            fact.against = [o.cid for o in against]
+        return
+    def worded(o: _OldFact) -> bool:
+        return o.text == (fact.text if o.joined or not fact.named_text else fact.named_text)
+
+    if any(worded(o) for o in live):
+        fact.outcome = 'same'
+        return
+    if any(worded(o) for o in settled):
+        fact.outcome = 'decided'
+        return
+    # Dates and places are compared only with claims still about these people.
+    live = [o for o in live if not o.orig_only]
+    settled = [o for o in settled if not o.orig_only]
+    if not live:
+        decided = any(_fields_relation(o, fact.claim) == 'same' for o in settled)
+        fact.outcome = 'decided' if decided else 'new'
+    else:
+        relations = [(_fields_relation(o, fact.claim), o) for o in live]
+        if any(rel == 'same' for rel, _o in relations):
+            fact.outcome = 'same'
+        elif any(rel == 'changed' for rel, _o in relations):
+            fact.outcome = 'changed'
+            fact.was = [o for rel, o in relations if rel == 'changed']
+            fact.against = [o.cid for o in fact.was]
+        else:
+            fact.outcome = 'more detail'
+            fact.was = [o for _rel, o in relations]
+
+
+def _when_where(date: str | None, place: str | None) -> str:
+    bits = []
+    if date:
+        bits.append(humanize_edtf(date) if is_valid_edtf(date) else date)
+    if place:
+        bits.append(place)
+    return ', '.join(bits) or 'no date or place'
+
+
+def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_PriorImport],
+                 others: list[_PriorImport], existing: list[dict]) -> None:
+    """Turn a freshly mapped plan into an update of the earlier imports in
+    `lineage`, in place: match the people, keep only what is new or changed.
+
+    After this `plan.stubs` holds the new people (ids are `new:@I11@`
+    placeholders), `plan.claims` the statements that would be added, and
+    `plan.facts` every statement of a matched or new person with its outcome.
+    A statement naming anyone held or removed is left out and counted, so no
+    tie is planned to a person who may be the wrong one."""
+    by_pid = {normalize_id(p['pid']): p for p in existing if p['pid']}
+    matches, held = _match_people(incoming, [p for prior in lineage for p in prior.people])
+    became: dict[str, str] = {}
+    dropped: set[str] = set()
+    for new in incoming:
+        match = matches.get(new.xref)
+        if match is not None and match.person.state == 'present':
+            became[_NEW_PERSON + new.xref] = match.pid
+        elif match is not None or new.xref in held:
+            dropped.add(_NEW_PERSON + new.xref)
+    new_stubs = [s for s in plan.stubs if s.xref not in matches and s.xref not in held]
+    file_names = {s.pid: s.name or '(no name)' for s in new_stubs}
+
+    def name_of(pid: str) -> str:
+        if pid in file_names:
+            return file_names[pid]
+        record = by_pid.get(pid)
+        name = record['name'] if record else ''
+        return name if name and name != 'unknown' else fmt_id_display(pid)
+
+    def names_of(pids) -> str:
+        return ' and '.join(sorted(name_of(p) for p in pids)) or 'unknown parents'
+
+    facts: list[_Fact] = []
+    held_statements = 0
+    for claim in plan.claims:
+        if dropped & set(claim.persons):
+            held_statements += 1
+            continue
+        _rename_people(claim, became)
+        facts.append(_new_fact(claim))
+
+    olds: dict[tuple, list[_OldFact]] = {}
+    for prior in lineage:
+        for old in prior.facts:
+            olds.setdefault(old.key, []).append(old)
+            if old.orig_key is not None:
+                olds.setdefault(old.orig_key, []).append(
+                    replace(old, key=old.orig_key, orig_only=True))
+            if old.now_key is not None:
+                olds.setdefault(old.now_key, []).append(replace(old, key=old.now_key))
+    parents_now: dict[tuple, frozenset[str]] = {}
+    for fact in facts:
+        if fact.kind == 'parents':
+            parents_now[fact.key] = parents_now.get(fact.key, frozenset()) | fact.parents
+    for fact in facts:
+        _judge(fact, olds.get(fact.key, []), parents_now.get(fact.key, frozenset()))
+        if fact.turned_down and fact.outcome != 'decided':
+            # The tie is planned with only the parents he has not turned down.
+            claim = fact.claim
+            keep = [p for p in claim.roles['parent'] if p in fact.parents]
+            claim.roles = {**claim.roles, 'parent': keep}
+            claim.persons = [claim.roles['child']] + keep
+            nature = f' ({claim.subtype})' if claim.subtype else ''
+            claim.value = (f'{name_of(claim.roles["child"])} is a child{nature} of '
+                           f'{names_of(keep)} (GEDCOM {claim.fam_xref})')
+
+    questions: list[_Question] = []
+    for fact in facts:
+        if fact.outcome not in ('changed', 'more detail'):
+            continue
+        claim = fact.claim
+        if fact.kind == 'parents':
+            people = [claim.roles['child']]
+            fact.subject = f'{name_of(people[0])}, parents'
+            heading = _PARENT_HEADINGS.get(claim.subtype or '', "Who were {a}'s parents?")
+            fact.before = '; or '.join(dict.fromkeys(names_of(o.parents) for o in fact.was))
+            fact.now = names_of(fact.parents)
+        else:
+            people = list(claim.roles['spouse']) if fact.kind == 'couple' else [claim.persons[0]]
+            fact.subject = f'{" and ".join(name_of(p) for p in people)}, {claim.claim_type}'
+            heading = _QUESTION_HEADINGS[claim.claim_type]
+            fact.before = '; or '.join(dict.fromkeys(
+                _when_where(o.date, o.place) for o in fact.was))
+            fact.now = _when_where(claim.date, claim.place_text)
+        if fact.outcome == 'changed':
+            questions.append(_Question(
+                heading=heading.format(a=name_of(people[0]), b=name_of(people[-1])),
+                refs=fact.against + list(dict.fromkeys(people)),
+                fact=fact, new_file=plan.ged_path.name))
+
+    matched_here = {m.pid for m in matches.values() if m.person.state == 'present'}
+    spoken_for = matched_here | {pid for h in held.values() for pid in h.about}
+    keys_now = {fact.key for fact in facts}
+    gone_facts: list[str] = []
+    gone_people: dict[str, str] = {}
+    for prior in lineage:
+        for old in prior.facts:
+            # Only a claim still on file and tied to its line can be said to be
+            # gone; without the filed copy every claim of the record is tried.
+            if (old.live and old.cid and (old.joined or not prior.copy_read)
+                    and old.people <= matched_here and old.key not in keys_now
+                    and old.orig_key not in keys_now and old.now_key not in keys_now):
+                gone_facts.append(_GEDCOM_TAIL_RE.sub('', old.value))
+        for person in prior.people:
+            if person.state == 'present' and person.pid not in spoken_for:
+                gone_people.setdefault(person.pid, _who(person))
+
+    name_changes: list[str] = []
+    death_now: list[str] = []
+    stub_of = {s.xref: s for s in plan.stubs}
+    has_death = {f.claim.persons[0] for f in facts if f.claim.claim_type == 'death'}
+    for xref, match in matches.items():
+        if match.person.state != 'present':
+            continue
+        pid, record = fmt_id_display(match.pid), by_pid.get(match.pid)
+        stub = stub_of[xref]
+        if stub.name and _name_key(stub.name) not in match.person.names:
+            name_changes.append(f'{pid} {name_of(match.pid)}: the newer file says {stub.name}')
+        for variant in stub.variants:
+            if variant and _name_key(variant) not in match.person.names:
+                name_changes.append(f'{pid} {name_of(match.pid)}: the newer file also gives '
+                                    f'the name {variant}')
+        living = str((record or {}).get('meta', {}).get('living', '')).strip().lower()
+        if match.pid in has_death and living != 'false':
+            death_now.append(f'{pid} {name_of(match.pid)}: to change, run '
+                             f'fha person set-living {pid} false')
+
+    plan.mode = 'update'
+    plan.prior, plan.other_copies = lineage, [fmt_id_display(p.sid) for p in others]
+    plan.unread_copies = [p.file_alias or p.file_name for p in lineage if not p.copy_read]
+    plan.matches, plan.held = matches, held
+    plan.facts, plan.questions = facts, questions
+    plan.held_statements = held_statements
+    plan.gone_facts, plan.gone_people = gone_facts, list(gone_people.values())
+    plan.removed_people = [
+        f'{xref} {stub_of[xref].name or "(no name)"} (was {fmt_id_display(m.pid)})'
+        for xref, m in matches.items() if m.person.state == 'removed']
+    plan.name_changes, plan.death_now = name_changes, death_now
+    plan.stubs = new_stubs
+    # "The new record shows the most exact one" is about records the plan
+    # would make: a matched person keeps the record he already has.
+    new_xrefs = {s.xref for s in new_stubs}
+    plan.date_conflicts = [c for c in plan.date_conflicts
+                           if c.split(' ', 1)[0] in new_xrefs]
+    plan.claims = [f.claim for f in facts if f.outcome in ('new', 'more detail', 'changed')]
+    # Every record is a candidate, matched ones too: a second Rose Hartley
+    # added to the tree beside the one already matched is the duplicate he
+    # most needs to hear about.
+    plan.duplicates = _find_duplicates(plan.archive_root, new_stubs, existing)
+
+
+def _reimport_question_block(question: _Question, *, new_cid: str, today: str) -> str:
+    """The `notes/questions.md` entry for one changed statement (SPEC §17b).
+
+    Both claims and the person are in `refs:`, so lint E009 finds the question
+    for the `contradicts:` pair and the question shows on the person's page.
+    The words say what is true: the archive has one thing and the newer
+    download says another. They do not say "the earlier download said", since
+    he may have corrected the earlier claim himself."""
+    earlier = ', '.join(fmt_id_display(cid) for cid in question.fact.against)
+    refs = ', '.join(fmt_id_display(r) for r in [new_cid] + question.refs)
+    return '\n'.join([
+        f'## Q: {question.heading}',
+        '- origin: tool',
+        '- status: open',
+        f'- refs: [{refs}]',
+        '- context:',
+        f'  - {today} (tool): The newer download of your tree ({question.new_file}) says '
+        f'{question.fact.now}. Your archive has {question.fact.before} ({earlier}). Neither was '
+        'changed: the newer one is filed beside it as a suggested statement. When you '
+        'review them, accept the one the records support.',
+        '',
+    ])
 # ── Building the plan ─────────────────────────────────────────────────────────
 
 def _count_unread(records: list[_Node], consumed: set[int]) -> tuple[int, list[tuple[str, int]]]:
@@ -1917,14 +3334,77 @@ def _read_audit_header(audit_path: Path) -> dict[str, str]:
     return out
 
 
-def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPlan:
+@dataclass
+class _Mapped:
+    """Everything one pass over a file's INDI and FAM records produced."""
+
+    stubs: list[_PersonStub]
+    claims: list[_Claim]
+    claim_count: int               # how many C-ids the claims still need
+    consumed: set[int]
+    sour_use: Counter
+    date_downgrades: list[str]
+    date_loose: list[str]          # read by the free-form fallback (#293)
+    warnings: list[str]
+    date_conflicts: list[str] = field(default_factory=list)   # disagreeing births/deaths (#449)
+
+
+class _DeferredPool(list):
+    """Hands out placeholders and counts them; real C-ids land afterward."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.count = 0
+
+    def pop(self, index: int = 0) -> str:  # type: ignore[override]
+        self.count += 1
+        return f'__C{self.count}__'
+
+
+def _map_file(indis: list[_Node], fams: list[_Node], xref_pid: dict[str, str],
+              sour_titles: dict[str, str], consumed: set[int]) -> _Mapped:
+    """Map every INDI, then every FAM, into stubs and claims (no ids minted).
+
+    One function for the three files the importer reads the same way: a first
+    import, a newer download, and the filed copy of an earlier download that a
+    newer one is compared with. Claims carry `__C1__` placeholders; the caller
+    mints real C-ids only when it will write. `consumed` is added to in place."""
+    cid_pool = _DeferredPool()
+    out = _Mapped(stubs=[], claims=[], claim_count=0, consumed=consumed,
+                  sour_use=Counter(), date_downgrades=[], date_loose=[], warnings=[])
+    pedi: dict[tuple[str, str], str] = {}
+    for indi in indis:
+        stub, indi_claims, pedi_map = _map_individual(
+            indi, xref_pid[indi.xref], cid_pool, sour_titles, out.sour_use,
+            consumed, out.date_downgrades, out.date_loose, out.date_conflicts)
+        out.stubs.append(stub)
+        out.claims.extend(indi_claims)
+        for fam_xref, pedi_value in pedi_map.items():
+            pedi[(indi.xref, fam_xref)] = pedi_value
+
+    display_names = {s.xref: s.name for s in out.stubs if s.name}
+    for fam in fams:
+        out.claims.extend(_map_family(
+            fam, xref_pid, display_names, cid_pool, sour_titles, out.sour_use,
+            pedi, consumed, out.date_downgrades, out.date_loose, out.warnings))
+    out.claim_count = cid_pool.count
+    return out
+
+
+def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
+               as_new_tree: bool = False) -> ImportPlan:
     """Parse the GEDCOM and plan every record to write. No filesystem writes.
 
     Guard order matters: file-exists → encoding → looks-like-GEDCOM →
     self-import → no-individuals → duplicate-xref → already-imported sentinel,
     all BEFORE any minting, so every refusal is cheap and stateless. Minting
     is exactly three `mint_ids` calls (S, P, C) - one tree scan each, never
-    one per record - which is what keeps a 2,000-person import tractable."""
+    one per record - which is what keeps a 2,000-person import tractable.
+
+    A file that is a newer download of a tree already imported gets an update
+    plan instead (`mode='update'`, see `_plan_update`): only the new people and
+    the statements that changed, and no ids minted. `as_new_tree` skips that
+    check and plans every person as new."""
     if not ged_path.is_file():
         raise GedcomImportError(
             f'{ged_path} does not exist. Check the path (the file Ancestry gives '
@@ -2025,10 +3505,24 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
     if audit_path.exists():
         header = _read_audit_header(audit_path)
         raise GedcomImportError(
-            f'this GEDCOM was already imported on {header.get("imported", "an earlier date")} '
-            f'as {header.get("source_id", "a source record")} - importing it again would '
-            'duplicate every person. If you have a NEWER export from Ancestry, import '
-            'that file instead; it is a different file and will import cleanly.')
+            _already_imported(header.get('imported'), header.get('source_id')))
+
+    # Has this tree been imported before? The answer comes from the source
+    # records themselves, so it survives a lost `.cache` or a new computer.
+    # people/ is only read when an earlier GEDCOM source exists.
+    existing: list[dict] | None = None
+    priors: list[_PriorImport] = []
+    unreadable: list[Path] = []
+    record_paths = _gedcom_source_paths(archive_root)
+    if record_paths:
+        existing = _scan_existing_persons(archive_root)
+        priors, unreadable = _read_prior_imports(
+            archive_root, fha_config, record_paths, existing)
+    same_file = next((p for p in priors if p.copy_hash == ged_hash), None)
+    if same_file is not None:
+        raise GedcomImportError(_already_imported(same_file.imported, same_file.sid))
+    if as_new_tree:
+        priors, unreadable = [], []
 
     # GEDCOM SOUR records: titles for claim notes + the Notes-section lead list.
     sour_titles: dict[str, str] = {}
@@ -2045,55 +3539,61 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         warnings.append(
             f'{len(malformed)} line(s) did not parse as GEDCOM and were skipped '
             f'({shown}{", ..." if len(malformed) > 3 else ""}). The filed copy keeps them.')
+    for path in unreadable:
+        # Said out loud: an earlier import the plan cannot read is one it
+        # cannot compare with, and the people in it would be planned twice.
+        warnings.append(
+            f'{_rel_display(path, archive_root)} is the record of an earlier GEDCOM '
+            'import, but it could not be read, so this plan could not check whether '
+            'the file is a newer download of that tree. Run fha lint to see what is '
+            'wrong with the record, fix it, then run this plan again.')
 
-    # Pass 1 (count) → mint in exactly three batches → pass 2 (assign) would
-    # mean mapping twice; instead map with a placeholder pool sized by an exact
-    # pre-count. Counting claims without mapping is error-prone, so: mint P-ids
-    # first (count is just len(indis)), map INDIs/FAMs against a *deferred* C-id
-    # pool, then mint the C batch and fill the ids in one zip.
-    sid = mint_ids('S', 1, archive_root)[0]
-    pid_list = mint_ids('P', len(indis), archive_root)
-    xref_pid = {indi.xref: pid for indi, pid in zip(indis, pid_list)}
+    # With an earlier import on file, read the people of this file first (no
+    # ids yet) and ask whether it is the same tree. If it is, the plan is an
+    # update and mints nothing at all.
+    update: tuple[list[_PriorImport], list[_PriorImport]] | None = None
+    incoming: list[_Incoming] = []
+    tree_note = ''
+    mapped: _Mapped | None = None
+    if priors:
+        probe = _map_file(indis, fams, {i.xref: _NEW_PERSON + i.xref for i in indis},
+                          sour_titles, set(consumed))
+        incoming = _incoming_people(indis, probe.stubs)
+        lineage, others, tree_note = _same_tree(incoming, priors)
+        away = [p.copy_folder_missing for p in lineage if p.copy_folder_missing]
+        if away and not is_working_copy(archive_root):
+            # Without the filed copy the plan cannot see the statements he
+            # deleted, and would offer them all again as new. A drive that is
+            # only unplugged is worth plugging in first.
+            raise GedcomImportError(
+                f'the earlier download of this tree is filed in {away[0]}, and that '
+                'folder is not here (usually a documents drive that is not plugged '
+                'in). Without it this plan cannot tell the statements you deleted '
+                'from new ones. Nothing was written. Plug the drive back in, then '
+                'run this again.')
+        if lineage:
+            update, mapped, consumed = (lineage, others), probe, probe.consumed
 
-    class _DeferredPool(list):
-        """Hands out placeholders and counts them; real C-ids land afterward."""
-
-        def __init__(self) -> None:
-            super().__init__()
-            self.count = 0
-
-        def pop(self, index: int = 0) -> str:  # type: ignore[override]
-            self.count += 1
-            return f'__C{self.count}__'
-
-    cid_pool = _DeferredPool()
-    date_downgrades: list[str] = []
-    date_loose: list[str] = []      # read by the free-form fallback (#293)
-    date_conflicts: list[str] = []  # two birth/death dates that disagree (#449)
-    sour_use: Counter = Counter()
-
-    stubs: list[_PersonStub] = []
-    claims: list[_Claim] = []
-    pedi: dict[tuple[str, str], str] = {}
-    for indi in indis:
-        stub, indi_claims, pedi_map = _map_individual(
-            indi, xref_pid[indi.xref], cid_pool, sour_titles, sour_use,
-            consumed, date_downgrades, date_loose, date_conflicts)
-        stubs.append(stub)
-        claims.extend(indi_claims)
-        for fam_xref, pedi_value in pedi_map.items():
-            pedi[(indi.xref, fam_xref)] = pedi_value
-
-    display_names = {s.xref: s.name for s in stubs if s.name}
-    for fam in fams:
-        claims.extend(_map_family(
-            fam, xref_pid, display_names, cid_pool, sour_titles, sour_use,
-            pedi, consumed, date_downgrades, date_loose, warnings))
-
-    if cid_pool.count:
-        real_cids = mint_ids('C', cid_pool.count, archive_root)
-        for claim, cid in zip(claims, real_cids):
-            claim.cid = cid
+    sid = ''
+    xref_pid: dict[str, str] = {}
+    if mapped is None:
+        # Pass 1 (count) → mint in exactly three batches → pass 2 (assign) would
+        # mean mapping twice; instead map with a placeholder pool sized by an exact
+        # pre-count. Counting claims without mapping is error-prone, so: mint P-ids
+        # first (count is just len(indis)), map INDIs/FAMs against a *deferred* C-id
+        # pool, then mint the C batch and fill the ids in one zip.
+        sid = mint_ids('S', 1, archive_root)[0]
+        pid_list = mint_ids('P', len(indis), archive_root)
+        xref_pid = {indi.xref: pid for indi, pid in zip(indis, pid_list)}
+        mapped = _map_file(indis, fams, xref_pid, sour_titles, consumed)
+        if mapped.claim_count:
+            real_cids = mint_ids('C', mapped.claim_count, archive_root)
+            for claim, cid in zip(mapped.claims, real_cids):
+                claim.cid = cid
+    stubs, claims = mapped.stubs, mapped.claims
+    date_downgrades, date_loose = mapped.date_downgrades, mapped.date_loose
+    date_conflicts = mapped.date_conflicts
+    warnings.extend(mapped.warnings)
 
     if date_downgrades:
         shown = '; '.join(date_downgrades[:3])
@@ -2111,24 +3611,24 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
 
     cited_sources = sorted(
         ((sour_titles.get(ref, ref.removeprefix('(inline) ')), n)
-         for ref, n in sour_use.items()),
+         for ref, n in mapped.sour_use.items()),
         key=lambda kv: (-kv[1], kv[0]))
 
     slug = _slugify(ged_path.stem)
     documents_root = resolve_path('documents', fha_config, archive_root)
-    doc_dest = documents_root / _GEDCOM_DOC_SUBDIR / f'{slug}_{sid}.ged'
+    if update is None:
+        doc_dest = documents_root / _GEDCOM_DOC_SUBDIR / f'{slug}_{sid}.ged'
+        record_path = archive_root / 'sources' / 'other' / f'{slug}_{sid}.md'
+    else:
+        # No source id exists for a plan that writes nothing, so the two
+        # destinations name their folders only.
+        doc_dest = documents_root / _GEDCOM_DOC_SUBDIR
+        record_path = archive_root / 'sources' / 'other'
     doc_alias = path_to_alias(doc_dest, 'documents', fha_config, archive_root)
-    record_path = archive_root / 'sources' / 'other' / f'{slug}_{sid}.md'
     title = f'GEDCOM export: {ged_path.name} ({len(indis)} people'
     title += f', exported {export_date_raw})' if export_date_raw else ')'
 
-    photo_links = _collect_photo_links(records, xref_pid, display_names, consumed)
-    photo_catalog = _match_photo_links(archive_root, fha_config, photo_links,
-                                       ged_path.parent)
-
-    unread_lines, unread_top = _count_unread(records, consumed)
-
-    return ImportPlan(
+    plan = ImportPlan(
         archive_root=archive_root, ged_path=ged_path, ged_hash=ged_hash,
         line_count=len(text.splitlines()),
         sid=sid, slug=slug, doc_dest_path=doc_dest, doc_dest_alias=doc_alias,
@@ -2137,14 +3637,31 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path) -> ImportPl
         source_date=source_date, export_date_raw=export_date_raw,
         stubs=stubs, claims=claims, family_count=len(fams),
         cited_sources=cited_sources,
-        duplicates=_find_duplicates(archive_root, stubs),
-        warnings=warnings, unread_lines=unread_lines, unread_top=unread_top,
+        duplicates=[],
+        warnings=warnings, unread_lines=0, unread_top=[],
         loose_dates=len(date_loose), loose_date_reads=list(date_loose),
         date_downgrades=list(date_downgrades),
         date_conflicts=list(date_conflicts),
         joined_lines=len(joined), markup_cleaned=markup_cleaned,
-        photo_links=photo_links, photo_catalog=photo_catalog,
+        tree_note=tree_note, file_people=len(indis),
+        unreadable_records=[_rel_display(path, archive_root) for path in unreadable],
     )
+    display_names = {s.xref: s.name for s in stubs if s.name}
+    if update is None:
+        plan.duplicates = _find_duplicates(archive_root, stubs, existing)
+    else:
+        _plan_update(plan, incoming, update[0], update[1], existing or [])
+        # Photos are looked for only for people the plan placed: someone
+        # matched for certain (under the record they already have) or someone
+        # new. A person held or removed gets nothing planned, photos included.
+        xref_pid = {m.xref: m.pid for m in plan.matches.values()
+                    if m.person.state == 'present'}
+        xref_pid.update({s.xref: s.pid for s in plan.stubs})
+    plan.photo_links = _collect_photo_links(records, xref_pid, display_names, consumed)
+    plan.photo_catalog = _match_photo_links(archive_root, fha_config, plan.photo_links,
+                                            ged_path.parent)
+    plan.unread_lines, plan.unread_top = _count_unread(records, consumed)
+    return plan
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
@@ -2339,7 +3856,12 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
 
     Headline counts first, then capped detail - a 2,000-person plan must be
     skimmable in a terminal. The living-heuristic counts are printed because
-    that default is the one privacy-relevant thing this import decides."""
+    that default is the one privacy-relevant thing this import decides.
+
+    A newer download of a tree already imported has its own plan text
+    (`_update_plan_lines`); the notes about the file itself are shared."""
+    if plan.mode == 'update':
+        return _update_plan_lines(plan, capped=capped) + _file_note_lines(plan, capped)
     # Uncapped means every line: one person can add several date conflicts,
     # and one new person can match several existing ones.
     cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
@@ -2360,12 +3882,20 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         f'  Source record: {_rel_display(plan.record_path, plan.archive_root)}',
         f'  Filed copy:    {plan.doc_dest_alias} (the original file is not touched)',
     ]
+    if plan.tree_note:
+        lines.append(f'  {plan.tree_note}')
     lines.append(f'  Person stubs (people/stubs/): {len(plan.stubs):,}')
     for stub in plan.stubs[:cap]:
         lines.append(f'    {_stub_plan_line(stub)}')
     if len(plan.stubs) > cap:
         lines.append(f'    ... and {len(plan.stubs) - cap:,} more '
                      '(use --plan-out FILE to write the full plan)')
+    return lines + _duplicate_lines(plan, cap) + _file_note_lines(plan, capped)
+
+
+def _duplicate_lines(plan: ImportPlan, cap: int) -> list[str]:
+    """New people who look like someone already on file (reported, never merged)."""
+    lines: list[str] = []
     if plan.duplicates:
         lines.append('')
         lines.append(f'  Possible matches with people already in your archive '
@@ -2378,6 +3908,14 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
                      'identities is a human decision.')
         lines.append('  After import, ask "are these the same person?" '
                      '(the merge-identities skill).')
+    return lines
+
+
+def _file_note_lines(plan: ImportPlan, capped: bool) -> list[str]:
+    """What the plan says about the file itself, whatever kind of plan it is:
+    dates typed loosely, lines joined or cleaned, and tags not read."""
+    cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
+    lines: list[str] = []
     if plan.loose_dates:
         # Three examples on screen; --plan-out (capped=False) lists every one.
         reads = plan.loose_date_reads if not capped else plan.loose_date_reads[:3]
@@ -2423,6 +3961,119 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         lines.append(f'  {plan.unread_lines:,} line(s) carried tags this importer does '
                      f'not read ({top}) - the original file is kept, nothing is lost.')
     return lines
+
+
+def _update_plan_lines(plan: ImportPlan, *, capped: bool) -> list[str]:
+    """The plan for a newer download of a tree already imported.
+
+    The counts come first, then what he most needs to look at: what the newer
+    file says differently, then who could not be matched and why. Every list
+    is cut at `_PLAN_DETAIL_CAP` on screen and whole in `--plan-out`. Nothing
+    here names a freshly made id or today's date, so the same archive and the
+    same file print the same text every time."""
+    cap = _PLAN_DETAIL_CAP if capped else None
+
+    def section(title: str, rows: list[str]) -> list[str]:
+        if not rows:
+            return []
+        out = ['', f'  {title}'] + [f'    {row}' for row in rows[:cap]]
+        if cap is not None and len(rows) > cap:
+            out.append(f'    ... and {len(rows) - cap:,} more '
+                       '(use --plan-out FILE to write the full plan)')
+        return out
+
+    def count(outcome: str) -> int:
+        return sum(1 for f in plan.facts if f.outcome == outcome)
+
+    def said(fact: _Fact) -> str:
+        return _GEDCOM_TAIL_RE.sub('', fact.claim.value)
+
+    def compared(fact: _Fact) -> str:
+        return (f'{fact.subject}: your archive has {fact.before}; '
+                f'the newer download says {fact.now}')
+
+    earlier = '; '.join(
+        f'{p.imported or "an earlier date"} ({p.file_name}, {fmt_id_display(p.sid)})'
+        for p in reversed(plan.prior))
+    matched = sum(1 for m in plan.matches.values() if m.person.state == 'present')
+    people = f'  People: {matched:,} already in your archive, {len(plan.stubs):,} new'
+    if plan.held:
+        people += f', {len(plan.held):,} not matched for certain (listed below)'
+    lines = [
+        'GEDCOM import plan (dry-run: nothing is written)',
+        f'  File: {plan.ged_path.name} ({plan.line_count:,} lines, '
+        f'sha256 {plan.ged_hash[:12]})',
+        f'  This is a newer download of the tree you imported on {earlier}.',
+        '  Only what changed would be added. Nothing already in your archive is',
+        '  changed, including everything you have reviewed or edited.',
+        people,
+        f'  Statements: {count("same"):,} the same as before (not added again)',
+    ]
+    if count('decided'):
+        lines.append(f'              {count("decided"):,} you already rejected, replaced or '
+                     'removed (not added again)')
+    lines.append(f'              {count("new"):,} new, {count("more detail"):,} adding detail '
+                 '(a place, or a more exact date)')
+    lines.append(f'              {count("changed"):,} changed'
+                 + (': each would get an open question in notes/questions.md so you '
+                    'can decide' if count('changed') else ''))
+    if plan.held_statements:
+        lines.append(f'              {plan.held_statements:,} left out because they name '
+                     'someone not matched for certain, or someone you removed')
+    if plan.other_copies:
+        lines.append(f'  You also hold this tree as a separate copy '
+                     f'({", ".join(plan.other_copies)}). This plan compares with the '
+                     'newest import only.')
+    for alias in plan.unread_copies:
+        lines.append(f'  The filed copy of the earlier download ({alias}) could not be '
+                     'read, so this plan compares the newer file with your records only. '
+                     'A statement you deleted from your records may be listed as new; '
+                     'check the new statements against what you removed.')
+    if not (plan.stubs or plan.claims or plan.held):
+        lines.append('  Nothing new: this download says the same as what your archive '
+                     'already has from this tree. Nothing would be written.')
+    else:
+        lines += [
+            f'  Filed copy:    {plan.doc_dest_alias}/ (a copy of this file; your '
+            'original is not touched)',
+            f'  Source record: {_rel_display(plan.record_path, plan.archive_root)}/ (one '
+            'new record holding only the new and changed statements)',
+            '  Adding these is not switched on in this version yet, so --apply will '
+            'refuse. This plan is for checking.',
+        ]
+
+    changed = [f for f in plan.facts if f.outcome == 'changed']
+    lines += section(f'Changed ({len(changed):,}):', [compared(f) for f in changed])
+    detail = [f for f in plan.facts if f.outcome == 'more detail']
+    lines += section(f'Adding detail ({len(detail):,}):', [compared(f) for f in detail])
+    new = [f for f in plan.facts if f.outcome == 'new']
+    lines += section(f'New statements ({len(new):,}):', [said(f) for f in new])
+    lines += section(
+        f'New people ({len(plan.stubs):,}):',
+        [f'{s.xref} {s.name or "(no name)"} ('
+         + ', '.join(([f'b.{s.birth}'] if s.birth else []) + [f'living: {s.living}']) + ')'
+         for s in plan.stubs])
+    if plan.held:
+        title = (f'Not matched for certain ({len(plan.held):,}). Nothing is added for '
+                 f'these people, or for the statements that name them:')
+        lines += section(title, [f'{h.xref} {h.label}: {h.reason}'
+                                 for h in plan.held.values()])
+        if len(plan.held) > matched:
+            lines.append('    Most people could not be matched by their record numbers. '
+                         'That usually means the program that made this file gave '
+                         'everyone a new number.')
+    lines += section(f'No longer in the newer file ({len(plan.gone_facts):,}), kept in '
+                     'your archive as they are:', plan.gone_facts)
+    lines += section(f'People no longer in the newer file ({len(plan.gone_people):,}), '
+                     'kept in your archive as they are:', plan.gone_people)
+    lines += section(f'People you removed that the earlier import had added '
+                     f'({len(plan.removed_people):,}); they are not added back:',
+                     plan.removed_people)
+    lines += section(f'Names that differ in the newer file ({len(plan.name_changes):,}); '
+                     'your records keep their names:', plan.name_changes)
+    lines += section(f'The newer file records a death for {len(plan.death_now):,} '
+                     'person(s) your archive lists as possibly living:', plan.death_now)
+    return lines + _duplicate_lines(plan, cap if cap is not None else len(plan.duplicates))
 
 
 def _rel_display(path: Path, root: Path) -> str:
@@ -2509,10 +4160,7 @@ def _preflight_apply(plan: ImportPlan) -> None:
     if audit_path.exists():
         header = _read_audit_header(audit_path)
         raise GedcomImportError(
-            f'this GEDCOM was already imported on {header.get("imported", "an earlier date")} '
-            f'as {header.get("source_id", "a source record")} - importing it again would '
-            'duplicate every person. If you have a NEWER export from Ancestry, import '
-            'that file instead; it is a different file and will import cleanly.')
+            _already_imported(header.get('imported'), header.get('source_id')))
 
     destinations = [_planned_stub_path(plan, s) for s in plan.stubs]
     destinations += [plan.doc_dest_path, plan.record_path]
@@ -2649,8 +4297,15 @@ def _write_plan_out(out_path: Path, text: str) -> None:
 
 
 def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
-               apply: bool = False, plan_out: str | None = None) -> Result:
+               apply: bool = False, plan_out: str | None = None,
+               as_new_tree: bool = False) -> Result:
     """Plan (and optionally apply) a GEDCOM import; return a Result.
+
+    A newer download of a tree already imported is planned as an update: only
+    the new people and the statements that changed (`data['mode'] ==
+    'update'`, with the counts and plain lines listed where `data` is built).
+    That plan can be read but not applied yet: `--apply` refuses it with exit
+    2 before anything is written. `as_new_tree` plans every person as new.
 
     Like convert-mining, the plan is printed inline - the human preview IS this
     intake tool's surface - and the Result carries the structured outcome:
@@ -2703,9 +4358,35 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
 
     try:
         out_path = _check_plan_out(plan_out, archive_root) if plan_out else None
-        plan = build_plan(archive_root, fha_config, ged_path)
+        plan = build_plan(archive_root, fha_config, ged_path, as_new_tree=as_new_tree)
     except GedcomImportError as e:
         print(f'ERROR: {e}', file=sys.stderr)
+        return Result(ok=False, exit_code=EXIT_ERRORS)
+
+    if apply and plan.unreadable_records:
+        # An earlier import the plan could not read is one it could not
+        # compare with: applying would add that tree's people a second time.
+        print(
+            'ERROR: the record of an earlier GEDCOM import could not be read ('
+            + ', '.join(plan.unreadable_records) + '), so this import cannot check '
+            'whether the file is a newer download of that tree. Nothing was written. '
+            'Run fha lint to see what is wrong with the record and fix it, then run '
+            'this again. (To import the file as a separate tree anyway, add '
+            '--as-new-tree.)', file=sys.stderr)
+        return Result(ok=False, exit_code=EXIT_ERRORS)
+
+    if apply and plan.mode == 'update':
+        # The plan is safe to read; the write path for it is not built yet,
+        # and a half-built one must never touch his records.
+        earlier = plan.prior[0]
+        print(
+            'ERROR: this file is a newer download of a tree you already imported (on '
+            f'{earlier.imported or "an earlier date"}, {fmt_id_display(earlier.sid)}). '
+            'Adding only what changed is not switched on in this version yet. Nothing '
+            'was written. Run the same command without --apply to see what it would '
+            'add, and keep the file: a later version of the tools adds it. (To import '
+            'it as a separate tree anyway, with every person a second time, add '
+            '--as-new-tree.)', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
 
     def _plan_out_text(as_applied: bool) -> str:
@@ -2784,6 +4465,33 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             'warnings': list(plan.warnings),
             'source_id': plan.sid,
             'audit_csv': str(plan.archive_root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv'),
+            'mode': plan.mode,
+        })
+    if plan.mode == 'update':
+        # In an update `persons` and `claims` above count only what would be
+        # added, and `source_id` is '' (no id is minted for a plan).
+        def count(outcome: str) -> int:
+            return sum(1 for f in plan.facts if f.outcome == outcome)
+
+        result.data.update({
+            'update_of': [fmt_id_display(p.sid) for p in plan.prior],
+            'matched': sum(1 for m in plan.matches.values()
+                           if m.person.state == 'present'),
+            'new_people': len(plan.stubs),
+            'unmatched': [f'{h.xref} {h.label}: {h.reason}' for h in plan.held.values()],
+            'unmatched_likely': sum(1 for h in plan.held.values() if h.likely is not None),
+            'same': count('same'),
+            'decided': count('decided'),
+            'new': count('new'),
+            'more_detail': count('more detail'),
+            'changed': count('changed'),
+            'questions': len(plan.questions),
+            'held_statements': plan.held_statements,
+            'gone_facts': list(plan.gone_facts),
+            'gone_people': list(plan.gone_people),
+            'removed_people': list(plan.removed_people),
+            'name_changes': list(plan.name_changes),
+            'death_now': list(plan.death_now),
         })
     if plan_out_warning:
         result.add('warning', plan_out_warning)
@@ -2807,6 +4515,7 @@ def _cmd_import(args: argparse.Namespace) -> int:
     return run_import(
         archive_root, fha_config, ged_path,
         apply=bool(args.apply), plan_out=getattr(args, 'plan_out', None),
+        as_new_tree=bool(getattr(args, 'as_new_tree', False)),
     ).exit_code
 
 
@@ -2826,7 +4535,14 @@ later, family by family. Nothing imported is treated as proven. Photos your
 old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
-  --plan-out FILE    Also write the full, uncut plan text to FILE."""
+Downloaded your tree again later? Run this on the newer file. The plan shows
+only what changed since the earlier download: the new people, the new
+statements, and each one the newer file says differently. People it cannot
+match for certain are listed with the reason. (This plan cannot be applied
+yet; it is for checking.)
+
+  --plan-out FILE    Also write the full, uncut plan text to FILE.
+  --as-new-tree      Treat a newer download as a separate tree instead."""
 
 
 def _add_arguments(p: argparse.ArgumentParser) -> None:
@@ -2837,6 +4553,10 @@ def _add_arguments(p: argparse.ArgumentParser) -> None:
     p.add_argument('--plan-out', metavar='FILE', dest='plan_out',
                    help='Also write the full (uncapped) plan text to FILE; refused '
                         'inside the archive except its out/ folder.')
+    p.add_argument('--as-new-tree', action='store_true', dest='as_new_tree',
+                   help='Import every person as new even if this looks like a newer '
+                        'download of a tree already imported. Every person arrives a '
+                        'second time, which is usually not what you want.')
     p.add_argument('--root', metavar='PATH',
                    help='Archive root (auto-detected if omitted).')
 

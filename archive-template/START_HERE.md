@@ -7,7 +7,7 @@ This folder is a family history archive. Everything in it is ordinary files: tex
 <!-- FAMILY: the setup interview fills in this part, and the owner may rewrite it at any time.
      Tools never overwrite this file once it exists. -->
 
-*Not written yet.* Whoever keeps this archive: say here, in two or three sentences, whose family this is, who the archive is centred on (the person named as `root_person` in `fha.yaml`), which surnames and places it covers, and who has kept it.
+*Not written yet.* Whoever keeps this archive: say here, in two or three sentences, whose family this is, who the archive is centred on (the person named as `root_person` in `fha.yaml`), which surnames and places it covers, who has kept it, and, if you like, who should look after it next.
 
 <!-- /FAMILY -->
 
