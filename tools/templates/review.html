@@ -55,8 +55,8 @@
 
 {% macro remembered_row(e, same) %}
     <li>
-      <a href="{{ root_prefix }}/persons/{{ e.person_a|lower }}.html">{{ e.name_a }}</a> and
-      <a href="{{ root_prefix }}/persons/{{ e.person_b|lower }}.html">{{ e.name_b }}</a>{% if same %}<span class="u-muted"> &middot; {% if e.date %}noted {{ e.date }}{% else %}noted (date unknown){% endif %}</span>{% endif %}
+      {% if e.has_page_a %}<a href="{{ root_prefix }}/persons/{{ e.person_a|lower }}.html">{{ e.name_a }}</a>{% else %}{{ e.name_a }}{% endif %} and
+      {% if e.has_page_b %}<a href="{{ root_prefix }}/persons/{{ e.person_b|lower }}.html">{{ e.name_b }}</a>{% else %}{{ e.name_b }}{% endif %}{% if same %}<span class="u-muted"> &middot; {% if e.date %}noted {{ e.date }}{% else %}noted (date unknown){% endif %}</span>{% endif %}
       <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="confirm.undismiss" data-wb-direct
               data-wb-args='{{ ({"person_a": e.person_a, "person_b": e.person_b, "not_same_person": true} if same else {"person_a": e.person_a, "person_b": e.person_b}) | tojson }}'>Undo</button>
     </li>

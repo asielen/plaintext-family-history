@@ -2593,10 +2593,6 @@ class DeathAcceptMarksNotLivingTests(_ServeCase):
         self.assertEqual(self._living_in_index(), 'false')
 
 
-if __name__ == '__main__':
-    unittest.main()
-
-
 class RememberedDecisionsTests(_ServeCase):
     """03 PR5: the Review page lists the pairs the archive remembers (not
     connected, not the same person) and offers Undo for each, through the same
@@ -2701,3 +2697,23 @@ class RememberedDecisionsTests(_ServeCase):
         self.assertIn('Not the same person', txt)
         self.assertEqual(txt.count('data-wb-verb="confirm.undismiss"'), 2)
         self.assertIn('"not_same_person": true', txt)
+
+    def test_deleted_person_shows_without_a_dead_link_and_undo_still_works(self):
+        # A pair whose person record was since deleted: he sees the id, not a
+        # link to a "Not found" page, and Undo still takes the pair back.
+        a, _b = self.two_people()
+        gone = 'p-zzzzzzzzzz'
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=gone)
+        s, d, _h = self.req('GET', '/review')
+        self.assertEqual(s, 200)
+        txt = d.decode('utf-8')
+        self.assertIn(gone, txt)
+        self.assertNotIn(f'/persons/{gone}.html', txt)
+        self.assertIn(f'/persons/{a.lower()}.html', txt)
+        s, d, _h = self.post_run('confirm.undismiss', {'person_a': a, 'person_b': gone}, False)
+        self.assertEqual(s, 200, d)
+        self.assertEqual(serve.confirm.run_list_dismissed(self.root).data['not_connected'], [])
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -950,6 +950,22 @@ def gather_review(state: ServeState) -> dict:
         remembered = confirm.run_list_dismissed(root).data
     except Exception:
         pass
+    # A person deleted since the decision has no page: show the id unlinked
+    # rather than a link that lands on "Not found". Undo still works.
+    known: set[str] = set()
+    conn3 = open_index_db(root, ('persons',), strict=False)
+    if conn3 is not None:
+        try:
+            known = {r[0].lower() for r in conn3.execute('SELECT id FROM persons')}
+        except Exception:
+            pass
+        finally:
+            conn3.close()
+    for entries in remembered.values():
+        for e in entries if isinstance(entries, list) else []:
+            if isinstance(e, dict):
+                e['has_page_a'] = str(e.get('person_a', '')).lower() in known
+                e['has_page_b'] = str(e.get('person_b', '')).lower() in known
 
     return {
         'items': items,
