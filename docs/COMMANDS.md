@@ -202,6 +202,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views register <p-id>        A printable book-style register of a person's descendants
   fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
   fha views descendants <p-id>     A printable numbered list of a person's descendants
 
@@ -359,6 +360,26 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 |---|---|
 | `p-id` | A deceased person; the sheet is for them and a spouse. |
 | `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views register`
+
+Print a book-style register of a person's descendants, each fact with its source.
+
+```text
+Write a printed register report to generated/views/: the person is
+1, each descendant who has children gets the next number (generation by
+generation) and a short paragraph, and children are listed with Roman
+numerals. Living descendants are counted under their parent, never
+named, and their own children are left out; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; everyone descended from them is listed. |
+| `--generations` `N` | How many generations to print, the person being the first (default 4, most 10). |
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
