@@ -12042,7 +12042,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-save-chart.js', 'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,
