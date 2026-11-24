@@ -99,6 +99,9 @@
   </div>
   <p><a href="discoveries.html">All discoveries →</a></p>
   {% endif %}
+  {%- if has_whats_new %}
+  <p><a href="whats-new.html">What's new on this site</a></p>
+  {%- endif %}
 
   <h2 id="people">People{% if workbench %}
     <a class="wb-add" href="#" data-wb-open="tpl-mint">Add a person&hellip;</a>{% endif %}</h2>{% if statistics %}

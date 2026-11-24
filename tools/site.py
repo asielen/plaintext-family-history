@@ -261,6 +261,8 @@ CODE MAP
       .build_search_page: data/search-data.js and search.html
       ._graves / .build_graves_page: graves.html, every family grave by
           burial place with map and directions links
+      ._whats_new / .build_whats_new_page: whats-new.html (site.whats_new),
+          what was accepted each month, shown facts only
       ._surname_groups / .build_surname_pages: surnames/*.html, one page per
           family name the build shows a person for
       ._page_count: the page count `run` and --dry-run both report
@@ -4944,13 +4946,16 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "What's new" page: off unless fha.yaml says `whats_new: true`.
+        self.show_whats_new, whats_new_warning = _site_switch(site_cfg, 'whats_new')
+        self._whats_new_cache: tuple[list[dict], bool] | None = None
         # A page for each family name: on unless fha.yaml says
         # `surname_pages: false` (TOOLING §12, "Surname pages").
         self.show_surnames, surname_warning = _site_switch(site_cfg, 'surname_pages', default=True)
         # The statistics page: off unless asked for (TOOLING §12).
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
-                                             surname_warning, statistics_warning) if w]
+                                             surname_warning, statistics_warning, whats_new_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -5120,6 +5125,9 @@ class _SiteBuilder:
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
+        # Every entry of the same file (not just the last five), which the
+        # "What's new" page files by month.
+        self._discovery_entries: list[str] = []
         # A person's profile photo is resolved once (front-matter read + photo
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
@@ -9948,7 +9956,172 @@ class _SiteBuilder:
         else:
             chunks = [ln.strip() for ln in lines if _LIST_RE.match(ln)]
         self._discoveries = (body, chunks[-5:])
+        # "What's new" shows each entry whole, as the discoveries page does:
+        # a top-level bullet keeps its sub-bullets and continuation lines, so
+        # a date quoted in a sub-bullet never becomes an entry of its own.
+        if section_starts:
+            self._discovery_entries = chunks
+        else:
+            # The top level is the shallowest bullet in the file (a log may be
+            # written with every bullet a space or tab in). As in Markdown, a
+            # bullet is a sub-bullet only when it sits two or more columns
+            # deeper; one stray space still makes a sibling entry.
+            def indent_of(ln: str) -> int:
+                return len(ln) - len(ln.lstrip(' \t'))
+
+            top = min((indent_of(ln) for ln in lines if _LIST_RE.match(ln)), default=0)
+            entries: list[list[str]] = []
+            open_entry = False
+            for ln in lines:
+                bullet = _LIST_RE.match(ln)
+                indent = indent_of(ln)
+                if bullet and (not open_entry or indent < top + 2):
+                    entries.append([ln])
+                    open_entry = True
+                elif open_entry and (indent > top or not ln.strip()
+                                     or entries[-1][-1].strip()):
+                    entries[-1].append(ln)    # indented, blank, or a lazy continuation
+                else:
+                    open_entry = False        # unindented text after a blank line
+            self._discovery_entries = ['\n'.join(e).strip() for e in entries]
         return self._discoveries
+
+    # - what's new -
+
+    def _whats_new(self, page_dir: Path) -> tuple[list[dict], bool]:
+        """What a returning relative can read as new, month by month, newest
+        first: (the 12 most recent months that have anything, whether older
+        months were left off).
+
+        Cousin Ann sees only changes to things the shared pages already show.
+        A fact is listed when a person page's timeline shows it
+        (`_person_timeline`'s own rules: accepted, nobody living, unknown or
+        restricted on the claim, not a restricted claim, not a private
+        source) and it then passes the shared export reader a second time
+        (`export_privacy`, `person_withheld`), so one slip in either cannot
+        list a hidden change. Nothing counts or hints at what was left out,
+        and a month exists only because something shown happened in it.
+
+        The month is the one in the claim's `reviewed:` date, the day the
+        owner accepted it, so the page reads the same whenever it is built;
+        the build date is never used. A claim with no `reviewed:` is left
+        out. Linked and workbench builds list accepted claims too, so there
+        is one rule."""
+        if self._whats_new_cache is not None:
+            return self._whats_new_cache
+        shared = not self.linked
+        privacy = export_privacy(self.conn, self.archive_root) if shared else None
+        carried = living_carried_to_survivors(self.conn) if shared else {}
+        self._footnotes = None            # sources here are named links, not footnotes
+        month_re = re.compile(r'^(\d{4})-(\d{2})')
+
+        def month_of(value) -> str | None:
+            m = month_re.match(str(value or '').strip())
+            return f'{m.group(1)}-{m.group(2)}' if m and 1 <= int(m.group(2)) <= 12 else None
+
+        def type_word(ctype) -> str:
+            ctype = (ctype or '').strip()
+            if ctype in _VITAL_LABELS:
+                return _VITAL_LABELS[ctype].lower()
+            return ctype.replace('_', ' ').replace('-', ' ') or 'fact'
+
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        facts: dict[str, dict[str, list]] = {}    # month -> pid -> [(reviewed, cid, word)]
+        first_seen: dict[str, str] = {}           # pid -> earliest reviewed
+        source_first: dict[str, str] = {}         # sid -> earliest reviewed
+        for pid in sorted(self.person_pages):
+            meta = self.person_meta[pid]
+            if meta['merged_into']:
+                continue
+            if shared and person_withheld(self.conn, meta, privacy, self.person_meta.get,
+                                          carried=carried):
+                continue
+            rows = self.conn.execute(
+                "SELECT DISTINCT c.id, c.type, c.source_id, c.reviewed "
+                "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
+                f"WHERE cp.person_id = ? AND c.status = 'accepted' {living_filter} "
+                "AND c.reviewed IS NOT NULL ORDER BY c.reviewed, c.id", (pid,)).fetchall()
+            for r in rows:
+                month = month_of(r['reviewed'])
+                if month is None:
+                    continue
+                cid = normalize_id(str(r['id']))
+                if self._claim_verdicts.get(r['id']) is not None:
+                    continue          # names someone withheld: not listed, even reworded
+                if shared and (cid in self.restricted_claims
+                               or cid in privacy.restricted_claims
+                               or self._source_hard_restricted(r['source_id'])):
+                    continue
+                when = str(r['reviewed']).strip()
+                facts.setdefault(month, {}).setdefault(pid, []).append(
+                    (when, r['id'], type_word(r['type'])))
+                if pid not in first_seen or when < first_seen[pid]:
+                    first_seen[pid] = when
+                sid = normalize_id(r['source_id']) if r['source_id'] else None
+                if sid and sid in self.source_pages and (
+                        sid not in source_first or when < source_first[sid]):
+                    source_first[sid] = when
+
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        # An entry's month is the date it starts with (`- 2026-10-02: ...`, the
+        # shape `fha confirm discovery` writes, or a `## 2026-10-02` heading);
+        # a date quoted later in its text (a baptism of 1847) is not its month.
+        date_re = re.compile(r'^(?:#{2,3}\s+|[-*]\s+)\W*(\d{4}-\d{2}-\d{2})\b')
+        discoveries: dict[str, list] = {}
+        self._read_discoveries()
+        for chunk in self._discovery_entries:
+            m = date_re.match(chunk)
+            month = month_of(m.group(1)) if m else None
+            if month is not None:
+                discoveries.setdefault(month, []).append(self._markup(
+                    _prose_to_html(chunk, render, embed, drop_private=not self.linked)))
+
+        def by_name(pid: str):
+            return (fold_accents(self.person_meta[pid]['name'] or '').lower(), pid)
+
+        def by_title(sid: str):
+            return (fold_accents(self.source_meta[sid]['title'] or '').lower(), sid)
+
+        all_months = sorted(
+            {m for m in (set(facts) | set(discoveries)
+                         | {month_of(v) for v in first_seen.values()}
+                         | {month_of(v) for v in source_first.values()}) if m},
+            reverse=True)
+        months: list[dict] = []
+        for key in all_months[:12]:
+            people = []
+            for pid in sorted(facts.get(key, {}), key=by_name):
+                items = sorted(facts[key][pid])
+                words: list[str] = []
+                for _when, _cid, word in items:
+                    if word not in words:
+                        words.append(word)
+                shown = ', '.join(words[:5]) + (', and more' if len(words) > 5 else '')
+                n = len(items)
+                people.append(self._markup(
+                    f'{self._person_link(pid, page_dir)}: {n} fact{"" if n == 1 else "s"} '
+                    f'added ({_escape(shown)})'))
+            months.append({
+                'key': key,
+                'label': f'{_MONTH_NAMES[int(key[5:7]) - 1]} {key[:4]}',
+                'people': people,
+                'new_pages': [self._markup(self._person_link(pid, page_dir))
+                              for pid in sorted(first_seen, key=by_name)
+                              if month_of(first_seen[pid]) == key],
+                'new_records': [self._markup(self._source_link(sid, page_dir))
+                                for sid in sorted(source_first, key=by_title)
+                                if month_of(source_first[sid]) == key],
+                'discoveries': discoveries.get(key, []),
+            })
+        self._whats_new_cache = (months, len(all_months) > 12)
+        return self._whats_new_cache
+
+    def build_whats_new_page(self) -> None:
+        """Write whats-new.html (fha.yaml `site: whats_new: true`)."""
+        months, older_not_listed = self._whats_new(self.out_dir)
+        self._write_page(self.out_dir / 'whats-new.html', 'whats-new.html', {
+            'months': months, 'older_not_listed': older_not_listed, 'root_prefix': '.'})
 
     # - interactive tree -
 
@@ -11702,6 +11875,7 @@ class _SiteBuilder:
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
             'hero': hero, 'root_prefix': '.', 'has_graves': bool(self._graves()),
+            'has_whats_new': self.show_whats_new,
             'statistics': self.show_statistics,
             # The workbench shows this week instead of the shared site's month
             # panel: it is the owner's daily view, as `fha report`'s is.
@@ -12658,6 +12832,7 @@ class _SiteBuilder:
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
+                + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
@@ -12727,6 +12902,8 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_graves_page()
         self.build_discoveries_page()
+        if self.show_whats_new:
+            self.build_whats_new_page()
         self.build_surname_pages()
         self.build_index_page()
         if self.show_search:
@@ -12750,6 +12927,9 @@ class _SiteBuilder:
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
                 self.out_dir / 'graves.html',
+                # Listed whether "What's new" is on or off, so switching it off
+                # removes the old page.
+                self.out_dir / 'whats-new.html',
                 # Listed whether surname pages are on or off, so switching
                 # them off, or the last person carrying a name becoming
                 # private, never leaves an old page naming that family.
