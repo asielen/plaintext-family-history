@@ -164,6 +164,29 @@ class ContentTests(_Base):
         self.assertIn('Found the 1880 census page', self.month(page, 'October 2026'))
         self.assertNotIn('undated scrap', page)
 
+    def test_a_date_inside_a_discovery_does_not_become_its_month(self):
+        # A hand-kept log quotes old dates in its text and in sub-bullets.
+        # Cousin Ann must not find "April 1921" among the recent months; the
+        # entry's month is the date it starts with, and its sub-bullets and
+        # continuation lines stay with it, as on the discoveries page.
+        notes = self.root / 'notes'
+        notes.mkdir()
+        (notes / 'discoveries.md').write_text(
+            '# Discoveries\n'
+            '- 2026-10-02: Found Margaret Cole\'s death record.\n'
+            '  - Death certificate dated 1921-04-12 names her parents.\n'
+            '  It was filed under her married name.\n'
+            '- Found Thomas Hartley\'s baptism of 1847-05-09 in the parish book.\n',
+            encoding='utf-8')
+        self.build()
+        page = self.page()
+        self.assertNotIn('1921</h2>', page)
+        self.assertNotIn('1847</h2>', page)
+        october = self.month(page, 'October 2026')
+        self.assertIn('names her parents', october)
+        self.assertIn('filed under her married name', october)
+        self.assertNotIn('parish book', page)
+
     def test_since_select_needs_script_and_page_works_without_it(self):
         self.build()
         page = self.page()

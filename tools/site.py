@@ -9368,7 +9368,24 @@ class _SiteBuilder:
         else:
             chunks = [ln.strip() for ln in lines if _LIST_RE.match(ln)]
         self._discoveries = (body, chunks[-5:])
-        self._discovery_entries = chunks
+        # "What's new" shows each entry whole, as the discoveries page does:
+        # a top-level bullet keeps its sub-bullets and continuation lines, so
+        # a date quoted in a sub-bullet never becomes an entry of its own.
+        if section_starts:
+            self._discovery_entries = chunks
+        else:
+            entries: list[list[str]] = []
+            open_entry = False
+            for ln in lines:
+                if re.match(r'^[-*]\s+', ln):
+                    entries.append([ln])
+                    open_entry = True
+                elif open_entry and (ln[:1] in (' ', '\t') or not ln.strip()
+                                     or entries[-1][-1].strip()):
+                    entries[-1].append(ln)    # indented, blank, or a lazy continuation
+                else:
+                    open_entry = False        # unindented text after a blank line
+            self._discovery_entries = ['\n'.join(e).strip() for e in entries]
         return self._discoveries
 
     # - what's new -
@@ -9449,12 +9466,15 @@ class _SiteBuilder:
 
         render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
         embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
-        date_re = re.compile(r'\b\d{4}-\d{2}-\d{2}\b')
+        # An entry's month is the date it starts with (`- 2026-10-02: ...`, the
+        # shape `fha confirm discovery` writes, or a `## 2026-10-02` heading);
+        # a date quoted later in its text (a baptism of 1847) is not its month.
+        date_re = re.compile(r'^(?:#{2,3}\s+|[-*]\s+)\W*(\d{4}-\d{2}-\d{2})\b')
         discoveries: dict[str, list] = {}
         self._read_discoveries()
         for chunk in self._discovery_entries:
-            m = date_re.search(chunk.split('\n', 1)[0])
-            month = month_of(m.group(0)) if m else None
+            m = date_re.match(chunk)
+            month = month_of(m.group(1)) if m else None
             if month is not None:
                 discoveries.setdefault(month, []).append(self._markup(
                     _prose_to_html(chunk, render, embed, drop_private=not self.linked)))
