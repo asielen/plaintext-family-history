@@ -13151,6 +13151,12 @@ class HeritageChartTests(_Base):
         self.assertNotIn('—', svg + legend)
         self.assertEqual(svg + legend, site._render_heritage_svg(self._rows('p-kit0000000')))
 
+    def test_the_chart_says_countries_are_todays_borders(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn("by today's borders", page)
+
     def test_countries_draw_biggest_share_first_then_by_name(self):
         rows = [{'label': 'Parents', 'slots': 2, 'counts': {'Wales': 1, 'England': 1}},
                 {'label': 'Grandparents', 'slots': 4, 'counts': {'Wales': 2, 'Ireland': 1,
