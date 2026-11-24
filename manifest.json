@@ -1268,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "3e0f82c6216f0fdcd14657646aadcbdf221015d35b7c5ea4301f11a2fffc0408",
+      "sha256": "3a7a1bab4aadcabf7b1bd0e234b5af68ccdcda76eb211ce235e1e3f87ca2ae10",
       "spec_version": "2.32",
       "src": "tools/templates/person.html"
     },
@@ -1473,7 +1473,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "5f4576befe6a56629089d2d868943777901eb5dc4448aec451f6ad9765195fe4",
+      "sha256": "71fb4fec2c174b55a082ea6a1dd2e453be198afa40c932c874a12f0c2278a6c1",
       "spec_version": "2.32"
     },
     {
@@ -1528,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "ed7fcc626d02d484630fb513aee7bee78dfedd4602525e37aa93cd7e53a3348f",
+      "sha256": "aa3a69416be673132b19b7ad48e7935fb189e303d7d097937418f4b19f0a39d4",
       "spec_version": "2.32",
       "src": "TOOLING.md"
     },
@@ -1572,7 +1572,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "1775a1f26442e76b73ec960a2fc03b4bcd1c60d1c43d6c244499ca872360839f",
+      "sha256": "371b63029ab9ba63859c40ca7604480a8fb22c0d51d968742d7a08bdc531b639",
       "spec_version": "2.32",
       "src": "archive-template/fha.yaml"
     },
