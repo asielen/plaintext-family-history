@@ -302,12 +302,19 @@
 
     var followed = -1;
     function follow(index) {
+      var was = followed;
       followed = index;
       focus.selectAll('*').remove();
       numbers.selectAll('*').remove();
       svg.classed('map-following', index >= 0);
       if (picker) picker.value = index >= 0 ? String(index) : '';
-      if (index < 0) return;
+      if (index < 0) {
+        if (was >= 0) {   // the journey's text goes with its line
+          clear(panel);
+          panel.appendChild(el('p', 'Choose a pin to see the place and the people the records put there.', 'note'));
+        }
+        return;
+      }
       var j = journeys[index];
       pins.classed('is-active', false);
       // Each move in two halves, the first ending in an arrow, so the

@@ -1330,7 +1330,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-map.js",
       "category": "operating",
-      "sha256": "bbc20b7e060de460f2a0ac235f0fa84f10a5f2a04c0e880650343f58e7973d1f",
+      "sha256": "650a33697dbe9865e98dfd3dbb530ec7d3ce6afa652291b2f0c3d4d791522957",
       "spec_version": "2.33",
       "src": "tools/templates/vendor/fha-map.js"
     },
