@@ -402,11 +402,10 @@ except ModuleNotFoundError:  # pragma: no cover - exercised via the CLI guard
     jinja2 = None  # type: ignore[assignment]
 
 try:  # Pillow is OPTIONAL - standalone image derivatives use it when present.
-    from PIL import Image, ImageOps, __version__ as _PIL_VERSION
+    from PIL import Image, __version__ as _PIL_VERSION
     _PIL_AVAILABLE = True
 except ModuleNotFoundError:  # pragma: no cover - environment-dependent
     Image = None  # type: ignore[assignment]
-    ImageOps = None  # type: ignore[assignment]
     _PIL_VERSION = ''
     _PIL_AVAILABLE = False
 
@@ -2364,6 +2363,10 @@ def _place_leading_name_end(place_label: str) -> int | None:
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
 
+# Exif Orientation value -> the turn that makes the stored pixels upright.
+_EXIF_UPRIGHT = ({2: Image.FLIP_LEFT_RIGHT, 3: Image.ROTATE_180, 4: Image.FLIP_TOP_BOTTOM,
+                  5: Image.TRANSPOSE, 6: Image.ROTATE_270, 7: Image.TRANSVERSE,
+                  8: Image.ROTATE_90} if _PIL_AVAILABLE else {})
 _FACE_WIDEN = 1.3   # a face crop shows a little hair and shoulder, not just the face
 
 
@@ -2391,8 +2394,8 @@ def _picture_bytes(src: Path, max_px: int, suffix: str,
     ending in `suffix`. None when it cannot be made.
 
     With `crop` (a face region, see `_face_box`) the picture is that face cut
-    out of the photo, turned upright first because a photo tool's regions are
-    drawn on the picture as it is displayed.
+    out of the photo on its stored pixels (the MWG rule for regions), then
+    turned upright.
 
     Standalone snapshots must carry their own image derivatives so no full-res
     original - and none of its EXIF (camera, GPS, timestamps that could leak a
@@ -2413,8 +2416,12 @@ def _picture_bytes(src: Path, max_px: int, suffix: str,
     try:
         with Image.open(src) as im:
             if crop is not None:
-                im = ImageOps.exif_transpose(im)
+                # MWG Guidelines 2.0 5.9: regions are relative to the stored
+                # pixels, before Exif Orientation - cut first, then turn upright.
+                turn = _EXIF_UPRIGHT.get(im.getexif().get(0x0112))
                 im = im.crop(_face_box(crop, im.size))
+                if turn is not None:
+                    im = im.transpose(turn)
             im = im.convert('RGB') if im.mode not in ('RGB', 'L') else im
             im.thumbnail((max_px, max_px))
             buf = io.BytesIO()
@@ -8709,6 +8716,13 @@ class _SiteBuilder:
                     or not (0 <= box[0] <= 1 and 0 <= box[1] <= 1 and 0 < box[2] <= 1 and 0 < box[3] <= 1)):
                 continue
             found.append((0 if r['is_primary'] else 1, -box[2] * box[3], r['path'], box, r['source_id']))
+        faces_in: dict[str, list[tuple[float, float]]] = {}
+        for r in rows:   # every named face in each photo, to keep a neighbour out of a crop
+            try:
+                a = json.loads(r['area_json'] or '')
+                faces_in.setdefault(r['path'], []).append((float(a['X']), float(a['Y']), float(a['W']), float(a['H'])))
+            except (ValueError, TypeError, KeyError):
+                continue
         for _primary, _area, path, box, source_id in sorted(found):
             if not self._photo_is_public(path) or self._photo_row_has_withheld_source(path):
                 continue
@@ -8716,13 +8730,33 @@ class _SiteBuilder:
                 src = resolve_path(path, self.fha_config, self.archive_root)
             except Exception:  # noqa: BLE001 - an unresolvable row publishes nothing
                 continue
-            if not src.is_file():
+            if not src.is_file() or self._crop_holds_a_neighbour(src, box, faces_in.get(path, [])):
                 continue
             dest = self._media_dest(f'{path}@{pid}', 'faces')
             if self._derive(src, dest, max_px=_FACE_MAX_PX, crop=box):
                 self._face_photo_source[pid] = source_id.lower() if source_id else None
                 return dest
         return None
+
+    @staticmethod
+    def _crop_holds_a_neighbour(src: Path, box: tuple, faces: list) -> bool:
+        """Would the face crop take in another person's face? Packed shoulder
+        to shoulder, a neighbour's face lands in the margin, and that neighbour
+        was not asked about. True when another face's centre falls inside the
+        square (or the picture cannot be measured)."""
+        try:
+            with Image.open(src) as im:
+                size = im.size
+        except Exception:  # noqa: BLE001
+            return True
+        left, top, right, bottom = _face_box(box, size)
+        for x, y, w, h in faces:
+            if (x, y, w, h) == box:
+                continue
+            if (x * size[0] - w * size[0] / 2 < right and x * size[0] + w * size[0] / 2 > left
+                    and y * size[1] - h * size[1] / 2 < bottom and y * size[1] + h * size[1] / 2 > top):
+                return True
+        return False
 
     def _portrait_note(self, pid: str, page_dir: Path):
         """Under a face cut from a group photo, say so, and link the photo's

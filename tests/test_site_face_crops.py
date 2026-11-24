@@ -51,6 +51,28 @@ class BoxTests(unittest.TestCase):
         self.assertEqual(site._face_box((0.5, 0.5, 1.0, 1.0), (400, 300)), (50, 0, 350, 300))
 
 
+class RotatedPhotoTests(unittest.TestCase):
+    def test_region_coordinates_are_read_on_the_stored_pixels(self):
+        # MWG Guidelines 2.0 sec 5.9: a Creator MUST express region coordinates
+        # relative to the stored image, prior to the application of the Exif
+        # Orientation tag. So a region on the stored left edge of a photo stored
+        # sideways (Orientation 6) is the red patch, and the crop is turned upright.
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            src = Path(tmp) / 'sideways.jpg'
+            im = Image.new('RGB', (400, 200), (0, 0, 255))
+            im.paste((255, 0, 0), (0, 0, 100, 200))   # red on the stored left edge
+            exif = Image.Exif()
+            exif[0x0112] = 6
+            im.save(src, exif=exif)
+            data = site._picture_bytes(src, 128, '.jpg', (0.125, 0.5, 0.2, 0.4))
+            self.assertIsNotNone(data)
+            out = Image.open(io.BytesIO(data)).convert('RGB')
+            r, g, b = out.getpixel((out.width // 2, out.height // 2))
+            self.assertGreater(r, 200)
+            self.assertLess(b, 60)
+
+
 class FaceCropTests(_Base):
     def setUp(self):
         super().setUp()
@@ -181,6 +203,38 @@ class FaceCropTests(_Base):
         with Image.open(self.faces()[0]) as im:
             r, g, b = im.getpixel((64, 64))
         self.assertGreater(b, 200)    # b.jpg: primary, and the biggest face
+
+    def test_a_crop_that_would_take_in_a_neighbours_face_is_not_made(self):
+        # A second named face sits shoulder to shoulder with hers: the margin of
+        # her crop would show his face, so the photo gives her no portrait.
+        self.catalog()
+        self.photos.execute(
+            'INSERT INTO photo_face_regions(path, name, region_type, area_json) VALUES (?,?,?,?)',
+            (WEDDING, 'Someone Else', 'Face',
+             json.dumps({'X': 0.56, 'Y': 0.4, 'W': 0.1, 'H': 0.2, 'Unit': 'normalized'})))
+        self.photos.commit()
+        self.build()
+        self.assertEqual(self.faces(), [])
+
+    def test_a_neighbour_whose_face_is_only_partly_in_the_crop_blocks_it(self):
+        self.catalog()
+        self.photos.execute(
+            'INSERT INTO photo_face_regions(path, name, region_type, area_json) VALUES (?,?,?,?)',
+            (WEDDING, 'Someone Else', 'Face',
+             json.dumps({'X': 0.63, 'Y': 0.4, 'W': 0.1, 'H': 0.2, 'Unit': 'normalized'})))
+        self.photos.commit()
+        self.build()
+        self.assertEqual(self.faces(), [])
+
+    def test_a_neighbour_well_clear_of_the_crop_does_not_block_it(self):
+        self.catalog()
+        self.photos.execute(
+            'INSERT INTO photo_face_regions(path, name, region_type, area_json) VALUES (?,?,?,?)',
+            (WEDDING, 'Someone Else', 'Face',
+             json.dumps({'X': 0.9, 'Y': 0.4, 'W': 0.1, 'H': 0.2, 'Unit': 'normalized'})))
+        self.photos.commit()
+        self.build()
+        self.assertEqual(len(self.faces()), 1)
 
     def test_the_cache_key_differs_between_two_crops_of_one_photo(self):
         src = self.image()
