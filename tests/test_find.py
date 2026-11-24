@@ -18,7 +18,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import find
 from _lib import (
     EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE, EXIT_WARNINGS,
-    PHOTOINDEX_SCHEMA_VERSION,
+    PHOTOINDEX_SCHEMA_VERSION, Result,
     index_manifest_path, record_path_manifest, write_path_manifest,
 )
 
@@ -2711,6 +2711,96 @@ class SoundsLikeTests(unittest.TestCase):
         self.assertIn('only a hint', out)
         # The exact spelling's group comes before the other spelling's.
         self.assertLess(out.index('Thomas Edward Hartley'), out.index('Ann Hartly'))
+
+    def test_spelling_groups_list_surnames_that_sound_alike(self) -> None:
+        rc, out, _err = self._find(['--spelling-groups'])
+        self.assertEqual(rc, EXIT_CLEAN, out)
+        self.assertRegex(out, r'Hartley \(\d+\), Hartly \(1\)')
+        self.assertIn('nothing has been changed', out)
+        self.assertIn('fha find --sounds-like', out)
+
+    def test_a_surname_spelled_one_way_is_not_a_group(self) -> None:
+        rc, out, _err = self._find(['--spelling-groups'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertNotIn('Kovalsky', out)      # the only Kovalsky in the fixture
+
+    def test_spelling_groups_never_show_a_private_name(self) -> None:
+        for argv in (['--spelling-groups'], ['--spelling-groups', '--json']):
+            rc, out, err = self._find(argv)
+            for text in (out, err):
+                for hidden in ('Hartlie', 'Petrowski', 'Petrowska', 'p-snd0000002'):
+                    self.assertNotIn(hidden, text)
+
+    def _with_ann(self, body: str, argvs: list[list[str]]) -> list[tuple[str, str]]:
+        path = self.root / 'people' / 'stubs' / 'hartly__ann_p-snd0000001.md'
+        before = path.read_bytes()
+        path.write_text('---\nid: p-snd0000001\naliases: [p-snd0000001]\n' + body +
+                        'living: false\ntier: stub\n---\n\n# Ann\n', encoding='utf-8')
+        try:
+            return [self._find(a)[1:] for a in argvs]
+        finally:
+            path.write_bytes(before)
+
+    def test_spelling_groups_skip_a_main_name_marked_private(self) -> None:
+        got = self._with_ann(
+            'name: Ann Hartly\nname_variants:\n  - {value: Ann Hartly, restricted: true}\n',
+            [['--spelling-groups'], ['--spelling-groups', '--json']])
+        for out, err in got:
+            self.assertNotIn('Hartly', out + err)
+
+    def test_spelling_groups_use_the_recorded_surname(self) -> None:
+        got = self._with_ann('name: Ann Hartly\nsurname: ""\n',
+                             [['--spelling-groups'], ['--spelling-groups', '--json']])
+        for out, err in got:
+            self.assertNotIn('Hartly', out + err)
+
+    def test_spelling_groups_fold_accents_before_coding(self) -> None:
+        from _lib import surname_spelling_groups
+        for accented in ('Bąk', 'Bąk'):
+            groups = surname_spelling_groups({'p-1': [accented], 'p-2': ['Back']})
+            self.assertEqual(len(groups), 1, accented)
+            self.assertEqual(groups[0]['people'], 2, accented)
+
+    def test_spelling_groups_json_shape(self) -> None:
+        rc, out, _err = self._find(['--spelling-groups', '--json'])
+        self.assertEqual(rc, EXIT_CLEAN)
+        groups = json.loads(out)
+        hartley = next(g for g in groups
+                       if any(s['spelling'] == 'Hartly' for s in g['spellings']))
+        self.assertEqual(set(hartley), {'code', 'spellings', 'people'})
+        self.assertEqual({s['spelling'] for s in hartley['spellings']}, {'Hartley', 'Hartly'})
+        self.assertEqual(hartley['people'], sum(s['count'] for s in hartley['spellings']))
+
+    def test_spelling_groups_change_no_file(self) -> None:
+        before = {p: p.stat().st_mtime_ns for p in self.root.rglob('*.md')}
+        self._find(['--spelling-groups'])
+        after = {p: p.stat().st_mtime_ns for p in self.root.rglob('*.md')}
+        self.assertEqual(before, after)
+
+    def test_spelling_groups_refuse_flags_that_mean_nothing(self) -> None:
+        for argv in (['--spelling-groups', '--date', '1900'], ['--spelling-groups', '--kind', 'person']):
+            rc, _out, err = self._find(argv)
+            self.assertEqual(rc, EXIT_ERRORS, argv)
+            self.assertIn('--spelling-groups', err)
+
+    def test_no_groups_says_so_and_exits_clean(self) -> None:
+        from _lib import surname_spelling_groups
+        self.assertEqual(surname_spelling_groups({'p-1': ['Smith'], 'p-2': ['Smith']}), [])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = find._cmd_find_spelling_groups(
+                Result(ok=True, exit_code=EXIT_CLEAN, data={'groups': [], 'more': 0}), False, 50)
+        self.assertEqual(rc, EXIT_CLEAN)
+        self.assertIn('No surnames in your records sound alike.', out.getvalue())
+
+    def test_groups_count_people_once_and_use_the_first_code_only(self) -> None:
+        from _lib import surname_spelling_groups
+        groups = surname_spelling_groups({
+            'p-1': ['Hartley', 'Hartly'], 'p-2': ['Hartley'], 'p-3': ['Hartly']})
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['people'], 3)
+        self.assertEqual(groups[0]['spellings'],
+                         [{'spelling': 'Hartley', 'count': 2}, {'spelling': 'Hartly', 'count': 2}])
 
     def test_a_married_name_finds_the_woman(self) -> None:
         # Margaret A. Cole's married name, Margaret Hartley, is public and
