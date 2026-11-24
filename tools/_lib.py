@@ -473,7 +473,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 "half-brother", "second cousin"
 #    blood_routes              - every separate blood route, nearest first, each
 #                                 with its half state (full, half, or may be half)
-#    blood_answer              - the nearest route, plus the "may be half" note
+#    blood_answer              - the nearest route, plus the "may be half" note,
+#                                 every route and the double word (double first cousin)
 #    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
 #                                 (by the dates), adoptive father, uncle by marriage
 #    kinship_answer            - {blood, by_marriage}, what fha relate prints
@@ -19725,7 +19726,8 @@ def _kin_line_children(graph: KinshipGraph, c: str, anc: dict[str, int]) -> set[
 
 
 def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int],
-                    anc_b: dict[str, int]) -> bool | None:
+                    anc_b: dict[str, int],
+                    lines: tuple[set[str], set[str]] | None = None) -> bool | None:
     """Whether a blood route is half: False (full), True (certainly half) or
     None (a parent on the connecting line is not recorded, so it may be half).
 
@@ -19738,8 +19740,9 @@ def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int]
     c = group[0]
     if anc_a[c] == 0 or anc_b[c] == 0:
         return False
-    ca = min(_kin_line_children(graph, c, anc_a))
-    cb = min(_kin_line_children(graph, c, anc_b))
+    line_a, line_b = lines or (_kin_line_children(graph, c, anc_a),
+                               _kin_line_children(graph, c, anc_b))
+    ca, cb = min(line_a), min(line_b)
     if frozenset({ca, cb}) in graph.half_sibling_pairs:
         return True
     other_a = graph.genetic_parents.get(ca, set()) - {c}
@@ -19751,13 +19754,71 @@ def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int]
     return None
 
 
+def _kin_separate_lines(graph: KinshipGraph, d: str, a: str, b: str,
+                        anc_a: dict[str, int], anc_b: dict[str, int]
+                        ) -> tuple[str, str, int, int] | None:
+    """A line to A and a line to B from common ancestor `d` that leave it
+    through different children and share no one below it, as (A-side child,
+    B-side child, generations from d to A, generations from d to B), the
+    nearest such pair; or None when every pair of lines meets again (then
+    `d` is only the way up to a nearer common ancestor). The generations
+    are counted along these lines, not along the shortest way up, which may
+    run through the nearer ancestor. Lines run down genetic edges through
+    A's and B's own ancestors."""
+    kids_a = {k for k in graph.genetic_children(d) if k in anc_a}
+    kids_b = {k for k in graph.genetic_children(d) if k in anc_b}
+    if len(kids_a | kids_b) < 2:
+        return None
+
+    def on_line(k: str, anc: dict[str, int]) -> set[str]:
+        # Everyone on some line from k down to the person `anc` belongs to.
+        return {n for n in anc if k in graph.ancestors(n)}
+
+    def steps(k: str, target: str, anc: dict[str, int], avoid: set[str]) -> int | None:
+        # Shortest line from k down to target that avoids `avoid`.
+        seen, todo = {k}, deque([(k, 0)])
+        while todo:
+            n, dist = todo.popleft()
+            if n in avoid or n not in anc:
+                continue
+            if n == target:
+                return dist
+            for child in graph.genetic_children(n):
+                if child not in seen:
+                    seen.add(child)
+                    todo.append((child, dist + 1))
+        return None
+
+    found: list[tuple[int, int, str, str, int, int]] = []
+    for ka in sorted(kids_a):
+        line = on_line(ka, anc_a)
+        for kb in sorted(kids_b - {ka}):
+            n = steps(kb, b, anc_b, line)
+            if n is not None:
+                ga, gb = anc_a[ka] + 1, n + 1
+                found.append((max(ga, gb), ga + gb, ka, kb, ga, gb))
+    for kb in sorted(kids_b):
+        line = on_line(kb, anc_b)
+        for ka in sorted(kids_a - {kb}):
+            n = steps(ka, a, anc_a, line)
+            if n is not None:
+                ga, gb = n + 1, anc_b[kb] + 1
+                found.append((max(ga, gb), ga + gb, ka, kb, ga, gb))
+    if not found:
+        return None
+    _, _, ka, kb, ga, gb = min(found)
+    return ka, kb, ga, gb
+
+
 def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     """Every separate way A and B are related by blood, nearest first, as A
     is B's <relationship>. Empty when no genetic line joins them.
 
     A route is one common ancestor, or a couple who share a child on both
     lines. A common ancestor who is only the way up to a nearer common
-    ancestor (the grandparents' own parents) is not a route of its own.
+    ancestor (the grandparents' own parents) is not a route of its own;
+    one with a second line down that avoids the nearer one (a cousin
+    marriage further up) is.
     Each route is {relationship, common_ancestors, gens_a, gens_b, half,
     half_relationship}: `half` is False, True or None (may be half; then
     `relationship` keeps the full word and `half_relationship` carries the
@@ -19774,7 +19835,21 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     covered: set[str] = set()
     for d in common:
         covered.update(up for up in graph.ancestors(d) if up != d)
-    minimal = sorted(common - covered)
+    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
+             for c in common - covered}
+    # A man who married his cousin: his brother is their child's uncle, and
+    # through the wife also her cousin. The great-grandparents sit above the
+    # nearer common ancestor, yet a second line runs down from them. A
+    # covered ancestor is a route of its own when lines to A and to B leave
+    # it through different children and never meet again below it.
+    gens = {c: (anc_a[c], anc_b[c]) for c in lines}
+    for d in covered & common:
+        split = _kin_separate_lines(graph, d, a, b, anc_a, anc_b)
+        if split:
+            ka, kb, ga, gb = split
+            lines[d] = ({ka}, {kb})
+            gens[d] = (ga, gb)
+    minimal = sorted(lines)
 
     # Group the minimal ancestors into couples: the same generations from
     # both people and a shared child on each line. Union-find keeps a
@@ -19786,11 +19861,9 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
             c = root[c]
         return c
 
-    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
-             for c in minimal}
     for i, c1 in enumerate(minimal):
         for c2 in minimal[i + 1:]:
-            if ((anc_a[c1], anc_b[c1]) == (anc_a[c2], anc_b[c2])
+            if (gens[c1] == gens[c2]
                     and lines[c1][0] & lines[c2][0] and lines[c1][1] & lines[c2][1]):
                 r1, r2 = find(c1), find(c2)
                 if r1 != r2:
@@ -19802,8 +19875,8 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     sex = graph.people.get(a, {}).get('sex', '')
     routes = []
     for group in groups.values():
-        ga, gb = anc_a[group[0]], anc_b[group[0]]
-        half = _kin_half_state(graph, group, anc_a, anc_b)
+        ga, gb = gens[group[0]]
+        half = _kin_half_state(graph, group, anc_a, anc_b, lines[group[0]])
         routes.append({
             'relationship': kinship_word(ga, gb, sex, half=half is True),
             'common_ancestors': sorted(group),
@@ -19812,8 +19885,12 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
             'half': half,
             'half_relationship': kinship_word(ga, gb, sex, half=True) if half is None else None,
         })
+    # At one degree a sure full line leads, then one that may be half, then
+    # a half one: the headline (and its note) never says "may be half" when
+    # another line makes the tie certain, whatever the IDs happen to be.
+    certainty = {False: 0, None: 1, True: 2}
     routes.sort(key=lambda r: (max(r['gens_a'], r['gens_b']), r['gens_a'] + r['gens_b'],
-                               r['common_ancestors']))
+                               certainty[r['half']], r['common_ancestors']))
     return routes
 
 
@@ -19825,12 +19902,37 @@ def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
     common_ancestors, gens_a, gens_b, half, half_relationship}) plus `note`:
     when the route may be half, one plain sentence naming both people that
     says so ("... so Ethel Hartley may be Frances Hartley's half-sister."),
-    else None."""
+    else None.
+
+    Children of two brothers who married two sisters hear "double first
+    cousin", and cousins whose grandparents were themselves cousins hear
+    both lines: `routes` is every route, nearest first (the first is the one
+    the top-level keys describe), and `double` is True when the two nearest
+    routes are full and at one cousin degree and no third route shares that
+    degree (a further, more distant line may follow). Then `relationship`
+    is the double word ("double first cousin") while each entry in `routes`
+    keeps its own line's word."""
     routes = blood_routes(graph, a, b)
     if not routes:
         return None
     answer = dict(routes[0])
     answer['note'] = None
+    first = routes[0]
+    # Double: the two nearest routes are full and at one cousin degree, and
+    # no third route shares that degree. A further, more distant line (the
+    # grandmothers were themselves cousins) does not undo "double".
+    gens = (first['gens_a'], first['gens_b'])
+    double = (len(routes) >= 2
+              and all(r['half'] is False for r in routes[:2])
+              and (routes[1]['gens_a'], routes[1]['gens_b']) == gens
+              and not any((r['gens_a'], r['gens_b']) == gens for r in routes[2:])
+              and min(gens) >= 2)
+    if double:
+        answer['relationship'] = kinship_word(
+            first['gens_a'], first['gens_b'], graph.people.get(a, {}).get('sex', ''),
+            double=True)
+    answer['double'] = double
+    answer['routes'] = [dict(r) for r in routes]
     if answer['half'] is None:
         a_name = graph.people.get(a, {}).get('name') or a
         b_name = graph.people.get(b, {}).get('name') or b
@@ -20453,6 +20555,13 @@ def _status_counts(c: dict, statuses: tuple[str, ...]) -> bool:
 # is a gap rather than a possibly-living person. Someone marked `living: false`
 # owes a death or burial whatever their age (SPEC §8.2, lint W101).
 END_OF_LIFE_YEARS = 130
+
+# Past this many years since birth, the archive takes someone to be no longer
+# living when it proposes the flag (lint W173 asks him) or defaults it
+# (`fha gedcom import`, owner-approved 2026-07-10). Lower than
+# END_OF_LIFE_YEARS on purpose: 130 decides on its own that a missing death is
+# a gap, so it has to be certain; 110 only asks, and his yes is the gate.
+LIVING_CUTOFF_YEARS = 110
 
 # Someone who died before this age is not asked for a marriage: a child who
 # died at two is not a gap in the record.
@@ -23201,6 +23310,241 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
                 'Open those records and fix the one that is wrong; until then the family '
                 'tree cannot show this line correctly.')
     raise ValueError(f'unknown plausibility problem kind {kind!r}')
+
+
+# ── "Probably not living" (fha lint W173; TOOLING §3) ────────────────────────
+#
+# "Thomas Hartley shows as Living Person on the family site, but his son was
+# born in 1871." A person left at `living: unknown` is treated as living
+# (SPEC §19), so every shared page hides him, and nothing said the dates
+# already settle it. These rules work out the latest year someone can have
+# been born, from their own records and their family's, so lint can ask the
+# owner. They only ask: nothing here writes the flag.
+#
+#   PLAUSIBLE_MIN_PARENT_AGE - nobody is taken to be a parent younger than this
+#   BornBy                  - the latest birth year and the evidence for it
+#   lived_claims_from_claims - per person, the dated records that name them
+#   born_by_estimate        - per person, the BornBy with the earliest year
+
+# PLAUSIBLE_MIN_PARENT_AGE (12) is W168's, defined with the family rules.
+
+
+@dataclasses.dataclass(frozen=True)
+class BornBy:
+    """The latest year a person can have been born, and why.
+
+    `evidence` is one of:
+      ('own', DatedClaim)                   a dated record names them
+      ('birth' | 'baptism', DatedClaim)     their own birth or baptism
+      ('death' | 'burial', DatedClaim)      their own death or burial
+      ('provisional', value)                the `birth:` estimate on their record
+      ('child', child_pid, BornBy)          a genetic child's own BornBy, less
+                                            PLAUSIBLE_MIN_PARENT_AGE
+      ('parent-died', parent_pid, DatedClaim)  a genetic parent's death (or
+                                            burial); a father's plus a year
+    """
+    year: int
+    evidence: tuple
+
+
+_BORN_BY_RANK = {'own': 0, 'birth': 1, 'baptism': 2, 'death': 3, 'burial': 4,
+                 'provisional': 5, 'child': 6, 'parent-died': 7}
+
+# The roles that put someone at the event on the claim's date, so they were
+# born by it: the event's own people and parties, and those the record says
+# were there. Not `informant` or a descriptive role (`narrator`,
+# `grandchild`): mine-transcript puts the living aunt who tells of her
+# grandfather's 1890 death on that claim, dated 1890, and she was not born
+# by then.
+_BORN_BY_ROLES: frozenset[str] = (
+    (CLAIM_ROLE_WORDS - {'informant'})
+    | {'subject', 'godparent', 'officiant', 'grantor', 'grantee'})
+
+
+def lived_claims_from_claims(
+    claims: Iterable[dict], alias_map: dict | None,
+    survivors: dict[str, str] | None = None, *,
+    statuses: tuple[str, ...] = ('accepted',),
+) -> dict[str, list[DatedClaim]]:
+    """Per person, the dated records that name them: a record that names
+    someone was made after they were born, so its last possible day is a
+    year they were born by.
+
+    Any type counts but `note` (a researcher's jotting dated today says
+    nothing about the person), in a role that puts them at the event
+    (`_BORN_BY_ROLES`, or no role), with the same status and
+    `negated:` rules as `plausibility_input_from_claims`. A person's own
+    birth, baptism, death or burial is left out: those are merged into one
+    range there, so two disagreeing birth years never read as the earlier
+    one. A claim whose end is open or unreadable is skipped. Merged records
+    count for their survivor."""
+    survivors = {normalize_id(str(k)): normalize_id(str(v))
+                 for k, v in (survivors or {}).items()}
+    wanted = {s.strip() for s in statuses}
+    lived: dict[str, list[DatedClaim]] = {}
+    vital_held: dict[tuple, int] = {}
+    for claim in claims:
+        if not isinstance(claim, dict):
+            continue
+        if str(claim.get('status', '')).strip() not in wanted:
+            continue
+        if str(claim.get('negated')).strip().lower() == 'true':
+            continue
+        ctype = str(claim.get('type', '')).strip().lower()
+        if not ctype or ctype == 'note':
+            continue
+        cid = normalize_id(str(claim.get('id') or ''))
+        span = claim_date_range(claim)
+        if not cid or span is None or span[1] is None:
+            continue
+        dated = DatedClaim(
+            claim_id=cid, ctype=ctype, lo=span[0], hi=span[1],
+            date=optional_scalar(claim.get('date')) or '',
+            subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
+        pairs = resolve_claim_persons_with_roles(claim, alias_map)
+        named = list(dict.fromkeys(p for p, _role in pairs))
+        present = {p for p, role in pairs
+                   if role is None or role_meaning(role) in _BORN_BY_ROLES}
+        own_vital: set[str] = set()
+        if ctype in _PLAUSIBILITY_VITAL_TYPES:
+            subjects = vital_subjects(ctype, pairs)
+            if subjects is None:
+                subjects = named if len(named) == 1 else []
+            own_vital = set(subjects)
+        for pid in dict.fromkeys(survivors.get(p, p) for p in named
+                                 if p not in own_vital and p in present):
+            if own_vital:
+                # A relative on a birth or death record: records of one
+                # person's one event merge into one range, so only the latest
+                # end counts for the relative too (two births, 1900 and 1930,
+                # leave the mother born by the later one).
+                key = (ctype, frozenset(own_vital), pid)
+                held = vital_held.get(key)
+                if held is not None:
+                    old = lived[pid][held]
+                    if (dated.hi, dated.claim_id) > (old.hi, old.claim_id):
+                        lived[pid][held] = dated
+                    continue
+                vital_held[key] = len(lived.get(pid, []))
+            lived.setdefault(pid, []).append(dated)
+    return lived
+
+
+def _latest_claim(fact: FactRange) -> DatedClaim:
+    """The claim behind a merged range's end (ties by claim id)."""
+    return max(fact.claims, key=lambda c: (c.hi or '', c.claim_id))
+
+
+def born_by_estimate(
+    data: PlausibilityInput, persons: dict[str, dict],
+    parents_of: dict[str, set[str]], children_of: dict[str, set[str]],
+    lived: dict[str, list[DatedClaim]],
+) -> dict[str, BornBy]:
+    """The latest year each person can have been born, with the evidence.
+
+    Read from, in this order on a tie: a dated record naming them
+    (`lived`), their own birth (or, with none, baptism), their own death
+    (or, with none, burial), the provisional
+    `birth:` on their record (only when no birth claim is accepted, since a
+    sourced birth supersedes it, SPEC §9), each genetic child's own
+    estimate less PLAUSIBLE_MIN_PARENT_AGE (so through grandchildren too),
+    and a genetic parent's death: a child is born by the mother's death, and
+    within a year of the father's. The earliest year wins; ties break by the
+    order above, then by claim or person id, so the message never changes
+    between runs. Any of these earlier than an accepted birth's first
+    possible day is a conflict, not a bound, and is left out.
+
+    `parents_of`/`children_of` are {pid: genetic parent or child pids}: the
+    caller decides which edges are genetic (an adoptive parent can be
+    younger than the child). A loop in the tree (lint W170) is cut where it
+    closes. Walked without recursion, so a very deep line cannot overflow."""
+    persons = {normalize_id(str(k)): v for k, v in (persons or {}).items()}
+    pids = (set(persons) | set(data.facts) | set(lived)
+            | set(parents_of) | set(children_of))
+
+    def _key(b: BornBy) -> tuple:
+        kind = b.evidence[0]
+        tail = b.evidence[1]
+        tie = tail.claim_id if isinstance(tail, DatedClaim) else str(tail)
+        return (b.year, _BORN_BY_RANK[kind], tie)
+
+    def _own(pid: str) -> list[BornBy]:
+        found: list[BornBy] = []
+        facts = data.facts.get(pid, {})
+        birth, bapt = facts.get('birth'), facts.get('baptism')
+        fact = birth if birth else bapt
+        born_lo = birth.lo if birth else None
+        for c in lived.get(pid, []):
+            # A record dated before his accepted birth is a conflict, not a
+            # bound: a misfiled 1900 census must not tell him a man born in
+            # 1950 is over 110 and should be marked dead.
+            if born_lo is not None and c.hi < born_lo:
+                continue
+            found.append(BornBy(int(c.hi[:4]), ('own', c)))
+        if fact is not None and fact.hi is not None and fact.claims:
+            found.append(BornBy(int(fact.hi[:4]),
+                                ('birth' if birth else 'baptism', _latest_claim(fact))))
+        # Someone who died or was buried by a year was born by it too, so a
+        # child known only from a death record still ages the parents.
+        death, burial = facts.get('death'), facts.get('burial')
+        ended = death if death else burial
+        if ended is not None and ended.hi is not None and ended.claims:
+            found.append(BornBy(int(ended.hi[:4]),
+                                ('death' if death else 'burial', _latest_claim(ended))))
+        meta = persons.get(pid)
+        if birth is None and isinstance(meta, dict):
+            value = optional_scalar(meta.get('birth'))
+            span = claim_date_range({'date': value}) if value else None
+            if span is not None and span[1] is not None:
+                found.append(BornBy(int(span[1][:4]), ('provisional', value)))
+        for parent in sorted(parents_of.get(pid, ())):
+            bounds = _plausibility_bounds(data.facts.get(parent, {}))
+            died_hi, died_from = bounds['died_hi']
+            if died_hi is None or not died_from.claims:
+                continue
+            grace = 0 if data.sex.get(parent) == 'F' else 1
+            found.append(BornBy(int(died_hi[:4]) + grace,
+                                ('parent-died', parent, _latest_claim(died_from))))
+        return found
+
+    result: dict[str, BornBy] = {}
+    for start in sorted(pids):
+        if start in result:
+            continue
+        # Post-order walk down the children: a person is settled once every
+        # child is. `on_path` cuts a loop where it closes.
+        stack: list[tuple[str, bool]] = [(start, False)]
+        on_path: set[str] = set()
+        while stack:
+            pid, expanded = stack.pop()
+            if expanded:
+                on_path.discard(pid)
+                options = _own(pid)
+                for child in sorted(children_of.get(pid, ())):
+                    got = result.get(child)
+                    if got is not None:
+                        options.append(BornBy(got.year - PLAUSIBLE_MIN_PARENT_AGE,
+                                              ('child', child, got)))
+                # Anything earlier than an accepted birth is a conflict, not
+                # a bound: a child misfiled as born before him, or a mother's
+                # death read onto the wrong son, must not tell him a man born
+                # in 1950 is over 110.
+                birth = data.facts.get(pid, {}).get('birth')
+                if birth is not None and birth.lo is not None:
+                    options = [o for o in options if o.year >= int(birth.lo[:4])]
+                if options:
+                    result[pid] = min(options, key=_key)
+                else:
+                    result.setdefault(pid, None)  # type: ignore[arg-type]
+                continue
+            if pid in result or pid in on_path:
+                continue
+            on_path.add(pid)
+            stack.append((pid, True))
+            for child in sorted(children_of.get(pid, ()), reverse=True):
+                if child not in result and child not in on_path:
+                    stack.append((child, False))
+    return {pid: b for pid, b in result.items() if b is not None}
 
 
 # ── Family calendar (fha calendar; TOOLING §7b) ──────────────────────────────

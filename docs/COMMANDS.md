@@ -31,6 +31,7 @@ current folder.
 - [`fha metrics`](#fha-metrics)
 - [`fha compare`](#fha-compare)
 - [`fha calendar`](#fha-calendar)
+- [`fha date`](#fha-date)
 - [`fha repositories`](#fha-repositories)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
@@ -618,6 +619,55 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
+
+## `fha date`
+
+Convert a date from the old calendar, a church feast or the Hebrew calendar
+
+```text
+Dates written in another calendar: the old (Julian) calendar, a church feast,
+or the Hebrew calendar. Prints the same day in today's calendar, its weekday,
+and the lines to put in a claim.
+
+  fha date convert "11 Feb 1731/32" --from julian
+  fha date convert 1918-02-14 --from gregorian
+  fha date convert "15 Nisan 5650" --from hebrew
+  fha date feast Michaelmas 1850
+  fha date feast Pokrov 1880 --church orthodox
+
+Pure arithmetic: nothing in the archive is read or written.
+```
+
+### `fha date convert`
+
+Convert a date from the old, today's or the Hebrew calendar
+
+```text
+Convert one date. Julian or Gregorian: 1732-02-11, "11 Feb 1732", "February 11, 1732", "Feb 1732", 1732, and a double year such as "11 Feb 1731/32". Hebrew: "15 Nisan 5650", "14 Adar II 5784".
+```
+
+| Argument | What it does |
+|---|---|
+| `DATE` | The date as the record writes it |
+| `--from` `{julian,gregorian,hebrew}` | The calendar the record uses: julian (the old calendar, "Old Style"), gregorian (today's) or hebrew |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
+
+### `fha date feast`
+
+The day a church feast or fast fell on in one year
+
+```text
+The day a church feast or fast fell on in one year. Names are matched exactly (accents and case aside): "Michaelmas", "St Stephen", "Easter Monday", "Pokrov". An unknown name lists the ones known.
+```
+
+| Argument | What it does |
+|---|---|
+| `NAME` | The feast, as the record names it |
+| `YEAR` | The year, e.g. 1850 |
+| `--church` `{western,orthodox}` | western (Catholic and Protestant, the default) or orthodox (kept in the old calendar) |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
 
 ## `fha repositories`
 
