@@ -21283,25 +21283,19 @@ def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict |
     spouses = known([normalize_id(str(r[0])) for r in conn.execute(
         "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? "
         "AND rel = 'spouse' ORDER BY other_id", (pid,))])
-    def by_sex(ids: list[str]) -> dict[str, set[str]]:
-        out: dict[str, set[str]] = {}
-        for i in ids:
-            sex = str((ctx['persons'].get(i) or {}).get('sex') or '').upper()
-            if sex in ('M', 'F'):
-                out.setdefault(sex, set()).add(i)
-        return out
-
-    # A half-brother or half-sister has a different recorded father or
-    # mother. A parent recorded on one side only (her mother not entered
-    # yet) rules nobody out: that is the commonest stub, not a half-sibling.
+    # A half-brother or half-sister has a parent the person does not, while
+    # the person has one they do not (Pa's daughter by a second wife). A
+    # parent recorded on one side only (her mother not entered yet) rules
+    # nobody out: that is the commonest stub, not a half-sibling. Sex is not
+    # consulted, so a parent with no recorded sex still counts.
     siblings: list[str] = []
-    own_by_sex = by_sex(parents)
+    own_parents = set(parents)
     for parent in parents:
         for sib in known(_genetic_kin(conn, parent, 'child')):
-            if sib in siblings or sib in parents:
+            if sib in siblings or sib in own_parents:
                 continue
-            sib_by_sex = by_sex(_genetic_kin(conn, sib, 'parent'))
-            if all(own_by_sex[s] == sib_by_sex[s] for s in own_by_sex if s in sib_by_sex):
+            sib_parents = set(_genetic_kin(conn, sib, 'parent'))
+            if own_parents <= sib_parents or sib_parents <= own_parents:
                 siblings.append(sib)
 
     def sex_of(rid: str) -> str:

@@ -2750,6 +2750,17 @@ class BirthSuggestionTests(unittest.TestCase):
         self._parent(half, self._person('Second Wife', 'F'))
         self.assertIsNone(self._suggest(ann, self._build(r)))
 
+    def test_a_half_sibling_is_left_out_when_her_mother_has_no_recorded_sex(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        pa = self._person('Pa Wells', 'M')
+        ann = self._person('Ann Wells', 'F')
+        half = self._person('Cat Wells', 'F', born=1880)
+        self._parent(ann, pa)
+        self._parent(ann, self._person('Mary Smith', 'U'))
+        self._parent(half, pa)
+        self._parent(half, self._person('Lucy Jones', 'F'))
+        self.assertIsNone(self._suggest(ann, self._build(r)))
+
     def test_a_sibling_counts_when_her_own_mother_is_not_recorded_yet(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')
         pa = self._person('Pa Wells', 'M')
