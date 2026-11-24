@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "5b90487a6a6dacee3aef2337eac4f9540f4f4d8e18a4e0403a8ebf55c02010b6",
+      "sha256": "b71be5923c43dba34728194265a8cf38ebcb00f8460d64c008adff61dc80f367",
       "spec_version": "2.35",
       "src": "tools/_lib.py"
     },
@@ -1521,7 +1521,7 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "e44acbb479df6d4141d824484b0c1e6e931ca24bb322531dd5b3dbec1b14de4c",
+      "sha256": "0b3210b0a642f80e319989021f5043c14564f7968821184e91d7b41f072ed9e5",
       "spec_version": "2.35",
       "src": "SPEC.md"
     },
