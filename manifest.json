@@ -665,7 +665,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "5535133131980a03bf4fb862da0bf18622a2600f6ee7cf73fc1883fd1dbe8a6e",
+      "sha256": "a6c999d6a9ccb2151f662dd08091fd0e605adfa23842c90ee709242eb5e7393d",
       "spec_version": "2.33",
       "src": "design/styles.css"
     },
@@ -1183,7 +1183,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "f0d1f849fda320be89a87e5153ea83caa9529dacd2b6f528797df1b56af4189b",
+      "sha256": "13a3e62bf14db3aacf67d2bf5fa8126dda29c98046a1abded55d30fe9b994480",
       "spec_version": "2.33",
       "src": "tools/site.py"
     },
@@ -1260,7 +1260,7 @@
     {
       "path": ".fha/tools/templates/map.html",
       "category": "operating",
-      "sha256": "7ebae6a9c2f1215f3bcf6d8cddc5cce77ea8297608f0e4c30ea0a5219e4f39e9",
+      "sha256": "bbf712e4e9330ce97fb4b1017bd199d57d6c6d3d9be5f762cf3bf9eaf9eb8759",
       "spec_version": "2.33",
       "src": "tools/templates/map.html"
     },
@@ -1330,7 +1330,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-map.js",
       "category": "operating",
-      "sha256": "798604e56ff4ab4787dd8440719710d1f41c4fbc14a5daad2dedf6eb37eb9c45",
+      "sha256": "bbc20b7e060de460f2a0ac235f0fa84f10a5f2a04c0e880650343f58e7973d1f",
       "spec_version": "2.33",
       "src": "tools/templates/vendor/fha-map.js"
     },
@@ -1534,7 +1534,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "f8c2658905e08a43a5331432c28c05493066bbbeafcd842df2d6f9c3c1231e58",
+      "sha256": "be1962ebcd86d4931b581aa3f0093a669ea124172dbed189ae605951784cca02",
       "spec_version": "2.33"
     },
     {
@@ -1583,7 +1583,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "b78c33ab93c9619cc4108a4f8440fc5795e1248223f6f27366cb1d976022f380",
+      "sha256": "781bdc6f5eccd0bd2b9292a7576f4d1ec8793f02cb9b3aeebfe5bfc964cb8546",
       "spec_version": "2.33",
       "src": "TOOLING.md"
     },

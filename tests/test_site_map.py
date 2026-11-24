@@ -16,6 +16,13 @@ person is on a record. A claim places only the people it is about (its only
 person, or those under `subject`, `head` or `household_member`), never a
 child merely named on his father's census line.
 
+Journeys: a line for each person who has died, from the place of one of
+their records to the next in date order, a vague date sitting at its middle
+("about 1840" is 1840). Undated records and records at places with no map
+position are counted, never drawn. No living, unknown, restricted or
+by-request person has a line on the shared site, and a line never passes
+through a record the shared site withholds.
+
 Builds a synthetic .cache/index.sqlite from index.py's DDL, the way
 tests/test_site_search.py does. Temp fixtures only. The JavaScript half is
 checked with node where node is installed (CI has none, so those tests skip
@@ -41,7 +48,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
 
 from index import _DDL as INDEX_DDL
-from _lib import index_manifest_path, record_path_manifest, write_path_manifest
+from _lib import edtf_bounds, index_manifest_path, record_path_manifest, write_path_manifest
 
 # site.py's stem collides with the stdlib `site` module, so it is loaded by
 # path under a private name (as tests/test_site.py and fha.py do).
@@ -132,11 +139,12 @@ class _Base(unittest.TestCase):
 
     def claim(self, cid, ctype, persons, place, *, roles=None, status='accepted',
               date='1880', source=SRC, negated=0):
-        lo = (date + '-01-01')[:10] if date else None
+        # The bounds the index gives the date (index.py: none for no date).
+        lo, hi = edtf_bounds(date) if date else ('', '')
         self.conn.execute(
             'INSERT INTO claims(id, source_id, type, value, status, date_edtf, date_min, '
             'date_max, place_id, negated) VALUES (?,?,?,?,?,?,?,?,?,?)',
-            (cid, source, ctype, f'{ctype} record', status, date, lo, lo, place, negated))
+            (cid, source, ctype, f'{ctype} record', status, date, lo, hi, place, negated))
         for pos, pid in enumerate(persons):
             self.conn.execute(
                 'INSERT INTO claim_persons(claim_id, person_id, position, role) '
@@ -450,6 +458,263 @@ class PrivacyTests(_Base):
         self.assertEqual(self.pin(FAIRVIEW)['events'], 3)
 
 
+HAYS = 'l-ffffffffff'       # coords, a third town for journeys
+
+
+class _JourneyBase(_Base):
+    def setUp(self) -> None:
+        super().setUp()
+        self.seed_family()
+        self.place(HAYS, 'Hays', hierarchy='Hays, Ellis County, Kansas, USA',
+                   lat=38.88, lon=-99.33)
+
+    def journey(self, name, out=None):
+        for j in self.data(out)['journeys']:
+            if j['name'] == name:
+                return j
+        return None
+
+    def stops(self, name, out=None):
+        j = self.journey(name, out)
+        if j is None:
+            return None
+        return [(s['place'], s['year_from'], s['year_to'], s['what']) for s in j['stops']]
+
+    def journey_names(self, out=None):
+        return [j['name'] for j in self.data(out)['journeys']]
+
+
+class JourneyTests(_JourneyBase):
+    """Lines on the map for each person who has died: their own dated,
+    placed, accepted records in date order, one stop per town in a row."""
+
+    def test_a_life_in_three_towns(self):
+        self.claim('c-aaaaaaaaaa', 'birth', [THOMAS], ELM_CREEK, roles={THOMAS: 'child'},
+                   date='1840-03-02')
+        self.claim('c-bbbbbbbbbb', 'census', [THOMAS], FAIRVIEW, roles={THOMAS: 'head'},
+                   date='1870')
+        self.claim('c-cccccccccc', 'residence', [THOMAS], FAIRVIEW, date='1880')
+        self.claim('c-dddddddddd', 'death', [THOMAS], HAYS, roles={THOMAS: 'deceased'},
+                   date='1941-01-19')
+        result = self.build()
+        self.assertEqual(result['status'], 'ok', result['messages'])
+        j = self.journey('Thomas Edward Hartley')
+        self.assertEqual(j['href'], f'persons/{THOMAS}.html')
+        self.assertEqual(j['life'], '1840-1941')
+        # The two Fairview records in a row are one stop, 1870 to 1880.
+        self.assertEqual(self.stops('Thomas Edward Hartley'), [
+            (ELM_CREEK, 1840, 1840, ['birth']),
+            (FAIRVIEW, 1870, 1880, ['census', 'residence']),
+            (HAYS, 1941, 1941, ['death']),
+        ])
+        self.assertEqual((j['undated'], j['unplaced']), (0, 0))
+        pins = {p['id'] for p in self.data()['places']}
+        self.assertTrue({s['place'] for s in j['stops']} <= pins, 'every stop is a pin')
+
+    def test_a_stop_sits_at_the_middle_of_its_date(self):
+        # "About 1840" spans 1839 to 1841 and reads 1840, not the 1839 its
+        # range starts in; a decade or a range reads its middle; "by 1895"
+        # and "from 1883 on" read the year they name.
+        dates = [('1840~', 1840), ('186X', 1865), ('1870/1880', 1875), ('[1883..]', 1883),
+                 ('[..1895]', 1895)]
+        towns = [ELM_CREEK, FAIRVIEW]
+        for n, (date, _year) in enumerate(dates):
+            self.claim(f'c-{"abcde"[n] * 10}', 'residence', [THOMAS], towns[n % 2], date=date)
+        self.build()
+        self.assertEqual([(s[0], s[1]) for s in self.stops('Thomas Edward Hartley')],
+                         [(towns[n % 2], year) for n, (_d, year) in enumerate(dates)])
+
+    def test_a_vague_date_does_not_jump_ahead_of_an_exact_one(self):
+        # Died 30 December 1900 at Hays, buried "about 1901" at Fairview's
+        # cemetery: the burial's range starts first (1900), but its middle is
+        # after the death, so the line goes Hays, then Fairview.
+        self.claim('c-aaaaaaaaaa', 'birth', [THOMAS], ELM_CREEK, roles={THOMAS: 'child'},
+                   date='1840')
+        self.claim('c-bbbbbbbbbb', 'burial', [THOMAS], CEMETERY, roles={THOMAS: 'deceased'},
+                   date='1901~')
+        self.claim('c-cccccccccc', 'death', [THOMAS], HAYS, roles={THOMAS: 'deceased'},
+                   date='1900-12-30')
+        self.build()
+        self.assertEqual(self.stops('Thomas Edward Hartley'), [
+            (ELM_CREEK, 1840, 1840, ['birth']),
+            (HAYS, 1900, 1900, ['death']),
+            (FAIRVIEW, 1901, 1901, ['burial']),
+        ])
+
+    def test_records_on_the_same_date_keep_the_timeline_order(self):
+        # Same year, two sources: the source id decides, as on his timeline,
+        # whatever order the index holds them in.
+        self.source('s-bbbbbbbbbb', 'Kansas state census')
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], FAIRVIEW, date='1880',
+                   source='s-bbbbbbbbbb')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], ELM_CREEK, date='1880')
+        self.build()
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, FAIRVIEW])
+
+    def test_undated_and_unmapped_records_are_counted_not_drawn(self):
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        self.claim('c-cccccccccc', 'residence', [THOMAS], HAYS, date=None)
+        self.claim('c-dddddddddd', 'occupation', [THOMAS], HAYS, date='sometime')
+        self.claim('c-eeeeeeeeee', 'residence', [THOMAS], TOWNSHIP, date='1875')
+        self.build()
+        j = self.journey('Thomas Edward Hartley')
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, FAIRVIEW])
+        self.assertEqual((j['undated'], j['unplaced']), (2, 1))
+        data = self.data()
+        self.assertEqual((data['undated_total'], data['unplaced_total']), (2, 1))
+        self.assertIn('Not on the lines: 2 events with no date and 1 at a place with no '
+                      'map position yet.', self.page())
+
+    def test_the_counts_line_reads_right_for_none_one_and_many(self):
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        self.build()
+        self.assertNotIn('Not on the lines', self.page())
+        self.claim('c-cccccccccc', 'residence', [THOMAS], HAYS, date=None)
+        self.build()
+        self.assertIn('Not on the lines: 1 event with no date.', self.page())
+        self.claim('c-dddddddddd', 'residence', [THOMAS], TOWNSHIP, date='1875')
+        self.claim('c-eeeeeeeeee', 'residence', [THOMAS], TOWNSHIP, date='1876')
+        self.build()
+        self.assertIn('Not on the lines: 1 event with no date and 2 at a place with no '
+                      'map position yet.', self.page())
+
+    def test_a_record_places_only_the_people_it_is_about(self):
+        # Ethel's birth at Hays names her mother, and Margaret's 1880
+        # residence mentions Thomas: neither gives the other person a stop.
+        self.claim('c-aaaaaaaaaa', 'birth', [ETHEL, MARGARET], HAYS,
+                   roles={ETHEL: 'child', MARGARET: 'mother'}, date='1885')
+        self.claim('c-bbbbbbbbbb', 'residence', [MARGARET, THOMAS], ELM_CREEK,
+                   roles={MARGARET: 'subject', THOMAS: 'mentioned'}, date='1880')
+        self.claim('c-cccccccccc', 'residence', [MARGARET], FAIRVIEW, date='1890')
+        self.claim('c-dddddddddd', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        self.claim('c-eeeeeeeeee', 'residence', [THOMAS], HAYS, date='1900')
+        self.build()
+        self.assertEqual([s[0] for s in self.stops('Margaret Cole')], [ELM_CREEK, FAIRVIEW])
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')], [FAIRVIEW, HAYS])
+        self.assertIsNone(self.journey('Ethel Hartley'), 'one stop draws no line')
+
+    def test_a_cemetery_without_coordinates_is_a_stop_at_its_town(self):
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1900')
+        self.claim('c-bbbbbbbbbb', 'burial', [THOMAS], CEMETERY, roles={THOMAS: 'deceased'},
+                   date='1941')
+        self.build()
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, FAIRVIEW])
+
+    def test_journeys_are_in_name_order(self):
+        for n, pid in enumerate((THOMAS, MARGARET, ETHEL)):
+            self.claim(f'c-{"abc"[n] * 10}', 'residence', [pid], ELM_CREEK, date='1900')
+            self.claim(f'c-{"def"[n] * 10}', 'residence', [pid], FAIRVIEW, date='1910')
+        self.build()
+        self.assertEqual(self.journey_names(),
+                         ['Ethel Hartley', 'Margaret Cole', 'Thomas Edward Hartley'])
+
+    def test_a_stub_has_no_journey(self):
+        self.person(STUB, 'Samuel Stub', tier='stub')
+        self.claim('c-aaaaaaaaaa', 'residence', [STUB], ELM_CREEK, date='1900')
+        self.claim('c-bbbbbbbbbb', 'residence', [STUB], FAIRVIEW, date='1910')
+        self.build()
+        self.assertEqual(self.data()['journeys'], [])
+
+    def test_two_builds_give_the_same_bytes(self):
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        self.claim('c-cccccccccc', 'residence', [MARGARET], FAIRVIEW, date='1860')
+        self.claim('c-dddddddddd', 'residence', [MARGARET], HAYS, date='1870~')
+        other = self.root / 'other-site'
+        self.build()
+        self.build(out=other)
+        self.assertEqual(self.page(), self.page(other))
+
+
+class JourneyPrivacyTests(_JourneyBase):
+    """No journey, stop, line or count for a living, unknown, restricted or
+    by-request person on the shared site, and a line never passes through a
+    record the shared site withholds."""
+
+    def test_a_hidden_person_has_no_journey_and_counts_nothing(self):
+        self.person(LIVE, WITHHELD_NAMES[LIVE], living='true')
+        self.person(UNK, WITHHELD_NAMES[UNK], living='unknown')
+        self.person(SECRET, WITHHELD_NAMES[SECRET], extra='restricted: true\n')
+        self.person(QUIET, WITHHELD_NAMES[QUIET], extra='restricted: by-request\n')
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        for n, pid in enumerate((LIVE, UNK, SECRET, QUIET)):
+            sid = f's-{"bcde"[n] * 10}'
+            self.source(sid, f'Register volume {"ABCD"[n]}')
+            self.claim(f'c-{"cdef"[n] * 10}', 'residence', [pid], ELM_CREEK, date='1950',
+                       source=sid)
+            self.claim(f'c-{"ghjk"[n] * 10}', 'residence', [pid], HAYS, date='1960',
+                       source=sid)
+            self.claim(f'c-{"mnpq"[n] * 10}', 'residence', [pid], TOWNSHIP, date='1970',
+                       source=sid)
+            self.claim(f'c-{"rstv"[n] * 10}', 'residence', [pid], FAIRVIEW, date=None,
+                       source=sid)
+        self.build()
+        self.assertEqual(self.journey_names(), ['Thomas Edward Hartley'])
+        data = self.data()
+        self.assertEqual((data['undated_total'], data['unplaced_total']), (0, 0))
+        page = self.page()
+        self.assertNotIn('Not on the lines', page)
+        self.assertNotIn('Hays', page)
+        for pid, name in WITHHELD_NAMES.items():
+            with self.subTest(name):
+                self.assertNotIn(name, page)
+                self.assertNotIn(pid, page)
+        # The private preview: a living or unknown person still draws no
+        # line; the restricted are the owner's own to see.
+        self.build(linked=True)
+        self.assertEqual(self.journey_names(),
+                         ['Prudence Quayle', 'Rupert Sequester', 'Thomas Edward Hartley'])
+
+    def test_a_line_skips_what_the_shared_site_withholds(self):
+        self.person(LIVE, WITHHELD_NAMES[LIVE], living='true')
+        self.source('s-bbbbbbbbbb', 'Open register', restricted_claims=('c-cccccccccc',))
+        self.source('s-cccccccccc', 'Sealed register', restricted=1)
+        self.source('s-dddddddddd', 'Marriage register')
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        # A restricted record, and an undated one in a sealed register, at Hays.
+        self.claim('c-cccccccccc', 'residence', [THOMAS], HAYS, date='1865',
+                   source='s-bbbbbbbbbb')
+        self.claim('c-dddddddddd', 'residence', [THOMAS], HAYS, date=None,
+                   source='s-cccccccccc')
+        # Margaret's second wedding, to a living man, at Hays.
+        self.claim('c-eeeeeeeeee', 'residence', [MARGARET], ELM_CREEK, date='1860')
+        self.claim('c-ffffffffff', 'marriage', [MARGARET, LIVE], HAYS,
+                   roles={MARGARET: 'spouse', LIVE: 'spouse'}, date='1868',
+                   source='s-dddddddddd')
+        self.claim('c-gggggggggg', 'residence', [MARGARET], FAIRVIEW, date='1870')
+        self.build()
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, FAIRVIEW])
+        self.assertEqual([s[0] for s in self.stops('Margaret Cole')], [ELM_CREEK, FAIRVIEW])
+        self.assertEqual(self.journey('Thomas Edward Hartley')['undated'], 0)
+        self.assertNotIn('Hays', self.page())
+        self.build(linked=True)
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, HAYS, FAIRVIEW])
+        self.assertEqual([s[0] for s in self.stops('Margaret Cole')],
+                         [ELM_CREEK, HAYS, FAIRVIEW])
+        self.assertEqual(self.journey('Thomas Edward Hartley')['undated'], 1)
+
+    def test_a_merged_record_moves_with_the_person_it_was_merged_into(self):
+        # An old duplicate's residence is the survivor's record now.
+        self.person('p-jjjjjjjjjj', 'Tom Hartley', extra=f'merged_into: {THOMAS}\n')
+        self.conn.execute("UPDATE persons SET merged_into = ?, status = 'merged' WHERE id = ?",
+                          (THOMAS, 'p-jjjjjjjjjj'))
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', ['p-jjjjjjjjjj'], FAIRVIEW, date='1870')
+        self.build()
+        self.assertEqual(self.journey_names(), ['Thomas Edward Hartley'])
+        self.assertEqual([s[0] for s in self.stops('Thomas Edward Hartley')],
+                         [ELM_CREEK, FAIRVIEW])
+
+
 class VendoredMapFilesTests(unittest.TestCase):
     """The outline the map draws is Natural Earth's 1:110m countries, from
     world-atlas 2.0.2, wrapped as a script so a page opened from disk can
@@ -545,6 +810,41 @@ class MapLayoutJsTests(unittest.TestCase):
             [{'lat': 39.8, 'lon': -95.6}, {'lat': 39.8, 'lon': -94.6}])
         self.assertGreater(abs(out[1][0] - out[0][0]), 20)
         self.assertLess(abs(out[1][0] - out[0][0]), 600)
+
+    def test_a_journey_turns_into_moves_numbers_and_text(self):
+        payload = {
+            'places': {'l-a': {'id': 'l-a', 'name': 'Elm Creek', 'lat': 39.5, 'lon': -96.25},
+                       'l-b': {'id': 'l-b', 'name': 'Fairview', 'lat': 39.8, 'lon': -95.6}},
+            'journey': {'stops': [
+                {'place': 'l-a', 'year_from': 1840, 'year_to': 1840, 'what': ['birth']},
+                {'place': 'l-b', 'year_from': 1870, 'year_to': 1900,
+                 'what': ['census', 'residence']},
+                {'place': 'l-a', 'year_from': 1941, 'year_to': 1941, 'what': ['death']}],
+                'undated': 2, 'unplaced': 1},
+        }
+        out = self.run_js(
+            'const j = input.journey, by = input.places;'
+            'process.stdout.write(JSON.stringify({'
+            ' segs: m.journeySegments(j, by),'
+            ' text: j.stops.map(s => m.stopText(s, by[s.place])),'
+            ' numbers: m.stopNumbers(j),'
+            ' left: [m.leftOutText(j), m.leftOutText({undated: 0, unplaced: 1}),'
+            '        m.leftOutText({undated: 1, unplaced: 0}), m.leftOutText({})],'
+            ' missing: m.journeySegments({stops: [j.stops[0], {place: "l-x"}]}, by)}));',
+            payload)
+        self.assertEqual(out['segs'], [
+            {'from': [-96.25, 39.5], 'to': [-95.6, 39.8], 'year': 1870},
+            {'from': [-95.6, 39.8], 'to': [-96.25, 39.5], 'year': 1941}])
+        self.assertEqual(out['text'], ['Elm Creek, 1840, birth',
+                                       'Fairview, 1870 to 1900, census, residence',
+                                       'Elm Creek, 1941, death'])
+        self.assertEqual(out['numbers'], [{'place': 'l-a', 'label': '1, 3'},
+                                          {'place': 'l-b', 'label': '2'}])
+        self.assertEqual(out['left'], [
+            'Not on this line: 2 events with no date and 1 at a place with no map position yet.',
+            'Not on this line: 1 event at a place with no map position yet.',
+            'Not on this line: 1 event with no date.', ''])
+        self.assertEqual(out['missing'], [], 'a stop with no pin draws no move')
 
     def test_the_outline_turns_into_shapes(self):
         out = self.run_js(
