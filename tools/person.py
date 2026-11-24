@@ -820,15 +820,22 @@ _EXTERNAL_ID_SHAPES = {
 }
 
 
-def _external_id_holder(archive_root: Path, pid: str, key: str, value: str) -> tuple[str, str] | None:
-    """(p-id, name) of ANOTHER person whose `external_ids:` already holds `key: value`.
+def _external_id_holder(
+    archive_root: Path, pid: str, key: str, value: str,
+) -> tuple[tuple[str, str] | None, list[Path]]:
+    """((p-id, name) of ANOTHER person whose `external_ids:` already holds
+    `key: value`, or None; and the person files that could not be read).
 
     Scans the person files, never the index, so a stale index cannot let the
-    same profile land on two people. A tombstone merged into `pid` is the same
+    same profile land on two people. A file that cannot be read or parsed is
+    returned, not skipped: the caller refuses, because an unread file may be
+    the one holding this id. Site keys match without case (a hand-typed
+    `WikiTree:` is the same site). A tombstone merged into `pid` is the same
     person and does not count."""
+    unreadable: list[Path] = []
     people_dir = archive_root / 'people'
     if not people_dir.is_dir():
-        return None
+        return None, unreadable
     want = value.strip().casefold()
     for p in sorted(people_dir.rglob('*.md')):
         parsed = parse_filename(p)
@@ -840,16 +847,19 @@ def _external_id_holder(archive_root: Path, pid: str, key: str, value: str) -> t
         try:
             m = FRONT_RE.match(read_text_exact(p))
             meta = safe_load_yaml(m.group(1)) if m else None
-        except (OSError, yaml.YAMLError):
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            unreadable.append(p)
             continue
         if not isinstance(meta, dict):
             continue
         if is_merged_meta(meta) and normalize_id(str(meta.get('merged_into') or '')) == pid:
             continue
         ext = meta.get('external_ids')
-        if isinstance(ext, dict) and str(ext.get(key) or '').strip().casefold() == want:
-            return other, str(meta.get('name') or '').strip()
-    return None
+        if isinstance(ext, dict) and any(
+                str(k).casefold() == key and str(v or '').strip().casefold() == want
+                for k, v in ext.items()):
+            return (other, str(meta.get('name') or '').strip()), unreadable
+    return None, unreadable
 
 
 def run_set_external_id(
@@ -908,8 +918,17 @@ def run_set_external_id(
             f'external_ids: in {path.name} is not a list of site: id pairs, so it '
             f'cannot be edited safely. Open {path} and add {key}: {value} by hand. '
             'Nothing was written.')
+    odd_case = [k for k in (ext or {}) if str(k) != key and str(k).casefold() == key]
+    if odd_case:
+        return _refuse_result(
+            result, 'refused',
+            f'{label} already has {odd_case[0]}: {ext[odd_case[0]]} (the site name '
+            f'written with capitals). Open {path} and change it to {key}: by hand, '
+            'then run this again. Nothing was written.')
     old_raw = (ext or {}).get(key)
     old = str(old_raw).strip() if old_raw is not None and str(old_raw).strip() else None
+    if old is not None and key == 'familysearch':
+        old = old.upper()
     result.data['old'] = old
     if old == value:
         result.data['status'] = 'already'
@@ -923,7 +942,15 @@ def run_set_external_id(
             f'`fha person set-external-id {fmt_id_display(pid)} {key} {value} --replace`. '
             'Nothing was written.')
 
-    holder = _external_id_holder(archive_root, pid, key, value)
+    holder, unreadable = _external_id_holder(archive_root, pid, key, value)
+    if holder is None and unreadable:
+        names = ', '.join(u.name for u in unreadable[:3])
+        more = f' and {len(unreadable) - 3} more' if len(unreadable) > 3 else ''
+        return _refuse_result(
+            result, 'refused',
+            f'could not read {names}{more}, so this tool cannot check that no one '
+            f'else already has {key}: {value}. Fix or close that file (run '
+            '`fha lint`), then run this again. Nothing was written.')
     if holder is not None:
         h_pid, h_name = holder
         who = f'{fmt_id_display(h_pid)} ({h_name})' if h_name else fmt_id_display(h_pid)
@@ -986,9 +1013,15 @@ def run_set_external_id(
             after_meta = safe_load_yaml(fm_after.group(1)) if fm_after else None
         except yaml.YAMLError:
             after_meta = None
-        got = ((after_meta or {}).get('external_ids') or {}).get(key)
+        after_ext = (after_meta or {}).get('external_ids')
+        after_ext = after_ext if isinstance(after_ext, dict) else {}
+        got = after_ext.get(key)
+        kept = {k: v for k, v in after_ext.items() if k != key}
+        had = {k: v for k, v in (ext or {}).items() if k != key}
         if str(got) != value:
             problem = f'the edit would not have read back as {key}: {value}'
+        elif kept != had:
+            problem = 'the other ids under external_ids: would not have survived the edit'
     if problem is not None:
         return _refuse_result(
             result, 'refused',

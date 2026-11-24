@@ -3513,6 +3513,57 @@ class SetExternalIdTests(unittest.TestCase):
         self.assertEqual(meta['external_ids']['familysearch'], 'KWCD-4PQ')
         self.assertEqual(str(meta['external_ids']['geni']), '6000000012345')
 
+    def _put_ext_block(self, path: Path, block: str) -> None:
+        text = path.read_text(encoding='utf-8')
+        path.write_text(text.replace('tier: curated\n', 'tier: curated\n' + block, 1)
+                        if 'tier: curated\n' in text else
+                        text.replace('\n---\n', '\n' + block + '---\n', 1),
+                        encoding='utf-8')
+
+    def test_a_quoted_external_ids_key_never_loses_the_other_ids(self) -> None:
+        self._put_ext_block(self.curated, "'external_ids':\n  ancestry: '123456'\n")
+        before = self.curated.read_bytes()
+        result = self._set()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_an_unreadable_person_file_stops_the_write(self) -> None:
+        self._set(pid=TARGET_PID)
+        before = self.curated.read_bytes()
+        real = person.read_text_exact
+
+        def flaky(p, *a, **kw):
+            if Path(p) == self.other:
+                raise PermissionError('locked')
+            return real(p, *a, **kw)
+        with mock.patch.object(person, 'read_text_exact', side_effect=flaky):
+            result = self._set()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertIn(self.other.name, ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_capitalised_site_key_typed_by_hand_is_not_doubled(self) -> None:
+        self._put_ext_block(self.curated, 'external_ids:\n  WikiTree: Hartley-1\n')
+        before = self.curated.read_bytes()
+        result = self._set()
+        self.assertEqual(result.exit_code, EXIT_FAILURE)
+        self.assertIn('Hartley-1', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_another_persons_capitalised_key_still_counts_as_holding_the_id(self) -> None:
+        self._put_ext_block(self.other, 'external_ids:\n  WikiTree: Hartley-6084\n')
+        before = self.curated.read_bytes()
+        result = self._set()
+        self.assertEqual(result.data['status'], 'refused')
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_lower_case_familysearch_id_already_held_is_already(self) -> None:
+        self._put_ext_block(self.curated, 'external_ids:\n  familysearch: kwcd-4pq\n')
+        result = self._set(key='familysearch', value='KWCD-4PQ')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['status'], 'already')
+
     def test_a_merged_tombstone_points_to_the_survivor(self) -> None:
         tomb = _mk_merged_tombstone(self.root)
         result = self._set(pid='P-dddddddddd')
