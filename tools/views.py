@@ -1099,8 +1099,12 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     columns.
     """
     if isinstance(row, dict) and row.get('kind') == 'context':
-        # Background about the place, not a record of the family.
-        return (f"{row['date_iso']} - place history: {place_history_phrase(row)} "
+        # Background about the place, not a record of the family. A period
+        # written to the year begins on 1 January: print the year, not a day
+        # the records never gave.
+        iso = row['date_iso']
+        when = iso[:4] if iso.endswith('-01-01') else iso
+        return (f"{when} - place history: {place_history_phrase(row)} "
                 f"[[{fmt_id_display(row['place_id'])}]]")
     date_str = row['date_edtf'] or '(undated)'
     place = _place_label(row['place_text'], row['place_id'], conn)

@@ -307,6 +307,9 @@ class TimelinePlaceHistoryViewTests(_ViewsHtmlBase):
         self.assertEqual(len(lines), 2, text)
         self.assertIn('From 1858, Fairview was in Kansas Territory.', lines[0])
         self.assertIn('From 1862, Fairview was in Breton Co., Kansas, USA.', lines[1])
+        # A period written to the year prints the year, not a made-up day.
+        self.assertIn('1858 - place history:', lines[0])
+        self.assertNotIn('1858-01-01', text)
         self.assertLess(text.index('lived in Fairview 1856'), text.index('place history:'))
         self.assertLess(text.rindex('place history:'), text.index('lived in Fairview 1875'))
 

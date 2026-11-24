@@ -20887,16 +20887,21 @@ def place_history_context(
     changed hands, the timeline says so, between their first and last record
     there, so a place left in childhood does not narrate its later history.
 
-    `visits` is {place_id: (first_iso, last_iso)}: the earliest date_min and
-    latest date_max of the person's own dated rows at that place. A place
-    reached through `within:` (a house inside Fairview) counts as a visit to
-    the containing place too, one hop only (SPEC A.9).
+    `visits` is {place_id: (first_iso, last_iso)}: the earliest and latest
+    known dates of the person's own rows at that place
+    (`place_visits_from_rows`). A place reached through `within:` (a house
+    inside Fairview) counts as a visit to the containing place too, one hop
+    only (SPEC A.9).
 
-    For each `history:` entry of a visited place, in date order: a row at the
-    entry's date_min (unless it is open, 0001-01-01), and, when no entry of
-    that place starts the day after the entry's date_max, a row the day after
-    date_max for the place's present hierarchy (unless open, 9999-12-31).
-    A row is kept only inside the person's window at that place. Returns
+    The days the government can change are each `history:` entry's first day
+    and the day after its last (open ends make none). On a day a period
+    begins, that period is what the place became, even when the one before it
+    was written to end the same year (`1855/1861` then `1861/1889`: Fairview
+    became a state in 1861, not 1862). On any other day `place_hierarchy_at`
+    says what held (the one period helper, SPEC A.9), or the place's present
+    `hierarchy:` when no period covers it. A day whose wording is the same as
+    the one before it is no change and makes no line. A line is kept only
+    inside the person's window at that place. Returns
     [{'kind': 'context', 'place_id', 'name', 'date_iso', 'year', 'hierarchy',
       'sort_key': (0, date_iso, 2, place_id, date_iso)}].
     """
@@ -20913,59 +20918,85 @@ def place_history_context(
         place = conn.execute('SELECT name, hierarchy FROM places WHERE id = ?', (pid,)).fetchone()
         if place is None:
             continue
-        # The days the government changes: each entry's first day, and the day
-        # after its last. What held on that day is `place_hierarchy_at`'s call
-        # (the one period helper, SPEC A.9); no period covering it means the
-        # place's present hierarchy.
         days: set[str] = set()
+        starts: dict[str, list[str]] = {}
         for r in conn.execute(
-                'SELECT date_min, date_max FROM place_history WHERE place_id = ?', (pid,)).fetchall():
+                'SELECT date_min, date_max, hierarchy FROM place_history '
+                'WHERE place_id = ? ORDER BY rowid', (pid,)).fetchall():
             elo, ehi = _date_edge(r[0], False), _date_edge(r[1], True)
             if elo is not None and elo > '0001-12-31':
                 days.add(elo)
+                if r[2]:
+                    starts.setdefault(elo, []).append(str(r[2]))
             if ehi is not None and ehi < '9999-01-01':
                 days.add((datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat())
-        rows: list[tuple[str, str]] = []
+        prev: str | None = None
         for iso in sorted(days):
-            if lo <= iso <= hi:
-                hier = place_hierarchy_at(conn, pid, iso, iso)[0] or place[1]
-                if hier:
-                    rows.append((iso, str(hier)))
-        for iso, hier in rows:
-            out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
-                        'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
-                        'sort_key': (0, iso, 2, pid, iso)})
+            held = place_hierarchy_at(conn, pid, iso, iso)[0]
+            begun = starts.get(iso)
+            if begun and held not in begun:
+                held = begun[0]
+            hier = str(held or place[1] or '')
+            if hier and hier != prev and lo <= iso <= hi:
+                out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
+                            'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
+                            'sort_key': (0, iso, 2, pid, iso)})
+            prev = hier
     out.sort(key=lambda r: r['sort_key'])
     return out
 
 
+# A burial back home says nothing about living there, so it does not stretch
+# her stay: a woman buried in her birthplace after sixty years away would
+# otherwise get every change of those sixty years on her timeline.
+_NOT_A_STAY_TYPES = frozenset({'burial'})
+
+
+def _row_known_bounds(r) -> tuple[str | None, str | None]:
+    """A timeline row's (first, last) known day, with the index's open-end
+    floor and ceiling (0001-01-01 for "by 1895", 9999-12-31 for "from 1883
+    on") read as unknown: an open end falls back to the known one."""
+    lo = _date_edge(r['date_min'], False)
+    hi = _date_edge(r['date_max'], True)
+    if lo is not None and lo <= '0001-12-31':
+        lo = None
+    if hi is not None and hi >= '9999-01-01':
+        hi = None
+    return (lo or hi, hi or lo)
+
+
 def place_visits_from_rows(rows, keep=None) -> dict[str, tuple[str, str]]:
     """{place_id: (first_iso, last_iso)} from a person's own dated timeline
-    rows (each with place_id, date_min, date_max). `keep(place_id)` limits it
-    to places that may be named (the shared site: only places with a page)."""
+    rows (each with place_id, type, date_min, date_max). A burial is not a
+    stay, and an open end ("by 1895", "from 1883 on") does not stretch it to
+    year 1 or 9999. `keep(place_id)` limits it to places that may be named
+    (the shared site: only places with a page)."""
     visits: dict[str, tuple[str, str]] = {}
     for r in rows:
         pid = r['place_id']
-        lo = _date_edge(r['date_min'], False)
-        hi = _date_edge(r['date_max'], True) or lo
-        if not pid or lo is None or (keep is not None and not keep(pid)):
+        if not pid or (r['type'] or '') in _NOT_A_STAY_TYPES:
             continue
+        lo, hi = _row_known_bounds(r)
+        if lo is None or hi is None or (keep is not None and not keep(pid)):
+            continue
+        hi = max(hi, lo)
         cur = visits.get(pid)
-        visits[pid] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, max(hi, lo))
+        visits[pid] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
     return visits
 
 
 def insert_context_rows(rows: list, context: list[dict]) -> list:
     """The person's own rows (already in date order) with each place-history
-    row put just before the first own row that starts later, so a context line
-    never jumps ahead of a record from the same day."""
+    row put just before the first own row that sorts later, so a context line
+    never jumps ahead of a record from the same day. A row sorts by the same
+    known bound as `claim_date_order_sql` ("by 1895" by 1895)."""
     out = list(rows)
     for c in context:
         at = len(out)
         for i, r in enumerate(out):
             if isinstance(r, dict):
                 continue
-            lo = _date_edge(r['date_min'], False)
+            lo = _row_known_bounds(r)[0]
             if lo is None or lo > c['date_iso']:
                 at = i
                 break
