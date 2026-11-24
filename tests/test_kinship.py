@@ -328,6 +328,58 @@ class SeveralRoutesTests(unittest.TestCase):
                                  [('first cousin', ['g1', 'g2']),
                                   ('second cousin', ['h1', 'h2'])])
 
+    def test_line_above_a_nearer_ancestor_still_counts(self):
+        # Harold (h) married his first cousin Winifred (w): their fathers hf
+        # and wf are brothers, sons of gg1 + gg2. Harold's brother u is their
+        # child c's uncle, and through Winifred also her first cousin once
+        # removed. gg1 + gg2 sit above hf (a nearer common ancestor), but
+        # their line through wf is a separate route he must hear.
+        people = {p: {'name': p, 'sex': 'M'} for p in
+                  ('gg1', 'gg2', 'hf', 'hm', 'wf', 'wm', 'h', 'u', 'w', 'c',
+                   's', 'sh', 'x', 'ggg')}
+        parents = [('hf', 'gg1', None), ('hf', 'gg2', None), ('wf', 'gg1', None),
+                   ('wf', 'gg2', None), ('h', 'hf', None), ('h', 'hm', None),
+                   ('u', 'hf', None), ('u', 'hm', None), ('w', 'wf', None),
+                   ('w', 'wm', None), ('c', 'h', None), ('c', 'w', None),
+                   ('s', 'hf', None), ('s', 'hm', None), ('x', 's', None),
+                   ('x', 'sh', None), ('gg1', 'ggg', None)]
+        for order in (1, -1):
+            with self.subTest(order=order):
+                g = KinshipGraph.from_edges(people, parent_edges=parents[::order])
+                routes = _lib.blood_routes(g, 'u', 'c')
+                self.assertEqual([(r['relationship'], r['common_ancestors']) for r in routes],
+                                 [('uncle', ['hf', 'hm']),
+                                  ('first cousin once removed', ['gg1', 'gg2'])])
+                routes = _lib.blood_routes(g, 'c', 'x')
+                self.assertEqual([(r['relationship'], r['common_ancestors']) for r in routes],
+                                 [('first cousin', ['hf', 'hm']),
+                                  ('second cousin', ['gg1', 'gg2'])])
+                # gg1's own father (ggg) reaches both only through gg1: no route.
+                self.assertEqual(len(_lib.blood_routes(g, 'h', 'u')), 1)
+                self.assertEqual(len(_lib.blood_routes(g, 'h', 'w')), 1)
+
+    def test_double_cousins_with_a_further_line_stay_double(self):
+        # Double first cousins whose two grandmothers were first cousins: the
+        # grandmothers' shared grandparents are a third, further line. They
+        # are still "double first cousin", and the third line is listed.
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2',
+                   'z1', 'z2', 'y1', 'y2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None),
+                   # p2 and q2 are first cousins: children of y1 and y2,
+                   # who are children of z1 + z2.
+                   ('y1', 'z1', None), ('y1', 'z2', None), ('y2', 'z1', None),
+                   ('y2', 'z2', None), ('p2', 'y1', None), ('q2', 'y2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        answer = blood_answer(g, 'c1', 'c2')
+        self.assertEqual([r['common_ancestors'] for r in answer['routes']],
+                         [['p1', 'p2'], ['q1', 'q2'], ['z1', 'z2']])
+        self.assertEqual((answer['relationship'], answer['double']),
+                         ('double first cousin', True))
+
     def test_couple_grouping_needs_shared_child(self):
         # g1 and g2 are each a grandparent of both cousins, at the same
         # distance, but through different children: two separate lines, not

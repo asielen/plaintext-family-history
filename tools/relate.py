@@ -238,8 +238,10 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         def ancestors(group: list[str]) -> str:
             return ', '.join(_id_name(c, names.get(c, fmt_id_display(c)), links) for c in group)
 
-        # Double first cousins descend from both couples, so both are named.
-        groups = ([r['common_ancestors'] for r in routes] if blood.get('double')
+        # Double first cousins descend from both couples, so both are named;
+        # any further, more distant line gets its own "and also" line below.
+        shown = 2 if blood.get('double') else 1
+        groups = ([r['common_ancestors'] for r in routes[:shown]] if blood.get('double')
                   else [blood['common_ancestors']])
         groups = [g for g in groups if g]
         rel = blood['relationship']
@@ -257,7 +259,7 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         # first, so a DNA match that looks too close has its explanation. A
         # line through one ancestor whose other parent is unrecorded says it
         # may be half, as the first line's note does.
-        extra = [] if blood.get('double') else routes[1:]
+        extra = routes[shown:]
         for r in extra[:_MAX_EXTRA_ROUTES]:
             word = r['relationship']
             if r.get('half') is None and r.get('half_relationship'):

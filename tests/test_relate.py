@@ -735,6 +735,40 @@ class RoutesTests(unittest.TestCase):
         self.assertEqual(text.count('and also'), 2)
         self.assertIn('and 2 more routes; run with --json to see them all', text)
 
+    def test_double_with_a_further_line_names_two_couples_then_the_third(self):
+        # Double first cousins whose grandmothers were cousins: the Blood
+        # line names the two grandparent couples, and the further line gets
+        # its own "and also" line instead of a third couple on the first.
+        import contextlib
+        import io
+        def route(anc, g, word):
+            return {'relationship': word, 'common_ancestors': anc, 'gens_a': g,
+                    'gens_b': g, 'half': False, 'half_relationship': None}
+        routes = [route(['P-r000000003', 'P-r000000004'], 2, 'first cousin'),
+                  route(['P-r000000005', 'P-r000000006'], 2, 'first cousin'),
+                  route(['P-r000000007', 'P-r000000008'], 4, 'third cousin')]
+        blood = dict(routes[0], relationship='double first cousin', note=None,
+                     double=True, routes=routes)
+        names = {f'P-r00000000{i}': n for i, n in
+                 zip('345678', ('Thomas Hartley', 'Margaret Cole', 'John Cole',
+                                'Mary Doe', 'Old Pa', 'Old Ma'))}
+        result = relate.Result(ok=True, exit_code=EXIT_CLEAN, data={
+            'a': 'P-r000000001', 'b': 'P-r000000002', 'a_name': 'Ethel Hartley',
+            'b_name': 'Frances Hartley', 'names': names, 'blood': blood,
+            'by_marriage': None, 'any': None})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(result)
+        lines = out.getvalue().splitlines()
+        blood_line = next(line for line in lines if line.startswith('Blood:'))
+        self.assertIn('double first cousin', blood_line)
+        self.assertIn('Mary Doe', blood_line)
+        self.assertNotIn('Old Pa', blood_line)
+        also = [line for line in lines if 'and also' in line]
+        self.assertEqual(len(also), 1)
+        self.assertIn("and also Frances Hartley's third cousin, through another line", also[0])
+        self.assertIn('Old Ma', also[0])
+
     def test_open_half_on_another_line_is_said(self):
         # A second route through one grandparent, with the other parent
         # unrecorded, must not be stated as a plain full cousin.

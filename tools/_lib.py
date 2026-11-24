@@ -19687,7 +19687,8 @@ def _kin_line_children(graph: KinshipGraph, c: str, anc: dict[str, int]) -> set[
 
 
 def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int],
-                    anc_b: dict[str, int]) -> bool | None:
+                    anc_b: dict[str, int],
+                    lines: tuple[set[str], set[str]] | None = None) -> bool | None:
     """Whether a blood route is half: False (full), True (certainly half) or
     None (a parent on the connecting line is not recorded, so it may be half).
 
@@ -19700,8 +19701,9 @@ def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int]
     c = group[0]
     if anc_a[c] == 0 or anc_b[c] == 0:
         return False
-    ca = min(_kin_line_children(graph, c, anc_a))
-    cb = min(_kin_line_children(graph, c, anc_b))
+    line_a, line_b = lines or (_kin_line_children(graph, c, anc_a),
+                               _kin_line_children(graph, c, anc_b))
+    ca, cb = min(line_a), min(line_b)
     if frozenset({ca, cb}) in graph.half_sibling_pairs:
         return True
     other_a = graph.genetic_parents.get(ca, set()) - {c}
@@ -19713,13 +19715,61 @@ def _kin_half_state(graph: KinshipGraph, group: list[str], anc_a: dict[str, int]
     return None
 
 
+def _kin_separate_lines(graph: KinshipGraph, d: str, a: str, b: str,
+                        anc_a: dict[str, int], anc_b: dict[str, int]
+                        ) -> tuple[set[str], set[str]] | None:
+    """The children of common ancestor `d` that start a line to A and a
+    line to B which share no one below `d`, as (A-side, B-side) sets, or
+    None when every pair of lines meets again (then `d` is only the way up
+    to a nearer common ancestor). Lines run down genetic edges through A's
+    and B's own ancestors."""
+    kids_a = {k for k in graph.genetic_children(d) if k in anc_a}
+    kids_b = {k for k in graph.genetic_children(d) if k in anc_b}
+    if len(kids_a | kids_b) < 2:
+        return None
+
+    def on_line(k: str, anc: dict[str, int]) -> set[str]:
+        # Everyone on some line from k down to the person `anc` belongs to.
+        return {n for n in anc if k in graph.ancestors(n)}
+
+    def reaches(k: str, target: str, anc: dict[str, int], avoid: set[str]) -> bool:
+        seen, todo = set(), [k]
+        while todo:
+            n = todo.pop()
+            if n in avoid or n in seen or n not in anc:
+                continue
+            if n == target:
+                return True
+            seen.add(n)
+            todo.extend(graph.genetic_children(n))
+        return False
+
+    side_a: set[str] = set()
+    side_b: set[str] = set()
+    for ka in kids_a:
+        line = on_line(ka, anc_a)
+        for kb in kids_b - {ka}:
+            if reaches(kb, b, anc_b, line):
+                side_a.add(ka)
+                side_b.add(kb)
+    for kb in kids_b:
+        line = on_line(kb, anc_b)
+        for ka in kids_a - {kb}:
+            if ka not in side_a and reaches(ka, a, anc_a, line):
+                side_a.add(ka)
+                side_b.add(kb)
+    return (side_a, side_b) if side_a else None
+
+
 def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     """Every separate way A and B are related by blood, nearest first, as A
     is B's <relationship>. Empty when no genetic line joins them.
 
     A route is one common ancestor, or a couple who share a child on both
     lines. A common ancestor who is only the way up to a nearer common
-    ancestor (the grandparents' own parents) is not a route of its own.
+    ancestor (the grandparents' own parents) is not a route of its own;
+    one with a second line down that avoids the nearer one (a cousin
+    marriage further up) is.
     Each route is {relationship, common_ancestors, gens_a, gens_b, half,
     half_relationship}: `half` is False, True or None (may be half; then
     `relationship` keeps the full word and `half_relationship` carries the
@@ -19736,7 +19786,18 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     covered: set[str] = set()
     for d in common:
         covered.update(up for up in graph.ancestors(d) if up != d)
-    minimal = sorted(common - covered)
+    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
+             for c in common - covered}
+    # A man who married his cousin: his brother is their child's uncle, and
+    # through the wife also her cousin. The great-grandparents sit above the
+    # nearer common ancestor, yet a second line runs down from them. A
+    # covered ancestor is a route of its own when lines to A and to B leave
+    # it through different children and never meet again below it.
+    for d in covered & common:
+        split = _kin_separate_lines(graph, d, a, b, anc_a, anc_b)
+        if split:
+            lines[d] = split
+    minimal = sorted(lines)
 
     # Group the minimal ancestors into couples: the same generations from
     # both people and a shared child on each line. Union-find keeps a
@@ -19748,8 +19809,6 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
             c = root[c]
         return c
 
-    lines = {c: (_kin_line_children(graph, c, anc_a), _kin_line_children(graph, c, anc_b))
-             for c in minimal}
     for i, c1 in enumerate(minimal):
         for c2 in minimal[i + 1:]:
             if ((anc_a[c1], anc_b[c1]) == (anc_a[c2], anc_b[c2])
@@ -19765,7 +19824,7 @@ def blood_routes(graph: KinshipGraph, a: str, b: str) -> list[dict]:
     routes = []
     for group in groups.values():
         ga, gb = anc_a[group[0]], anc_b[group[0]]
-        half = _kin_half_state(graph, group, anc_a, anc_b)
+        half = _kin_half_state(graph, group, anc_a, anc_b, lines[group[0]])
         routes.append({
             'relationship': kinship_word(ga, gb, sex, half=half is True),
             'common_ancestors': sorted(group),
@@ -19792,8 +19851,9 @@ def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
     Children of two brothers who married two sisters hear "double first
     cousin", and cousins whose grandparents were themselves cousins hear
     both lines: `routes` is every route, nearest first (the first is the one
-    the top-level keys describe), and `double` is True when there are
-    exactly two full routes at the same cousin degree. Then `relationship`
+    the top-level keys describe), and `double` is True when the two nearest
+    routes are full and at one cousin degree and no third route shares that
+    degree (a further, more distant line may follow). Then `relationship`
     is the double word ("double first cousin") while each entry in `routes`
     keeps its own line's word."""
     routes = blood_routes(graph, a, b)
@@ -19802,10 +19862,15 @@ def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
     answer = dict(routes[0])
     answer['note'] = None
     first = routes[0]
-    double = (len(routes) == 2
-              and all(r['half'] is False for r in routes)
-              and (routes[1]['gens_a'], routes[1]['gens_b']) == (first['gens_a'], first['gens_b'])
-              and min(first['gens_a'], first['gens_b']) >= 2)
+    # Double: the two nearest routes are full and at one cousin degree, and
+    # no third route shares that degree. A further, more distant line (the
+    # grandmothers were themselves cousins) does not undo "double".
+    gens = (first['gens_a'], first['gens_b'])
+    double = (len(routes) >= 2
+              and all(r['half'] is False for r in routes[:2])
+              and (routes[1]['gens_a'], routes[1]['gens_b']) == gens
+              and not any((r['gens_a'], r['gens_b']) == gens for r in routes[2:])
+              and min(gens) >= 2)
     if double:
         answer['relationship'] = kinship_word(
             first['gens_a'], first['gens_b'], graph.people.get(a, {}).get('sex', ''),
