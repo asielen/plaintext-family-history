@@ -94,7 +94,7 @@ The name comes from *kowal*, the Polish word for smith.
 
 Private paragraphs and unaccepted drafts stay off the shared site, as everywhere else. If no one who may be shown carries the name, the file is left unused.
 
-For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`.
+For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
 ## Putting a photo in your writing
 

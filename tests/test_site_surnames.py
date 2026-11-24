@@ -120,6 +120,18 @@ class GroupingTests(_Surnames):
             if f not in ('index.html', f'{li}.html'):
                 self.assertNotIn('Guangdong', self.page(f[:-5]))
 
+    def test_an_accent_spelling_keeps_the_page_and_note_of_another_alphabet(self):
+        # Королёв and Королев are one name; a second spelling must not move
+        # the page or drop his note.
+        self.person(P[0], 'Pyotr Королёв', sex='M')
+        self.build()
+        slug = next(f for f in self.files() if f != 'index.html')[:-5]
+        self.note(slug, 'The Korolev family.\n')
+        self.person(P[1], 'Ivan Королев', sex='M')
+        self.person(P[2], 'Olga Королев')
+        self.build()
+        self.assertIn('The Korolev family.', self.page(slug))
+
     def test_a_family_named_place_is_not_confused_with_another_alphabet(self):
         self.person(P[0], 'Ann Place')
         self.person(P[1], 'Wei 李', sex='M')
@@ -180,6 +192,17 @@ class NoteTests(_Surnames):
         self.assertNotIn('Anna Kowalska', self.page('kowalski'))
         self.assertIn('Anna Kowalska', self.page('kowalsky'))
         self.assertNotIn('Jan Kowalski', self.page('kowalsky'))
+
+    def test_also_naming_a_page_brings_its_feminine_forms(self):
+        # Kowalski moved onto the Kowalsky page brings Anna Kowalska with him
+        # rather than leaving her alone on a page of her own.
+        self.person(P[0], 'Jan Kowalski', sex='M')
+        self.person(P[1], 'Anna Kowalska')
+        self.person(P[2], 'Pawel Kowalsky', sex='M')
+        self.note('kowalsky', '---\nalso: [Kowalski]\n---\nAnother spelling.\n')
+        self.build()
+        self.assertEqual(self.files(), ['index.html', 'kowalsky.html'])
+        self.assertIn('Anna Kowalska', self.page('kowalsky'))
 
     def test_also_lists_do_not_chain(self):
         # Hartly moves to the Hartley page; the Hartly note's own also: then

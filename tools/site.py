@@ -665,13 +665,13 @@ def _surname_slug(display: str) -> str:
 
     A name written in another alphabet (Иванов, 李) has no letters left after
     folding. It gets `name-` and eight characters worked out from the name
-    itself, so its page and the note he writes for it keep one file name
+    itself, accents folded first (Королёв and Королев share one), so its page and the note he writes for it keep one file name
     however many other such families are added. A name Windows keeps for a
     device (Con, Nul) gets `-family` after it, or its page would never be
     written there."""
     slug = re.sub(r'[^a-z0-9]+', '-', fold_accents(display).lower()).strip('-')
     if not slug:
-        written = unicodedata.normalize('NFC', display).casefold()
+        written = unicodedata.normalize('NFC', fold_accents(display)).casefold()
         return 'name-' + hashlib.sha1(written.encode('utf-8')).hexdigest()[:8]
     if slug in _WINDOWS_DEVICE_NAMES:
         return f'{slug}-family'
@@ -11336,12 +11336,18 @@ class _SiteBuilder:
                         f'WARNING: {path.name} and {claimed[key]} both list {spelling!r} under '
                         f'also:; it stays on the page of {claimed[key]}.')
                     continue
-                claimed[key] = path.name
-                owner[key] = target
-                other['keys'].discard(key)
-                target['keys'].add(key)
-                moving = other['by_key'].pop(key, [])
-                target['by_key'].setdefault(key, []).extend(moving)
+                # The page's own spelling takes the feminine forms joined to
+                # it along (Kowalski brings Kowalska); a joined form moves alone.
+                moving_keys = sorted(other['keys']) if key == other['home'] else [key]
+                moving = []
+                for k in moving_keys:
+                    claimed.setdefault(k, path.name)
+                    owner[k] = target
+                    other['keys'].discard(k)
+                    target['keys'].add(k)
+                    batch = other['by_key'].pop(k, [])
+                    target['by_key'].setdefault(k, []).extend(batch)
+                    moving += batch
                 for pid, surname in moving:
                     other['pids'].remove(pid)
                     target['pids'].append(pid)
