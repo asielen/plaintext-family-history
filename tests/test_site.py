@@ -13005,6 +13005,25 @@ class AhnentafelEdgeFilterTests(_Base):
         self.assertEqual(full['p-cccccccccc'], 3)
         self.assertEqual(got, {'p-aaaaaaaaaa': 1, 'p-cccccccccc': 3, 'p-dddddddddd': 7})
 
+    def test_a_hidden_second_father_does_not_take_the_shown_fathers_number(self):
+        # A DNA-only second father must not cost the legal father (and his
+        # whole line) their numbers on the shared site.
+        from _lib import build_ahnentafel_map
+        H, DAN, FRANK, MARY, GRETA = ('p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-ffffffffff',
+                                      'p-gggggggggg', 'p-hhhhhhhhhh')
+        for pid, sex in ((H, 'M'), (DAN, 'M'), (FRANK, 'M'), (MARY, 'F'), (GRETA, 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', H, DAN), ('c-2222222222', H, FRANK),
+                                   ('c-3333333333', H, MARY), ('c-4444444444', FRANK, GRETA)):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        got = build_ahnentafel_map(self.conn, H,
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {H: 1, FRANK: 2, MARY: 3, GRETA: 5})
+
     def test_one_allowed_claim_keeps_the_parent(self):
         self._chain()
         self._seed_claim('c-9999999999', 's-1111111111', 'relationship', 'parent',
