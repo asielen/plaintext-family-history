@@ -23330,14 +23330,7 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
 # and the private views draw the line in different places, so they hand in
 # their own person_ok / claim_ok / edge_ok tests.
 
-_AGE_OPEN_BOUNDS = ('0001-01-01', '9999-12-31')
-
-
-def _age_whole_years(a_iso: str, b_iso: str) -> int:
-    """Completed years from day `a_iso` to day `b_iso` (ISO strings)."""
-    ay, am, ad = int(a_iso[:4]), int(a_iso[5:7]), int(a_iso[8:10])
-    by, bm, bd = int(b_iso[:4]), int(b_iso[5:7]), int(b_iso[8:10])
-    return by - ay - (1 if (bm, bd) < (am, ad) else 0)
+_AGE_OPEN_BOUNDS = (_EDTF_FLOOR, _EDTF_CEILING)
 
 
 def age_between(birth_edtf: str | None, event_edtf: str | None) -> tuple[int, int] | None:
@@ -23360,8 +23353,8 @@ def age_between(birth_edtf: str | None, event_edtf: str | None) -> tuple[int, in
             return None
         if e_max < b_min:
             return None
-        lo = max(_age_whole_years(b_max, e_min), 0)
-        hi = _age_whole_years(b_min, e_max)
+        lo = max(_whole_years_between(b_max, e_min), 0)
+        hi = _whole_years_between(b_min, e_max)
     except (ValueError, TypeError):
         return None
     if hi < 0 or hi - lo > 1:
@@ -23459,6 +23452,7 @@ def family_life_events(
     claim_ok: Callable[[dict], bool] | None = None,
     edge_ok: Callable[[str, str, str, Any], bool] | None = None,
     cache: dict | None = None,
+    kin: KinshipGraph | None = None,
 ) -> dict:
     """The person's own birth and death, and the births, marriages and deaths
     of their close family that fall inside the person's recorded life.
@@ -23469,7 +23463,15 @@ def family_life_events(
     refuses gives no row at all, and is no route to a sibling), `claim_ok(row)`
     for every claim used (row has id, source_id, status, type), and
     `edge_ok(person_id, rel, other_id, claim_id)` for every `relationships`
-    row a tie rests on. `cache` is handed to `claim_is_own_vital`.
+    row a tie rests on. `cache` is handed to `claim_is_own_vital`. `kin` is
+    the KinshipGraph the "half-brother" word is read from (`blood_answer`,
+    the rule `fha relate` uses); a caller building many pages passes one
+    built once with the same edge test, else one is built here.
+
+    A tie may pass through a parent `person_ok` refuses (living or unknown):
+    her brother is still her brother, and that parent is never named. A
+    parent the caller must not even route through (restricted, by-request)
+    is the caller's `edge_ok` to refuse.
 
     The life runs from the own birth (else the earliest of the person's own
     dated records) to the own death or burial (else the latest own record).
@@ -23577,28 +23579,16 @@ def family_life_events(
 
     # Siblings: the other children of each parent the person's own tie to is
     # kept, each through a tie of their own to that parent that is kept too.
-    # "Half" only on a firm basis, the rule `fha relate` uses: a source that
-    # says so, or one shared parent and a different other parent on each side
-    # (one parent unrecorded stays a plain brother or sister).
-    my_genetic = {p for p, n in parent_natures.items() if n is None and _person_passes(p)}
-    half_pairs: set[frozenset] = set()
-    for claim in _family_dicts(conn.execute(
-            "SELECT DISTINCT c.id AS id, c.source_id AS source_id, c.status AS status, "
-            "c.type AS type FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id "
-            "WHERE cp.person_id = ? AND c.type = 'relationship' AND c.status = 'accepted' "
-            "AND COALESCE(c.negated, 0) = 0 "
-            "AND LOWER(TRIM(c.subtype)) IN ('half', 'half-sibling') ORDER BY c.id", (pid,))):
-        if claim_ok is not None and not claim_ok(claim):
-            continue
-        people = claim_role_pairs((r[0], r[1]) for r in conn.execute(
-            'SELECT person_id, role FROM claim_persons WHERE claim_id = ? ORDER BY position',
-            (claim['id'],)).fetchall())
-        sibs = {normalize_id(str(p)) for p, role in people
-                if p and role_meaning(role) == 'sibling'}
-        if pid in sibs:
-            half_pairs.update(frozenset({pid, s}) for s in sibs if s != pid)
+    # "Half" only on a firm basis, read from the kinship engine `fha relate`
+    # uses (`blood_answer`): a source that says so, or one shared parent and
+    # a different other parent recorded on each side. One parent unrecorded
+    # stays a plain brother or sister.
+    if kin is None:
+        kin = kin_graph(conn, edge_ok=None if edge_ok is None else (
+            lambda row: edge_ok(row['person_id'], row['rel'], row['other_id'],
+                                row['claim_id'])))
     sibling_ties: dict[str, dict[str, str | None]] = {}   # sib -> {parent: sib's nature}
-    for parent in sorted(p for p in parent_natures if _person_passes(p)):
+    for parent in sorted(parent_natures):
         for kid_edge in _edges(parent, 'child'):
             kid = kid_edge['other_id']
             if kid == pid:
@@ -23606,16 +23596,14 @@ def family_life_events(
             back = _edges(kid, 'parent', parent)
             if back:
                 sibling_ties.setdefault(kid, {})[parent] = _family_natures(back)[parent]
+    my_genetic = {p for p, n in parent_natures.items() if n is None}
     for sib, ties in sorted(sibling_ties.items()):
         sex = sexes.get(sib, '')
-        shared_genetic = {p for p, n in ties.items() if n is None and p in my_genetic}
-        if shared_genetic:
-            theirs = {p for p, n in _family_natures(_edges(sib, 'parent')).items()
-                      if n is None and _person_passes(p)}
-            half = (frozenset({pid, sib}) in half_pairs
-                    or (len(shared_genetic) == 1 and bool(my_genetic - shared_genetic)
-                        and bool(theirs - shared_genetic)))
-            word = kinship_word(1, 1, sex, half=half)
+        if any(n is None and p in my_genetic for p, n in ties.items()):
+            answer = blood_answer(kin, sib, pid)
+            word = (answer['relationship']
+                    if answer and (answer['gens_a'], answer['gens_b']) == (1, 1)
+                    else kinship_word(1, 1, sex))
         else:
             # Tied only through a parent one of them has by marriage or
             # fostering: a stepbrother, a foster sister. An adopted child of

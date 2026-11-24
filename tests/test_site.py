@@ -11597,6 +11597,81 @@ class TimelineFamilyRowsTests(_Base):
         self._seed_rel('p-mo00000002', 'child', self.B, claim_id='c-brel00002')
         self.assertIn('Her half-brother', self._timeline())
 
+    def test_by_request_relative_gives_no_row_anywhere_on_the_page(self):
+        # A brother who asked to be left out (SPEC §19 by-request): no row,
+        # no name, no date, and his marriage gives nothing either.
+        self._family()
+        self._seed_person(self.B, 'Benjamin Hartley', surname='Hartley2', sex='M',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_source('s-5555555555', 'Benjamin birth', source_type='vital-record')
+        self._seed_claim('c-bb0000001', 's-5555555555', 'birth', 'Benjamin born',
+                         date_edtf='1875', persons=[self.B], roles={self.B: 'child'})
+        self._seed_rel(self.B, 'parent', self.F, claim_id='c-rel000001')
+        self._seed_rel(self.F, 'child', self.B, claim_id='c-rel000001')
+        tl = self._timeline()
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('1875', tl)
+        self.assertNotIn('Her brother', tl)
+
+    def test_restricted_parent_is_no_route_to_a_sibling(self):
+        # The only tie between Margaret and Benjamin runs through a father
+        # marked restricted: the shared page says nothing of either.
+        self._family()
+        self._brother()
+        meta = self.archive_root / 'people'
+        caleb = next(meta.glob(f'*{self.F}.md'))
+        caleb.write_text(caleb.read_text(encoding='utf-8').replace(
+            'name: Caleb', 'restricted: true\nname: Caleb'), encoding='utf-8')
+        tl = self._timeline()
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('Caleb', tl)
+
+    def test_sibling_through_a_living_parent_shows_without_naming_the_parent(self):
+        # Owner decision D16: a tie may pass through a living or unknown
+        # person, who is never named. Her father left at living: unknown
+        # still makes Benjamin her brother; the father gets no row.
+        self._family()
+        self._brother()
+        self.conn.execute("UPDATE persons SET living = 'unknown' WHERE id = ?", (self.F,))
+        tl = self._timeline()
+        self.assertIn('Her brother', tl)
+        self.assertNotIn('Caleb', tl)
+        self.assertNotIn('Living Person', tl)
+
+    def test_half_brother_when_his_other_parent_is_living(self):
+        # "Half" rests on both other parents being recorded and different,
+        # the rule fha relate uses; a living mother of his still counts,
+        # and is never named.
+        self._family()
+        self._brother()
+        self._seed_person('p-mo00000001', 'Ann Cole', surname='Cole3', sex='F')
+        self._seed_person('p-mo00000002', 'Sarah Lane', surname='Lane', sex='F',
+                          living='true')
+        self._seed_claim('c-mrel00001', 's-3333333333', 'relationship', 'Ann is her mother',
+                         persons=[self.M, 'p-mo00000001'],
+                         roles={self.M: 'child', 'p-mo00000001': 'parent'})
+        self._seed_rel(self.M, 'parent', 'p-mo00000001', claim_id='c-mrel00001')
+        self._seed_rel('p-mo00000001', 'child', self.M, claim_id='c-mrel00001')
+        self._seed_claim('c-brel00002', 's-5555555555', 'relationship', 'Sarah is his mother',
+                         persons=[self.B, 'p-mo00000002'],
+                         roles={self.B: 'child', 'p-mo00000002': 'parent'})
+        self._seed_rel(self.B, 'parent', 'p-mo00000002', claim_id='c-brel00002')
+        self._seed_rel('p-mo00000002', 'child', self.B, claim_id='c-brel00002')
+        tl = self._timeline()
+        self.assertIn('Her half-brother', tl)
+        self.assertNotIn('Sarah', tl)
+
+    def test_shared_death_record_stays_her_own_line(self):
+        # One record of a house fire names Margaret and her son as deceased:
+        # her own death line stays, and her daughter's death is a family row.
+        self._family(death=False)
+        self._seed_claim('c-ed0000001', 's-4444444444', 'death', 'Both died in the fire',
+                         date_edtf='1920', persons=[self.M, self.E],
+                         roles={self.M: 'deceased', self.E: 'deceased'})
+        tl = self._timeline()
+        self.assertIn('Both died in the fire', tl)
+        self.assertRegex(tl, r'Her daughter <a [^>]*>Ethel Cole</a> died')
+
     def test_unknown_sex_uses_name(self):
         self._family(margaret_sex='')
         tl = self._timeline()

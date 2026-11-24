@@ -127,6 +127,28 @@ class FamilyLifeEventsTests(unittest.TestCase):
         words = {e['relative_id']: e['relation'] for e in self.events()['events']}
         self.assertEqual(words[B], 'half-brother')
 
+    def test_sibling_through_a_refused_parent_but_not_a_refused_tie(self):
+        # A father the caller will not name (living or unknown) is still the
+        # way to her brother; a tie the caller refuses (restricted) is not.
+        self.person(B, 'Ben Hartley', 'M')
+        self.claim('c-bb', 's-5', 'birth', '1875', {B: 'child'})
+        self.parent(B, F, 'c-relb')
+        out = self.events(person_ok=lambda p: p != F)
+        self.assertEqual([(e['relative_id'], e['relation']) for e in out['events']
+                          if e['relative_id'] in (B, F)], [(B, 'brother')])
+        out = self.events(edge_ok=lambda p, rel, o, cid: F not in (p, o))
+        self.assertNotIn(B, [e['relative_id'] for e in out['events']])
+
+    def test_half_word_from_a_source_that_says_so(self):
+        # A record calling them half-siblings is enough, as in fha relate.
+        self.person(B, 'Ben Hartley', 'M')
+        self.claim('c-bb', 's-5', 'birth', '1875', {B: 'child'})
+        self.parent(B, F, 'c-relb')
+        self.claim('c-half', 's-5', 'relationship', None, {M: 'sibling', B: 'sibling'},
+                   subtype='half')
+        words = {e['relative_id']: e['relation'] for e in self.events()['events']}
+        self.assertEqual(words[B], 'half-brother')
+
     def test_step_child_word(self):
         self.person('p-s000000001', 'Tom Cole', 'M')
         self.claim('c-sb', 's-6', 'birth', '1900', {'p-s000000001': 'child'})

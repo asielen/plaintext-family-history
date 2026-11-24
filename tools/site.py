@@ -323,6 +323,7 @@ from _lib import (
     age_between,
     age_phrase,
     family_life_events,
+    kin_graph,
     edtf_bounds,
     is_placeholder_name,
     person_surname,
@@ -4572,6 +4573,8 @@ class _SiteBuilder:
         # so a person named on twenty records would otherwise re-read the same
         # claim_persons rows twenty times. None means the claim never said.
         self._vital_subjects: dict[str, list[str] | None] = {}
+        # The family graph the timeline's family rows read (`_family_events`).
+        self._family_kin = None
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
         # Opened once in prepare() when the photo index is fresh, reused across
@@ -7615,8 +7618,12 @@ class _SiteBuilder:
         # (`_lib.family_life_events`). A claim shown as a family row is not
         # shown again as her own bare "birth" line.
         family = self._family_events(pid)
+        # One record of a house fire that names her and her daughter as
+        # deceased is still her own death line as well.
         family_claims = {ev['claim_id'] for ev in family['events']}
-        rows = [r for r in rows if r['id'] not in family_claims]
+        rows = [r for r in rows if r['id'] not in family_claims
+                or claim_is_own_vital(self.conn, pid, r['id'], r['type'],
+                                      self._vital_subjects)]
         own_birth, own_death = family['birth'], family['death']
 
         # Own rows keep the SQL order; a family row goes after own rows on
@@ -7698,17 +7705,20 @@ class _SiteBuilder:
         """The family rows for one person's timeline, under this build's
         privacy line (`_lib.family_life_events`).
 
-        The shared site shows a relative only when their own page could be
-        shown (not living, unknown or restricted, merges followed): a living
-        brother gives no row at all, not a "Living Person" row, since a
-        family tie is itself personal (SPEC §21: a kept claim adds no one to
-        any list of the family). Every claim used must be publishable
-        (accepted, not restricted, not on a restricted or DNA source) and
-        not withheld for a living person's sake; a record kept because it
-        only names a living godparent is fine, as the row names only the
+        On the shared site a relative is named only when their own page could
+        be shown: a living, unknown, restricted or by-request brother (merges
+        followed) gives no row at all, not a "Living Person" row, since a
+        family tie is itself personal. Every claim used must be publishable
+        (accepted, not restricted, not on a restricted or DNA source) and not
+        withheld for a living person's sake (SPEC §21); a record kept because
+        it only names a living godparent is fine, as the row names only the
         relative. Each tie must rest on a publishable claim, the rule the
-        Family section uses (`_has_public_parent_edge`). The linked preview
-        and the workbench show everything, parked claims flagged."""
+        Family section uses (`_has_public_parent_edge`), and no tie may run
+        through a restricted or by-request person. A tie may run through a
+        living or unknown parent, who is never named (owner decision D16,
+        the rule the relationship line follows): her brother is her brother
+        even when their father's record is still marked unknown. The linked
+        preview and the workbench show everything, parked claims flagged."""
         if self.linked:
             person_ok = claim_ok = edge_ok = None
         else:
@@ -7721,6 +7731,8 @@ class _SiteBuilder:
                         and self._claim_verdicts.get(row['id']) != CLAIM_WITHHELD)
 
             def edge_ok(person_id, rel, other_id, claim_id) -> bool:
+                if self._pid_is_restricted(person_id) or self._pid_is_restricted(other_id):
+                    return False
                 if claim_id is None:
                     return True
                 row = self.conn.execute(
@@ -7728,9 +7740,16 @@ class _SiteBuilder:
                 if row is None:
                     return True     # a bare edge with nothing behind it to hide
                 return self._claim_row_is_publishable(claim_id, row['source_id'], row['status'])
+        if self._family_kin is None:
+            # One family graph per build for the "half-brother" word, under
+            # the same edge test as the rows themselves.
+            self._family_kin = kin_graph(self.conn, edge_ok=None if edge_ok is None else (
+                lambda row: edge_ok(row['person_id'], row['rel'], row['other_id'],
+                                    row['claim_id'])))
         return family_life_events(
             self.conn, pid, include_parked=self.linked, person_ok=person_ok,
-            claim_ok=claim_ok, edge_ok=edge_ok, cache=self._vital_subjects)
+            claim_ok=claim_ok, edge_ok=edge_ok, cache=self._vital_subjects,
+            kin=self._family_kin)
 
     def _own_age_text(self, pid: str, r, own_birth: dict | None,
                       own_death: dict | None) -> str:
