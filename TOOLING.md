@@ -506,12 +506,13 @@ The `review-claims` skill (§16) and `fha report` drive `fha claim`; the accept 
 
 ## 3c. `fha person`: person-field write-backs
 
-Safe one-line commands for the person-record fields and prose that exports and the workbench depend on. Eleven verbs.
+Safe one-line commands for the person-record fields and prose that exports and the workbench depend on. Twelve verbs.
 
 ```
 fha person set-living <p-id> true|false|unknown [--dry-run] [--root PATH]
 fha person set-profile-photo <p-id> PHOTO [--dry-run] [--root PATH]
 fha person set-sex <p-id> M|F|intersex|unknown [--dry-run] [--root PATH]
+fha person set-external-id <p-id> SITE ID [--replace] [--dry-run] [--root PATH]
 fha person new "Name" [--sex M|F|intersex|unknown] [--gender TEXT] [--birth DATE] [--death DATE] [--birth-place TEXT] [--death-place TEXT] [--surname TEXT] [--force] [--dry-run]
 fha person new --from-file PEOPLE.tsv [--force] [--dry-run]
 fha person rename <p-id> "New Name" [--keep-variant] [--surname TEXT] [--dry-run] [--root PATH]
@@ -535,6 +536,8 @@ fha person promote <p-id> [--into FOLDER] [--dry-run] [--root PATH]
 **`set-sex`.** M | F | intersex | unknown, case-folded. `sex:` drives Ahnentafel placement (§7: `F` mother/odd slot, else father/even; W120). A live change says: run `fha index`, then `fha views brackets`, `--realign` to apply; index first, since placement reads the indexed `sex:`. Workbench verb `person.set-sex`.
 
 **`set-profile-photo`.** Sets `profile_photo:` (SPEC §9). `PHOTO` (filename, path or s-id) is written as given, safely quoted, and resolved leniently at site build; unresolvable just shows no portrait.
+
+**`set-external-id`.** Writes or replaces one key of `external_ids:` (SPEC A.7), so the next capture and the WikiTree export match the right person. The site name is lower-case letters, numbers and `_`. Known sites' ids are shape-checked so a pasted web address is refused (`wikitree` Name-123, `findagrave` and `ancestry` all numbers, `familysearch` XXXX-XXX, written in capitals); other sites are taken as typed. A different id already there needs `--replace` (status `needs-replace`); a site name typed with capitals by hand is refused with a by-hand fix rather than doubled. An id another person holds (any key case, anywhere under `people/`, by file scan) is refused naming that person; a person file the scan cannot read also refuses, since it might be the holder. Guard: every other `external_ids:` entry and every other field must read back unchanged; a one-line `external_ids: {...}` is refused with a by-hand fix. Exit codes and statuses as `set-living`, plus `needs-replace`.
 
 ### `new`
 
@@ -1174,6 +1177,29 @@ Read-only. It answers "what holds death records for Fairview in 1911?" from the 
 
 ---
 
+## 7d. `fha compare`: the evidence for one fact, side by side
+
+```
+fha compare <p-id | "Full Name"> [--fact birth|death|marriage|parents|name|residence|<claim type>]
+            [--accepted-only] [--include-rejected] [--json] [--root PATH]
+```
+
+When two records give a person two different birth years, the researcher needs one table with every record about that fact, so that the human and any skill look at the same thing. Read-only: a pure read over the index plus the frontmatter of the sources it shows; nothing is written or stored (SPEC §17b).
+
+**With no `--fact`**, one line per fact whose records disagree: "Birth: 3 records, years 1838 to 1840 (they disagree)"; the years are the ones the records give (`date_edtf`), so "before 1840" shows as 1840. Only birth, death and marriage are checked, since a person moves house and changes jobs, so two residence records that differ are normal. Two records of the same claim type disagree when their date ranges (`date_min..date_max`) do not overlap, or their places rule each other out (two `place_id`s neither of which sits `within` the other, or, both unlinked, two `place_text`s where neither is the other with some parts left out: "New York" and "Easton, New York" both agree with "Easton, Washington County, New York"); a birth is never held against its baptism, nor a death against its burial, and two marriage records are compared only when they name the same couple (`_lib.spouse_parties`; a witness or parent named on one does not make it another wedding, and a person may marry twice). When nothing disagrees it says so and lists the facts that have records.
+
+**Which claims count for a fact** uses `_lib.vital_subjects`, so a son's birth never lands on his mother: `birth` gathers birth and baptism claims whose own person is the child (or the sole person named); `death` death and burial (`deceased:`); `marriage` marriage (`spouse:`); `parents` relationship claims naming him `child:` plus birth claims that name `parent:` roles; a ceremony asked for by name (`--fact baptism`, `--fact burial`, `divorce`) goes through `vital_subjects` too; roles are read through `_lib.roles_by_person`, so `mother`/`son` count as `parent`/`child`; `name` and any other claim type, the claims that name him `subject:` or, with no `subject:` on the claim, everyone it names. A merged person is read through `merged_into` and the output says so. Stubs work.
+
+**Which statuses.** `accepted`, `suggested` (a parked claim is marked) and `disputed` by default; `--accepted-only` narrows to accepted (when that leaves nothing but unreviewed records exist, it says the records are still suggested or disputed rather than that there are none); `--include-rejected` adds `rejected` and `superseded`.
+
+**One row per claim**, in date order: what it says (`value`, `date_edtf`, `place_text`, `place_id`); the source and its date (`source_id`, `source_title`, `source_type`, `source_class`, `source_date`, `repository`, `path`); how long after the event it was recorded (`recorded_after_years`: `{min, max}` from the source's date bounds minus the claim's, `null` when either is undated or open-ended ("before 1840"); text "at the time" within a year, "about N years after", "undated"); who told it (`informants`, from `informant` roles; "not named" when none); the kind of information (`information`: "firsthand" for primary, "secondhand" for secondary, "not known" otherwise); whether it says the fact outright (`evidence`: direct, indirect, negative); `status`, `reviewed`, `confidence`; `same_origin_as`; `links` (`corroborates`/`contradicts` targets, with their row number when that claim is in the table); `anchor`.
+
+**Same origin** means the rows are one piece of evidence, not several: two claims on one source; two sources that are one record saved from two sites (the rule of lint W162: one collection group in `record_collections.json`, the same subject in the saved site data, a person in common, agreeing dates); and, labelled "someone's tree", claims from sources written by `fha gedcom import` (`subtype: gedcom`) or a `source_type: website` source whose title names a tree ("family tree", "pedigree", "online tree"; a title like "Oak Tree Cemetery" does not count).
+
+**Exit codes.** `0` shown; `1` no claims for that fact (the message names the facts that do have records); `2` bad arguments or an ambiguous name (candidates with their IDs listed); `3` no index or an unreadable one.
+
+---
+
 ## 8. `fha packet`: person data dump
 
 `fha packet p-de957bcda1 [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]`
@@ -1775,6 +1801,7 @@ The session start screen, narrated by the `today` skill.
 | 3 | `vitals-gaps` | Curated people first, then people touched since last report (W101). Computed fresh each run; never written as questions (SPEC §17b). |
 | 3b | `loose-ends` | Computed fresh, never written as questions (SPEC §17b). (a) End of the line: direct-line ancestors from `root_person` with one or both genetic parents unrecorded, closest first, with their Ahnentafel number and the path in words ("father's mother's father"). (b) Not connected to the tree: people with no accepted relationship of any kind (family, social or power) linking them to `root_person`'s group (the largest group when `root_person` is unset): groups largest first, then people on their own, most mentioned first, and how many are named on family-tie claims still waiting for review. (c) Same surname, not connected: unconnected people who share a surname with someone in the tree. Counts plus the top five per bucket. |
 | 4 | `contradictions` | `contradicts:` pairs lacking an open question (E009). |
+| 4b | `possible-duplicates` | Pairs of people that look like one person entered twice: names match after folding accents and case (a close spelling counts), and nothing rules them out (different recorded sex, different generational suffix, a parent, child, spouse or ancestor tie between them, a pair noted as two different people, or recorded birth or death dates that cannot be one person: two exact dates that differ, or approximate ones more than two years apart). Ranked by what they share (birth, death, a parent, a spouse, a birthplace) and shown as "strong" or "worth a look" with the reasons; at most ten. Each line offers the merge-identities skill and the exact `fha confirm dismiss <p-a> <p-b> --not-same-person` command. The owner's private view, so living people are named. Engine: `_lib.possible_duplicate_people`. |
 | 5 | `search-log` | Leads (vitals gaps, review queue, contradictions) annotated from `notes/research-log.md` (SPEC §17c): "already searched (date)", with the years searched when the entry gives them; a nil older than 18 months is "worth re-running". An `unavailable` entry reads "could not be searched (date)" and a `requested` one "asked (date), waiting for a reply"; both are still to do. Then captures from the last 30 days not yet linked to a person. |
 | 5b | `answerable-questions` | Open questions whose referenced gap now has an accepted claim, or whose referenced claims changed status, proposed for `answered [[s-...]]`. The human closes. |
 | 6 | `photo-triage` | Top N (§15b). Prefixed by the scan's note: unreadable files, and when any are new or changed, that the catalog stays out of date until they read (§9). A `MISSING:` group points at `reconcile`. |
@@ -1785,7 +1812,7 @@ The session start screen, narrated by the `today` skill.
 
 Every section's items are leads: the report proposes and the human acts.
 
-**Place-text escalation.** A §6b cluster of 20 or more claims sharing one unlinked `place_text` is promoted to the banner. Its line is the same line §6b prints, with a ready command: `--into <l-id>` when the text fits a registered place by the write-time rule of SPEC §15, else `--name=...`. The banner then names the same all-at-once commands §6b leads with. On a run filtered to any other section, it names `fha report --section place-candidates`. The Result carries `data['place_escalations']` (raw clusters) and `data['sections']['place-escalations']`.
+**Place-text escalation.** A §6b cluster of 20 or more claims sharing one unlinked `place_text` is promoted to the banner. Its line is the same line §6b prints, with a ready command: `--into <l-id>` when the text fits a registered place by the write-time rule of SPEC §15, else `--name=...`. The banner then names the same all-at-once commands §6b leads with. On a run filtered to any other section, it names `fha report --section place-candidates`. The Result carries `data['place_escalations']` (raw clusters) and `data['sections']['place-escalations']`, and `data['possible_duplicates']` (§4b's pairs as raw dicts).
 
 ## 15b. `fha photoindex triage`: processing candidates
 
@@ -1801,7 +1828,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 |---|---|---|---|---|
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
-| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_anniversaries`, `test_find`, `test_doctor` |
+| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `compare`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §7d, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_compare`, `test_anniversaries`, `test_find`, `test_doctor` |
 | 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary, merge), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
@@ -1948,6 +1975,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <p-a> <p-b>` (T C) | "How are these two related?" The blood relationship (cousin/removal, half), the tie by marriage when there is no blood tie (brother-in-law, stepmother, uncle by marriage) and the shortest social path between any two people, derived from accepted relationship claims. |
 | `fha metrics [<p-id>]` (T C) | "Who still lacks a birth record, a census, a marriage record?" Five completeness checks per person, the direct line by generation, and archive totals (§7a). `--include-suggested` counts suggested claims too. |
+| `fha compare <p-id> [--fact …]` (T C) | "Which birth year is right?" Every record about one fact of one person in one table: what it says, when it was written, who told it, firsthand or not, and which records are copies of one another (§7d). Read-only. |
 | `fha calendar [WHEN]` (T C) | "What happened in the family this month?" Births, marriages, deaths and arrivals on a day, in a month, or in the week ahead (§7b). |
 | `fha repositories [--place l-id] [--year Y] [--record TYPE]` (T C) | "What holds death records for Fairview in 1911?" Archives and record sites for the place, year and kind of record, under the government that held the place then and the country it is in now; cost and how to reach it on every line (§7c). |
 
