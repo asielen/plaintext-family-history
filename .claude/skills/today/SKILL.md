@@ -46,6 +46,7 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
    - **§8 Possible connections:** co-occurrence leads, clearly labeled as leads and never as facts.
    - Mention these only when they hold something to act on, and don't read empty sections aloud:
      - §1b, claims to look at again: parked claims and thin facts to revisit when a new record turns up. Present them as "someday" leads, not chores.
+     - §3b, loose ends: where a line of the family stops (an ancestor with no parents recorded) and people the tree does not yet reach, including ones who share a surname with it. Present them as leads, never as defects: *"Caleb Hartley's line stops with him. Nobody's parents are recorded yet, so a record naming them would take the tree back a generation."*
      - §2, new since last time.
      - §5b, answerable questions.
      - §6b, place candidates. A large one can win step 4's one next action; see step 4.
