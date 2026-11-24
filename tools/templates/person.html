@@ -131,6 +131,19 @@
   </script>
   {% endif %}
 
+  {% if person.heritage %}
+  {#- Where the family came from (chart plan 08-12): one bar per generation,
+      computed from the same ancestors the fan shows, so a person the page may
+      not name never adds a country. Static SVG, no script. -#}
+  <details class="chart heritage-chart-wrap">
+    <summary class="chart-title">Where the family came from</summary>
+    <div class="chart-body">
+      <p class="heritage-note">Each bar is one generation. A coloured part is the share of that generation born in one country, from the birth records we have. "Birthplace unknown" is someone shown whose birthplace is not recorded, and "Not traced" is a place in the tree nobody is recorded in yet.{% if person.heritage_repeats %} A person who appears twice in the tree is counted in both places.{% endif %}</p>
+      {{ person.heritage }}
+    </div>
+  </details>
+  {% endif %}
+
   {% if person.descendants_tree %}
   {#- #115: the interactive descendant explorer, demoted from the home page
       to a per-person opt-in link - native <details> disclosure (works with

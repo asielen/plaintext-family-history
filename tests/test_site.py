@@ -12987,5 +12987,176 @@ class GravesTests(_Base):
         self.assertNotIn('buried Ada Hartley', graves)
 
 
+
+class HeritageChartTests(_Base):
+    """"Where the family came from" on a person page (chart plan 08-12): for
+    each generation back, which countries the ancestors were born in, from
+    accepted birth claims and registered places only. Someone whose birthplace
+    is not recorded is "Birthplace unknown", an empty place is "Not traced",
+    and a living parent adds no country in any build."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-eng0000000', 'Dunmow', 'Dunmow, Essex, England')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-wal0000000', 'Brecon', 'Brecon, Powys, Wales')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-kan0000000', 'Topeka', 'Topeka, Shawnee County, Kansas')")
+        self.conn.execute("INSERT INTO places(id, name) VALUES ('l-nohier0000', 'Nowhere')")
+
+    def _person(self, pid, name, *, born_at=None, living='false', sex='M', year='1850'):
+        self._seed_person(pid, name, surname=name.split()[-1], living=living, sex=sex)
+        if born_at:
+            self._n += 1
+            cid = f'c-b{self._n:09d}'
+            self._seed_claim(cid, 's-1111111111', 'birth', 'born', date_edtf=year,
+                             persons=(pid,), roles={pid: 'child'})
+            self.conn.execute('UPDATE claims SET place_id = ? WHERE id = ?', (born_at, cid))
+
+    def _parent(self, child, parent):
+        self._n += 1
+        cid = f'c-p{self._n:09d}'
+        self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                         persons=(child, parent), roles={child: 'child', parent: 'parent'})
+        self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _rows(self, seed, linked=False):
+        self.conn.commit()
+        builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir, linked=linked)
+        builder.prepare()
+        ahnen, _ = builder._build_ahnentafel(seed, 5, self.out_dir / 'persons',
+                                             private_cards=True)
+        return builder._heritage_rows(ahnen, 5)
+
+    def _family(self):
+        # Kit's father Hugh (England) and mother Kate (Kansas). Hugh's father
+        # Abel was born in a registered place with no country, his mother
+        # Bea in Wales; Kate's parents are not recorded.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-hugh000000', 'Hugh Hartley', born_at='l-eng0000000')
+        self._person('p-kate000000', 'Kate Cole', born_at='l-kan0000000', sex='F')
+        self._person('p-abel000000', 'Abel Hartley', born_at='l-nohier0000')
+        self._person('p-bea0000000', 'Bea Reed', born_at='l-wal0000000', sex='F')
+        self._parent('p-kit0000000', 'p-hugh000000')
+        self._parent('p-kit0000000', 'p-kate000000')
+        self._parent('p-hugh000000', 'p-abel000000')
+        self._parent('p-hugh000000', 'p-bea0000000')
+
+    def _hugh_birth_claims(self):
+        return ("SELECT c.id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = 'p-hugh000000' AND c.type = 'birth'")
+
+    def test_each_generation_counts_its_countries_and_every_row_adds_up(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual([r['label'] for r in rows], ['Parents', 'Grandparents'])
+        self.assertEqual(rows[0]['counts'], {'England': 1, 'United States': 1})
+        self.assertEqual(rows[1]['counts'], {
+            'Birthplace unknown': 1, 'Wales': 1, 'Not traced': 2})
+        for row in rows:
+            self.assertAlmostEqual(
+                sum(n / row['slots'] for n in row['counts'].values()), 1.0, places=9)
+
+    def test_a_us_state_folds_to_the_country_and_a_place_with_no_country_is_unknown(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertIn('United States', rows[0]['counts'])
+        self.assertNotIn('Kansas', rows[0]['counts'])
+        self.assertEqual(rows[1]['counts']['Birthplace unknown'], 1)
+
+    def test_a_person_with_no_birthplace_is_unknown_never_guessed(self):
+        self._family()
+        self.conn.execute(f'UPDATE claims SET place_id = NULL WHERE id IN ({self._hugh_birth_claims()})')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[0]['counts'], {'Birthplace unknown': 1, 'United States': 1})
+
+    def test_a_suggested_birthplace_is_not_used(self):
+        self._family()
+        self.conn.execute(f"UPDATE claims SET status = 'suggested' WHERE id IN ({self._hugh_birth_claims()})")
+        self.assertEqual(self._rows('p-kit0000000')[0]['counts'],
+                         {'Birthplace unknown': 1, 'United States': 1})
+
+    def _siblings_who_married(self):
+        # Alan and Dora are brother and sister, children of Calvin (England)
+        # and Edith (Wales); Kit is their child, so Kit's four grandparent
+        # places are Calvin, Edith, Calvin, Edith.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-alan000000', 'Alan Hartley', born_at='l-eng0000000')
+        self._person('p-dora000000', 'Dora Hartley', born_at='l-eng0000000', sex='F')
+        self._person('p-calv000000', 'Calvin Hartley', born_at='l-eng0000000')
+        self._person('p-edit000000', 'Edith Cole', born_at='l-wal0000000', sex='F')
+        for child in ('p-alan000000', 'p-dora000000'):
+            self._parent(child, 'p-calv000000')
+            self._parent(child, 'p-edit000000')
+        self._parent('p-kit0000000', 'p-alan000000')
+        self._parent('p-kit0000000', 'p-dora000000')
+
+    def test_a_repeated_ancestor_counts_in_every_place_they_fill(self):
+        self._siblings_who_married()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[1]['slots'], 4)
+        self.assertEqual(rows[1]['counts'], {'England': 2, 'Wales': 2})
+
+    def test_a_repeat_also_brings_its_own_parents_into_the_next_row(self):
+        self._siblings_who_married()
+        self._person('p-greg000000', 'Greg Hartley', born_at='l-kan0000000')
+        self._parent('p-calv000000', 'p-greg000000')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[2]['slots'], 8)
+        self.assertEqual(rows[2]['counts']['United States'], 2)
+
+    def test_a_living_parent_is_not_traced_in_the_site_and_the_preview(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        for linked in (False, True):
+            rows = self._rows('p-kit0000000', linked=linked)
+            self.assertEqual(rows[0]['counts'], {'England': 1, 'Not traced': 1}, linked)
+
+    def test_the_shared_page_never_names_a_living_parents_country(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn('Where the family came from', page)
+        self.assertNotIn('United States', page)
+        self.assertNotIn('Kansas', page)
+
+    def test_the_section_is_left_off_when_no_country_is_known(self):
+        self._family()
+        self.conn.execute('UPDATE claims SET place_id = NULL')
+        self._run()
+        self.assertNotIn('Where the family came from', self._read('persons/p-kit0000000.html'))
+
+    def test_the_chart_is_text_labelled_deterministic_and_dash_free(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        svg = re.search(r'<svg class="heritage-chart.*?</svg>', page, re.S).group(0)
+        self.assertIn('<title>England: 1 of 2 parents</title>', svg)
+        self.assertIn('role="img"', svg)
+        self.assertIn('aria-label="Where the family came from.', svg)
+        legend = re.search(r'<ul class="heritage-legend">.*?</ul>', page, re.S).group(0)
+        for name in ('England', 'United States', 'Wales', 'Birthplace unknown', 'Not traced'):
+            self.assertIn(name, legend)
+        self.assertNotIn('–', svg + legend)
+        self.assertNotIn('—', svg + legend)
+        self.assertEqual(svg + legend, site._render_heritage_svg(self._rows('p-kit0000000')))
+
+    def test_countries_draw_biggest_share_first_then_by_name(self):
+        rows = [{'label': 'Parents', 'slots': 2, 'counts': {'Wales': 1, 'England': 1}},
+                {'label': 'Grandparents', 'slots': 4, 'counts': {'Wales': 2, 'Ireland': 1,
+                                                                 'Not traced': 1}}]
+        self.assertEqual(site._heritage_country_order(rows), ['Wales', 'England', 'Ireland'])
+
+
 if __name__ == '__main__':
     unittest.main()
