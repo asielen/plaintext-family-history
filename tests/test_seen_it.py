@@ -1198,6 +1198,38 @@ class FindAGravePartialCaptures(_TempHome):
         self.assertIn('fagphoto:990000201', items)
 
 
+class FilmImagesKnownByPlace(_TempHome):
+    """A film image he already holds is known by where it sits on its film, so
+    the capture add-on can ask whether the image he is capturing now (a page
+    of the same deed) belongs with it: fsfilm:{DGS}:{image number}."""
+
+    # A bare film image's site data, as the capture add-on writes it
+    # (captureFamilySearchImage): `image` is fsImageInfoFrom's answer.
+    IMAGE = {'imageId': 'HRT1-FLM1', 'dgs': '8000011', 'imageNumber': 11, 'imageCount': 689,
+             'filmNumber': '27833', 'catalogTitle': 'Deeds, 1785-1851',
+             'arkUrl': 'https://www.familysearch.org/ark:/61903/3:1:HRT1-FLM1'}
+
+    def test_a_bare_film_image_is_known_by_its_film_and_image_number(self):
+        self.assertEqual(host._keys_from_site_data({'image': self.IMAGE}), ['fsfilm:8000011:11'])
+        # the viewer's nine-digit padding is the same film
+        self.assertEqual(host._keys_from_site_data({'image': dict(self.IMAGE, dgs='008000011')}),
+                         ['fsfilm:8000011:11'])
+
+    def test_a_film_image_whose_place_was_not_found_is_known_by_nothing(self):
+        # fsImageInfoFrom leaves a value it did not find as null, never a guess
+        for image in (dict(self.IMAGE, dgs=None), dict(self.IMAGE, imageNumber=None),
+                      dict(self.IMAGE, imageNumber=True), dict(self.IMAGE, imageNumber='11'),
+                      dict(self.IMAGE, imageNumber=0), dict(self.IMAGE, dgs='DGS 8000011'), 'junk'):
+            self.assertEqual(host._keys_from_site_data({'image': image}), [], image)
+
+    def test_a_filed_film_image_answers_with_its_source(self):
+        archive = self.make_archive()
+        _json(archive / 'documents' / 'deeds' / ('deeds-1785-1851-image-11-site-data_%s.json' % SID_A),
+              {'note': 'x', 'image': self.IMAGE, 'citation': 'x'})
+        items, _ = host.scan_known(host.scan_folders({'archive': str(archive)}))
+        self.assertEqual(items['fsfilm:8000011:11'], {'state': 'filed', 'where': 'deeds', 'sid': SID_A})
+
+
 class NotVendoredYet(unittest.TestCase):
 
     def test_seen_it_is_not_in_the_archive_manifest(self):

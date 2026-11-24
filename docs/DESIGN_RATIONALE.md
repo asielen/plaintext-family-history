@@ -386,6 +386,8 @@ Across a family it also warns when a marriage falls before a spouse's birth or a
 
 **Probably not living (W173).** Lint also names someone still marked `living: unknown` whose records put their birth more than 110 years ago: their own records, their children's births (a parent is at least 12), or a parent's death. The cutoff is 110, not the 130 that `fha metrics` uses, because the two answer different questions. 130 decides on its own that a missing death is a gap, so it has to be certain. 110 only asks: the message names `fha person set-living … false` and he runs it, so his yes is the gate. 110 is also the age `fha gedcom import` already uses for the same flag, so one archive gives one answer. At 130, most undated great-grandparents would stay hidden as "Living Person" on the site. Rejected: flipping the flag automatically, because SPEC §19 keeps `unknown` as the safe default so a mistake over-hides and never shows a living person; and a `living_confirmed:` field, turned down under §5.
 
+**Calendar gap (W172).** A date inside 5 to 14 October 1582 or 3 to 13 September 1752 is flagged unless the claim shows it was converted. `date:` is always today's calendar, so a correctly converted day can land in the gap (25 August 1752 old style is 5 September 1752). The signs are structural: the record's own old-calendar day in `value` that converts to `date:`, a double year (1751/52), or an Old Style, O.S. or Julian marker. Those are what SPEC §11 already asks him to record. Any other note does not quiet it, since a note alone does not show the day was converted (owner, 2026-11-24). Rejected: any note silencing it, which let an unconverted day hide behind an unrelated remark; and reading free text beyond those markers.
+
 ## 16. Search links on the workbench person page
 
 **The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
@@ -443,6 +445,7 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 
 - **Fuzzy feast matching.** The nearest name to a typo is a confident wrong day; an unknown name is refused with the list instead.
 - **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
+- **Keeping the record's own day in `date:` and fixing only the year** (`1732-02-11` for "11 Feb 1731/32"). Many genealogists write old-style English dates this way, but it mixes two calendars in one field, so a Russian register's birth would read 12 days early against a Polish one, and every age, order and anniversary check compares `date:` across people. SPEC §11 keeps `date:` in today's calendar and the record's words in `value`.
 - **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.
 
 ---
@@ -459,6 +462,8 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **The weakest tie on any route.** A person reached through both a story and a certificate would fade although the certificate settles them.
 - **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
 - **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
+
+**How it is drawn.** Only `low` fades (medium is the ordinary single-source case, and fading it would fade most of most trees). Fading alone cannot be the signal: a faded card prints as a grey one and is lost to a colour-blind reader, so the faded card also gets a dotted outline, and the tie is thin and dash-dot (the explorer already uses solid, long dash and dots for the kinds of tie). A key sentence under the chart says what it means, and appears only when something is faded. A Private card is never faded, and its ties count as unrated, so nobody behind it fades because of them: either would tell a visitor something about a living person's records.
 
 ---
 
@@ -478,3 +483,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Matching by name and birth year alone.** Two cousins of one name are common in a family tree; the result would be a silent wrong merge.
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
+
+---
+
+## 22. Surname pages: feminine forms join only when the masculine form is there
+
+**The rule.** The family site gives each family name a page. Accent and case spellings share one page (Müller, Muller). A Polish feminine form (Kowalska, Wiśniewska) or a Czech one (Nováková) joins the masculine page only when the masculine form is also carried by someone the site shows. A note's `also:` list merges any other spelling.
+
+**Why.** Kowalska and Kowalski are one family name in two grammatical forms, so a relative looking for the family wants both on one page. But a tree that holds only Kowalskas should not have its page renamed after a man who is not in it, and a guess about which spellings are "the same" stays out of the rule: anything else is merged by hand, in the human's own note. A name carried only by people the shared site hides gets no page at all, because an empty page would tell visitors the name exists, and so that a living person carries it.
+
+**Rejected.**
+
+- **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
+- **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
+- **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
