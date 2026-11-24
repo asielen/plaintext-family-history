@@ -807,7 +807,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "5d8523f1c8f680d20d59844f96a459b52209f5023c32dd35fe69698869aa18e5",
+      "sha256": "61816e450d4753251494c57401284381c9b1c740057d45de7d5a5962ba1e6c0d",
       "spec_version": "2.29",
       "src": "tools/gedcom_import.py"
     },
@@ -1413,7 +1413,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "98567748212c70f1dc248daa8cc45502d31ca394d2a360cae812c34a98af149f",
+      "sha256": "8f0dcc8dab5cb5b05d9832689797f31a923d7fe51bbb020e75814e1d5a37d152",
       "spec_version": "2.29"
     },
     {
@@ -1480,14 +1480,14 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "9d3668de186641556de48ed6ad98372ec81b0da99cb10a3a24b3f259704fca4a",
+      "sha256": "1f6e82a2321bd42830dec54c619eb65d4471e3537dd70d69bca76825c2ff0fc2",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "f62dc9f53a488277fecb4ec9ec117c028e6396319991e64c212e0d9bf5e946d3",
+      "sha256": "139808a49ef184a51a66d0f2f9cc920a15ec6dd55dd261aecc58fc85ebf52eea",
       "spec_version": "2.29"
     },
     {
