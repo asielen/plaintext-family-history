@@ -35,9 +35,9 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    fha relate <p-a> <p-b>             # is there already a blood, marriage or social tie between them?
    fha find --sounds-like "<surname>"  # a third record, spelled differently, that belongs in the comparison?
    fha report --section possible-duplicates  # why the report flagged them, when it did
-   fha lint                           # a date that cannot be true for one person (W163 to W165)
+   fha lint                           # dates that cannot all be true (W163 to W170)
    ```
-   Read `fha lint` for both people: a finding there that joining them would make (a death before a birth, a life over 120 years) is evidence against the merge.
+   **Check that joining them would not make an impossible person, and stop if it would.** Put each record's birth, death and marriages beside the other's and beside the births of each one's children: one dying before the other married, had a child, or turns up in a later record means two people (a widower's two wives of one name look exactly like this). `fha report` already keeps such pairs off its list and counts them as "cannot be one person", and `fha lint` names any such date already on either record. If the report or lint says merging would make an impossible person, or the dates side by side show it, say so and do not propose the merge.
    Read both records directly for their vitals, `name_variants`, and existing claims. A name that only sounds alike is a reason to look, never evidence for the merge.
 
 2. **Lay out the evidence for and against, plainly.** Give the human a two-column read he can judge:
