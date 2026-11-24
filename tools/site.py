@@ -9545,21 +9545,29 @@ class _SiteBuilder:
 
     def _kinship_context(self) -> dict:
         """Once per build: the anchor, the filtered kinship graph and the
-        family-tree numbers. Numbers are the folders' own (from `root_person`
-        and `root_generation`), whoever the sentence is relative to."""
+        family-tree numbers.
+
+        The number and the sentence never disagree: "Frank Hartley's
+        grandmother" carries Frank's number for her (5), not one counted from
+        somebody else. When the anchor is `root_person` the numbers are the
+        folders' own (`root_generation` sets where the root sits); when the
+        home page is centred on someone else, or a hidden living hub has
+        handed off to an ancestor, they count from that person as no. 1."""
         if self._kinship is not None:
             return self._kinship
         ok = None if self.linked else self._kinship_edge_ok
         numbers: dict[str, int] = {}
         root = normalize_id(str(self.fha_config.get('root_person', '')))
-        if root in self.person_meta:
+        anchor = self._kinship_anchor()
+        if anchor and anchor == root:
             try:
                 seed_pos = root_generation_seed_position(resolve_root_generation(self.fha_config))
                 numbers = build_ahnentafel_map(self.conn, root, root_position=seed_pos, edge_ok=ok)
             except FhaConfigError as exc:
                 self.messages.append(
                     f'WARNING: {exc} Person pages show no family-tree numbers until it is fixed.')
-        anchor = self._kinship_anchor()
+        elif anchor:
+            numbers = build_ahnentafel_map(self.conn, anchor, edge_ok=ok)
         self._kinship = {
             'anchor': anchor, 'root': root, 'numbers': numbers,
             'graph': kin_graph(self.conn, ok) if anchor else None,
@@ -9577,7 +9585,7 @@ class _SiteBuilder:
         wife"), never as "stepmother". The note ("other parent not recorded")
         is printed only in the private builds."""
         kc = self._kinship_context()
-        number = kc['numbers'].get(pid) if pid != kc['root'] else None
+        number = kc['numbers'].get(pid) if pid != kc['anchor'] else None
         lead = None
         note = None
         anchor = kc['anchor']
@@ -9587,7 +9595,7 @@ class _SiteBuilder:
                 life=lambda p: person_life_dates(self.conn, p, kc['life_cache']))
             if rel['kind'] != 'none':
                 words = rel['path'] if (rel['kind'] == 'step' and rel['note']) else rel['words']
-                if self.workbench:
+                if self.workbench and anchor == kc['root']:
                     lead = f'Your {_escape(words)}'
                 else:
                     meta = self.person_meta[anchor]

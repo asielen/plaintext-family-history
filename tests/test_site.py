@@ -12849,13 +12849,32 @@ class PersonKinshipLineTests(_Base):
         self._run()
         self.assertIn('ancestor no. 17', self._kin(self.GGM))
 
-    def test_home_person_sets_the_words_root_person_sets_the_number(self):
+    def test_home_person_sets_both_the_words_and_the_number(self):
+        # The sentence and the number must not disagree: "Frank Hartley's
+        # grandmother" is Frank's no. 5, not the root person's no. 9.
         self._seed_line()
         self._fha(home='P-bbbbbbbbbb')
         self._run()
         kin = self._kin(self.GGM)
         self.assertIn("Frank Hartley</a>'s grandmother", kin)
-        self.assertIn('ancestor no. 9', kin)
+        self.assertIn('ancestor no. 5', kin)
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
+        self.assertIsNone(self._kin(self.F))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+
+    def test_workbench_names_the_anchor_when_root_person_is_missing(self):
+        # A mistyped root_person: the line is relative to the home person,
+        # so it must name them, not say "Your".
+        self._seed_line()
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-zzzzzzzzzz\nsite:\n  home_person: P-bbbbbbbbbb\n',
+            encoding='utf-8')
+        self._run(linked=True, workbench=True)
+        kin = self._kin(self.GGM)
+        self.assertNotIn('Your', kin)
+        self.assertIn('grandmother', kin)
+        self.assertIn('Frank Hartley', kin)
 
     def test_workbench_says_your(self):
         self._seed_line()
@@ -12869,6 +12888,10 @@ class PersonKinshipLineTests(_Base):
         self._run()
         self.assertIn("Frank Hartley</a>'s grandmother", self._kin(self.GGM))
         self.assertIn("Frank Hartley</a>'s father", self._kin(self.GF))
+        # The number follows the person the sentence names, so it never
+        # counts generations from the hidden living hub.
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
         self._assert_nowhere(b'Hubert')
 
     def test_a_living_person_on_the_walk_is_passed_through_never_named(self):
@@ -12959,6 +12982,28 @@ class AhnentafelEdgeFilterTests(_Base):
         got = self.build(self.conn, 'p-aaaaaaaaaa',
                          edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
         self.assertEqual(got, {'p-aaaaaaaaaa': 1})
+
+    def test_refusing_the_father_leaves_an_unsexed_mother_in_her_own_slot(self):
+        # The shared site must give her the same number as the folders (3),
+        # not the father's number (2) just because his tie is hidden.
+        from _lib import build_ahnentafel_map
+        self._seed_person('p-aaaaaaaaaa', 'p-aaaaaaaaaa', sex='M')
+        self._seed_person('p-bbbbbbbbbb', 'p-bbbbbbbbbb', sex='M')
+        self._seed_person('p-cccccccccc', 'p-cccccccccc', sex='U')
+        self._seed_person('p-dddddddddd', 'p-dddddddddd', sex='F')
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-aaaaaaaaaa', 'p-cccccccccc'),
+                                   ('c-3333333333', 'p-cccccccccc', 'p-dddddddddd')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        full = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa')
+        got = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa',
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(full['p-cccccccccc'], 3)
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1, 'p-cccccccccc': 3, 'p-dddddddddd': 7})
 
     def test_one_allowed_claim_keeps_the_parent(self):
         self._chain()

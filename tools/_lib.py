@@ -19264,8 +19264,9 @@ def build_ahnentafel_map(
     same row `kin_graph` hands its filter) and a False edge is not walked, so
     a shared page's family-tree number is never worked out through a tie the
     page may not show. A parent kept by one allowed claim still counts when
-    another claim for the same tie is refused. None (the default) walks every
-    edge, exactly as before.
+    another claim for the same tie is refused, and a refused parent still holds
+    their slot, so everyone the walk reaches keeps the number the unfiltered
+    walk gives them. None (the default) walks every edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19321,6 +19322,7 @@ def build_ahnentafel_map(
 
     while queue:
         pid, n = queue.popleft()
+        allowed: set[str] | None = None
         if edge_ok is None:
             parent_rows = conn.execute(
                 f"""
@@ -19350,20 +19352,26 @@ def build_ahnentafel_map(
                 """,
                 (pid, *social),
             )
+            # A hidden tie still holds its slot: a mother whose sex is unset
+            # keeps the number the folders give her (3) when only the father's
+            # tie is refused, instead of sliding into his slot (2). Slots are
+            # chosen over every genetic parent; only allowed ones are walked.
             cols = [d[0] for d in cur.description]
-            kept: dict[str, str] = {}
+            every: dict[str, str] = {}
+            allowed = set()
             for raw in cur.fetchall():
                 row = dict(zip(cols, tuple(raw.values()) if isinstance(raw, dict) else tuple(raw)))
+                every.setdefault(row['other_id'], row['sex'] or 'U')
                 if edge_ok(row):
-                    kept.setdefault(row['other_id'], row['sex'] or 'U')
-            parents = sorted(kept.items())
+                    allowed.add(row['other_id'])
+            parents = sorted(every.items())
         if not parents:
             continue
 
         if len(parents) == 1:
             p_pid, p_sex = parents[0]
             pos = 2 * n if p_sex != 'F' else 2 * n + 1
-            if p_pid not in pid_to_pos:
+            if p_pid not in pid_to_pos and (allowed is None or p_pid in allowed):
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
                 if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
@@ -19404,7 +19412,7 @@ def build_ahnentafel_map(
             remaining = [e for e in parents if e[0] != father]
             mother = min(remaining, key=_mother_rank)[0]
             for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
-                if pp not in pid_to_pos:
+                if pp not in pid_to_pos and (allowed is None or pp in allowed):
                     pid_to_pos[pp] = pos
                     queue.append((pp, pos))
 
