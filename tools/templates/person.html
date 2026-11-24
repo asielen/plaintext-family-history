@@ -110,13 +110,13 @@
   {#- Five generations make a big chart, so it gets the home pedigree's pan
       and zoom once the reader opens it: a closed <details> has no width to
       fit to. The plain SVG works with no script at all. fha-tree.js loads
-      once per page: the descendant explorer below loads it when it is
+      once per page: the family explorer below loads it when it is
       there, and the wrap runs on a click, after the page has loaded. -#}
   <details class="chart">
     <summary class="chart-title">Ancestor fan</summary>
     <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div></div>
   </details>
-  {% if not person.descendants_tree %}<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>{% endif %}
+  {% if not person.family_tree %}<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>{% endif %}
   <script>
   (function () {
     var el = document.getElementById('fha-fan');
@@ -131,17 +131,18 @@
   </script>
   {% endif %}
 
-  {% if person.descendants_tree %}
-  {#- #115: the interactive descendant explorer, demoted from the home page
+  {% if person.family_tree %}
+  {#- #115: the interactive family explorer (his ancestors above, his
+      descendants below, chart plan 08-10), demoted from the home page
       to a per-person opt-in link - native <details> disclosure (works with
       no script; the interactive chart inside still needs one, same as
       before). A native <summary> click always toggles it open/closed even
       with JS disabled - the arrow-styled affordance below just names what
       opening it shows. -#}
   <details class="chart fha-tree-explorer">
-    <summary class="chart-title">See descendants of {{ person.name }} &rarr;</summary>
+    <summary class="chart-title">See {{ person.name }}'s family &rarr;</summary>
     <div class="chart-body">
-      {% with tree = person.descendants_tree %}{% include "_tree.html" %}{% endwith %}
+      {% with tree = person.family_tree %}{% include "_tree.html" %}{% endwith %}
     </div>
   </details>
   {% endif %}

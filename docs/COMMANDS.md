@@ -337,7 +337,7 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | Argument | What it does |
 |---|---|
 | `p-id` | Seed person for traversal. |
-| `--mode` `{ancestors,descendants,fan}` | ancestors: pedigree BFS; descendants: all descendants + in-law spouses; fan: all edge types (default 2 hops). |
+| `--mode` `{ancestors,descendants,fan,hourglass}` | ancestors: pedigree BFS; descendants: all descendants + in-law spouses; fan: all edge types (default 2 hops); hourglass: ancestors above and descendants below, with spouses. |
 | `--generations` `N` | Maximum generations / hops (default: unlimited; fan default: 2). |
 | `--format` `{json,dot,html}` | Output format (default: json). html is not available here; run `fha site` for a browsable tree. |
 | `--out` `FILE` | Write output to FILE instead of stdout. |

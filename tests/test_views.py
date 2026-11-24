@@ -726,6 +726,19 @@ class TreeCaseTests(_ChartCaseIndex):
                     dot = self._tree(case['seed'], mode, 'dot')
                     self.assertTrue(dot.startswith('digraph'))
 
+    def test_the_command_draws_an_hourglass_c16(self) -> None:
+        import argparse
+        import json
+        for register, argv in ((views.register, ['views', 'tree']),
+                               (views.register_standalone, ['tree'])):
+            parser = argparse.ArgumentParser()
+            register(parser.add_subparsers())
+            args = parser.parse_args(argv + ['p-0000000001', '--mode', 'hourglass'])
+            self.assertEqual(args.mode, 'hourglass')
+        case = self._index_case('C16')
+        tree = json.loads(self._tree(case['people']['a'], 'hourglass', 'json'))
+        self.assertEqual(tree['mode'], 'hourglass')
+
     def test_a_person_who_is_their_own_ancestor_ends_the_walk_in_c12(self) -> None:
         import json
         case = self._index_case('C12')
@@ -934,6 +947,61 @@ class TreeFamilyKeyTests(unittest.TestCase):
                         self.assertLessEqual(set(members), ids, edge)
                         if edge['type'] == 'spouse':
                             self.assertEqual(set(members), {edge['from'], edge['to']})
+
+
+class TreeHourglassTests(unittest.TestCase):
+    """One tree with a person's ancestors above and their descendants below
+    (chart plan 08-10): he sees where Alan came from and who came after him
+    in one picture. Brothers and sisters are not in it, as on any
+    hourglass chart: the walk never turns back down from an ancestor."""
+
+    setUp = TreeFamilyKeyTests.setUp
+    tearDown = TreeFamilyKeyTests.tearDown
+    _case = TreeFamilyKeyTests._case
+    _fam = TreeFamilyKeyTests._fam
+    _keys = staticmethod(TreeFamilyKeyTests._keys)
+
+    def _hourglass(self, seed_role: str, generations: int | None = None) -> dict:
+        import json
+        seed = self.p[seed_role]
+        nodes, edges = views._traverse_tree(self.conn, seed, 'hourglass', generations)
+        return json.loads(views._tree_to_json(seed, 'hourglass', nodes, edges))
+
+    def test_ancestors_and_descendants_but_no_brothers_or_sisters_c16(self) -> None:
+        self._case('C16')
+        p = self.p
+        tree = self._hourglass('a')
+        self.assertEqual(tree['mode'], 'hourglass')
+        ids = [n['p_id'] for n in tree['nodes']]
+        self.assertEqual(ids[0], p['a'])
+        self.assertEqual(len(ids), len(set(ids)))
+        for who in ('gf', 'gm', 'a_wife', 'x', 'y', 'k'):
+            self.assertIn(p[who], ids, who)
+        # Beth is Alan's sister and Dan her husband: not on Alan's hourglass.
+        self.assertNotIn(p['b'], ids)
+        self.assertNotIn(p['b_husband'], ids)
+        # Ancestors come before descendants.
+        self.assertLess(ids.index(p['gf']), ids.index(p['x']))
+        keys = self._keys(tree)
+        self.assertEqual(keys[('parent', p['a'], p['gf'])], self._fam('gf', 'gm'))
+        self.assertEqual(keys[('child', p['a'], p['x'])], self._fam('a', 'a_wife'))
+        self.assertNotIn(('child', p['gf'], p['b']), keys)
+
+    def test_generations_bound_both_sides_c10(self) -> None:
+        self._case('C10')
+        p = self.p
+        ids = {n['p_id'] for n in self._hourglass('man2', 1)['nodes']}
+        # One generation up (his parents) and one down (his son, with the
+        # son's mother); his grandson and great-grandfather are past the bound.
+        for who in ('man2', 'man3', 'wife3', 'man1', 'wife2'):
+            self.assertIn(p[who], ids, who)
+        for who in ('man4', 'seed', 'mother'):
+            self.assertNotIn(p[who], ids, who)
+
+    def test_a_person_who_is_their_own_ancestor_still_ends_c12(self) -> None:
+        self._case('C12')
+        ids = {n['p_id'] for n in self._hourglass('a')['nodes']}
+        self.assertEqual(ids, set(self.p.values()))
 
 
 class ChartCaseShapeTests(_ChartCaseIndex):

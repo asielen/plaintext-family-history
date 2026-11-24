@@ -7,7 +7,7 @@ views.py - fha views: generate view files from the index.
   fha views summary [P-id | --all-curated]
   fha views draft-queue [P-id | --all-curated] [--format md|html]
   fha views brackets [--fix | --fix-promote | --realign] [--generations N] [--dry-run] [--yes]
-  fha views tree <P-id> --mode ancestors|descendants|fan [--generations N] [--format json|dot]
+  fha views tree <P-id> --mode ancestors|descendants|fan|hourglass [--generations N] [--format json|dot]
   fha views places [--dry-run]
   fha views clean [--dry-run]
   fha views refresh [--format md|html|both]
@@ -3749,10 +3749,28 @@ def _traverse_tree(
     starts.  Any P-id already in visited is never re-enqueued, so even a
     self-referential edge or cousin-marriage cycle terminates cleanly.
 
+        'hourglass'   - his ancestors above and his descendants below in one
+                        tree: the 'ancestors' walk and the 'descendants'
+                        walk from the same seed, merged (seed first, then
+                        ancestors, then descendants). An ancestor's other
+                        children are never followed, so the seed's brothers
+                        and sisters are not in it. max_hops bounds each
+                        direction.
+
     Every parent, child and spouse edge gets a `family` key
     (`_family_keys_of`), so a chart can keep the children of a first and a
     second marriage apart.
     """
+    if mode == 'hourglass':
+        nodes, edges = _traverse_tree(conn, seed_pid, 'ancestors', max_hops)
+        down_nodes, down_edges = _traverse_tree(conn, seed_pid, 'descendants', max_hops)
+        for pid, node in down_nodes.items():
+            nodes.setdefault(pid, node)
+        # The ancestors walk holds only `parent` edges and the descendants
+        # walk only `child` and `spouse` edges, so no key is in both.
+        edges.update(down_edges)
+        return nodes, edges
+
     pids_in_order: list[str] = [seed_pid]
     pids_seen: set[str] = {seed_pid}
     edges: dict[tuple, dict] = {}
@@ -3971,7 +3989,7 @@ def run_tree(
         return _views_result(EXIT_FAILURE)
 
     if not mode:
-        print('ERROR: --mode ancestors|descendants|fan is required.', file=sys.stderr)
+        print('ERROR: --mode ancestors|descendants|fan|hourglass is required.', file=sys.stderr)
         return _views_result(EXIT_FAILURE)
 
     # 'html' is accepted by argparse (so the refusal can explain itself in
@@ -6923,9 +6941,10 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     )
     tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument(
-        '--mode', choices=['ancestors', 'descendants', 'fan'], required=True,
+        '--mode', choices=['ancestors', 'descendants', 'fan', 'hourglass'], required=True,
         help='ancestors: pedigree BFS; descendants: all descendants + in-law spouses; '
-             'fan: all edge types (default 2 hops).',
+             'fan: all edge types (default 2 hops); '
+             'hourglass: ancestors above and descendants below, with spouses.',
     )
     tr.add_argument(
         '--generations', type=int, metavar='N',
@@ -7127,7 +7146,7 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
 
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
-    tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
+    tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan', 'hourglass'], required=True)
     tr.add_argument('--generations', type=int, metavar='N')
     tr.add_argument('--format', choices=['json', 'dot', 'html'], default='json', dest='format')
     tr.add_argument('--out', metavar='FILE')
