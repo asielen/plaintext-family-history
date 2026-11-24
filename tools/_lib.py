@@ -21049,23 +21049,47 @@ BIRTH_SUGGESTION_LATEST_YEAR = 1935
 BIRTH_SUGGESTION_MAX_WIDTH = 35
 
 
-def _relative_birth_year(ctx: dict, pid: str) -> int | None:
-    """The year a relative was born, for working out someone else's birth:
-    the midpoint of their accepted birth or baptism claims, or failing that
-    their own provisional `birth:` estimate; never a merely suggested claim,
-    because a guess should rest on facts the family has reviewed."""
-    own = _own_vital_claims(ctx, pid, ('accepted',), ('birth', 'baptism'))
-    los = [c['y_lo'] for _cid, c in own if c['y_lo'] is not None]
-    his = [c['y_hi'] for _cid, c in own if c['y_hi'] is not None]
-    if los and his:
-        return (min(los) + max(his)) // 2
-    edtf = (ctx['persons'].get(pid) or {}).get('birth')
-    if edtf and is_valid_edtf(str(edtf)):
-        lo, hi = edtf_bounds(str(edtf))
-        y_lo, y_hi = _claim_year(lo, hi, edtf)
-        if y_lo is not None and y_hi is not None:
-            return (y_lo + y_hi) // 2
+def _relative_birth_window(ctx: dict, pid: str) -> dict | None:
+    """When a relative was born, for working out someone else's birth, as
+    {'lo', 'hi', 'event'}: the span their accepted birth claims allow, so a
+    husband recorded as born `1840/1860` counts as 1840 to 1860, never as an
+    exact 1850. With no dated birth claim, an accepted baptism says only that
+    they were born by then (an adult baptism says little of age), so `lo` is
+    None. Never a suggested claim or a provisional `birth:` estimate, which
+    may be a guess this very report offered yesterday: a guess is never built
+    on another guess."""
+    births = [c for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',))
+              if c['y_lo'] is not None and c['y_hi'] is not None]
+    if births:
+        # "1840~" reads back as "about 1840", not "between 1839 and 1841".
+        dates = {c['date'] for c in births}
+        about = (int(next(iter(dates))[:4]) if len(dates) == 1
+                 and re.fullmatch(r'\d{4}~', next(iter(dates))) else None)
+        return {'lo': min(c['y_lo'] for c in births),
+                'hi': max(c['y_hi'] for c in births), 'event': 'birth', 'about': about}
+    baptisms = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('baptism',))
+                if c['y_hi'] is not None]
+    if baptisms:
+        return {'lo': None, 'hi': min(baptisms), 'event': 'baptism'}
     return None
+
+
+def _genetic_kin(conn: sqlite3.Connection, pid: str, rel: str) -> list[str]:
+    """A person's genetic parents (`rel='parent'`) or children (`'child'`) by
+    accepted relationship, read from the person's own rows so the lookup
+    uses the index. Step, adoptive and other social parents are left out: a
+    stepmother's age says nothing about when her stepson was born."""
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    marks = ','.join('?' * len(social))
+    out: list[str] = []
+    for r in conn.execute(
+            'SELECT r.other_id FROM relationships r WHERE r.person_id = ? AND r.rel = ? '
+            "AND COALESCE(LOWER((SELECT subtype FROM claims WHERE id = r.claim_id)), '') "
+            f'NOT IN ({marks}) ORDER BY r.other_id', (pid, rel, *social)):
+        other = normalize_id(str(r[0]))
+        if other != pid and other not in out:
+            out.append(other)
+    return out
 
 
 def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict | None:
@@ -21080,95 +21104,113 @@ def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict |
 
     Offsets are the rules of thumb in genealogy-mcp's `estimate.py` (MIT),
     widened for fathers. Each basis gives a range for this person's birth year
-    and the answer is their intersection:
+    and the answer is their intersection. A relative's birth is a span (see
+    `_relative_birth_window`), and each offset is applied to its ends:
 
-      mother born M        -> M+18 .. M+45        father (or unknown) F -> F+18 .. F+50
-      eldest child C       -> C-45 .. C-18  (a father: C-50 .. C-18)
-      each spouse S        -> S-8 .. S+8
-      siblings, as one     -> earliest-8 .. latest+8
+      mother born M         -> M+18 .. M+45     father (or unknown) F -> F+18 .. F+50
+      eldest child C        -> C-45 .. C-18  (a father: C-50 .. C-18)
+      each spouse S         -> S-8 .. S+8
+      full siblings, as one -> earliest-8 .. latest+8
 
-    None when: the person has any birth reading (accepted or suggested birth
-    or baptism claim, or a provisional `birth:`), is `living: true`, is merged,
-    no relative has an accepted birth year, the bases disagree (an empty
-    intersection is a lint matter, not a guess to offer), the range is wider
-    than BIRTH_SUGGESTION_MAX_WIDTH years, or ends after
-    BIRTH_SUGGESTION_LATEST_YEAR.
+    Siblings are only those with exactly the same known parents: a half-sister
+    from a second marriage can be twenty years younger. The person's own
+    accepted records cap the range: someone in an 1880 census, or who died in
+    1866, was born by then (kind `record` in the basis when it narrows).
+
+    None when: the person has a dated birth reading (accepted or suggested
+    birth or baptism claim, or a provisional `birth:`), is `living: true`, is
+    merged or unnamed, no relative has an accepted birth, the range has no
+    earliest year, the bases disagree (an empty intersection is a lint
+    matter, not a guess to offer), the range is wider than
+    BIRTH_SUGGESTION_MAX_WIDTH years, or ends after BIRTH_SUGGESTION_LATEST_YEAR.
 
     Returns {'person', 'lo', 'hi', 'edtf', 'basis': [{'kind', 'relative',
-    'year', ...}]} with kind one of mother, father, parent, child, spouse,
-    siblings (siblings carry `year_to`; `relative` is a list of p-ids there).
+    'year', 'year_to', 'event'}]} with kind one of mother, father, parent,
+    child, spouse, siblings, record. `year`..`year_to` is the relative's span
+    (`year` None when only a baptism dates them: born by `year_to`);
+    `relative` is a list of p-ids for siblings, None for record.
     """
     pid = normalize_id(str(pid))
     person = ctx['persons'].get(pid)
-    if person is None or (person.get('living') or '') == 'true':
+    if (person is None or (person.get('living') or '') == 'true'
+            or is_placeholder_name(person.get('name'))):
         return None
-    if person.get('birth') or _own_vital_claims(
-            ctx, pid, ('accepted', 'suggested'), ('birth', 'baptism')):
+    if person.get('birth') or any(
+            c['y_lo'] is not None or c['y_hi'] is not None
+            for _cid, c in _own_vital_claims(
+                ctx, pid, ('accepted', 'suggested'), ('birth', 'baptism'))):
         return None
-    social = sorted(SOCIAL_PARENT_SUBTYPES)
-    marks = ','.join('?' * len(social))
-    genetic = ("AND COALESCE(LOWER((SELECT subtype FROM claims WHERE id = r.claim_id)), '') "
-               f'NOT IN ({marks})')
 
-    def related(sql: str, *args: Any) -> list[str]:
-        out: list[str] = []
-        for r in conn.execute(sql, args):
-            other = normalize_id(str(r[0]))
-            if other in ctx['persons'] and other != pid and other not in out:
-                out.append(other)
-        return out
+    def known(ids: list[str]) -> list[str]:
+        return [i for i in ids if i in ctx['persons'] and i != pid]
 
-    parents = related(
-        f"SELECT r.other_id FROM relationships r WHERE r.person_id = ? "
-        f"AND r.rel = 'parent' {genetic} ORDER BY r.other_id", pid, *social)
-    children = related(
-        f"SELECT r.person_id FROM relationships r WHERE r.other_id = ? "
-        f"AND r.rel = 'parent' {genetic} ORDER BY r.person_id", pid, *social)
-    spouses = related(
-        "SELECT r.other_id FROM relationships r WHERE r.person_id = ? "
-        "AND r.rel = 'spouse' ORDER BY r.other_id", pid)
+    parents = known(_genetic_kin(conn, pid, 'parent'))
+    children = known(_genetic_kin(conn, pid, 'child'))
+    spouses = known([normalize_id(str(r[0])) for r in conn.execute(
+        "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? "
+        "AND rel = 'spouse' ORDER BY other_id", (pid,))])
     siblings: list[str] = []
+    own_parents = set(parents)
     for parent in parents:
-        for sib in related(
-                f"SELECT r.person_id FROM relationships r WHERE r.other_id = ? "
-                f"AND r.rel = 'parent' {genetic} ORDER BY r.person_id", parent, *social):
-            if sib not in siblings and sib not in parents:
+        for sib in known(_genetic_kin(conn, parent, 'child')):
+            if (sib not in siblings and sib not in own_parents
+                    and set(_genetic_kin(conn, sib, 'parent')) == own_parents):
                 siblings.append(sib)
 
     def sex_of(rid: str) -> str:
         return str(ctx['persons'][rid].get('sex') or '').upper()
 
+    def basis(kind: str, rid: Any, w: dict) -> dict:
+        return {'kind': kind, 'relative': rid, 'year': w['lo'], 'year_to': w['hi'],
+                'event': w['event'], 'about': w.get('about')}
+
+    def shift(year: int | None, by: int) -> int | None:
+        return None if year is None else year + by
+
     bases: list[dict] = []
-    ranges: list[tuple[int, int]] = []
+    ranges: list[tuple[int | None, int]] = []
     for rid in parents:
-        year = _relative_birth_year(ctx, rid)
-        if year is None:
+        w = _relative_birth_window(ctx, rid)
+        if w is None:
             continue
         mother = sex_of(rid) == 'F'
         kind = 'mother' if mother else ('father' if sex_of(rid) == 'M' else 'parent')
-        bases.append({'kind': kind, 'relative': rid, 'year': year})
-        ranges.append((year + 18, year + (45 if mother else 50)))
-    kids = sorted((y, rid) for rid in children
-                  if (y := _relative_birth_year(ctx, rid)) is not None)
+        bases.append(basis(kind, rid, w))
+        ranges.append((shift(w['lo'], 18), w['hi'] + (45 if mother else 50)))
+    kids = sorted((w['hi'], rid, w) for rid in children
+                  if (w := _relative_birth_window(ctx, rid)) is not None)
     if kids:
-        year, rid = kids[0]
-        bases.append({'kind': 'child', 'relative': rid, 'year': year})
-        ranges.append((year - (50 if sex_of(pid) == 'M' else 45), year - 18))
+        _y, rid, w = kids[0]
+        bases.append(basis('child', rid, w))
+        ranges.append((shift(w['lo'], -(50 if sex_of(pid) == 'M' else 45)), w['hi'] - 18))
     for rid in spouses:
-        year = _relative_birth_year(ctx, rid)
-        if year is not None:
-            bases.append({'kind': 'spouse', 'relative': rid, 'year': year})
-            ranges.append((year - 8, year + 8))
-    sibs = sorted((y, rid) for rid in siblings
-                  if (y := _relative_birth_year(ctx, rid)) is not None)
+        w = _relative_birth_window(ctx, rid)
+        if w is not None:
+            bases.append(basis('spouse', rid, w))
+            ranges.append((shift(w['lo'], -8), w['hi'] + 8))
+    sibs = [(rid, w) for rid in siblings if (w := _relative_birth_window(ctx, rid)) is not None]
     if sibs:
-        bases.append({'kind': 'siblings', 'relative': [rid for _y, rid in sibs],
-                      'year': sibs[0][0], 'year_to': sibs[-1][0]})
-        ranges.append((sibs[0][0] - 8, sibs[-1][0] + 8))
-    if not ranges:
+        sibs.sort(key=lambda t: (t[1]['hi'], t[0]))
+        los = [w['lo'] for _r, w in sibs]
+        earliest = None if None in los else min(los)
+        latest = max(w['hi'] for _r, w in sibs)
+        events = {w['event'] for _r, w in sibs}
+        bases.append({'kind': 'siblings', 'relative': [r for r, _w in sibs],
+                      'year': earliest, 'year_to': latest,
+                      'event': events.pop() if len(events) == 1 else 'mixed'})
+        ranges.append((shift(earliest, -8), latest + 8))
+    lows = [lo for lo, _hi in ranges if lo is not None]
+    if not lows:
         return None
-    lo = max(r[0] for r in ranges)
-    hi = min(r[1] for r in ranges)
+    lo = max(lows)
+    hi = min(h for _lo, h in ranges)
+    # Born by the first year any of the person's own accepted records allows.
+    own_years = [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, ('accepted',))
+                 if c['y_hi'] is not None]
+    if own_years and min(own_years) < hi:
+        hi = min(own_years)
+        bases.append({'kind': 'record', 'relative': None, 'year': hi, 'year_to': hi,
+                      'event': 'record'})
     if lo > hi or hi - lo > BIRTH_SUGGESTION_MAX_WIDTH or hi > BIRTH_SUGGESTION_LATEST_YEAR:
         return None
     return {'person': pid, 'lo': lo, 'hi': hi, 'edtf': f'{lo}/{hi}', 'basis': bases}

@@ -1630,35 +1630,70 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
     return len(waiting)
 
 
+def _birth_span_words(event: str, lo: int | None, hi: int, plural: bool = False,
+                      about: int | None = None) -> str:
+    """When one relative (or a group) was born or baptised, as the end of a
+    sentence: 'was born in 1840', 'was born about 1840', 'was born between
+    1838 and 1842', 'was baptised in 1840'. A range stays a range so a vague
+    date never reads as an exact one."""
+    verb = 'were' if plural else 'was'
+    if event == 'birth' and about is not None and not plural:
+        return f'{verb} born about {about}'
+    if event == 'birth':
+        if lo == hi:
+            return f'{verb} born in {hi}'
+        return (f'{verb} born {lo} to {hi}' if plural
+                else f'{verb} born between {lo} and {hi}')
+    if event == 'baptism' and not plural:
+        return f'{verb} baptised in {hi}'
+    if lo is None:
+        return f'{verb} born or baptised by {hi}'
+    return f'{verb} born or baptised {lo} to {hi}'
+
+
 def _birth_basis_clauses(basis: list[dict], sex: str, persons: dict) -> list[str]:
     """The relatives a birth suggestion rests on, in a family's words: ['her
-    husband was born in 1840', 'her eldest child in 1871']. The first clause
-    carries the verb; later ones only the year."""
+    husband was born in 1840', 'her eldest child in 1871']. A clause drops
+    'was born' when the one before it carries it. With two spouses each is
+    named, so the line never reads 'her husband ... and her husband ...'."""
     poss = {'F': 'her', 'M': 'his'}.get(sex, 'their')
+    subject = {'F': 'she', 'M': 'he'}.get(sex, 'they')
+    order = {'spouse': 0, 'mother': 1, 'father': 1, 'parent': 1, 'child': 2,
+             'siblings': 3, 'record': 4}
+    spouses = sum(1 for b in basis if b['kind'] == 'spouse')
+
+    def rel_sex(rid: str) -> str:
+        return str(persons[rid].get('sex') or '').upper()
+
     clauses: list[str] = []
-    order = {'spouse': 0, 'mother': 1, 'father': 1, 'parent': 1, 'child': 2, 'siblings': 3}
-    for i, b in enumerate(sorted(basis, key=lambda b: order[b['kind']])):
-        kind = b['kind']
-        if kind == 'siblings':
-            who = f'{poss} brothers and sisters'
-            if len(b['relative']) == 1:
-                who = f'{poss} brother or sister'
-                clauses.append(f"{who} was born in {b['year']}" if i == 0
-                               else f"{who} in {b['year']}")
-                continue
-            span = (str(b['year']) if b['year'] == b['year_to']
-                    else f"{b['year']} to {b['year_to']}")
-            clauses.append(f'{who} were born {span}' if i == 0 else f'{who}, born {span}')
+    prev_birth = False
+    for b in sorted(basis, key=lambda b: order[b['kind']]):
+        kind, lo, hi, event = b['kind'], b['year'], b['year_to'], b['event']
+        if kind == 'record':
+            clauses.append(f"{subject} {'is' if sex in ('F', 'M') else 'are'} "
+                           f'in a record from {hi}')
+            prev_birth = False
             continue
-        if kind == 'spouse':
-            rel_sex = str(persons[b['relative']].get('sex') or '').upper()
-            who = f"{poss} {({'M': 'husband', 'F': 'wife'}).get(rel_sex, 'spouse')}"
+        plural = False
+        if kind == 'siblings':
+            if len(b['relative']) == 1:
+                who = f"{poss} {({'M': 'brother', 'F': 'sister'}).get(rel_sex(b['relative'][0]), 'brother or sister')}"
+            else:
+                who, plural = f'{poss} brothers and sisters', True
+        elif kind == 'spouse':
+            noun = {'M': 'husband', 'F': 'wife'}.get(rel_sex(b['relative']), 'spouse')
+            who = f'{poss} {noun}'
+            if spouses > 1:
+                who += f" {persons[b['relative']].get('name') or b['relative']}"
         elif kind == 'child':
             who = f'{poss} eldest child'
         else:
-            who = f'{poss} {({"mother": "mother", "father": "father"}).get(kind, "parent")}'
-        clauses.append(f"{who} was born in {b['year']}" if i == 0
-                       else f"{who} in {b['year']}")
+            who = f'{poss} {kind}'
+        words = _birth_span_words(event, lo, hi, plural, b.get('about'))
+        if prev_birth and event == 'birth' and not plural:
+            words = words.replace('was born ', '', 1)
+        clauses.append(f'{who} {words}')
+        prev_birth = event == 'birth' and not plural
     return clauses
 
 
