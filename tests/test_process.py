@@ -11,6 +11,7 @@ import argparse
 import os
 import contextlib
 import io
+import json
 import shutil
 import stat
 import subprocess
@@ -3502,7 +3503,7 @@ class ProcessTestCase(unittest.TestCase):
 
     # ── a bundle whose notes say which source its files join (attach_to) ──
 
-    def _film_bundle(self, number: int, extra_meta: str = '') -> Path:
+    def _film_bundle(self, number: int, extra_meta: str = '', dgs: str | None = '8000011') -> Path:
         """One FamilySearch film image capture of a deed, as ingest files it."""
         bundle = self.archive / 'inbox' / f'deeds-image-{number}'
         bundle.mkdir(parents=True)
@@ -3522,7 +3523,10 @@ class ProcessTestCase(unittest.TestCase):
             f'Image {number} of the deed of Samuel Hartley to Thomas Hartley.\n',
             encoding='utf-8')
         (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff image %d' % number)
-        (bundle / 'record-data.json').write_text('{"image": {"imageNumber": %d}}\n' % number, encoding='utf-8')
+        image = {'imageNumber': number}
+        if dgs is not None:
+            image['dgs'] = dgs
+        (bundle / 'record-data.json').write_text(json.dumps({'image': image}) + '\n', encoding='utf-8')
         return bundle
 
     def _filed_film_source(self) -> tuple[Path, str]:
@@ -3596,6 +3600,40 @@ class ProcessTestCase(unittest.TestCase):
             self.assertEqual(self._run([str(bundle)]), EXIT_ERRORS)
         self.assertEqual(self._snapshot_tree(self.archive), before)
         self.assertIn('s-0a1b2c3d4e', err.getvalue())  # what a source id looks like
+
+    def test_attach_to_a_source_of_another_film_or_far_image_is_refused(self) -> None:
+        # One event, one source: the notes line can be mistyped or edited by
+        # hand, so fha process checks the files themselves. An image of
+        # another film, one ten images away, or one with no film number is
+        # never folded into the deed he holds.
+        record, sid = self._filed_film_source()
+        before_record = record.read_bytes()
+        for number, dgs in [(12, '9999999'), (21, '8000011'), (12, None)]:
+            bundle = self._film_bundle(number, f'attach_to: {sid}\n', dgs=dgs)
+            before = self._snapshot_tree(self.archive)
+            err = io.StringIO()
+            with contextlib.redirect_stderr(err):
+                self.assertEqual(self._run([str(bundle)]), EXIT_ERRORS, (number, dgs))
+            self.assertEqual(self._snapshot_tree(self.archive), before, (number, dgs))
+            self.assertIn('delete the attach_to line', err.getvalue())
+            shutil.rmtree(bundle)
+        self.assertEqual(record.read_bytes(), before_record)
+
+    def test_attach_to_a_source_with_no_film_image_is_refused(self) -> None:
+        # A typo naming another source (one with no film image) changes nothing.
+        record, sid = self._filed_film_source()
+        other = self._film_bundle(30, dgs=None)
+        (other / 'record-data.json').write_text('{}\n', encoding='utf-8')
+        self.assertEqual(self._run([str(other)]), EXIT_CLEAN)
+        plain = next(p for p in (self.archive / 'sources' / 'land-record').glob('*_s-*.md') if p != record)
+        plain_sid = read_record(plain)['meta']['id']
+        bundle = self._film_bundle(12, f'attach_to: {plain_sid}\n')
+        before = self._snapshot_tree(self.archive)
+        err = io.StringIO()
+        with contextlib.redirect_stderr(err):
+            self.assertEqual(self._run([str(bundle)]), EXIT_ERRORS)
+        self.assertEqual(self._snapshot_tree(self.archive), before)
+        self.assertIn('no FamilySearch film image', err.getvalue())
 
     def test_attach_to_with_type_or_date_is_refused(self) -> None:
         # --type and --date describe a NEW source; the one these files join

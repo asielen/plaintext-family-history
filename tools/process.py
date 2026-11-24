@@ -3386,9 +3386,37 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
             f'{rename}and process it again.')
 
 
+_ATTACH_SPAN = 2  # how far apart two film images of one record may be (the panel's question)
+
+
+def _film_positions(data_files) -> list[tuple[str, int]]:
+    """The (DGS, image number) pairs a set of site-data files say they show.
+
+    For him: a FamilySearch film image capture saves where it sits on its
+    film (`image: {dgs, imageNumber}` in its site data). Only numbers the
+    capture found count; anything unreadable or missing gives nothing, never
+    a guess. The DGS is compared unpadded, as Seen It keys it.
+    """
+    out = []
+    for path in data_files:
+        try:
+            data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        image = data.get('image') if isinstance(data, dict) else None
+        if not isinstance(image, dict):
+            continue
+        dgs = str(image.get('dgs') or '')
+        number = image.get('imageNumber')
+        if re.fullmatch(r'[0-9]+', dgs) and isinstance(number, int)                 and not isinstance(number, bool) and number > 0:
+            out.append((dgs.lstrip('0') or '0', number))
+    return out
+
+
 def _bundle_attach_target(
     archive_root: Path, sidecar_meta: dict, folder: Path, *,
     source_type: str | None, source_date: str | None,
+    fha_config: dict | None = None, assets=(),
 ) -> dict | None:
     """The existing source a bundle's notes say its files join, or None.
 
@@ -3401,8 +3429,11 @@ def _bundle_attach_target(
     Everything that could stop the attach is checked here, before anything
     moves: the value must be a source id, the source must exist and read
     cleanly, `--type` and `--date` (which describe a new source) must not be
-    given, and a bundle marked `restricted` may join only a source that is
-    restricted too, so a privacy mark is never dropped on the way in.
+    given, a bundle marked `restricted` may join only a source that is
+    restricted too, so a privacy mark is never dropped on the way in, and
+    the bundle's site data must name a FamilySearch film image within two
+    of one the source already holds on the same film (`_film_positions`),
+    so a mistyped or hand-edited s-id cannot fold a different record in.
     Returns {sid, record_path, old_text, source_type}.
     """
     raw = sidecar_meta.get('attach_to')
@@ -3442,6 +3473,32 @@ def _bundle_attach_target(
         raise ProcessError(
             f'the notes in {folder.name} mark these files restricted, and {sid} is not, so they '
             f'would lose that mark. Mark {sid} restricted first, or {instead}')
+    # The one-event-one-source guard: the panel only offers a source that
+    # holds an image of the same film within two of this one, and the notes
+    # line can be edited by hand, so the same is checked here against the
+    # files themselves. A wrong yes would merge two records into one source.
+    here = _film_positions(a for a in assets if a.suffix.lower() == '.json')
+    if not here:
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files to {sid} (attach_to), but they '
+            'carry no FamilySearch film and image number, and attach_to is only for the next '
+            'image of a film record you already hold. To add files to a source by hand, use '
+            f'`fha process <a file of {sid}> --more <file> <role>`, or {instead}')
+    held = []
+    for entry in meta.get('files') or []:
+        name = str(entry.get('file') or '') if isinstance(entry, dict) else ''
+        if name.lower().endswith('.json'):
+            held.append(resolve_path(name, fha_config or {}, archive_root))
+    there = _film_positions(held)
+    if not any(d == hd and abs(n - hn) <= _ATTACH_SPAN for d, n in here for hd, hn in there):
+        shown_here = ', '.join(f'film {d} image {n}' for d, n in here)
+        shown_there = (', '.join(f'film {d} image {n}' for d, n in there)
+                       or 'no FamilySearch film image')
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files ({shown_here}) to {sid} '
+            f'(attach_to), but {sid} holds {shown_there}, not an image of the same film within '
+            f'{_ATTACH_SPAN} of this one, so they may be a different record. Check the s-id, or '
+            f'{instead}')
     rtype = str(meta.get('source_type') or '')
     return {'sid': sid, 'record_path': record_path, 'old_text': old_text,
             'source_type': rtype if rtype in SOURCE_TYPES else None}
@@ -3590,7 +3647,8 @@ def process_bundle(
             'notes.md to match, then process the folder again. Nothing was changed.')
 
     attach = _bundle_attach_target(archive_root, sidecar_meta, folder,
-                                   source_type=source_type, source_date=source_date)
+                                   source_type=source_type, source_date=source_date,
+                                   fha_config=fha_config, assets=assets)
 
     final_title = str(sidecar_meta['title']) if sidecar_meta.get('title') \
         else _slugify(folder.name).replace('-', ' ')
