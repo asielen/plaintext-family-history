@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "seed": "p-5e6f7g8h9j",
   "mode": "descendants",
   "nodes": [
@@ -11,7 +12,8 @@
         "death": null
       },
       "url": "p-5e6f7g8h9j.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": null
     },
     {
       "p_id": "p-2b3c4d5e6f",
@@ -22,7 +24,8 @@
         "death": "2015-11-03"
       },
       "url": "p-2b3c4d5e6f.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "high"
     },
     {
       "p_id": "p-0a1b2c3d4e",
@@ -33,7 +36,8 @@
         "death": null
       },
       "url": "p-0a1b2c3d4e.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "high"
     }
   ],
   "edges": [
@@ -45,6 +49,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "high",
       "dates": {
         "start": null,
         "end": null
@@ -58,6 +63,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "high",
       "dates": {
         "start": null,
         "end": null
