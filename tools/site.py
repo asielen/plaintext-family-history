@@ -301,8 +301,6 @@ from urllib.parse import quote as _urlquote
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from anniversaries import _wall_month   # the private wall calendar's month grid
-
 from _lib import (
     claim_date_order_sql,
     place_hierarchy_at,
@@ -315,6 +313,7 @@ from _lib import (
     family_calendar_events,
     family_calendar_week,
     family_calendar_year,
+    wall_month_html,
     person_completeness,
     PARKED_CLAIM_SQL,
     CLAIM_UNWORDED,
@@ -10890,7 +10889,7 @@ class _SiteBuilder:
         `_lib.family_calendar_year`'s (accepted claims, dates recorded to the
         month or day), each held to `_calendar_event_is_shown` like the home
         page's month panel, and the months are laid out by the same
-        `anniversaries._wall_month` as the private printed calendar. The year
+        `_lib.wall_month_html` as the private printed calendar. The year
         is the build's own (`_today`): the site is a snapshot, and a rebuild
         next January makes next year's. A 29 February moves to the 28th in a
         year without one, as on the printed calendar."""
@@ -10919,7 +10918,7 @@ class _SiteBuilder:
                                if self._calendar_event_is_shown(ev)]})
         self._write_page(self.out_dir / 'calendar.html', 'calendar.html', {
             'root_prefix': '.', 'year': year,
-            'months': [self._markup(_wall_month(year, m, person)) for m in months]})
+            'months': [self._markup(wall_month_html(year, m, person)) for m in months]})
 
     def _calendar_event_is_shown(self, ev: dict) -> bool:
         """May this calendar event appear on this build's home page?

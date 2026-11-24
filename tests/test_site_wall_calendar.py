@@ -12,7 +12,10 @@ TOOLING §7b, not from the code's output.
 Reuses the synthetic-index fixtures of tests/test_site_rings_calendar.py.
 """
 
+import os
+import sqlite3
 import sys
+import time
 import unittest
 import unittest.mock
 from pathlib import Path
@@ -207,6 +210,63 @@ class WallCalendarTests(_Base):
             'roots:\n  photos: photos\n' + ON, encoding='utf-8')
         self.build()
         self.assertIn('class="wall-face"', self.page('calendar.html'))
+
+    @unittest.skipUnless(site._PIL_AVAILABLE, 'Pillow not installed')
+    def test_a_portrait_photo_that_also_shows_a_living_person_is_not_used(self):
+        # Ada has died; her chosen portrait is a group photo tagged to a
+        # living cousin. The calendar shows her name and no face.
+        from PIL import Image
+        from photoindex import _DDL as PHOTOS_DDL
+        img = self.root / 'photos' / '1950' / 'ada.png'
+        img.parent.mkdir(parents=True, exist_ok=True)
+        Image.new('RGB', (60, 40), (10, 20, 30)).save(img)
+        self.person(ME, 'Ada Example', extra='profile_photo: photos/1950/ada.png\n')
+        self.person(LIVE, 'Cleo Example', living='true')
+        self.source('s-1111111111', 'Birth register')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1850-06-14', [ME])
+        (self.root / 'fha.yaml').write_text(
+            'roots:\n  photos: photos\n' + ON, encoding='utf-8')
+        pconn = sqlite3.connect(str(self.root / '.cache' / 'photos.sqlite'))
+        pconn.executescript(PHOTOS_DDL)
+        pconn.execute('INSERT INTO photos(path, group_id, is_primary, caption) '
+                      'VALUES (?,?,?,?)', ('photos/1950/ada.png', 'g1', 1, ''))
+        for pid in (ME, LIVE):
+            pconn.execute('INSERT INTO photo_people(path, person_ref, via) VALUES (?,?,?)',
+                          ('photos/1950/ada.png', pid, 'pid-keyword'))
+        pconn.commit()
+        pconn.close()
+        future = time.time() + 10_000
+        os.utime(self.root / '.cache' / 'photos.sqlite', (future, future))
+        self.build()
+        html = self.page('calendar.html')
+        self.assertIn('Ada Example', html)
+        self.assertNotIn('wall-face', html)
+
+    def test_month_only_events_pass_the_same_privacy_filter(self):
+        self.person(LIVE, 'Cleo Example', living='true')
+        self.person(QUIET, 'Edna Example', extra='restricted: by-request\n')
+        self.person(OTHER, 'Fern Example')
+        self.source('s-1111111111', 'Register')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1990-06', [LIVE])
+        self.claim('c-2222222222', 's-1111111111', 'death', '1930-06', [QUIET])
+        self.source('s-2222222222', 'Death register')
+        self.claim('c-3333333333', 's-2222222222', 'death', '1931-06', [OTHER])
+        self.config(ON)
+        self.build()
+        html = self.page('calendar.html')
+        self.assertIn('Fern Example', html)
+        for leaked in ('Cleo', 'Edna', '(1990)', '(1930)'):
+            self.assertNotIn(leaked, html)
+
+    def test_feb_29_of_a_living_person_never_reaches_the_page(self):
+        self.person(LIVE, 'Cleo Example', living='true')
+        self.source('s-1111111111', 'Register')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1992-02-29', [LIVE])
+        self.config(ON)
+        self.build(today='2027-03-01')
+        html = self.page('calendar.html')
+        self.assertNotIn('Cleo', html)
+        self.assertNotIn('(29 February)', html)
 
     def test_no_portrait_means_no_placeholder(self):
         self.seed_ada()
