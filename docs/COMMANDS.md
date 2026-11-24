@@ -429,6 +429,7 @@ Locate anything in the archive, or search its full text.
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
   fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
+  fha find --spelling-groups          Surnames in your records that sound alike (changes nothing)
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`.
@@ -439,6 +440,7 @@ as `fha find --text`.
 | `--root` `PATH` | Archive root |
 | `--text` `PHRASE` | Full-text search across records, notes, transcripts |
 | `--related` `[ID]` | Neighborhood of an ID: the people, places and sources next to it. Combine with --date for a time slice, or pass --related --date EDTF alone for the standalone time-slice neighborhood. |
+| `--spelling-groups` | List surnames in your records that sound alike (Hartley, Hartly, Hartlie) with how many people write each. Names are never changed. Works with --json and --limit. |
 | `--sounds-like` `NAME` | People whose names sound like NAME in any spelling (Kowalski, Kowalska, Kovalsky), grouped by spelling, with the Daitch-Mokotoff and census Soundex codes. Works with --json and --limit. |
 | `--date` `EDTF` | Time-slice filter. With --related <ID>, narrows that neighborhood to the given EDTF range; with --related and no ID, reports everything active in that range. |
 | `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query, --text or --sounds-like; combine with --kind/--limit to narrow it. Not yet valid with --related. |
@@ -925,7 +927,14 @@ later, family by family. Nothing imported is treated as proven. Photos your
 old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
+Downloaded your tree again later? Run this on the newer file. The plan shows
+only what changed since the earlier download: the new people, the new
+statements, and each one the newer file says differently. People it cannot
+match for certain are listed with the reason. (This plan cannot be applied
+yet; it is for checking.)
+
   --plan-out FILE    Also write the full, uncut plan text to FILE.
+  --as-new-tree      Treat a newer download as a separate tree instead.
 ```
 
 | Argument | What it does |
@@ -933,6 +942,7 @@ the same file is refused, and a failed import cleans up after itself.
 | `FILE.ged` | The GEDCOM file to import (e.g. an Ancestry tree download). |
 | `--apply` | Write the records (default: print the dry-run plan only). |
 | `--plan-out` `FILE` | Also write the full (uncapped) plan text to FILE; refused inside the archive except its out/ folder. |
+| `--as-new-tree` | Import every person as new even if this looks like a newer download of a tree already imported. Every person arrives a second time, which is usually not what you want. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ## `fha wikitree`
