@@ -217,17 +217,31 @@ class WidowedTests(_Base):
 
 
 class SiblingDayTests(_Base):
-    def _pair(self, mine: str, theirs: str, ctype: str = 'birth') -> None:
+    def _pair(self, mine: str, theirs: str, ctype: str = 'birth', half: bool = False) -> None:
         self.person(FATHER, 'Caleb Cole', 'M')
+        self.person(MOTHER, 'Chastina Cole', 'F')
         self.person(SIB, 'James Cole', 'M')
         role = 'child'
+        sib_parents = [FATHER] if half else [FATHER, MOTHER]
         self.claims('s-r000000001',
-                    _claim('c-r000000001', 'relationship', [ME, FATHER], {'child': [ME], 'parent': [FATHER]},
-                           subtype='biological'),
-                    _claim('c-r000000002', 'relationship', [SIB, FATHER], {'child': [SIB], 'parent': [FATHER]},
-                           subtype='biological'))
+                    _claim('c-r000000001', 'relationship', [ME, FATHER, MOTHER],
+                           {'child': [ME], 'parent': [FATHER, MOTHER]}, subtype='biological'),
+                    _claim('c-r000000002', 'relationship', [SIB] + sib_parents,
+                           {'child': [SIB], 'parent': sib_parents}, subtype='biological'))
         self.claims('s-a000000001', _claim('c-a000000001', ctype, [ME], {role: [ME]}, mine))
         self.claims('s-a000000002', _claim('c-a000000002', ctype, [SIB], {role: [SIB]}, theirs))
+
+    def test_half_brother_is_called_half(self):
+        self._pair('1875-03-02', '1875-03-02', half=True)
+        self.build()
+        (fact,) = self.facts('same_birthday')
+        self.assertIn('her half-brother [[p-b000000001|James Cole]]', fact['line_md'])
+        self.assertNotIn('twins', fact['line_md'])
+
+    def test_day_level_guess_never_matches(self):
+        self._pair('1875-03-02~', '1875-03-02')
+        self.build()
+        self.assertEqual(self.facts('same_birthday'), [])
 
     def test_same_birthday(self):
         self._pair('1875-03-02', '1875-03-02')

@@ -25239,9 +25239,16 @@ CONNECTED_FACT_KINDS = ('orphaned', 'lost_parent', 'widowed', 'same_birthday',
 
 
 def _cf_usable(row: Any) -> bool:
-    """A claim whose date has a closed start and end (not `[..1871]`, not undated)."""
-    return bool(row is not None and row['date_min'] and row['date_max']
-                and row['date_min'] != _CF_OPEN_MIN and row['date_max'] != _CF_OPEN_MAX)
+    """A claim whose date has a closed start and end (not `[..1871]`, not undated).
+
+    A day-level `~` or `?` ("1875-03-02~") is not widened by the date bounds
+    but is a guess, so it is not usable either: no confident age or "same day"."""
+    if row is None or not (row['date_min'] and row['date_max']):
+        return False
+    if row['date_min'] == _CF_OPEN_MIN or row['date_max'] == _CF_OPEN_MAX:
+        return False
+    edtf = row['date_edtf'] or ''
+    return not (row['date_min'] == row['date_max'] and any(q in edtf for q in '~?%'))
 
 
 def _cf_day_known(row: Any) -> bool:
@@ -25429,11 +25436,15 @@ def connected_facts(conn: Any, pid: str) -> list[dict]:
             if not _cf_day_known(theirs):
                 continue
             gap = abs(_iso_day_number(mine['date_min']) - _iso_day_number(theirs['date_min']))
+            sib_parents = _cf_family(conn, sib)['parents']
+            half = bool(set(sib_parents) ^ set(fam['parents']))
             label = word(sib, 'brother', 'sister', 'sibling')
+            if half:
+                label = f'half-{label}'
             if ctype == 'birth' and gap <= 1:
                 lead = 'Born the same day as' if gap == 0 else 'Born within a day of'
                 days = date(mine) if gap == 0 else f'{date(mine)} and {date(theirs)}'
-                line = f'{lead} {poss} {label} {link(sib)} (twins?): {days} {tok(mine)} {tok(theirs)}.'
+                line = f'{lead} {poss} {label} {link(sib)}{'' if half else ' (twins?)'}: {days} {tok(mine)} {tok(theirs)}.'
             elif ctype == 'baptism' and gap == 0:
                 line = (f'Baptised the same day as {poss} {label} {link(sib)}, '
                         f'{date(mine)} {tok(mine)} {tok(theirs)}.')
