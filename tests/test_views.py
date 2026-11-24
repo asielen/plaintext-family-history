@@ -580,6 +580,122 @@ class _ChartCaseIndex(unittest.TestCase):
         return case
 
 
+class TreeJsonContractTests(unittest.TestCase):
+    """The tree data says how well each parent tie is proven, so a chart can
+    show which part of his tree rests on a family story (chart plan 08-6).
+    Version 2 of the neutral JSON only adds keys: anything that read version 1
+    reads it unchanged."""
+
+    KIT, ALAN, SILAS, RUTH = 'p-3000000001', 'p-3000000002', 'p-3000000003', 'p-3000000004'
+
+    def setUp(self) -> None:
+        import sqlite3
+        from index import _DDL
+        self.conn = sqlite3.connect(':memory:')
+        self.conn.executescript(_DDL)
+        self.conn.row_factory = sqlite3.Row
+        for pid, name, sex in ((self.KIT, 'Kit Hartley', 'M'), (self.ALAN, 'Alan Hartley', 'M'),
+                               (self.SILAS, 'Silas Hartley', 'M'), (self.RUTH, 'Ruth Reed', 'F')):
+            self.conn.execute(
+                'INSERT INTO persons(id, name, sex, living, tier, status, path) '
+                "VALUES (?,?,?,'false','curated','active',?)", (pid, name, sex, f'people/{pid}.md'))
+        self._n = 0
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def _parent(self, child, parent, confidence, *, cid=None):
+        self._n += 1
+        cid = cid or f'c-30000000{self._n:02d}'
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, value, status, confidence) '
+            "VALUES (?,'s-3000000001','relationship','parent of','accepted',?)", (cid, confidence))
+        self.conn.execute('INSERT INTO relationships(person_id, rel, other_id, claim_id) '
+                          "VALUES (?,'parent',?,?)", (child, parent, cid))
+        self.conn.execute('INSERT INTO relationships(person_id, rel, other_id, claim_id) '
+                          "VALUES (?,'child',?,?)", (parent, child, cid))
+
+    def _tree(self, seed=None, mode='ancestors'):
+        import json
+        nodes, edges = views._traverse_tree(self.conn, seed or self.KIT, mode, None)
+        return json.loads(views._tree_to_json(seed or self.KIT, mode, nodes, edges))
+
+    def test_version_two_rates_every_edge_and_every_line(self) -> None:
+        self._parent(self.KIT, self.ALAN, 'low')
+        self._parent(self.ALAN, self.SILAS, 'high')
+        self._parent(self.KIT, self.RUTH, 'high')
+        tree = self._tree()
+        self.assertEqual(list(tree)[0], 'version')
+        self.assertEqual(tree['version'], 2)
+        for edge in tree['edges']:
+            self.assertEqual(edge['kind'], 'genetic')
+            self.assertIn(edge['confidence'], ('low', 'medium', 'high'))
+        lines = {n['p_id']: n['line_confidence'] for n in tree['nodes']}
+        self.assertEqual(lines, {self.KIT: None, self.ALAN: 'low',
+                                 self.SILAS: 'low', self.RUTH: 'high'})
+
+    def test_a_birth_record_beats_an_adoption_record_by_the_same_father(self) -> None:
+        # Legitimation: Alan adopted Kit, who was also born to him. He is
+        # drawn as the father, whichever record sorts first.
+        self._parent(self.KIT, self.ALAN, 'high', cid='c-3000000001')
+        self.conn.execute("UPDATE claims SET subtype = 'adoptive' WHERE id = 'c-3000000001'")
+        self._parent(self.KIT, self.ALAN, 'low', cid='c-3000000002')
+        edge, = self._tree()['edges']
+        self.assertEqual((edge['kind'], edge['claim_id']), ('genetic', 'c-3000000002'))
+        self.assertEqual(edge['confidence'], 'high')
+
+    def test_two_records_of_one_tie_count_as_the_stronger(self) -> None:
+        # A family story and a birth certificate both say Alan is Kit's
+        # father: the tie is as strong as the certificate.
+        self._parent(self.KIT, self.ALAN, 'low', cid='c-3000000001')
+        self._parent(self.KIT, self.ALAN, 'high', cid='c-3000000002')
+        tree = self._tree()
+        self.assertEqual(len(tree['edges']), 1)
+        self.assertEqual(tree['edges'][0]['confidence'], 'high')
+        self.assertEqual(tree['edges'][0]['claim_id'], 'c-3000000001')
+
+    def test_a_step_parent_tie_is_a_legal_edge_and_a_neighbour_is_other(self) -> None:
+        self._parent(self.KIT, self.ALAN, 'medium')
+        self.conn.execute("UPDATE claims SET subtype = 'step'")
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, value, status, confidence) '
+            "VALUES ('c-3000000099','s-3000000001','neighbor','lived next door','accepted','low')")
+        for a, b in ((self.KIT, self.RUTH), (self.RUTH, self.KIT)):
+            self.conn.execute('INSERT INTO relationships(person_id, rel, other_id, claim_id) '
+                              "VALUES (?,'neighbor',?,'c-3000000099')", (a, b))
+        tree = self._tree(mode='fan')
+        kinds = {(e['type'], e['to']): e['kind'] for e in tree['edges']}
+        self.assertEqual(kinds[('parent', self.ALAN)], 'legal')
+        self.assertEqual(kinds[('neighbor', self.RUTH)], 'other')
+        # A neighbour never weakens or strengthens anyone's line.
+        lines = {n['p_id']: n['line_confidence'] for n in tree['nodes']}
+        self.assertIsNone(lines[self.RUTH])
+
+    def test_everything_version_one_said_is_still_there_unchanged(self) -> None:
+        self._parent(self.KIT, self.ALAN, 'low')
+        self._parent(self.ALAN, self.SILAS, None)
+        tree = self._tree()
+        self.assertEqual(tree['seed'], self.KIT)
+        self.assertEqual(tree['mode'], 'ancestors')
+        v1_node = {'p_id', 'name', 'sex', 'vitals'}
+        v1_edge = {'type', 'from', 'to', 'claim_id', 'subtype', 'genetic', 'dates'}
+        self.assertEqual(
+            [{k: n[k] for k in v1_node} for n in tree['nodes']],
+            [{'p_id': self.KIT, 'name': 'Kit Hartley', 'sex': 'M',
+              'vitals': {'birth': None, 'death': None}},
+             {'p_id': self.ALAN, 'name': 'Alan Hartley', 'sex': 'M',
+              'vitals': {'birth': None, 'death': None}},
+             {'p_id': self.SILAS, 'name': 'Silas Hartley', 'sex': 'M',
+              'vitals': {'birth': None, 'death': None}}])
+        self.assertEqual(
+            [{k: e[k] for k in v1_edge} for e in tree['edges']],
+            [{'type': 'parent', 'from': self.KIT, 'to': self.ALAN, 'claim_id': 'c-3000000001',
+              'subtype': None, 'genetic': True, 'dates': {'start': None, 'end': None}},
+             {'type': 'parent', 'from': self.ALAN, 'to': self.SILAS, 'claim_id': 'c-3000000002',
+              'subtype': None, 'genetic': True, 'dates': {'start': None, 'end': None}}])
+        self.assertIsNone(tree['edges'][1]['confidence'])
+
+
 class TreeCaseTests(_ChartCaseIndex):
     """`fha views tree` on the hard family shapes (tests/chart_cases.py, C1 to
     C18): a man with five wives, a niece who married her uncle, a person who is
@@ -616,6 +732,18 @@ class TreeCaseTests(_ChartCaseIndex):
         tree = json.loads(self._tree(case['seed'], 'ancestors', 'json'))
         self.assertEqual({n['p_id'] for n in tree['nodes']}, set(case['people'].values()))
 
+    def test_the_fathers_side_rests_on_the_weak_tie_in_c18(self) -> None:
+        import json
+        case = self._index_case('C18')
+        tree = json.loads(self._tree(case['seed'], 'ancestors', 'json'))
+        lines = {n['p_id']: n['line_confidence'] for n in tree['nodes']}
+        p = case['people']
+        self.assertIsNone(lines[p['child']])
+        for who in ('father', 'f_gf', 'f_gm'):
+            self.assertEqual(lines[p[who]], 'low', who)
+        for who in ('mother', 'm_gf', 'm_gm'):
+            self.assertEqual(lines[p[who]], 'high', who)
+
     def test_the_private_tool_shows_the_living_in_c13(self) -> None:
         # views applies no redaction (the shared site does, see
         # ChartCaseTests); a family researcher's own view names everyone.
@@ -626,6 +754,87 @@ class TreeCaseTests(_ChartCaseIndex):
         for pid in case['living']:
             self.assertIn(pid, ids)
         self.assertIn(case['people']['grandchild'], ids)
+
+
+class TreeDotTests(_ChartCaseIndex):
+    """`fha views tree --format dot` draws each family the way a family chart
+    does: two parents meet at a point, one line drops to a bar, the children
+    hang from the bar (chart plan 08-11). The tests read the DOT text, so
+    they need no Graphviz installed."""
+
+    def _dot(self, name: str, mode: str, seed: str | None = None) -> tuple[str, dict]:
+        case = self._index_case(name)
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = views.run_tree(self.root, seed or case['seed'], mode, None, 'dot', None)
+        self.assertEqual(res.exit_code, 0)
+        return res['output'], case
+
+    @staticmethod
+    def _edges(dot: str) -> list[tuple[str, str, str]]:
+        import re
+        return [(m.group(1), m.group(2), m.group(3) or '') for m in re.finditer(
+            r'^  "([^"]+)" -> "([^"]+)"(?: \[([^\]]*)\])?;', dot, re.M)]
+
+    @staticmethod
+    def _nodes(dot: str, prefix: str) -> list[str]:
+        import re
+        return re.findall(r'^  "(' + prefix + r'[^"]*)" \[', dot, re.M)
+
+    def test_a_man_with_five_wives_has_five_unions_in_c1(self) -> None:
+        dot, _ = self._dot('C1', 'descendants')
+        self.assertEqual(len(self._nodes(dot, 'u_')), 5)
+        # Three of the marriages had children, so three sibling bars.
+        self.assertEqual(len(self._nodes(dot, 'k_')), 3)
+
+    def test_a_single_parent_family_is_a_union_with_one_parent_in_c6(self) -> None:
+        dot, case = self._dot('C6', 'ancestors')
+        mother = case['people']['mother']
+        union = f'u_fam:{mother}'
+        self.assertIn(union, self._nodes(dot, 'u_'))
+        into = [e for e in self._edges(dot) if e[1] == union]
+        self.assertEqual([e[0] for e in into], [mother])
+
+    def test_an_adopted_child_hangs_from_a_dashed_line_in_c7(self) -> None:
+        dot, case = self._dot('C7', 'ancestors')
+        child = case['people']['child']
+        into = [e for e in self._edges(dot) if e[1] == child]
+        self.assertEqual(sorted('dashed' in e[2] for e in into), [False, True])
+        # Two couples: the birth parents and the adoptive parents.
+        self.assertEqual(len(self._nodes(dot, 'u_')), 2)
+
+    def test_brothers_and_sisters_keep_their_birth_order_in_c8(self) -> None:
+        dot, case = self._dot('C8', 'descendants')
+        people = case['people']
+        chain = [(a, b) for a, b, attrs in self._edges(dot) if 'style=invis' in attrs]
+        want = [people[f'kid{n:02d}'] for n in (9, 8, 7, 6, 5, 4, 3, 2, 1, 10, 11, 12)]
+        self.assertEqual(chain, list(zip(want, want[1:])))
+
+    def test_a_marriage_with_no_children_has_a_union_and_no_bar_in_c14(self) -> None:
+        dot, case = self._dot('C14', 'descendants')
+        people = case['people']
+        union = f'u_fam:{"+".join(sorted((people["husband"], people["wife"])))}'
+        self.assertIn(union, self._nodes(dot, 'u_'))
+        self.assertFalse([e for e in self._edges(dot) if e[0] == union])
+
+    def test_a_weak_tie_is_drawn_thin_and_says_why_in_c18(self) -> None:
+        dot, _ = self._dot('C18', 'ancestors')
+        self.assertIn('penwidth=0.5', dot)
+        self.assertIn('tooltip="low confidence"', dot)
+
+    def test_names_with_quotes_and_backslashes_stay_valid(self) -> None:
+        nodes = {'p-1': {'p_id': 'p-1', 'sex': 'M',
+                         'name': 'Ann "Bud" O\\Neil\nSmith',
+                         'vitals': {'birth': '1840-03-02', 'death': '1918/1920'}}}
+        dot = views._tree_to_dot(nodes, {})
+        self.assertIn(r'label="Ann \"Bud\" O\\Neil Smith\n1840-1918-1920"', dot)
+        self.assertNotIn('\u2013', dot)
+
+    def test_the_file_says_it_is_private_and_is_the_same_every_time(self) -> None:
+        dot, case = self._dot('C3', 'ancestors')
+        self.assertTrue(dot.startswith('digraph'))
+        self.assertIn('Private research companion', dot)
+        again = views.run_tree(self.root, case['seed'], 'ancestors', None, 'dot', None)
+        self.assertEqual(dot, again['output'])
 
 
 class ChartCaseShapeTests(_ChartCaseIndex):

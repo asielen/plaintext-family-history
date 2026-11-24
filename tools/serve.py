@@ -714,7 +714,9 @@ def gather_review(state: ServeState) -> dict:
     reads - xref.run_xref and cooccur.run_cooccur - so detection is never
     reinvented. Returns {'items': [...], 'sources': [...], 'persons': [...]} where
     each item is a self-contained dict the template renders and whose action
-    buttons carry the /api/run verb + fixed args."""
+    buttons carry the /api/run verb + fixed args. Also carries 'remembered':
+    the not-connected / not-the-same-person pairs, each with its Undo; they
+    are not review items and do not change the count."""
     root = state.archive_root
     items: list[dict] = []
     sources: dict[str, str] = {}
@@ -940,8 +942,34 @@ def gather_review(state: ServeState) -> dict:
         finally:
             conn2.close()
 
+    # The pairs he told the archive to remember (not connected, not the same
+    # person), so a wrong click can be undone. Never part of `items`: the
+    # review count stays what is waiting on his judgment.
+    remembered: dict = {'not_connected': [], 'not_same_person': []}
+    try:
+        remembered = confirm.run_list_dismissed(root).data
+    except Exception:
+        pass
+    # A person deleted since the decision has no page: show the id unlinked
+    # rather than a link that lands on "Not found". Undo still works.
+    known: set[str] = set()
+    conn3 = open_index_db(root, ('persons',), strict=False)
+    if conn3 is not None:
+        try:
+            known = {r[0].lower() for r in conn3.execute('SELECT id FROM persons')}
+        except Exception:
+            pass
+        finally:
+            conn3.close()
+    for entries in remembered.values():
+        for e in entries if isinstance(entries, list) else []:
+            if isinstance(e, dict):
+                e['has_page_a'] = str(e.get('person_a', '')).lower() in known
+                e['has_page_b'] = str(e.get('person_b', '')).lower() in known
+
     return {
         'items': items,
+        'remembered': remembered,
         'sources': [{'id': sid, 'title': t} for sid, t in sources.items()],
         'persons': [{'id': pid, 'name': n,
                      'has_page': person_rows.get(pid, {}).get('has_page', False),
@@ -1284,11 +1312,42 @@ def _echo_cooccur(kw):
 def _verb_dismiss(state, kw, dry_run):
     return confirm.run_dismiss(
         state.archive_root, person_a=kw.get('person_a', ''),
-        person_b=kw.get('person_b', ''), dry_run=dry_run)
+        person_b=kw.get('person_b', ''),
+        not_same_person=bool(kw.get('not_same_person', False)), dry_run=dry_run)
 
 
 def _echo_dismiss(kw):
-    return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}'
+    flag = ' --not-same-person' if kw.get('not_same_person') else ''
+    return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}{flag}'
+
+
+def _verb_undismiss(state, kw, dry_run):
+    # Undo a wrong "not connected" / "not the same person" click: the pair goes
+    # back so the report may suggest it again. Only on his click.
+    return confirm.run_undismiss(
+        state.archive_root, person_a=kw.get('person_a', ''),
+        person_b=kw.get('person_b', ''),
+        not_same_person=bool(kw.get('not_same_person', False)), dry_run=dry_run)
+
+
+def _echo_undismiss(kw):
+    flag = ' --not-same-person' if kw.get('not_same_person') else ''
+    return f'fha confirm undismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}{flag}'
+
+
+def _verb_search(state, kw, dry_run):
+    return confirm.run_confirm_search(
+        state.archive_root, kw.get('person_id', ''), repository=kw.get('repository', ''),
+        result=kw.get('result', ''), terms=kw.get('terms', ''), dry_run=dry_run)
+
+
+def _echo_search(kw):
+    parts = ['fha confirm search', kw.get('person_id', '?'),
+             '--repository', _q(kw.get('repository', '?'))]
+    if kw.get('terms'):
+        parts += ['--terms', _q(kw['terms'])]
+    parts += ['--result', kw.get('result', '?')]
+    return ' '.join(parts)
 
 
 def _verb_set_living(state, kw, dry_run):
@@ -1930,8 +1989,18 @@ VERBS: dict[str, dict] = {
     'confirm.cooccur': {'schema': {'person_a': 'str', 'person_b': 'str', 'source_id': 'str',
                                   'subtype': 'str', 'accept': 'bool'},
                         'run': _verb_cooccur, 'echo': _echo_cooccur, 'reindex': 'source'},
-    'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str'},
+    'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str',
+                                  'not_same_person': 'bool'},
                         'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
+    # The workbench's "Nothing found" after a search-link click. The writer puts
+    # its own search_log row in the index, as capture does, so no rebuild.
+    'confirm.search': {'schema': {'person_id': 'str', 'repository': 'str', 'terms': 'str',
+                                  'result': 'str'},
+                       'run': _verb_search, 'echo': _echo_search, 'reindex': 'none'},
+    'confirm.undismiss': {'schema': {'person_a': 'str', 'person_b': 'str',
+                                    'not_same_person': 'bool'},
+                          'run': _verb_undismiss, 'echo': _echo_undismiss,
+                          'reindex': 'none'},
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
     'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},
@@ -2505,6 +2574,43 @@ def _msg_payload(ok: bool, text: str) -> dict:
 
 # ── The HTTP handler ────────────────────────────────────────────────────────────
 
+def _parse_byte_range(header: str | None, size: int):
+    """Read one `Range: bytes=...` header against a file of `size` bytes.
+
+    Returns `(first, last)` (inclusive) for a single satisfiable range,
+    'unsatisfiable' when it starts past the end (answer 416), or None when
+    the whole file should be sent: no header, another unit, several ranges,
+    or text that is not a range at all (RFC 9110 says to ignore those)."""
+    if not header:
+        return None
+    unit, _, spec = header.partition('=')
+    if unit.strip().lower() != 'bytes':
+        return None
+    spec = spec.strip()
+    if not spec or ',' in spec:
+        return None
+    first, dash, last = spec.partition('-')
+    first, last = first.strip(), last.strip()
+    if not dash or not (first.isascii() and last.isascii()):
+        return None
+    if first == '':                       # suffix: the last n bytes
+        if not last.isdigit():
+            return None
+        n = int(last)
+        if n == 0 or size == 0:
+            return 'unsatisfiable'
+        return max(size - n, 0), size - 1
+    if not first.isdigit() or (last and not last.isdigit()):
+        return None
+    a = int(first)
+    b = int(last) if last else size - 1
+    if last and b < a:
+        return None
+    if a >= size:
+        return 'unsatisfiable'
+    return a, min(b, size - 1)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = 'fha-serve'
     protocol_version = 'HTTP/1.1'
@@ -2816,13 +2922,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_file(self, path: Path) -> None:
         """Stream `path` to the client in `_STREAM_CHUNK_SIZE` chunks instead
-        of reading it whole into memory first - a large scan/video used to be
-        fully buffered in RAM (and off the socket) before a single byte went
-        out. Content-Length still comes from a `stat()`, so the client gets
-        an accurate length up front exactly as before; HEAD still sends
-        headers only, no chunks. No Range/206 support this pass - a
-        seek-based partial-content responder is its own feature, not a
-        one-line addition to a chunked GET."""
+        of reading it whole into memory first.
+
+        For someone playing a long interview recording in the workbench, this
+        is what lets the slider jump to a moment: a browser can only seek an
+        `<audio>`/`<video>` element when the server answers `Range` requests.
+        One `bytes=a-b`, `a-` or `-n` range gets a 206 with Content-Range;
+        a start past the end gets 416. Several ranges, a malformed header or
+        an `If-Range` are answered with the whole file and a 200, which HTTP
+        allows and every player copes with. HEAD sends headers only."""
         ctype, _ = mimetypes.guess_type(str(path))
         try:
             size = path.stat().st_size
@@ -2831,19 +2939,47 @@ class _Handler(BaseHTTPRequestHandler):
             self._not_found()
             return
         try:
-            self.send_response(200)
+            start, length = 0, size
+            status = 200
+            rng = None
+            if 'If-Range' not in self.headers:
+                rng = _parse_byte_range(self.headers.get('Range'), size)
+            if rng == 'unsatisfiable':
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                return
+            if rng is not None:
+                start, end = rng
+                length = end - start + 1
+                status = 206
+            self.send_response(status)
             self.send_header('Content-Type', ctype or 'application/octet-stream')
-            self.send_header('Content-Length', str(size))
+            self.send_header('Content-Length', str(length))
+            self.send_header('Accept-Ranges', 'bytes')
+            if status == 206:
+                self.send_header('Content-Range', f'bytes {start}-{start + length - 1}/{size}')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.end_headers()
             if self.command != 'HEAD':
                 try:
-                    shutil.copyfileobj(f, self.wfile, _STREAM_CHUNK_SIZE)
-                except (ConnectionAbortedError, BrokenPipeError):
-                    # The client went away mid-download (closed tab,
-                    # cancelled fetch) - not a server error, nothing to log
-                    # or retry.
+                    if start:
+                        f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = f.read(min(_STREAM_CHUNK_SIZE, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                    # The client went away mid-download (closed tab, or a
+                    # player dropping the connection to seek) - not a server
+                    # error, nothing to log or retry.
                     pass
         finally:
             f.close()

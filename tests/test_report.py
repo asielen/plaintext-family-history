@@ -1982,6 +1982,20 @@ class PossibleDuplicatesSectionTests(unittest.TestCase):
         self.assertIn(f'`{FHA} confirm undismiss --list`', body[-1])
         self.assertIn('1 pair you said are two different people is not shown', body[-1])
 
+    def test_footer_counts_pairs_that_cannot_be_one_person(self) -> None:
+        one = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 1})
+        self.assertEqual(one[0], 'No possible duplicate people found.')
+        self.assertIn('1 more pair has the same name but cannot be one person', one[-1])
+        self.assertIn('It is not shown.', one[-1])
+        two = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 2})
+        self.assertIn('2 more pairs have the same name but cannot be one person', two[-1])
+        self.assertIn('They are not shown.', two[-1])
+        none = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 0})
+        self.assertEqual(none, ['No possible duplicate people found.'])
+
     def test_section_filter_prints_only_4b(self) -> None:
         self._twins(1)
         md = self._run(section='possible-duplicates')['markdown']
@@ -2217,6 +2231,36 @@ class OnThisDayTests(unittest.TestCase):
                         full.index('## 0b. This week in the family'))
         self.assertLess(full.index('## 0b. This week in the family'),
                         full.index('## 1. Review queue'))
+
+
+class LoggedSearchShowsInReportTests(unittest.TestCase):
+    """A search filed with `fha confirm search` is "already searched" in the
+    next report, so he is not sent back to the same website."""
+
+    def test_a_nil_search_he_filed_shows_as_already_searched(self) -> None:
+        import shutil
+        import confirm
+        import index
+        example = ROOT / 'example-archive'
+        if not example.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'arc'
+            shutil.copytree(example, root, ignore=shutil.ignore_patterns('generated', '.cache'))
+            thomas = 'p-de957bcda1'
+            r = confirm.run_confirm_search(
+                root, thomas, repository='Ancestry', result='nil', date='2026-11-22')
+            self.assertEqual(r.exit_code, 0)
+            index.build_index(root, _lib.load_fha_yaml(root))
+            conn = sqlite3.connect(root / '.cache' / 'index.sqlite')
+            conn.row_factory = sqlite3.Row
+            try:
+                lines = report._section_search_log(conn, {'vitals_gap_person_ids': [thomas]})
+            finally:
+                conn.close()
+        self.assertTrue(any(
+            'Thomas Edward Hartley' in ln and 'Ancestry: already searched 2026-11-22' in ln
+            for ln in lines), lines)
 
 
 class LooseEndsSectionTests(unittest.TestCase):

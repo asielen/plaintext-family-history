@@ -14,7 +14,7 @@ If you've already edited a page by hand and want to keep the change, see [Keepin
 
 ## What you can change, and where
 
-There are four places. All are plain files you edit in a normal text editor (Notepad or TextEdit, not Word), or ask the assistant to edit for you.
+There are five places. All are plain files you edit in a normal text editor (Notepad or TextEdit, not Word), or ask the assistant to edit for you.
 
 ### 1. The homepage welcome: `notes/home.md`
 
@@ -35,10 +35,13 @@ site:
     image: s-ea61339378          # a photo to feature in the banner (by its source ID)
   home_person: p-de957bcda1            # who the homepage family chart is centered on
   home_pedigree_generations: 5         # how many generations of ancestors it shows
+  fan_degrees: 180                     # how far each person's ancestor fan opens: 180, 270 or 360
+  fan_generations: 5                   # how many generations the ancestor fan draws (1 to 6)
   picture_workers: auto                # how many web pictures to make at once
   completeness_rings: true             # a "how well documented" ring on each person's page
   calendar: true                       # "This month in the family" on the homepage
   search: true                         # the search box on every page (on unless set to false)
+  surname_pages: true                  # a page for each family name (on unless set to false)
   statistics: true                     # a "Family statistics" page (off unless set to true)
 ```
 
@@ -46,10 +49,12 @@ site:
 - **`hero`** is the large welcome banner on the homepage: a title, a one-line tagline and an optional photo. Leave any of them out and the site uses a default.
 - **`home_person`** chooses who the homepage's family chart is built around. Leave it out and the site uses the "root person" you named when you set up the archive. If that person is still living, the shareable version still starts with them, on a card that just says "Private". Relatives see both sides of the family behind it. Living adults in the chart show the same way, with no name, dates or photo, and living children are left out entirely. A living person counts as an adult when they have a child in the archive, or when their recorded birth was 18 or more years ago. If the archive can't tell that the home person is an adult, the chart starts with their nearest ancestor who has died instead. People who have died show in full.
 - **`home_pedigree_generations`** sets how many generations of ancestors the homepage chart shows (5 by default: parents, grandparents, great-grandparents and two more). You can click any ancestor's card **that already has its own page** to see the chart centered on them and go back further from there. An ancestor who is still a stub (a name in the tree with no page written up yet, which is normal while an archive is in progress) shows as a plain name with no link.
+- **`fan_degrees`** and **`fan_generations`** shape the "Ancestor fan" on each person's page. The fan opens a half circle (`180`) by default, five generations deep. `270` opens it three quarters of the way round and `360` makes a full circle, which holds more names for the same size of page; `fan_generations` can go from 1 to 6. For a reunion poster, set `fan_degrees: 360` and `fan_generations: 6`, then print that person's page with the Ancestor fan open. Every name stays upright, including the ones along the bottom. A value that is not allowed is ignored with a warning, and the build uses the default.
 - **`picture_workers`** is how many web-sized photo copies the site makes at once. The first build of a large archive spends most of its time on those copies, so by default it makes several at a time, as many as your computer's processors and free memory allow. You can leave this out. Set it to `1` to make them one at a time (slower, but easier on an older computer); the site comes out the same either way.
 - **`completeness_rings`** (off unless set to `true`) puts a small ring on each person's page showing how well documented they are, in five parts: a birth record, the censuses they lived through, their parents, their marriage records, and a death or burial. A filled part means found, half filled means partly found, an empty outline means not found yet, and a faint dotted outline means it doesn't apply. A list beside the ring says the same in words. It counts only facts you've accepted, the same way `fha metrics` does. Nobody living, or whose living status is unknown, gets a ring, and a record you marked private doesn't count toward one on the shareable site. The private workbench (`fha serve`) always shows the ring, whatever this setting says, and names under each gap the kind of record that would fill it.
 - **`calendar`** (off unless set to `true`) adds "This month in the family" to the homepage: the births, baptisms, marriages, deaths, burials and arrivals recorded to the month or the day, each name linked to that person's page. Every month is built into the page and the visitor sees their own current month, with all twelve listed below. It uses accepted facts only, and leaves out a living person's own birth, marriage or death, anything naming a private person, and anything resting on a private record. A grandfather's death stays when his living son reported it; the son is not named. The private workbench (`fha serve`) shows "This week in the family" on its home page instead, living relatives included.
 - **`search`** (on unless set to `false`) puts a search box at the top of every page. It finds people, places and records by name, forgives the usual spelling differences in old records (Kowalski, Kowalsky), and finds a woman by her married name. It only knows what the site already shows: nobody living, nothing private. It works from a USB stick with no internet.
+- **`surname_pages`** (on unless set to `false`) gives each family name its own page: the people who carried it, from the first year to the last, the places they are most often found, and the records that mention them. A Polish or Czech feminine form (Kowalska, Nováková) shares the page of the masculine form when that form is on the site too. A name only living or private people carry gets no page, and no page says how many people are left out.
 - **`statistics`** (off unless set to `true`) adds a "Family statistics" page, linked from the homepage under People. It says how long the family lived and how old they were when they married, by century of birth, how many children families had, the commonest first names and surnames, and, for the direct line from the person the homepage chart centres on, how many ancestors are known in each generation (when that person is you and you're living, the line starts with your parents). It uses the middle figure (the median), not an average, so one very long life doesn't skew it, and it counts only dates known to within a couple of years. A figure from fewer than three people says "Too few to say." Living relatives and anyone you marked private are never counted, even in the private preview.
 
 The photo you name in `image` is handled like every other photo on the site: a web-sized copy is made, its hidden location and camera data is removed, and if it shows a living person it's left out of the shareable version.
@@ -76,7 +81,22 @@ Or ask your assistant to open the stylesheet for you.
 
 ### 4. The facts themselves: your records
 
-Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history. That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
+Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history (a person who lived there while it changed hands gets a grey "Place history" line on their timeline). That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
+
+### 5. A page about a family name: `notes/surnames/`
+
+To add your own words to a family name's page, make a file named for the name in plain lowercase letters, such as `notes/surnames/kowalski.md`, and write about the name: where it comes from, how it was spelled, what the family says about it. To put other spellings on the same page, add a line at the top between two `---` lines:
+
+```
+---
+also: [Kowalsky, Kovalski]
+---
+The name comes from *kowal*, the Polish word for smith.
+```
+
+Private paragraphs and unaccepted drafts stay off the shared site, as everywhere else. If no one who may be shown carries the name, the file is left unused.
+
+For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
 ## Putting a photo in your writing
 

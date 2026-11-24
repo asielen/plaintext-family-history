@@ -149,6 +149,7 @@ The capture **browser extension** (`browser-companion/` in the project repo) run
   - "June 1923" → `1923-06`; "the 14th of June 1923" → `1923-06-14`; a bare year → `1923`
 
   When the hedge is ambiguous (a vague "back then", a date you can't pin to a shape above), ask one short plain question. Never quiz him on EDTF and never refuse. The tools are forgiving too: if a hand-edited date like `circa 1870` or `1870s` slips through, `fha lint` understands it and suggests the stored form (a gentle warning, not an error).
+- **Which calendar a date is in:** `date:` is always today's (Gregorian) calendar (SPEC §11). When a record gives its date another way (Old Style, an Orthodox register, a feast day, a Hebrew date), `value:` keeps the record's words, `date:` holds the converted day, and `notes:` says which calendar the record used. Run `fha date convert` or `fha date feast`; never do the arithmetic yourself. When it prints a caution or two readings (an English January to March date before 1752, a feast kept on two days, plain Adar), or gives a January to March feast in an English record before 1752 (it prints no caution for that), SPEC §11 says which to take; when the record does not settle it, ask.
 - **Citations:** factual prose cites sources with `[[s-xxxx]]` links; `[[p-xxxx]]` cross-links people, `[[l-xxxx]]` a place, and `[[c-xxxx]]` is the rare claim-level citation. The link carries the immutable ID and may add a readable display after a pipe (`[[p-xxxx|Margaret Cole]]`). You can also link by name (`[[Margaret Cole]]`) and the alias layer resolves it. Acceptance is lenient (a single-bracket `[s-xxxx]`, a bare ID or a name all still resolve), but **write the `[[ ]]` form**. The anti-pattern is a bare `s-ea61339378` dropped into a sentence: the tools can still resolve it if asked, but it is not clickable in Obsidian and is not counted as a citation. In prose, always write `[[s-ea61339378]]` (better: `[[s-ea61339378|the 1871 marriage notice]]`). Bare IDs belong only in structured YAML fields and tool arguments. `fha normalize-links` tidies bracketed slips (`[s-…]`, unpinned name-links); a fully bare ID has no automated net, so write the form right the first time. When `fha.yaml` says `links: obsidian` (SPEC §18), links name the record's file instead (`[[hartley__thomas_edward_p-…|Thomas Edward Hartley]]`) so Obsidian can follow them: the `fha` verbs write that form, and after writing prose by hand you run `fha normalize-links --write` to convert your `[[id|Name]]` links (lint W161 names any left). **Uncited prose is story or context, never fact**; write accordingly.
 - **Prose in records:** a biography, a story, a `## Notes` or `## Research Notes` paragraph, a place note, a question's context: write each paragraph on one line of the file with a blank line between paragraphs, and let the editor wrap it. Never hard-wrap at a fixed column and never put one sentence per line. Lists, headings, quotes, tables and code keep their own line breaks, and a YAML folded scalar (`notes: >`) inside a claims block stays as it is.
 - **Claims:** YAML list under `## Claims` in the source file; schema in SPEC §8.4. Required: `id, type, persons, value, status`; `roles:` required for relationship claims. Quote free text that holds a space and `#` (`value: 'Lot #4 of block 2'`): unquoted, YAML drops everything from the `#` on, and the timeline and site show "Lot" (lint W156). The same goes for frontmatter, such as a record's `title:` or `name:` or the `title:` of a notes file waiting in the inbox (lint W157).
@@ -190,7 +191,7 @@ fha claim new --source s-id --type … --value …    mint a brand-new claim ont
                             --negated mints a SPEC §8.6 confirmed absence, "researched, did
                             not happen", writing negated: true + evidence: negative)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
-                            decision (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+                            decision (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <p-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
                             backfill any record section an older stub is still missing (never
@@ -284,6 +285,7 @@ fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), adviso
 fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path,
                             and how much DNA such relatives usually share
 fha relate --cm <N>          which relationships N shared cM fits (several; never a percentage)
+fha relate <p-A> --all       everyone related to one person: blood relatives nearest first, then by marriage
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
@@ -300,7 +302,9 @@ fha date convert DATE --from julian|gregorian|hebrew
 fha repositories [--place l-id] [--year Y] [--record TYPE]   archives and record sites that hold that kind of record for the place and year, with who governed the place then; free/paid and online/in person/by letter on every line
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
-                            person stubs + suggested claims; plan first, --apply to write
+                            person stubs + suggested claims; plan first, --apply to write.
+                            A newer download of the same tree adds only what changed;
+                            --confirm-matches asks the human about likely matches
 fha backup                   dated zip of the records, written outside the archive
                             (--include-assets adds the photo/document roots; restore = unzip)
 ```
@@ -338,7 +342,7 @@ Record the issue number against the local entry, and the local entry in the issu
 
 ### Playbooks (workflow skills)
 
-Nineteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
+Twenty workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
 
 If your harness loads skills natively, prefer the matching skill over improvising. If it does not (any harness reading this file without a skill loader), treat them as documentation: when a request matches a playbook's trigger, **read that SKILL.md and follow it** before doing the task freehand. The playbooks restate the contract above; they never relax it, and they bind the same in every harness.
 
