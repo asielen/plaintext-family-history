@@ -4467,6 +4467,16 @@ class PlacePageTests(_Base):
         for text in ('Lee at cemetery', 'Living Lee', 'Confirmed absence', 'Parked guess'):
             self.assertNotIn(text, html)
 
+    def test_through_the_years_hides_restricted_source_claim_at_a_cemetery_when_shared(self):
+        self._chronology_fixture()
+        self._seed_source('s-2222222222', 'Private letter', restricted=1, people=('p-aaaaaaaaaa',))
+        self._seed_dated_claim('c-1111111111', 's-2222222222', 'l-2222222222',
+                               'Restricted burial note', '1880', ('p-aaaaaaaaaa',))
+        self._run(linked=False)
+        self.assertNotIn('Restricted burial note', self._read('places/l-1111111111.html'))
+        self._run(linked=True)
+        self.assertIn('Restricted burial note', self._read('places/l-1111111111.html'))
+
     def test_through_the_years_is_the_same_on_two_builds(self):
         self._chronology_fixture()
         self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-2222222222', 'Buried', '1880')
