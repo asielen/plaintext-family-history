@@ -4313,6 +4313,185 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             f'role="img" aria-label="{label}">' + ''.join(links) + ''.join(cards) + ''.join(extra) + '</svg>')
 
 
+# ── Lifespan chart (static SVG) ─────────────────────────────────────────────
+# A relative opens "Who overlapped" and sees that a grandmother lived to meet
+# her great-grandson, or that a father died before his daughter was born: one
+# bar per person on a shared year axis. (The idea follows WikiTree's timeline
+# tree view; nothing is copied.)
+
+_LIFESPAN_LABEL_W = 210.0       # name column, left of the axis
+_LIFESPAN_PLOT_W = 480.0
+_LIFESPAN_NOTE_W = 130.0        # room to the right for "death not recorded"
+_LIFESPAN_ROW_H = 34.0
+_LIFESPAN_BAR_H = 12.0
+_LIFESPAN_TOP = 6.0
+_LIFESPAN_TAIL = 10             # faded years past the last dated record, or before the first
+_LIFESPAN_OPEN = 30             # faded years for a "before 1900" or "after 1900" date
+_LIFESPAN_NAME_MAX = 26
+_LIFESPAN_ROLE_MAX = 36
+
+
+def _lifespan_years(edtf) -> tuple[int, int] | None:
+    """The earliest and latest year a date could mean, for a bar's faded end.
+
+    A relative reads "about 1840" as a bar that fades in over 1839 to 1841,
+    never as a sharp line at 1840. Works from `_lib.edtf_bounds`; a date with
+    no start ("before 1900") or no end ("after 1900") gets a faded stretch of
+    `_LIFESPAN_OPEN` years on the open side. A date that cannot be read is
+    None, so its person is drawn from other records or left out."""
+    if not edtf:
+        return None
+    try:
+        lo_s, hi_s = edtf_bounds(str(edtf))
+        lo, hi = int(lo_s[:4]), int(hi_s[:4])
+    except (ValueError, TypeError):
+        return None
+    if lo < 100 and hi >= 9999:
+        return None
+    if lo < 100:
+        lo = hi - _LIFESPAN_OPEN
+    elif hi >= 9999:
+        hi = lo + _LIFESPAN_OPEN
+    return (lo, hi)
+
+
+def _lifespan_summary(spans: list) -> str:
+    """The chart in words for a screen reader, who cannot reach the bars: each
+    person's name, role, years and any "not recorded" note, in row order."""
+    parts = []
+    for r, _sl, _sh, s_open, _el, _eh, e_open in spans:
+        bits = [r.get('name') or '', r.get('role') or '', r.get('years') or '']
+        if s_open or e_open:
+            bits.append('dates not recorded' if (s_open and e_open) else
+                        'birth not recorded' if s_open else 'death not recorded')
+        parts.append(', '.join(b for b in bits if b))
+    return f'Lifespans of {len(spans)} people on one time line. ' + '; '.join(parts)
+
+
+def _render_lifespan_svg(rows: list[dict]) -> str:
+    """Render the "Who overlapped" chart as a static, print-friendly SVG.
+
+    He sees every person on the page's family as a bar from birth to death on
+    one year axis. `rows` run top to bottom as given; each is {'name', 'role',
+    'birth': (earliest, latest year) or None, 'death': likewise, 'first': the
+    year of the earliest dated record, 'last': the latest, 'living': bool,
+    'years': the words printed under the name, such as 'abt. 1840-1920'}.
+
+    The solid bar runs from the latest possible birth to the earliest
+    possible death. Wherever a date is uncertain the bar ends in a hatched,
+    dashed cap over the whole range it could be, so an approximate date never
+    looks exact, and the hatching means the same in black and white. No death
+    recorded draws a hatched tail past the last dated record, labelled; no
+    birth recorded starts at the first dated record, hatched and labelled.
+    Names are plain `<text>`, so the chart prints and saves cleanly."""
+    spans = []
+    for r in rows:
+        birth, death = r.get('birth'), r.get('death')
+        first, last = r.get('first'), r.get('last')
+        if birth:
+            s_lo, s_hi, s_open = birth[0], birth[1], False
+        else:
+            anchor = first if first is not None else (death[0] if death else last)
+            if anchor is None:
+                continue
+            s_lo, s_hi, s_open = anchor - _LIFESPAN_TAIL, anchor, True
+        if death:
+            e_lo, e_hi, e_open = death[0], death[1], False
+        elif r.get('living'):
+            yr = last if last is not None else s_hi
+            e_lo = e_hi = yr
+            e_open = False
+        else:
+            yr = last if last is not None else s_hi
+            e_lo, e_hi, e_open = yr, yr + _LIFESPAN_TAIL, True
+        e_lo = max(e_lo, s_hi)
+        e_hi = max(e_hi, e_lo)
+        spans.append((r, s_lo, s_hi, s_open, e_lo, e_hi, e_open))
+    if not spans:
+        return ''
+    ymin = math.floor(min(s[1] for s in spans) / 10) * 10
+    ymax = math.ceil(max(s[5] for s in spans) / 10) * 10
+    if ymax <= ymin:
+        ymax = ymin + 10
+    step = 20 if ymax - ymin > 150 else 10
+    lw, pw = _LIFESPAN_LABEL_W, _LIFESPAN_PLOT_W
+    width = lw + pw + _LIFESPAN_NOTE_W
+    rh, bh, top = _LIFESPAN_ROW_H, _LIFESPAN_BAR_H, _LIFESPAN_TOP
+    y_axis = top + rh * len(spans)
+    height = y_axis + 26
+
+    def x_of(year: float) -> float:
+        return lw + (year - ymin) / (ymax - ymin) * pw
+
+    def short(text: str, limit: int) -> str:
+        return text if len(text) <= limit else text[:limit - 1] + '…'
+
+    esc = html.escape
+    out = [f'<svg class="lifespan-chart" viewBox="0 0 {width:.1f} {height:.1f}" '
+           f'preserveAspectRatio="xMidYMid meet" role="img" '
+           f'aria-label="{esc(_lifespan_summary(spans))}">',
+           '<defs><pattern id="fha-lifespan-hatch" width="4" height="4" '
+           'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+           '<line class="lifespan-hatch" x1="0" y1="0" x2="0" y2="4"/></pattern></defs>']
+    for year in range(ymin, ymax + 1, step):
+        x = x_of(year)
+        out.append(f'<line class="lifespan-grid" x1="{x:.1f}" y1="{top:.1f}" '
+                   f'x2="{x:.1f}" y2="{y_axis:.1f}"/>')
+        out.append(f'<text class="lifespan-tick" x="{x:.1f}" y="{y_axis + 16:.1f}" '
+                   f'text-anchor="middle">{year}</text>')
+    out.append(f'<line class="lifespan-axis" x1="{lw:.1f}" y1="{y_axis:.1f}" '
+               f'x2="{lw + pw:.1f}" y2="{y_axis:.1f}"/>')
+    for i, (r, s_lo, s_hi, s_open, e_lo, e_hi, e_open) in enumerate(spans):
+        y0 = top + i * rh
+        by = y0 + (rh - bh) / 2
+        name, role = r.get('name') or '', r.get('role') or ''
+        notes = []
+        if s_open:
+            notes.append('birth not recorded')
+        if e_open:
+            notes.append('death not recorded')
+        note = ('dates not recorded' if len(notes) == 2 else notes[0]) if notes else ''
+        years = r.get('years') or ''
+        title = f'{name}, {role}' + (f': {years}' if years else '')
+        if note:
+            title += f' ({note})'
+        out.append(f'<g class="lifespan-row" data-role="{esc(role)}">')
+        out.append(f'<title>{esc(title)}</title>')
+        out.append(f'<text class="lifespan-name" x="{lw - 10:.1f}" y="{y0 + 15:.1f}" '
+                   f'text-anchor="end">{esc(short(name, _LIFESPAN_NAME_MAX))}</text>')
+        detail = ', '.join(p for p in (role, years) if p)
+        out.append(f'<text class="lifespan-role" x="{lw - 10:.1f}" y="{y0 + 28:.1f}" '
+                   f'text-anchor="end">{esc(short(detail, _LIFESPAN_ROLE_MAX))}</text>')
+        xs, xe = x_of(s_hi), x_of(e_lo)
+        out.append(f'<rect class="lifespan-bar" x="{xs:.1f}" y="{by:.1f}" '
+                   f'width="{max(xe - xs, 2.0):.1f}" height="{bh:.1f}" rx="2"/>')
+        if s_hi > s_lo:
+            out.append(f'<rect class="lifespan-cap" x="{x_of(s_lo):.1f}" y="{by:.1f}" '
+                       f'width="{x_of(s_hi) - x_of(s_lo):.1f}" height="{bh:.1f}" '
+                       f'fill="url(#fha-lifespan-hatch)"/>')
+        if e_hi > e_lo:
+            out.append(f'<rect class="lifespan-cap" x="{x_of(e_lo):.1f}" y="{by:.1f}" '
+                       f'width="{x_of(e_hi) - x_of(e_lo):.1f}" height="{bh:.1f}" '
+                       f'fill="url(#fha-lifespan-hatch)"/>')
+        if note:
+            out.append(f'<text class="lifespan-note" x="{x_of(e_hi) + 5:.1f}" '
+                       f'y="{by + bh - 2:.1f}">{note}</text>')
+        out.append('</g>')
+        if role == 'subject':
+            # A guide line is a sharp year, so it is drawn only for a date
+            # known to the year; a range would read as a confident point.
+            for part, spot in (('born', s_lo if not s_open and s_hi == s_lo else None),
+                               ('died', e_lo if not e_open and r.get('death')
+                                and e_hi == e_lo else None)):
+                if spot is not None:
+                    x = x_of(spot)
+                    out.append(f'<line class="lifespan-mark" x1="{x:.1f}" y1="{top:.1f}" '
+                               f'x2="{x:.1f}" y2="{y_axis:.1f}"><title>{esc(name)} '
+                               f'{part}</title></line>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
 
 def _rel_href(target: Path, page_dir: Path) -> str:
@@ -6745,6 +6924,15 @@ class _SiteBuilder:
         fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees),
                                        _chart_name(name, 'ancestor-fan')))
                if len(ahnen) > 1 else None)
+        # "Who overlapped": a bar per relative on one time line, drawn only
+        # when at least two people have dates to compare.
+        lifespan_rows, lifespan_omitted = self._build_lifespan_rows(pid, wings, page_dir)
+        lifespan = None
+        if len(lifespan_rows) >= 2:
+            lifespan = {'svg': self._markup(_tag_chart(_render_lifespan_svg(lifespan_rows),
+                                                         _chart_name(name, 'who-overlapped'))),
+                        'omitted': lifespan_omitted,
+                        'chart': _chart_name(name, 'who-overlapped')}
         # The plain-words key goes under a chart only when that chart fades someone.
         chart_weak_key = (_WEAK_LINE_KEY if has_pedigree and _any_weak_slot(ped_labels, 2) else None)
         fan_weak_key = (_WEAK_LINE_KEY if fan and _any_weak_slot(ahnen, self.fan_generations)
@@ -6776,6 +6964,7 @@ class _SiteBuilder:
             'chart_title': chart_title,
             'chart_weak_key': chart_weak_key,
             'fan': fan,
+            'lifespan': lifespan,
             'fan_weak_key': fan_weak_key,
             'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
             'descendants_tree': descendants_tree,
@@ -9980,6 +10169,122 @@ class _SiteBuilder:
             'nodes': nodes,
             'edges': edges,
         }
+
+    def _dated_record_years(self, pid: str) -> tuple[int | None, int | None]:
+        """The years of this person's earliest and latest dated accepted
+        record, for a lifespan bar whose birth or death is not recorded.
+
+        A relative sees a bar run to the last year the archive can show he or
+        she was alive. Same filters as `_person_vitals`: a birth or death
+        record about somebody else (a child's birth) is not this person's, and
+        a shared site skips a restricted claim, a hard-restricted source or a
+        record shared with a living twin. Another person's record cannot
+        stretch a bar, so only the person's own vitals and the records that
+        name them count."""
+        years: list[tuple[int, int]] = []
+        for r in self.conn.execute(
+                "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.status = 'accepted' "
+                "AND COALESCE(c.negated, 0) = 0 AND c.date_edtf IS NOT NULL "
+                "ORDER BY c.id", (pid,)):
+            if r['type'] in ('birth', 'death') and not self._claim_is_own_vital(
+                    pid, r['id'], r['type']):
+                continue
+            if not self.linked and (
+                    normalize_id(str(r['id'])) in self.restricted_claims
+                    or self._source_hard_restricted(r['source_id'])
+                    or self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD):
+                continue
+            span = _lifespan_years(r['date_edtf'])
+            if span:
+                years.append(span)
+        if not years:
+            return None, None
+        return min(y[0] for y in years), max(y[1] for y in years)
+
+    def _build_lifespan_rows(self, pid: str, wings: dict, page_dir: Path) -> tuple[list, int]:
+        """The rows of the person page's "Who overlapped" chart, and how many
+        shown people had no date to draw.
+
+        A relative sees the person's parents (father first), the person,
+        each spouse in marriage order, then the children by birth year. Anyone
+        the page does not name in a shared site is absent, never a "Living
+        Person" bar: a living person's bar would give away a birth year. So
+        the rows reuse the family chart's own gates (`_chart_entry` for the
+        parents, `_build_family_wings` for spouses and children), and the
+        count of people without dates counts only people the page shows."""
+        people: list[tuple[str, dict]] = []
+        subject = self._chart_entry(pid, page_dir)
+        if subject['redacted']:
+            return [], 0
+        subject['id'] = pid
+        parents = []
+        seen = {pid}
+        for r in self.conn.execute(
+                "SELECT r.other_id, p.sex FROM relationships r "
+                "LEFT JOIN persons p ON p.id = r.other_id "
+                "WHERE r.person_id = ? AND r.rel = 'parent' "
+                "GROUP BY r.other_id ORDER BY r.other_id", (pid,)):
+            other = r['other_id']
+            if not self.linked:
+                ometa = self.person_meta.get(other)
+                if (ometa is None or self._person_is_redacted(ometa)
+                        or not self._has_public_claim(pid, other)):
+                    continue
+            entry = self._chart_entry(other, page_dir)
+            if entry['redacted'] or other in seen:
+                continue
+            seen.add(other)
+            entry['id'] = other
+            role = {'M': 'father', 'F': 'mother'}.get(r['sex'] or '', 'parent')
+            parents.append(({'father': 0, 'mother': 1}.get(role, 2), other, role, entry))
+        parents.sort(key=lambda t: t[:2])
+        people.extend((role, entry) for _, _, role, entry in parents)
+        people.append(('subject', subject))
+        for entry in wings['spouses']:
+            if entry['id'] not in seen:
+                seen.add(entry['id'])
+                people.append(('spouse', entry))
+        kids = [e for e in wings['children'] if e['id'] not in seen]
+        kids.sort(key=lambda e: (
+            (_lifespan_years(e['dates']['birth']) or (9999, 9999))[0], e['id']))
+        people.extend(('child', e) for e in kids)
+
+        today_year = int(_today()[:4])
+        rows, omitted = [], 0
+        for role, entry in people:
+            other = entry['id']
+            birth = _lifespan_years(entry['dates']['birth'])
+            death = _lifespan_years(entry['dates']['death'])
+            first, last = self._dated_record_years(other)
+            if birth is None and death is None and first is None:
+                omitted += 1
+                continue
+            meta = self.person_meta.get(other)
+            living = bool(meta is not None and (meta['living'] or '') == 'true'
+                          and death is None)
+            if living:
+                last = today_year
+            rows.append({'name': entry['name'], 'role': role, 'birth': birth,
+                         'death': death, 'first': first, 'last': last,
+                         'living': living,
+                         'years': self._lifespan_years_text(entry['dates'], living)})
+        return rows, omitted
+
+    @staticmethod
+    def _lifespan_years_text(dates: dict, living: bool) -> str:
+        """The years printed under a name on the lifespan chart: '1810-1880',
+        'abt. 1840-1920', 'b. 1868', 'd. 1890', or 'b. 1990, living'. A range
+        or a qualified date on either side spells out both ends instead, so a
+        range never reads as a birth and a death."""
+        b = _chart_year(dates['birth']).replace('–', ' to ')
+        d = _chart_year(dates['death']).replace('–', ' to ')
+        if b and d:
+            return f'b. {b}, d. {d}' if (' to ' in b or ' to ' in d) else f'{b}-{d}'
+        if b:
+            return f'b. {b}, living' if living else f'b. {b}'
+        return f'd. {d}' if d else ''
 
     def _chart_entry(self, pid: str, page_dir: Path) -> dict:
         """One redacted display node {'name','url','redacted','dates'} for any
