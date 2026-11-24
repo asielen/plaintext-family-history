@@ -19675,8 +19675,20 @@ def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
     root_position: int = 1,
+    *, edge_ok: Callable[[dict], bool] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
+
+    `edge_ok(row) -> bool`, when given, is asked once per parent edge (a dict
+    with person_id, rel, other_id, claim_id, source_id, status, subtype - the
+    same row `kin_graph` hands its filter) and a False edge is not walked, so
+    a shared page's family-tree number is never worked out through a tie the
+    page may not show. A parent kept by one allowed claim still counts when
+    another claim for the same tie is refused. A shown parent keeps the slot
+    the unfiltered walk gives them when it fits their recorded sex (a hidden
+    father does not push an unsexed mother into no. 2); otherwise (a hidden
+    DNA father outranked the legal one) they take the slot the shown parents
+    alone give them. None (the default) walks every edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19730,72 +19742,125 @@ def build_ahnentafel_map(
     pid_to_pos: dict[str, int] = {root_pid: root_position}
     queue: deque[tuple[str, int]] = deque([(root_pid, root_position)])
 
+    def _slots(edges: list[tuple[str, str]], n: int) -> list[tuple[str, str, int, bool]]:
+        """(pid, sex, position, only_parent) for the parents of the person at n."""
+        if len(edges) == 1:
+            p_pid, p_sex = edges[0]
+            return [(p_pid, p_sex, 2 * n if p_sex != 'F' else 2 * n + 1, True)]
+        # Two or more genetic parent edges - assisted reproduction (a
+        # donor-egg mother plus a surrogate-genetic mother plus a
+        # donor-sperm father), or a co-valid biological/surrogate-genetic
+        # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
+        # exactly one contributor per slot: the father slot is 2n, the
+        # mother slot 2n+1. Taking the first two SQL rows would let two
+        # female contributors land in both slots and drop the sperm
+        # contributor entirely, and the choice would swing with row order.
+        #
+        # TOOLING 7 fixes the rule: "The parent with sex: M takes position
+        # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
+        # first-encountered parent (by P-id, deterministic) takes the lower
+        # slot. Where two genetic contributors share a role ... the genetic
+        # contributor anchors the number and the other is shown beside it."
+        # So we rank every contributor for each slot by (sex-fitness, P-id):
+        # the father slot prefers M, then U, then F; the mother slot prefers
+        # F, then U, then M; P-id breaks every tie so runs always agree.
+        # The father-slot winner is chosen first and removed, then the
+        # mother-slot winner from the rest. Extra contributors beyond the two
+        # slots are intentionally left unnumbered here - `fha views brackets`
+        # lists them beside the couple. This reproduces the old two-parent
+        # behaviour exactly for every sex combination while staying
+        # deterministic for three or more contributors.
+        def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
+
+        def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
+
+        sex_of = dict(edges)
+        father = min(edges, key=_father_rank)[0]
+        remaining = [e for e in edges if e[0] != father]
+        mother = min(remaining, key=_mother_rank)[0]
+        return [(father, sex_of[father], 2 * n, False),
+                (mother, sex_of[mother], 2 * n + 1, False)]
+
     while queue:
         pid, n = queue.popleft()
-        parent_rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.other_id AS pid, p.sex
-            FROM relationships r
-            JOIN persons p ON r.other_id = p.id
-            LEFT JOIN claims c ON r.claim_id = c.id
-            WHERE r.person_id = ? AND r.rel = 'parent'
-              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
-            ORDER BY r.other_id
-            """,
-            (pid, *social),
-        ).fetchall()
-
-        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        allowed: set[str] | None = None
+        if edge_ok is None:
+            parent_rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.other_id AS pid, p.sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id
+                """,
+                (pid, *social),
+            ).fetchall()
+            parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        else:
+            cur = conn.execute(
+                f"""
+                SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id,
+                       r.claim_id AS claim_id, c.source_id AS source_id,
+                       c.status AS status, c.subtype AS subtype, p.sex AS sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id, r.claim_id
+                """,
+                (pid, *social),
+            )
+            # A hidden tie still holds its slot: a mother whose sex is unset
+            # keeps the number the folders give her (3) when only the father's
+            # tie is refused, instead of sliding into his slot (2). Slots are
+            # chosen over every genetic parent; only allowed ones are walked.
+            cols = [d[0] for d in cur.description]
+            every: dict[str, str] = {}
+            allowed = set()
+            for raw in cur.fetchall():
+                row = dict(zip(cols, tuple(raw.values()) if isinstance(raw, dict) else tuple(raw)))
+                every.setdefault(row['other_id'], row['sex'] or 'U')
+                if edge_ok(row):
+                    allowed.add(row['other_id'])
+            parents = sorted(every.items())
         if not parents:
             continue
 
-        if len(parents) == 1:
-            p_pid, p_sex = parents[0]
-            pos = 2 * n if p_sex != 'F' else 2 * n + 1
+        slots = _slots(parents, n)
+        if allowed is not None:
+            # A shown parent keeps the slot the full walk gives them when it
+            # fits their own recorded sex, so a hidden father never pushes an
+            # unsexed mother into his number. Otherwise (a hidden DNA father
+            # outranked the legal one, or pushed him into the mother's number)
+            # they take the slot the shown parents alone would give them. The
+            # folders' number wins where the two pull apart (an unsexed parent
+            # beside a hidden father keeps no. 3), so a rare mix of three or
+            # more genetic parents can still number differently from a tree
+            # without the hidden one.
+            def _fits(e: tuple[str, str, int, bool]) -> bool:
+                return {'M': e[2] % 2 == 0, 'F': e[2] % 2 == 1}.get(e[1], True)
+            kept = [e for e in slots if e[0] in allowed and _fits(e)]
+            taken = {e[2] for e in kept}
+            have = {e[0] for e in kept}
+            for e in _slots([e for e in parents if e[0] in allowed], n) if allowed else []:
+                if e[0] not in have and e[2] not in taken:
+                    kept.append(e)
+                    taken.add(e[2])
+                    have.add(e[0])
+            slots = kept
+        for p_pid, p_sex, pos, only_parent in slots:
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
-                if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
+                if only_parent and sex_gaps is not None and sex_slot_is_defaulted(p_sex):
                     sex_gaps.append({'pid': p_pid, 'pos': pos, 'sex': p_sex})
-        else:
-            # Two or more genetic parent edges - assisted reproduction (a
-            # donor-egg mother plus a surrogate-genetic mother plus a
-            # donor-sperm father), or a co-valid biological/surrogate-genetic
-            # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
-            # exactly one contributor per slot: the father slot is 2n, the
-            # mother slot 2n+1. Taking the first two SQL rows would let two
-            # female contributors land in both slots and drop the sperm
-            # contributor entirely, and the choice would swing with row order.
-            #
-            # TOOLING 7 fixes the rule: "The parent with sex: M takes position
-            # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
-            # first-encountered parent (by P-id, deterministic) takes the lower
-            # slot. Where two genetic contributors share a role ... the genetic
-            # contributor anchors the number and the other is shown beside it."
-            # So we rank every contributor for each slot by (sex-fitness, P-id):
-            # the father slot prefers M, then U, then F; the mother slot prefers
-            # F, then U, then M; P-id breaks every tie so runs always agree.
-            # The father-slot winner is chosen first and removed, then the
-            # mother-slot winner from the rest. Extra contributors beyond the two
-            # slots are intentionally left unnumbered here - `fha views brackets`
-            # lists them beside the couple. This reproduces the old two-parent
-            # behaviour exactly for every sex combination while staying
-            # deterministic for three or more contributors.
-            def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
-
-            def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
-
-            father = min(parents, key=_father_rank)[0]
-            remaining = [e for e in parents if e[0] != father]
-            mother = min(remaining, key=_mother_rank)[0]
-            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
-                if pp not in pid_to_pos:
-                    pid_to_pos[pp] = pos
-                    queue.append((pp, pos))
 
     return pid_to_pos
 
