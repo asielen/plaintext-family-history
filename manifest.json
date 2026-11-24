@@ -1225,7 +1225,7 @@
     {
       "path": ".fha/tools/templates/calendar.html",
       "category": "operating",
-      "sha256": "f06e58078d7389141bf0f8bcd124d408da77e18e92ddb8e6c9373567e3da3a69",
+      "sha256": "3dc472a61967ad425c33023a3e25cfeb916b92c7acbbeabcaa8410ccc39fa0d9",
       "spec_version": "2.33",
       "src": "tools/templates/calendar.html"
     },
