@@ -29,7 +29,10 @@ current folder.
 - [`fha search`](#fha-search)
 - [`fha relate`](#fha-relate)
 - [`fha metrics`](#fha-metrics)
+- [`fha compare`](#fha-compare)
 - [`fha calendar`](#fha-calendar)
+- [`fha date`](#fha-date)
+- [`fha repositories`](#fha-repositories)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
 - [`fha cooccur`](#fha-cooccur)
@@ -199,6 +202,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -357,6 +361,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
+### `fha views ahnentafel`
+
+Print a numbered list of a person's ancestors, each fact with its source.
+
+```text
+Write a printed Ahnentafel report to generated/views/: the person is
+number 1, then 2 his father, 3 his mother, 4 his father's father, and
+so on, with dates, places and a note for each fact. A living relative
+is shown as "A living relative (not named)"; private records are left
+out. The numbering starts at 1 for the person asked about, whatever
+root_generation says.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person whose ancestors are listed (a living person is allowed). |
+| `--generations` `N` | How many generations to print, the person being the first (default 6, most 12). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
 ### `fha views clean`
 
 Delete every generated view file (companion .md + generated/views/ HTML); they regenerate with `fha views refresh`.
@@ -480,6 +505,8 @@ Show how two people are related.
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
   fha relate P-A --all        Everyone related to one person: blood relatives
                               nearest first, then those related by marriage
+  fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
+  fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
 A read-only view over accepted relationship claims: nothing is written.
 ```
@@ -489,6 +516,7 @@ A read-only view over accepted relationship claims: nothing is written.
 | `[P-A]` | First person: ID or full name |
 | `[P-B]` | Second person: ID or full name |
 | `--all` | List everyone related to one person, by blood or by marriage |
+| `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 
@@ -522,6 +550,34 @@ nothing is written.
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
+## `fha compare`
+
+Every record about one fact of one person, side by side.
+
+```text
+Every record about one fact, side by side.
+
+  fha compare p-xxxxxxxxxx               Which facts of this person have records that disagree
+  fha compare "Mary Smith" --fact birth  Every birth or baptism record in one table: what it says,
+                                         when it was written, who told it, firsthand or not, and
+                                         which records are copies of one another
+  fha compare p-xxxxxxxxxx --fact death  death, marriage, parents, name, residence, or any claim type
+  fha compare p-xxxxxxxxxx --accepted-only   Leave out records not yet reviewed
+  fha compare p-xxxxxxxxxx --include-rejected   Also show rejected and superseded records
+  fha compare p-xxxxxxxxxx --json        The same answer as machine-readable JSON
+
+Read-only: nothing is written.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person, by ID or by full name |
+| `--fact` `FACT` | birth, death, marriage, parents, name, residence or any claim type (default: list the facts whose records disagree) |
+| `--accepted-only` | Only accepted claims (default also shows suggested and disputed) |
+| `--include-rejected` | Also show rejected and superseded claims |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
+
 ## `fha calendar`
 
 What happened in the family this month, or on this day?
@@ -546,6 +602,84 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
+
+## `fha date`
+
+Convert a date from the old calendar, a church feast or the Hebrew calendar
+
+```text
+Dates written in another calendar: the old (Julian) calendar, a church feast,
+or the Hebrew calendar. Prints the same day in today's calendar, its weekday,
+and the lines to put in a claim.
+
+  fha date convert "11 Feb 1731/32" --from julian
+  fha date convert 1918-02-14 --from gregorian
+  fha date convert "15 Nisan 5650" --from hebrew
+  fha date feast Michaelmas 1850
+  fha date feast Pokrov 1880 --church orthodox
+
+Pure arithmetic: nothing in the archive is read or written.
+```
+
+### `fha date convert`
+
+Convert a date from the old, today's or the Hebrew calendar
+
+```text
+Convert one date. Julian or Gregorian: 1732-02-11, "11 Feb 1732", "February 11, 1732", "Feb 1732", 1732, and a double year such as "11 Feb 1731/32". Hebrew: "15 Nisan 5650", "14 Adar II 5784".
+```
+
+| Argument | What it does |
+|---|---|
+| `DATE` | The date as the record writes it |
+| `--from` `{julian,gregorian,hebrew}` | The calendar the record uses: julian (the old calendar, "Old Style"), gregorian (today's) or hebrew |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
+
+### `fha date feast`
+
+The day a church feast or fast fell on in one year
+
+```text
+The day a church feast or fast fell on in one year. Names are matched exactly (accents and case aside): "Michaelmas", "St Stephen", "Easter Monday", "Pokrov". An unknown name lists the ones known.
+```
+
+| Argument | What it does |
+|---|---|
+| `NAME` | The feast, as the record names it |
+| `YEAR` | The year, e.g. 1850 |
+| `--church` `{western,orthodox}` | western (Catholic and Protestant, the default) or orthodox (kept in the old calendar) |
+| `--json` | Machine-readable JSON output (one object) |
+| `--root` `PATH` | Accepted and ignored: this command needs no archive |
+
+## `fha repositories`
+
+Where are the records? Archives and record sites for a place, year and kind of record.
+
+```text
+Where are the records? Archives and record sites for a place, a year and a kind
+of record, from the list that ships with the tools.
+
+  fha repositories --place l-xxxxxxxxxx --year 1911 --record death
+  fha repositories --place Fairview --year 1860 --record birth
+  fha repositories --country "United States" --year 1880 --record census
+
+A place with dated history is looked up under the government that held it in
+that year and under the country it is in today; each line says which. Every
+line says what it costs and how to reach it. Read-only.
+```
+
+| Argument | What it does |
+|---|---|
+| `--place` `L-ID|TOWN` | A registered place, by l-id or name |
+| `--country` `NAME|CC` | A country by name or two-letter code, for a place not registered yet |
+| `--year` `YYYY` | The year the record was made |
+| `--record` `KIND` | Kind of record: birth, baptism, marriage, death, burial, grave, census, military, immigration, probate, land, newspaper, church |
+| `--topic` `{jewish,african-american}` | A topic list: jewish or african-american |
+| `--access` `{free,paid,any}` | free keeps free and free-with-account; paid keeps paid and part-paid |
+| `--limit` `N` | How many to list (default 10) |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
@@ -1279,7 +1413,7 @@ Enact a human-confirmed identity merge: tombstone + rename + fold + relink (SPEC
 
 ## `fha person`
 
-Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, relate, estimate, edit, note
+Change a person record: new, promote, rename, set-living, set-profile-photo, set-sex, set-external-id, relate, estimate, edit, note
 
 ```text
 Update a person's record directly, one field or section at a time.
@@ -1288,6 +1422,7 @@ Update a person's record directly, one field or section at a time.
   fha person promote <p-id> [--into FOLDER]
   fha person rename <p-id> "New Name" [--keep-variant]
   fha person set-living <p-id> true|false|unknown
+  fha person set-external-id <p-id> SITE ID [--replace]
   fha person relate <p-id> --parent|--child|--sibling|--spouse <p-id2>
   fha person estimate <p-id> --birth DATE --death DATE
   fha person edit <p-id> --section biography|stories|research --text TEXT
@@ -1487,6 +1622,27 @@ Set a person's sex: field. The numbered family-tree folders (Ahnentafel numberin
 | `SEX` | M, F, intersex, or unknown (case-insensitive). |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 | `--dry-run` | Preview the one-line change without writing. |
+
+### `fha person set-external-id`
+
+Record a person's profile id on another site (WikiTree, Ancestry, ...).
+
+```text
+Record which profile on another site is this person's, so the next capture and the WikiTree export match the right person.
+
+  fha person set-external-id p-2b3c4d5e6f wikitree Hartley-6084
+
+Writes or replaces one key in external_ids: and nothing else. A key the person already has with a different id needs --replace. An id another person already holds is refused, naming them. Preview with --dry-run.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person to update (e.g. p-2b3c4d5e6f). |
+| `SITE` | The site: wikitree, ancestry, familysearch, ... |
+| `ID` | The id as the site shows it (e.g. Hartley-6084). |
+| `--replace` | Replace an id the person already has for this site. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+| `--dry-run` | Preview the change without writing. |
 
 ### `fha person relate`
 

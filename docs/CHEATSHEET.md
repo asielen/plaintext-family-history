@@ -52,13 +52,17 @@ fha backup                    # dated zip beside the archive; to restore, unzip 
 fha update-tools --dry-run --repo PATH-TO-PROJECT   # preview a tools update (docs/UPDATING.md)
 fha relate p-aaaa p-bbbb      # how are these two related?
 fha relate p-aaaa --all       # everyone related to this person
+fha relate --cm 450           # which relationships fit 450 cM of shared DNA?
 fha metrics                   # who still lacks a birth, census or marriage record?
 fha metrics "Ann Smith"       # one person's checks in detail, by name or p-id
 fha calendar today            # who in the family was born, married or died on this day?
+fha date convert "11 Feb 1731/32" --from julian   # an old-calendar date as today's day (also feasts: fha date feast Michaelmas 1850)
 fha person new "Ann Smith" --sex F   # add one new person (refuses a name already on file)
 fha person new --from-file people.tsv   # add a list at once: name, sex, surname per line, tab-separated
+fha person set-external-id p-aaaa wikitree Hartley-6084   # note which WikiTree (or ancestry, familysearch) profile is this person's
 fha views timeline p-aaaa --format html   # a printable one-page timeline (lands in generated/views/)
 fha views family-sheet p-aaaa --format html   # a family group sheet to print for a relative (lands in generated/views/)
+fha views ahnentafel p-aaaa --format html   # a numbered list of his ancestors to print (lands in generated/views/)
 fha photoindex gallery --person p-aaaa    # a clickable page of someone's photos; double-click to open (lands in generated/gallery/)
 ```
 

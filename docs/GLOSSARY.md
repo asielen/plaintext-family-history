@@ -18,6 +18,11 @@
 **Claim** (`c-`): one statement a source makes (a date, place, relationship or other fact). It lives inside its source record and moves through review (see *Status*).
 *Example: "born 12 March 1898 in Leeds," read off a birth certificate and marked `accepted`.*
 
+**cM (centimorgan):** The unit DNA testing companies use for how much DNA two people share. More cM means a closer relationship, but every amount fits several relationships: `fha relate --cm 450` lists them. It never gives a percentage chance, and documents decide which relationship it is. Figures: The Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.
+*Example: A match page says "450 cM". That fits first cousins, half first cousins and several others, so it is a reason to look for documents, not an answer.*
+
+**Double cousin:** when two brothers marry two sisters, their children share all four grandparents and are double first cousins. `fha relate` says *double* only for two full lines at the same cousin degree; two people related some other way twice (cousins whose grandparents were cousins) hear each line on its own, nearest first.
+
 **Doctor:** `fha doctor`, the archive's health check. It looks for the common problems (an out-of-date index, a drive that isn't plugged in, a missing helper program, an old backup) and names the fix for each. Run it first whenever something seems wrong.
 
 **EDTF:** Extended Date/Time Format (ISO 8601-2), the way all dates are written, so approximate and partial dates are as valid as exact ones (`1850~`, `185X`, `1871-02/1871-03`).
