@@ -9277,10 +9277,11 @@ class _SiteBuilder:
 
         A relative should see only what he chose to share and never a living
         person's name, so a question is dropped whole when anything it names
-        is withheld: its home file belongs to a by-request person, a person
-        in `refs:` has no page here (living, unknown, restricted, or not in
-        the archive), a source in `refs:` has no page, or its heading names a
-        withheld person through a `[[p-...]]` link. Only the heading and the
+        is withheld: its home file is the research file of a person with no
+        page here, a person in `refs:` has no page here (living, unknown,
+        restricted, by-request, or not in the archive), a source in `refs:`
+        has no page, a ref is not an ID, or its heading names a withheld
+        person or record in any link form. Only the heading and the
         people and sources in `refs:` are published: the working answer, its
         basis and `context:` never are. Sorted by heading, then file, so a
         rebuild is byte-identical."""
@@ -9296,16 +9297,48 @@ class _SiteBuilder:
                 continue
             if self._question_origin_is_by_request(info):
                 continue
-            refs = list(dict.fromkeys(info['refs']))
-            people = [normalize_id(r) for r in refs if r.startswith('p-')]
-            sources = [normalize_id(r) for r in refs if r.startswith('s-')]
+            # A question kept in a person's research file is about that
+            # person: if her page is withheld (living, unknown, private), the
+            # question stays home too. A file whose owner cannot be read
+            # from its name stays home as well (fail closed).
+            home = info.get('file') or ''
+            if home != 'notes/questions.md':
+                parsed = parse_filename(Path(home))
+                if (parsed is None or parsed.get('id_type') != 'P'
+                        or normalize_id(parsed['id_str']) not in self.person_pages):
+                    continue
+            # Every ref must be a recognisable ID; a ref written as a
+            # wikilink is read for the ID inside it, and anything else
+            # (a name, a typo) keeps the question home rather than guessing.
+            ref_ids: list[str] | None = []
+            for raw in info['refs']:
+                ids = [normalize_id(m) for m in _BARE_ID_RE.findall(raw)]
+                if not ids:
+                    ref_ids = None
+                    break
+                ref_ids.extend(ids)
+            if ref_ids is None:
+                continue
+            refs = list(dict.fromkeys(ref_ids))
+            people = [r for r in refs if r.startswith('p-')]
+            sources = [r for r in refs if r.startswith('s-')]
             if any(p not in self.person_pages or self._person_is_by_request(
                     p, question_origin=info.get('file')) for p in people):
                 continue
             if any(s not in self.source_pages for s in sources):
                 continue
+            # The heading may name people or records in any link form
+            # (`[[p-…]]`, a markdown link to the person's file, a bare ID).
+            # Any person or record without a page here keeps it home, and so
+            # does a rendered "Living Person" or "Restricted" label: even the
+            # label tells relatives something private exists.
+            heading_ids = {normalize_id(m) for m in _BARE_ID_RE.findall(info['heading'])}
+            if any((h.startswith('p-') and h not in self.person_pages)
+                   or (h.startswith('s-') and h not in self.source_pages)
+                   for h in heading_ids):
+                continue
             heading_html = _inline_html(info['heading'], render)
-            if _LIVING_LABEL in heading_html:
+            if _LIVING_LABEL in heading_html or _RESTRICTED_LABEL in heading_html:
                 continue
             found.append((info['heading'], info['file'], {
                 'heading_html': self._markup(heading_html),

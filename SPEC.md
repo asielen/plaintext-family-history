@@ -911,7 +911,7 @@ An entry is an `## Q:` heading, then one markdown list line per field. The `- ` 
 - `refs:`: a bracketed list of bare IDs, `[p-…, c-…]`, naming who and what the question is about.
 - `id:`, `guess:`, `basis:`, `verify:`: present once the question has a working answer (step 2 of the ladder). The `h-` id is added with the guess and never changes or is reused; the people in `refs:` are the people the working answer is about.
 - `context:`: dated, origin-attributed findings indented beneath it and appended over time.
-- `share:`: optional; `family` puts the question on the shared site's questions page (`TOOLING.md` §12) when that page is turned on. Only the question's heading and the people and sources in `refs:` are shown there; the working answer and `context:` never leave the archive. Absent means the question stays in the working archive. Like `status:`, it is the human's to set.
+- `share:`: optional; `family` marks a question the human is willing to show relatives (the shared site's questions page, `TOOLING.md` §12). Only its heading and `refs:` are shared; the working answer and `context:` never leave the archive. Absent means the question stays in the working archive. Like `status:`, it is the human's to set.
 
 Tooling may propose answers and closures and append context; status changes require human confirmation.
 

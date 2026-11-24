@@ -130,6 +130,59 @@ class QuestionsPageTests(_QBase):
         self.build()
         self.assertNotIn('Where did Quinn go?', self.page('questions.html'))
 
+    def research_file(self, pid, surname, block):
+        path = self.root / f'people/{surname}__x_research_{pid}.md'
+        path.write_text(f'---\nid: {pid}\n---\n# Research\n\n## Open Questions\n\n' + block,
+                        encoding='utf-8')
+
+    def test_a_question_homed_with_a_withheld_person_is_dropped(self):
+        # TOOLING §12: a question kept in a living, unknown or private
+        # person's research file is about them, so it stays home even when
+        # its refs name only people with pages.
+        self.config(ON)
+        self.person('p-ffffffffff', 'Rhea Hartley', extra='restricted: true\n')
+        self.research_file(LIVE, 'hartley', q('HOME-live: where was her grandfather from?', refs=[DAD]))
+        self.research_file(UNK, 'hartley', q('HOME-unk: where was her grandfather from?', refs=[DAD]))
+        self.research_file('p-ffffffffff', 'hartley',
+                           q('HOME-rhea: where was her grandfather from?', refs=[DAD]))
+        self.research_file(ME, 'hartley', q('HOME-anne: where was her father from?', refs=[DAD]))
+        self.build()
+        html = self.page('questions.html')
+        for gone in ('HOME-live', 'HOME-unk', 'HOME-rhea'):
+            self.assertNotIn(gone, html)
+        self.assertIn('HOME-anne', html)
+
+    def test_a_markdown_link_to_a_living_person_drops_the_question(self):
+        self.config(ON)
+        self.questions(q(f'Is [Liv Hartley](../people/hartley_{LIVE}.md) Carl\'s niece?',
+                         refs=[DAD]))
+        self.build()
+        html = self.page('questions.html')
+        self.assertNotIn('Liv Hartley', html)
+        self.assertNotIn(LIVE, html)
+
+    def test_a_withheld_record_in_the_heading_drops_the_question(self):
+        # Showing "Restricted" would tell relatives a private record exists.
+        self.config(ON)
+        self.source('s-bbbbbbbbbb', 'A private letter', restricted=1)
+        self.questions(q('What does [[s-bbbbbbbbbb]] say about Carl?', refs=[DAD]),
+                       q('Who is [[p-zzzzzzzzzz]]?', refs=[DAD]))
+        self.build()
+        html = self.page('questions.html')
+        self.assertNotIn('say about Carl', html)
+        self.assertNotIn('Restricted', html)
+        self.assertNotIn('p-zzzzzzzzzz', html)
+
+    def test_a_living_person_in_refs_as_a_wikilink_drops_the_question(self):
+        self.config(ON)
+        self.questions(q('REFS-WIKI: who was she?', refs=[f'[[{LIVE}]]']),
+                       q('REFS-DISP: who was she?', refs=[f'[[{LIVE}|Liv Hartley]]']),
+                       q('REFS-ODD: who was she?', refs=['Liv']))
+        self.build()
+        html = self.page('questions.html')
+        for gone in ('REFS-WIKI', 'REFS-DISP', 'REFS-ODD'):
+            self.assertNotIn(gone, html)
+
     def test_questions_are_sorted_by_heading(self):
         self.config(ON)
         self.questions(q('Zed question?', refs=[ME]), q('Alpha question?', refs=[DAD]))
