@@ -59,10 +59,14 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     configure_utf8_stdout,
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     FhaConfigError,
     Result,
     blood_answer,
+    blood_routes,
+    cm_fits,
+    expected_shared_cm,
     fmt_id_display,
     id_type_of,
     is_valid_id,
@@ -73,10 +77,12 @@ from _lib import (
     load_fha_yaml,
     normalize_id,
     open_index_db,
+    parse_cm,
     person_life_dates,
     person_name_refusal,
     persons_named,
     resolve_root_arg,
+    shared_cm_table,
 )
 
 configure_utf8_stdout()
@@ -100,10 +106,31 @@ _REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'claim_persons', 'alia
 
 # ── Engine / interface ────────────────────────────────────────────────────────
 
-def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: str) -> Result:
+def run_relate(archive_root: Path, fha_config: dict, person_a: str | None,
+               person_b: str | None, cm: str | None = None) -> Result:
     """Compute the blood relationship, the tie by marriage and the shortest path between two
     people and return a structured Result. A pure read over the index; never
-    writes. The text formatter and `--json` both render this one Result."""
+    writes. The text formatter and `--json` both render this one Result.
+
+    `cm` is the shared DNA a match page shows. With two people it says whether
+    that amount fits their recorded tie; with no people it is the lookup alone
+    (no index needed)."""
+    cm_value = None
+    if cm is not None:
+        cm_value = parse_cm(cm)
+        if cm_value is None:
+            return _usage_error(archive_root, '--cm needs a number of centimorgans, for example '
+                                '--cm 450 (from the match page: "Shared DNA: 450 cM").')
+        if person_a and not person_b:
+            return _usage_error(archive_root, '--cm goes with two people (to check their tie) '
+                                'or with none (to list what an amount fits), not one.')
+    if not person_a and not person_b:
+        if cm_value is None:
+            return _usage_error(archive_root, 'Give two people, e.g. `fha relate P-A P-B`, or an '
+                                'amount of shared DNA, e.g. `fha relate --cm 450`.')
+        return _cm_lookup(cm_value)
+    if not person_b:
+        return _usage_error(archive_root, 'Give two people, e.g. `fha relate P-A P-B`.')
     a_raw, b_raw = person_a, person_b
     pid_a, pid_b = normalize_id(person_a), normalize_id(person_b)
     for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
@@ -161,6 +188,7 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         answers = kinship_answer(graph, pid_a, pid_b,
                                  life=lambda p: person_life_dates(conn, p, vital_cache))
         path = kinship_path(graph, pid_a, pid_b)
+        n_routes = len(blood_routes(graph, pid_a, pid_b))
     finally:
         try:
             conn.close()
@@ -181,6 +209,7 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
         'a_name': people[pid_a]['name'], 'b_name': people[pid_b]['name'],
         'names': names,
         'blood': blood, 'by_marriage': by_marriage, 'any': path,
+        'dna': _dna_answer(blood, n_routes, cm_value),
     }
     # With links: obsidian (SPEC §18) each name is linked by its file name, so
     # the line can be pasted into a note Obsidian follows. The id mode's
@@ -189,6 +218,150 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
     if links.obsidian:
         data['links'] = {pid: links.link(pid, name) for pid, name in names.items()}
     return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
+
+
+# ── shared DNA (The Shared cM Project figures, _lib's shared_cm_table) ────────
+# SPEC §21: DNA evidence is restricted. This reads no DNA source and stores
+# nothing: the amount he types lives only in this command's output.
+
+def _usage_error(archive_root: Path, text: str) -> Result:
+    r = Result(ok=False, exit_code=EXIT_ERRORS, data={'error': 'usage'})
+    r.add('error', text, path=archive_root)
+    return r
+
+
+def _fig(n: float) -> str:
+    """450.0 reads "450", 1397 reads "1,397", 72.5 stays "72.5"."""
+    return f'{int(n):,}' if float(n) == int(n) else f'{n:,}'
+
+
+def _cm_row(row: dict) -> dict:
+    return {'key': row['key'], 'label': row['label'], 'average_cm': row['average'],
+            'low_cm': row['low'], 'high_cm': row['high']}
+
+
+def _usual(row: dict) -> str:
+    return f'nearly all share between {_fig(row["low_cm"])} and {_fig(row["high_cm"])} cM'
+
+
+_CM_DOCUMENTS = 'Documents decide which.'
+_CM_TOO_SMALL = 'Matches under 20 cM are often false or too distant to place.'
+_CM_TOO_BIG = ('That is more than a parent and child share. It usually means the same '
+               'person tested twice, or identical twins.')
+_CM_MISSING = ("The shared-DNA table is missing from this archive's tools. "
+               'Run `fha update-tools` to restore it.')
+_CM_NO_ROW = ('no typical figure is listed for this relationship; relatives this distant '
+              'often share little or no detectable DNA.')
+
+
+def _cm_lookup(cm: float) -> Result:
+    """`fha relate --cm N` with no people: every relationship N cM fits, the
+    typical amount nearest first. Several answers on purpose; DNA alone
+    never settles which."""
+    table = shared_cm_table()
+    data = {'cm': cm, 'fits': [], 'note': None, 'credit': table.get('credit')}
+    if not table:
+        data['note'] = _CM_MISSING
+    elif cm > max(r['high'] for r in table['rows']):
+        data['note'] = _CM_TOO_BIG
+    else:
+        data['fits'] = [_cm_row(r) for r in cm_fits(cm, table)]
+        if cm < 20:
+            data['note'] = _CM_TOO_SMALL
+    return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
+
+
+def _dna_answer(blood: dict | None, n_routes: int, cm: float | None) -> dict | None:
+    """The DNA part of a two-person answer: what the recorded blood tie
+    usually shares and, with `cm`, whether that amount fits it. None with no
+    blood tie (a tie by marriage shares no DNA by itself). Both rows when the
+    tie may be half, so he never repeats one guess."""
+    if not blood or not (blood['gens_a'] or blood['gens_b']):
+        return None       # no tie, or the same person twice
+    table = shared_cm_table()
+    dna: dict = {'expected': [], 'more_than_one_route': False, 'note': None,
+                 'credit': table.get('credit')}
+    if cm is not None:
+        dna.update(cm=cm, fits_recorded=None, fits=[])
+    if not table:
+        dna['note'] = _CM_MISSING
+        return dna
+    halves = [False, True] if blood['half'] is None else [bool(blood['half'])]
+    rows = [expected_shared_cm(blood['gens_a'], blood['gens_b'], h, table) for h in halves]
+    rows = [r for r in rows if r]
+    dna['expected'] = [_cm_row(r) for r in rows]
+    dna['more_than_one_route'] = n_routes > 1
+    if not rows:
+        dna['note'] = _CM_NO_ROW
+    if cm is not None:
+        dna['fits_recorded'] = any(r['low'] <= cm <= r['high'] for r in rows)
+        here = {r['key'] for r in rows}
+        dna['fits'] = [_cm_row(f) for f in cm_fits(cm, table) if f['key'] not in here]
+    return dna
+
+
+def _dna_lines(dna: dict) -> list[str]:
+    """The DNA line and the lines under it, without the label column."""
+    rows, cm = dna['expected'], dna.get('cm')
+    lines: list[str] = []
+    if cm is None:
+        if len(rows) == 1:
+            r = rows[0]
+            lines.append(f'{r["label"]} share about {_fig(r["average_cm"])} cM on average; '
+                         f'{_usual(r)}.')
+        elif rows:
+            first, second = rows
+            lines.append(
+                f'{first["label"]} share about {_fig(first["average_cm"])} cM on average '
+                f'(nearly all {_fig(first["low_cm"])} to {_fig(first["high_cm"])} cM); '
+                f'{second["label"]} about {_fig(second["average_cm"])} cM '
+                f'(nearly all {_fig(second["low_cm"])} to {_fig(second["high_cm"])} cM).')
+    elif rows:
+        also = ', '.join(f['label'] for f in dna['fits'][:5])
+        if dna['fits_recorded']:
+            hit = [r for r in rows if r['low_cm'] <= cm <= r['high_cm']]
+            lines.append(f'{_fig(cm)} cM fits {" and ".join(r["label"] for r in hit)} '
+                         f'(nearly all share between {_fig(min(r["low_cm"] for r in hit))} '
+                         f'and {_fig(max(r["high_cm"] for r in hit))} cM).')
+            lines.append(f'It also fits: {also}. {_CM_DOCUMENTS}' if also else _CM_DOCUMENTS)
+        else:
+            lines.append(f'{_fig(cm)} cM is outside what {" or ".join(r["label"] for r in rows)} '
+                         f'usually share ('
+                         + '; '.join(_usual(r) for r in rows) + ').')
+            lines.append((f'It fits: {also}. ' if also else '')
+                         + 'A wrong or missing parent in the tree, a half relationship, or a '
+                         'different tie could explain it.')
+        if cm < 20:
+            lines.append(_CM_TOO_SMALL)
+        elif cm > 3720:
+            lines.append(_CM_TOO_BIG)
+    if not rows and dna.get('note'):
+        lines.append(dna['note'])
+    if dna['more_than_one_route']:
+        lines.append('Because they are related by more than one route, they may share more '
+                     'than this.')
+    if dna.get('credit'):
+        lines.append(f'Figures: {dna["credit"]}.')
+    return lines
+
+
+def _print_cm_lookup(data: dict) -> None:
+    cm = data['cm']
+    if not data['fits']:
+        print(f'{_fig(cm)} cM of shared DNA: {data["note"] or "fits no relationship in the table."}')
+    else:
+        print(f'{_fig(cm)} cM of shared DNA fits several relationships. '
+              f'Closest typical amount first:')
+        for f in data['fits']:
+            print(f'  {f["label"]:<62}typical {_fig(f["average_cm"])} cM, '
+                  f'nearly all {_fig(f["low_cm"])} to {_fig(f["high_cm"])} cM')
+        print('DNA alone cannot say which of these it is; documents decide. If the two '
+              'families married into each other more than once, people can share more DNA '
+              'than these figures suggest.')
+        if data.get('note'):
+            print(data['note'])
+    if data.get('credit'):
+        print(f'Figures: {data["credit"]}.')
 
 
 # Every answer line starts its words in this column ("By marriage:" and two
@@ -216,6 +389,9 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         return result.exit_code
 
     data = result.data
+    if 'a' not in data:       # `--cm` alone: the lookup, no people
+        _print_cm_lookup(data)
+        return result.exit_code
     links = data.get('links')
     a_label = _id_name(data['a'], data['a_name'], links)
     b_label = _id_name(data['b'], data['b_name'], links)
@@ -251,6 +427,13 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         if bm.get('hedge'):
             print(f'{"":<{_LABEL}}{bm["hedge"]}')
 
+    # How much DNA such relatives usually share and, with --cm, whether the
+    # amount a match shows fits the recorded tie. Several answers, never odds.
+    dna = data.get('dna')
+    if dna:
+        for i, text in enumerate(_dna_lines(dna)):
+            print(f'{"DNA:" if i == 0 else "":<{_LABEL}}{text}')
+
     path = data.get('any')
     if path and path.get('path'):
         print(f'{"Path:":<{_LABEL}}{path["rendered"]}')
@@ -272,6 +455,8 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
+  fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
 A read-only view over accepted relationship claims: nothing is written."""
 
@@ -283,8 +468,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('person_a', metavar='P-A', help='First person: ID or full name')
-    p.add_argument('person_b', metavar='P-B', help='Second person: ID or full name')
+    p.add_argument('person_a', metavar='P-A', nargs='?', help='First person: ID or full name')
+    p.add_argument('person_b', metavar='P-B', nargs='?', help='Second person: ID or full name')
+    p.add_argument('--cm', metavar='CM',
+                   help='Shared DNA in centimorgans from a match; shows the relationships it fits')
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
@@ -300,7 +487,8 @@ def _run_relate(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    result = run_relate(archive_root, fha_config, args.person_a, args.person_b)
+    result = run_relate(archive_root, fha_config, args.person_a, args.person_b,
+                        cm=getattr(args, 'cm', None))
     return _cmd_relate(result, use_json=getattr(args, 'use_json', False))
 
 
@@ -310,8 +498,9 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('person_a', metavar='P-A')
-    parser.add_argument('person_b', metavar='P-B')
+    parser.add_argument('person_a', metavar='P-A', nargs='?')
+    parser.add_argument('person_b', metavar='P-B', nargs='?')
+    parser.add_argument('--cm', metavar='CM')
     parser.add_argument('--root', metavar='PATH')
     parser.add_argument('--json', action='store_true', dest='use_json')
     args = parser.parse_args(argv)

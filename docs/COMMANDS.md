@@ -476,14 +476,17 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
+  fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
 A read-only view over accepted relationship claims: nothing is written.
 ```
 
 | Argument | What it does |
 |---|---|
-| `P-A` | First person: ID or full name |
-| `P-B` | Second person: ID or full name |
+| `[P-A]` | First person: ID or full name |
+| `[P-B]` | Second person: ID or full name |
+| `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 
