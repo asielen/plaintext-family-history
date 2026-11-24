@@ -14,7 +14,7 @@ Genealogy keeps asking "are these two records the same human?" or "is this one r
 
 ## When this runs
 
-"Are these the same person?", "this looks like two people", "the report flagged a possible duplicate", "did Thomas Hartley and Thos. Hartley get entered twice?"
+"Are these the same person?", "this looks like two people", "the report flagged a possible duplicate" (a pair from `fha report` section 4b, possible duplicate people), "did Thomas Hartley and Thos. Hartley get entered twice?"
 
 Two *source* records that are one piece of evidence (an index entry and the document it indexes, one record saved from two sites) are not this skill. They merge with `fha source merge <keep> <other>`: run it with `--dry-run`, show the human what moves, and run it for real only on his yes. It refuses when the two sources' accepted claims are about different people.
 
@@ -34,7 +34,10 @@ Two *source* records that are one piece of evidence (an index entry and the docu
    fha cooccur                        # shared-source signal (do they keep appearing together?)
    fha relate <p-a> <p-b>             # is there already a blood, marriage or social tie between them?
    fha find --sounds-like "<surname>"  # a third record, spelled differently, that belongs in the comparison?
+   fha report --section possible-duplicates  # why the report flagged them, when it did
+   fha lint                           # a date that cannot be true for one person (W163 to W165)
    ```
+   Read `fha lint` for both people: a finding there that joining them would make (a death before a birth, a life over 120 years) is evidence against the merge.
    Read both records directly for their vitals, `name_variants`, and existing claims. A name that only sounds alike is a reason to look, never evidence for the merge.
 
 2. **Lay out the evidence for and against, plainly.** Give the human a two-column read he can judge:
@@ -47,6 +50,8 @@ Two *source* records that are one piece of evidence (an index entry and the docu
 3. **Propose, then wait.** State your read as a recommendation with its confidence ("These look like the same person: the same 1840 birth in New York, both in the 1880 Fairview household, and nothing in the records separating them. I'd fold the newer short record into Thomas's full page. Shall I?"), and **wait for explicit confirmation.** Do nothing to the records until he says yes to a specific decision. If he's unsure, leave both records as they are; not merging is always safe.
 
    When the case rests on a few agreeing facts, also name the one record most likely to show they are two people, so he can check it before he says yes.
+
+3b. **On a confirmed NOT THE SAME PERSON, remember it.** When he says they are two people, run `fha confirm dismiss <p-a> <p-b> --not-same-person --dry-run`, show him what it will record, and run it live on his yes. Tell him the report will not list the pair again, and that `fha confirm undismiss <p-a> <p-b> --not-same-person` takes it back if he changes his mind.
 
 4a. **On a confirmed MERGE, enact it with the verb (SPEC §9).** The **survivor** is the one that keeps the canonical home (prefer the curated record over a stub; the lower-numbered couple folder when both are placed). Then run the deterministic write. Never hand-edit the records:
    ```
@@ -88,6 +93,7 @@ Two *source* records that are one piece of evidence (an index entry and the docu
 - **Human-confirmed only.** No `merged_into` (or split reassignment) without an explicit decision in the transcript.
 - Evidence for **and against** is laid out before any proposal.
 - A name match alone is never the case for a merge, and an unexplained impossibility always blocks one.
+- Never record "not the same person" (`fha confirm dismiss --not-same-person`) without his explicit statement this session.
 - The merge write belongs to `fha confirm merge` alone (SPEC §9 exactly: tombstone rename, four fields, folds, relinks), always dry-run first. The skill never hand-edits a merge and invents no mechanics.
 - Post-merge lint is clean of **new** W107/W115; merged files are renamed and kept, never deleted.
 - Any record ID written into prose (a split note on a record, a reason narrated into `## Notes`) is `[[ ]]`-wrapped, `[[id|Name]]` preferred; bare IDs only in structured fields and tool arguments (_STANDARD.md §11).

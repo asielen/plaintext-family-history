@@ -73,6 +73,8 @@ CODE MAP
     _section_new_since_last      - §2: source/claim/person id set diff vs snapshot
     _section_vitals_gaps         - §3: W101 findings, formatted
     _section_contradictions      - §4: E009 findings, formatted
+    _section_possible_duplicates - §4b: people who look like one person entered
+                                    twice (`_lib.possible_duplicate_people`)
     _section_search_log          - §5: search_log lookups for current leads
     _section_answerable_questions - §5b: open questions with a closeable gap
     _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
@@ -157,6 +159,9 @@ from _lib import (
     person_name_key,
     is_placeholder_name,
     claim_source_lookup,
+    completeness_context,
+    load_not_same_person,
+    possible_duplicate_people,
     cited_source_ids,
     calendar_years_ago_phrase,
     family_calendar_week,
@@ -197,6 +202,7 @@ SECTIONS: list[tuple[str, str, str]] = [
     ('vitals-gaps', '3', 'Vitals gaps'),
     ('loose-ends', '3b', 'Loose ends in the tree'),
     ('contradictions', '4', 'Contradictions'),
+    ('possible-duplicates', '4b', 'Possible duplicate people'),
     ('search-log', '5', 'Search-log awareness'),
     ('answerable-questions', '5b', 'Answerable questions'),
     ('photo-triage', '6', 'Photo processing triage'),
@@ -703,6 +709,52 @@ def _section_contradictions(findings: list) -> list[str]:
 
 
 # ── Section 5: Search-log awareness ───────────────────────────────────────────
+
+
+# ── Section 4b: Possible duplicate people ────────────────────────────────────
+
+_DUPLICATES_SHOWN = 10
+
+
+def _section_possible_duplicates(duplicates: dict) -> list[str]:
+    """After an import the same grandmother can be in the tree twice. This
+    names the pairs that look like it, says why in words, and gives the two
+    ways forward: ask the merge-identities skill "are these the same person?",
+    or record that they are two people so the report stops asking. Nothing
+    here merges or writes. Points stay internal: a line says "strong" or
+    "worth a look", never a score.
+
+    The report is his private view (TOOLING §15a), so living people are
+    named; only each person's main `name:` is printed, never another name
+    that may be one he marked restricted."""
+    pairs = duplicates['pairs']
+    hidden = duplicates['dismissed_hidden']
+    lines: list[str] = []
+    if pairs:
+        noun = 'possible duplicate' if len(pairs) == 1 else 'possible duplicates'
+        each = 'This pair looks' if len(pairs) == 1 else 'Each pair looks'
+        lines.append(f'**{len(pairs)} {noun}.** {each} like one person entered twice. '
+                     'Nothing is merged unless you decide to.')
+        for p in pairs[:_DUPLICATES_SHOWN]:
+            a, b = fmt_id_display(p['person_a']), fmt_id_display(p['person_b'])
+            lines.append(
+                f"- {p['name_a']} [{a}] and {p['name_b']} [{b}] ({p['strength']}): "
+                f"{', '.join(p['reasons'])}. To compare them, ask \"are these the same "
+                'person?". If they are two people: '
+                f'`{fha_launcher()} confirm dismiss {a} {b} --not-same-person`')
+        if len(pairs) > _DUPLICATES_SHOWN:
+            lines.append(f'- … and {len(pairs) - _DUPLICATES_SHOWN} more; they come up '
+                         'here as you settle these.')
+    else:
+        lines.append('No possible duplicate people found.')
+    if hidden:
+        what = ('1 pair you said are two different people is'
+                if hidden == 1 else
+                f'{hidden} pairs you said are two different people are')
+        lines.append(f'({what} not shown. `{fha_launcher()} confirm undismiss --list` '
+                     'lists them.)')
+    return lines
+
 
 def _years_label(years) -> str:
     """A research-log `years:` value for a line: `1880/1890` reads `1880-1890`,
@@ -1733,7 +1785,7 @@ def _birth_suggestion_lines(conn, ctx: dict, pid_to_pos: dict, label) -> list[st
     return lines
 
 
-def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
+def _section_loose_ends(conn, direct_line: tuple, ctx: dict) -> list[str]:
     """Where each line of the tree stops, who is not tied to it, and which of
     those share a surname with it (TOOLING §15a, section 3b).
 
@@ -1742,7 +1794,6 @@ def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
     written down as a question).
     """
     pid_to_pos, root_pid, root_position, root_problems = direct_line
-    ctx = completeness_context(conn)
     persons = ctx['persons']          # merged tombstones already left out
     people = set(persons)
 
@@ -2235,6 +2286,9 @@ def run_report(
         escalation apart from an ordinary §6b candidate without reparsing
         Markdown (Codex review, PR #142 finding 4 - previously this state
         only ever reached `_render_report`'s Markdown output).
+      - data['possible_duplicates']: §4b's pairs as raw dicts (`person_a`,
+        `person_b`, `name_a`, `name_b`, `points`, `strength`, `reasons`:
+        `_lib.possible_duplicate_people`'s own shape), for a headless consumer.
     The persisted snapshot and `.cache/report_{date}.md` always hold the complete
     report - `--section` narrows what's printed this run, not what's recorded -
     and both written files are listed in `result.changed`.  `result.exit_code`
@@ -2289,7 +2343,7 @@ def run_report(
         (
             'persons', 'sources', 'claims', 'claim_persons', 'claim_links',
             'relationships', 'hypotheses', 'person_files', 'search_log',
-            'places',
+            'places', 'person_variants', 'aliases', 'source_people', 'source_places',
         ),
     )
     if conn is None:
@@ -2298,6 +2352,11 @@ def run_report(
     try:
         prev = {} if full else _load_snapshot(archive_root)
         current = _build_snapshot(conn, archive_root, findings, registry)
+        # One read of every person and claim, shared by §3b and §4b: on a big
+        # imported tree it is the slow part, so the briefing does it once.
+        ctx = completeness_context(conn)
+        duplicates = possible_duplicate_people(
+            conn, ctx, set(load_not_same_person(archive_root)))
 
         # One `places.run_candidates()` fetch, shared by §6b's own listing
         # and the oversight-threshold escalation below it never re-derives
@@ -2326,8 +2385,9 @@ def run_report(
             'second-look': _section_second_look(conn),
             'new-since-last': _section_new_since_last(prev, current),
             'vitals-gaps': _section_vitals_gaps(findings, registry),
-            'loose-ends': _section_loose_ends(conn, direct_line),
+            'loose-ends': _section_loose_ends(conn, direct_line, ctx),
             'contradictions': _section_contradictions(findings),
+            'possible-duplicates': _section_possible_duplicates(duplicates),
             'search-log': _section_search_log(conn, current),
             'answerable-questions': _section_answerable_questions(conn, archive_root),
             'photo-triage': _section_photo_triage(
@@ -2409,6 +2469,7 @@ def run_report(
             'full_markdown': full_md,
             'sections': bodies,
             'place_escalations': place_escalations,
+            'possible_duplicates': duplicates['pairs'],
         },
         # The index warnings also ride as structured messages for headless
         # consumers; the markdown embeds the same texts as the archive-notes
