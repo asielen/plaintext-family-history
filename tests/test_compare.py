@@ -461,7 +461,29 @@ class SecondReviewTests(_Base):
             self.assertEqual(r.exit_code, EXIT_WARNINGS)
             text = ' '.join(m.text for m in r.messages)
             self.assertNotIn('No records name', text)
-            self.assertIn('not reviewed', text)
+            self.assertIn('Leave out --accepted-only', text)
+
+    def test_accepted_only_never_calls_a_disputed_record_unreviewed(self):
+        self.a.source([_birth('1840', status='disputed', reviewed='2026-01-01')])
+        r = self.a.run(accepted_only=True, fact='birth')
+        text = ' '.join(m.text for m in r.messages)
+        self.assertNotIn('not reviewed', text)
+        self.assertIn('disputed', text)
+
+    def test_a_birthplace_without_its_county_or_country_still_agrees(self):
+        for short, full in (('Easton, New York', 'Easton, Washington County, New York'),
+                            ('Kansas', 'Fairview, Breton County, Kansas, USA')):
+            with self.subTest(short=short):
+                a = _Archive()
+                self.addCleanup(a.cleanup)
+                a.source([_birth('1840', place_text=short)])
+                a.source([_birth('1840', place_text=full)])
+                self.assertEqual(a.run().data['disagreeing'], [])
+
+    def test_two_towns_in_one_county_still_disagree(self):
+        self.a.source([_birth('1840', place_text='Salem, Washington County, New York')])
+        self.a.source([_birth('1840', place_text='Easton, Washington County, New York')])
+        self.assertEqual([f['fact'] for f in self.a.run().data['disagreeing']], ['birth'])
 
 
 if __name__ == '__main__':

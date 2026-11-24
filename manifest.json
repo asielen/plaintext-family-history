@@ -758,7 +758,7 @@
     {
       "path": ".fha/tools/compare.py",
       "category": "operating",
-      "sha256": "948c3831caae91c2058aa9d3815c1f3886a8c62cfffcca2d6e288479191937df",
+      "sha256": "d75180085f98edc13f25a55765c9364ebea60d93d08ddb9a4fc41badee358ca2",
       "spec_version": "2.29",
       "src": "tools/compare.py"
     },
@@ -1494,7 +1494,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "7003f45cdb3a3019f3cd2f360cd32bcda8d554d3c82bee9757b29c2e51e85f85",
+      "sha256": "bc358908c6842e546f1d82ceff3348c5699280ad891657efdde07136b7a6e0a0",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },

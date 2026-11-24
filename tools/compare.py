@@ -364,10 +364,14 @@ def _places_differ(conn, a: dict, b: dict) -> bool:
     pa, pb = _place_parts(a['place_text']), _place_parts(b['place_text'])
     if not pa or not pb:
         return False
+    if pa[0] == pb[0]:
+        return False  # the same town, however much of the rest each wrote
     short, long_ = sorted((pa, pb), key=len)
-    # One is the other with the smaller parts left off, or with the larger
-    # parts left off ("Easton" against "Easton, New York"): the same place.
-    return not (long_[-len(short):] == short or long_[:len(short)] == short)
+    # The shorter is the longer with some parts left off (the town, the
+    # county, the country): "Kansas" against "Fairview, Breton County,
+    # Kansas, USA" is the same place, written more coarsely.
+    rest = iter(long_)
+    return not all(part in rest for part in short)
 
 
 def _disagree(rows: list[dict], conn) -> bool:
@@ -389,11 +393,11 @@ def _disagree(rows: list[dict], conn) -> bool:
 
 
 def _waiting_text(name: str, pid: str, fact: str | None = None) -> str:
-    """--accepted-only found nothing, but records are waiting for review: say
-    so, rather than telling him there is no evidence at all."""
+    """--accepted-only found nothing, but there are records still suggested or
+    disputed: say so, rather than telling him there is no evidence at all."""
     what = f'{fact} records' if fact else 'records'
-    return (f'None of the {what} about {name} {fmt_id_display(pid)} is accepted yet: they are '
-            'not reviewed. Leave out --accepted-only to see them.')
+    return (f'None of the {what} about {name} {fmt_id_display(pid)} is accepted; '
+            'they are still suggested or disputed. Leave out --accepted-only to see them.')
 
 
 def _public(rows: list[dict]) -> list[dict]:
