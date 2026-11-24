@@ -9,7 +9,8 @@
 {% if pedigree %}
 <div class="pedigree-home-wrap" id="fha-pedigree">{{ pedigree.svg }}</div>
 <p class="fha-tree-note">{{ pedigree.caption }}</p>
-{% if pedigree.chart_name %}<div class="chart-save" data-for="{{ pedigree.chart_name }}"></div>{% endif %}
+{% if pedigree.weak_key %}<p class="fha-tree-note fha-weak-key">{{ pedigree.weak_key }}</p>
+{% endif %}{% if pedigree.chart_name %}<div class="chart-save" data-for="{{ pedigree.chart_name }}"></div>{% endif %}
 {% if pedigree.note %}<p class="empty">{{ pedigree.note }}</p>{% endif %}
 <script src="{{ root_prefix }}/vendor/fha-tree.js"></script>
 <script>
