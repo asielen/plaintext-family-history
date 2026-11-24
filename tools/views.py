@@ -172,7 +172,8 @@ from _lib import (
     format_w120_message,  # the W120 wording - shared with lint so the twins agree,
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
-    is_placeholder_name,  # 'unknown'/'None'/'' - never written into a folder name,
+    is_placeholder_name,
+    line_confidence,      # each person's weakest tie on their best route to the seed,  # 'unknown'/'None'/'' - never written into a folder name,
     folder_name_text,     # a name made safe for a folder name on every OS,
     load_fha_yaml,
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None),
@@ -192,7 +193,8 @@ from _lib import (
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     resolve_root_generation,   # validate fha.yaml root_generation: 'self'|'children' (#72),
     root_generation_seed_position,  # 'self'|'children' -> the Ahnentafel seed position,
-    spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
+    spouse_extended_base,
+    stronger_confidence,  # the better of two claim confidence words,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
     vital_pick_key,       # which accepted vital is the node label: most exact first (#201),
@@ -3648,7 +3650,8 @@ def _collect_edges(
     as repeated edges in the traversal.
 
     Returns a list of internal edge dicts:
-        {type, from, to, claim_id, date_start, date_end}
+        {type, from, to, claim_id, subtype, genetic, confidence, date_start, date_end}
+    `confidence` is the backing claim's (SPEC §8.5), None when unrated.
     IDs are lowercase as stored; callers apply fmt_id_display at output time.
     date_start / date_end are None when the table holds an empty string.
     """
@@ -3658,6 +3661,7 @@ def _collect_edges(
     rows = conn.execute(
         f"""
         SELECT DISTINCT r.rel, r.other_id, r.claim_id, r.date_start, r.date_end, c.subtype,
+               c.confidence,
                EXISTS(SELECT 1 FROM relationships r2 WHERE r2.claim_id = r.claim_id
                       AND r2.rel IN ('parent', 'child')) AS records_parentage
         FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
@@ -3684,11 +3688,30 @@ def _collect_edges(
             # distinctly; unset/legacy subtypes default to genetic, back-compatibly.
             'subtype': nature(row),
             'genetic': is_genetic_parent_subtype(nature(row)),
+            'confidence': row['confidence'] or None,
             'date_start': row['date_start'] or None,
             'date_end': row['date_end'] or None,
         }
         for row in rows
     ]
+
+
+def _merge_edge(edges: dict[tuple, dict], edge: dict) -> None:
+    """Add one edge to the traversal, one per `(from, to, type)`. A tie that
+    a family story and a certificate both record is as strong as the
+    certificate, so a repeat lifts the kept edge's `confidence`. Its
+    `claim_id` and nature stay the first claim's, except that a birth record
+    beats an adoption record by the same parent: he is drawn as the father,
+    as his pedigree seats him."""
+    ekey = (edge['from'], edge['to'], edge['type'])
+    kept = edges.get(ekey)
+    if kept is None:
+        edges[ekey] = edge
+        return
+    confidence = stronger_confidence(kept['confidence'], edge['confidence'])
+    if not kept.get('genetic', True) and edge.get('genetic', True):
+        edges[ekey] = kept = edge
+    kept['confidence'] = confidence
 
 
 def _traverse_tree(
@@ -3744,9 +3767,7 @@ def _traverse_tree(
         # Expand BFS edges (hop-limit check gates further enqueuing, not edge collection)
         if max_hops is None or depth < max_hops:
             for edge in _collect_edges(conn, pid, traverse_rels):
-                ekey = (edge['from'], edge['to'], edge['type'])
-                if ekey not in edges:
-                    edges[ekey] = edge
+                _merge_edge(edges, edge)
                 other = edge['to']
                 if other not in visited:
                     visited.add(other)
@@ -3758,9 +3779,7 @@ def _traverse_tree(
         # Collect extra_rels as leaf nodes - never enqueued (in-law lineages
         # appear in the tree but their own ancestry is not followed).
         for edge in _collect_edges(conn, pid, extra_rels):
-            ekey = (edge['from'], edge['to'], edge['type'])
-            if ekey not in edges:
-                edges[ekey] = edge
+            _merge_edge(edges, edge)
             other = edge['to']
             if other not in pids_seen:
                 pids_in_order.append(other)
@@ -3770,21 +3789,34 @@ def _traverse_tree(
     return nodes, edges
 
 
+_SOCIAL_EDGE_TYPES = frozenset({'friend', 'associate', 'neighbor'})
+
+
 def _edge_to_json_dict(edge: dict) -> dict:
     """Convert an internal edge dict to the TOOLING §7 JSON edge schema.
 
     dates.start / dates.end are populated only for spouse edges; all other
     relationship types use null per TOOLING §7.  The claim_id and P-ids are
-    written in the one all-lowercase ID form (SPEC §10).
+    written in the one all-lowercase ID form (SPEC §10). `kind` is the one
+    the site's explorer draws by (SPEC §12.2): 'genetic', 'legal' for an
+    adoptive, step, foster or guardian parent tie, 'other' for a friend,
+    associate or neighbour.
     """
     is_spouse = edge['type'] == 'spouse'
+    genetic = edge.get('genetic', True)
+    if edge['type'] in _SOCIAL_EDGE_TYPES:
+        kind = 'other'
+    else:
+        kind = 'genetic' if genetic else 'legal'
     return {
         'type': edge['type'],
         'from': fmt_id_display(edge['from']),
         'to': fmt_id_display(edge['to']),
         'claim_id': fmt_id_display(edge['claim_id']) if edge['claim_id'] else None,
         'subtype': edge.get('subtype'),
-        'genetic': edge.get('genetic', True),
+        'genetic': genetic,
+        'kind': kind,
+        'confidence': edge.get('confidence'),
         'dates': {
             'start': edge['date_start'] if is_spouse else None,
             'end': edge['date_end'] if is_spouse else None,
@@ -3800,11 +3832,21 @@ def _tree_to_json(
     The JSON is the stable data contract between fha views tree and the site
     generator (TOOLING §7 D3).  The renderer adapter in fha site maps this
     shape to whatever tree library is vendored.
+
+    Version 2 only adds keys, so a version 1 reader keeps working: `kind` and
+    `confidence` on every edge, and each node's `line_confidence` (the
+    weakest rated parent or child tie on the person's best route to the
+    seed, `_lib.line_confidence`), which lets a chart fade the part of his
+    tree that rests on a family story. Social ties never weaken anyone.
     """
+    lines = line_confidence(seed_pid, [
+        (e['from'], e['to'], e['type'], e['confidence']) for e in edges.values()
+        if e['type'] in ('parent', 'child', 'spouse')])
     out = {
+        'version': 2,
         'seed': fmt_id_display(seed_pid),
         'mode': mode,
-        'nodes': list(nodes.values()),
+        'nodes': [{**node, 'line_confidence': lines.get(pid)} for pid, node in nodes.items()],
         'edges': [_edge_to_json_dict(e) for e in edges.values()],
     }
     return json.dumps(out, indent=2, ensure_ascii=False)

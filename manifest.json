@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "eaf93b7865cba61ef28de0fc57e6adcb6d9cc137eb3a1cf1b82c43ef08247d95",
+      "sha256": "40aa7749031b1ad5cc94888ddcc692956bd61faff08d78d4d268334220ce090f",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
@@ -834,7 +834,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "2ce9dc9fbd475d67349593c998940532cbd82b3e57998ac4de7c4a15e0e5a288",
+      "sha256": "906df5343957a52bce3059a514a0347a149ce07919352cb97ff4fe3950973f45",
       "spec_version": "2.31",
       "src": "tools/gedcom_import.py"
     },
@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "ffc4343c8f52d055ea074a52ff87adde7eda148eb42d22f2b7faab5276585666",
+      "sha256": "3aad536cf0b337feeddc801f2d644c71648cc82b3614fa4d3368fba6a77ab52e",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1387,7 +1387,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "3cffc2190bab800b3b5a247f451087637f8b8e5bcfa9d2f9d2e4a8038bb39e5d",
+      "sha256": "42f455dfe1013871b0925cd471c5126bd6825a5b9dadc4874916780271332b58",
       "spec_version": "2.31",
       "src": "tools/views.py"
     },
@@ -1479,7 +1479,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "a1ec5b2e6e3da62f95671bcd0cd9af0c6759ded243ea9479da932edae17a6323",
+      "sha256": "e7ff6c6a09ea74373255aca6a344e2820e483e71821a8c5c32efc621568351e4",
       "spec_version": "2.31"
     },
     {
@@ -1528,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "1ca40944a56047a094b85d306e7fc8d93de2463565098075206af01b0d34cb94",
+      "sha256": "1b8121b7039c5cbda7145097a2b01163950924f2ed42d33d81475acb853b6ab7",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
