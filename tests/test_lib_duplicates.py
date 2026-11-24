@@ -351,6 +351,84 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
         self.a.person('Henry Cole', sex='M')
         self.assertEqual(self.a.scan()['pairs'], [])
 
+    # A merge that would make an impossible person (TOOLING §15a, 4b row):
+    # the date rules `fha lint` runs (W163-W170) are asked about the two
+    # records read as one, and a pair they say cannot be one person is
+    # counted, not listed.
+
+    def test_child_born_after_the_other_record_died_is_hidden(self) -> None:
+        a = self.a.person('Margaret Cole', sex='F')
+        b = self.a.person('Margaret Cole', sex='F')
+        self._born(a, '1849')
+        self._born(b, '1849')
+        self.a.claim('death', [a], date='1880')
+        child = self.a.person('Ada Hartley', sex='F')
+        self._born(child, '1890')
+        self.a.parent(child, b)
+        result = self.a.scan()
+        self.assertEqual(result['pairs'], [])
+        self.assertEqual(result['impossible_hidden'], 1)
+        self.assertEqual(result['dismissed_hidden'], 0)
+
+    def test_widowers_two_wives_of_one_name_are_not_offered(self) -> None:
+        # Thomas married Mary Cole in 1870; she died in 1880 and he married
+        # another Mary Cole in 1885. Same name, same husband: the report must
+        # not invite merging them (review of PR #474).
+        thomas = self.a.person('Thomas Hartley', sex='M')
+        mary1 = self.a.person('Mary Cole', sex='F')
+        mary2 = self.a.person('Mary Cole', sex='F')
+        self.a.claim('marriage', [thomas, mary1], date='1870',
+                     roles=f'  roles:\n    spouse: [{thomas}, {mary1}]')
+        self.a.claim('death', [mary1], date='1880')
+        self.a.claim('marriage', [thomas, mary2], date='1885',
+                     roles=f'  roles:\n    spouse: [{thomas}, {mary2}]')
+        result = self.a.scan()
+        self.assertEqual(result['pairs'], [])
+        self.assertEqual(result['impossible_hidden'], 1)
+
+    def test_widowers_two_wives_from_an_import_are_not_offered(self) -> None:
+        # The same, the morning after an import: every claim suggested, and
+        # the second wife known only through her child's birth.
+        thomas = self.a.person('Thomas Hartley', sex='M')
+        mary1 = self.a.person('Mary Cole', sex='F')
+        mary2 = self.a.person('Mary Cole', sex='F')
+        for wife, year in ((mary1, '1870'), (mary2, '1885')):
+            self.a.claim('marriage', [thomas, wife], date=year, status='suggested',
+                         roles=f'  roles:\n    spouse: [{thomas}, {wife}]')
+        self.a.claim('death', [mary1], date='1880', status='suggested')
+        child = self.a.person('Ada Hartley', sex='F')
+        self.a.claim('birth', [child, mary2, thomas], date='1890', status='suggested',
+                     roles=f'  roles:\n    child: {child}\n    parent: [{mary2}, {thomas}]')
+        result = self.a.scan()
+        self.assertEqual(result['pairs'], [])
+        self.assertEqual(result['impossible_hidden'], 1)
+
+    def test_a_problem_one_record_already_has_does_not_hide_the_pair(self) -> None:
+        # Record a already says she died before she was born. Joining b to
+        # her adds nothing impossible, so the pair is still worth a look:
+        # that bad date is lint's to report, on her own record.
+        a = self.a.person('Ellen Hartley', sex='F')
+        b = self.a.person('Ellen Hartley', sex='F')
+        self._born(a, '1870')
+        self._born(b, '1870')
+        self.a.claim('death', [a], date='1860')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        self.assertEqual(result['impossible_hidden'], 0)
+
+    def test_dates_that_fit_together_still_pair(self) -> None:
+        a = self.a.person('Margaret Cole', sex='F')
+        b = self.a.person('Margaret Cole', sex='F')
+        self._born(a, '1849')
+        self._born(b, '1849')
+        self.a.claim('death', [a], date='1920')
+        child = self.a.person('Ada Hartley', sex='F')
+        self._born(child, '1875')
+        self.a.parent(child, b)
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        self.assertEqual(result['impossible_hidden'], 0)
+
 
 class PossibleDuplicatePeopleTimingTests(unittest.TestCase):
     """Guards against an accidental all-pairs loop on a big imported tree,

@@ -22146,6 +22146,56 @@ def _duplicate_name_match(fa: list[dict], fb: list[dict], ratio) -> tuple[int, s
     return best
 
 
+def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, dict]:
+    """The index's claims as the raw claim dicts the date rules read
+    (`plausibility_input_from_claims`), keyed by claim id: `persons:` and
+    `roles:` rebuilt from `claim_people`, so the rules decide whose birth or
+    marriage each one is exactly as they do for `fha lint`."""
+    out: dict[str, dict] = {}
+    for cid, c in ctx['claims'].items():
+        if c['status'] not in statuses or c['negated']:
+            continue
+        pairs = ctx['claim_people'].get(cid, [])
+        roles: dict[str, list[str]] = {}
+        for pid, role in pairs:
+            if role:
+                roles.setdefault(role, []).append(pid)
+        out[cid] = {'id': cid, 'type': c['type'], 'subtype': c['subtype'],
+                    'status': c['status'], 'date': c['date'],
+                    'persons': list(dict.fromkeys(p for p, _r in pairs)),
+                    'roles': roles}
+    return out
+
+
+def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
+                            kin: set[str], statuses: tuple[str, ...]) -> bool:
+    """Would reading records a and b as one person give that person dates
+    that cannot all be true? A widower's two wives of one name: the first
+    died in 1880, the second married him in 1885, so one woman would marry
+    after her own death.
+
+    The question goes to the same rules `fha lint` runs (W163 to W170), over
+    the claims naming the two people and their parents, children and spouses
+    (`kin`), first as they stand and then with b read as a. Only a problem
+    the joining makes counts: a bad date one record already has on its own
+    is lint's to report there, and is no evidence against the pair."""
+    wanted = {a, b} | kin
+    picked = list(dict.fromkeys(
+        cid for pid in sorted(wanted)
+        for cid in ctx['person_claims'].get(pid, ()) if cid in claims))
+    picked_claims = [claims[cid] for cid in picked]
+    persons = {pid: ctx['persons'].get(pid) or {} for pid in wanted}
+
+    def problems(survivors: dict[str, str]) -> set[tuple]:
+        data = plausibility_input_from_claims(
+            picked_claims, persons, None, survivors, statuses=statuses)
+        return {(pr.kind, pr.pids) for pr in one_person_problems(data) + family_problems(data)}
+
+    before = {(kind, tuple(a if p == b else p for p in pids))
+              for kind, pids in problems({})}
+    return bool(problems({b: a}) - before)
+
+
 def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                               not_same: set) -> dict:
     """Pairs of people who look like one person entered twice, best first.
@@ -22156,7 +22206,11 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
     are counted so the report can say how many it is keeping quiet about.
 
     Returns `{'pairs': [{'person_a', 'person_b', 'name_a', 'name_b', 'points',
-    'strength', 'reasons'}], 'dismissed_hidden': int}`, `person_a` the lower id.
+    'strength', 'reasons'}], 'dismissed_hidden': int, 'impossible_hidden': int}`,
+    `person_a` the lower id. A pair whose records, read as one person, would
+    give that person dates that cannot all be true (`_merge_makes_impossible`,
+    the rules `fha lint` runs) is never offered for a merge: it is counted in
+    `impossible_hidden` instead.
 
     Speed on a big imported tree (thousands of people): people are compared
     only within a block that shares the first letters of the given name and
@@ -22298,9 +22352,12 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
             return ('text:' + place_text, label)
         return None
 
+    claim_dicts: dict[str, dict] | None = None   # built when the first pair needs it
+
     seen_pairs: set[tuple[str, str]] = set()
     kept: list[dict] = []
     hidden = 0
+    impossible = 0
     for members in blocks.values():
         for i, pa in enumerate(members):
             for pb in members[i + 1:]:
@@ -22373,6 +22430,18 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 if frozenset(pair) in not_same:
                     hidden += 1
                     continue
+                # Two records that cannot be one person are never offered
+                # for a merge. Last, as the slowest check: only the few
+                # pairs that got this far need it.
+                if claim_dicts is None:
+                    claim_dicts = _duplicate_claim_dicts(ctx, statuses)
+                kin: set[str] = set()
+                for pid in pair:
+                    kin |= parents.get(pid, set()) | children.get(pid, set())
+                    kin |= spouses.get(pid, set())
+                if _merge_makes_impossible(ctx, claim_dicts, a, b, kin - {a, b}, statuses):
+                    impossible += 1
+                    continue
                 kept.append({
                     'person_a': a, 'person_b': b,
                     'name_a': name_of(a), 'name_b': name_of(b),
@@ -22382,7 +22451,7 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 })
     kept.sort(key=lambda p: (-p['points'], p['name_a'], p['name_b'],
                              p['person_a'], p['person_b']))
-    return {'pairs': kept, 'dismissed_hidden': hidden}
+    return {'pairs': kept, 'dismissed_hidden': hidden, 'impossible_hidden': impossible}
 
 
 # ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────

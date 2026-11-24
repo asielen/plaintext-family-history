@@ -1982,6 +1982,20 @@ class PossibleDuplicatesSectionTests(unittest.TestCase):
         self.assertIn(f'`{FHA} confirm undismiss --list`', body[-1])
         self.assertIn('1 pair you said are two different people is not shown', body[-1])
 
+    def test_footer_counts_pairs_that_cannot_be_one_person(self) -> None:
+        one = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 1})
+        self.assertEqual(one[0], 'No possible duplicate people found.')
+        self.assertIn('1 more pair has the same name but cannot be one person', one[-1])
+        self.assertIn('It is not shown.', one[-1])
+        two = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 2})
+        self.assertIn('2 more pairs have the same name but cannot be one person', two[-1])
+        self.assertIn('They are not shown.', two[-1])
+        none = report._section_possible_duplicates(
+            {'pairs': [], 'dismissed_hidden': 0, 'impossible_hidden': 0})
+        self.assertEqual(none, ['No possible duplicate people found.'])
+
     def test_section_filter_prints_only_4b(self) -> None:
         self._twins(1)
         md = self._run(section='possible-duplicates')['markdown']

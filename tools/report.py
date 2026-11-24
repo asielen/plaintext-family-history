@@ -752,6 +752,16 @@ def _section_possible_duplicates(duplicates: dict) -> list[str]:
                 f'{hidden} pairs you said are two different people are')
         lines.append(f'({what} not shown. `{fha_launcher()} confirm undismiss --list` '
                      'lists them.)')
+    # A widower's two wives of one name look alike, but one died before the
+    # other married him: the report says it is keeping quiet about such a
+    # pair rather than inviting a merge that would make an impossible person.
+    impossible = duplicates.get('impossible_hidden', 0)
+    if impossible:
+        what = ('1 more pair has' if impossible == 1 else f'{impossible} more pairs have')
+        shown = 'It is' if impossible == 1 else 'They are'
+        lines.append(f'({what} the same name but cannot be one person: merging them '
+                     'would give one person dates that cannot all be true, such as a '
+                     f'birth after a death. {shown} not shown.)')
     return lines
 
 

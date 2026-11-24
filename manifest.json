@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
+      "sha256": "3085a16ee2753cc21985b8cca3b248efbe8fa5ec2d26c77f4164f595e6ad6210",
       "spec_version": "2.30",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -230,7 +230,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
+      "sha256": "3085a16ee2753cc21985b8cca3b248efbe8fa5ec2d26c77f4164f595e6ad6210",
       "spec_version": "2.30"
     },
     {
@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "bd8547777ed73be2754a112332d5e4c297b5de3e0a56d55f7e960fd1731c70af",
+      "sha256": "eaae40201d2e81a18308d7495a74cf18e7cf44eeaeb8f6254fe92130dbf2ecc7",
       "spec_version": "2.30",
       "src": "tools/_lib.py"
     },
@@ -932,7 +932,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "771f8efd80645abc4555e27388bf87dde9d48923fe4520fbe4b4e7bc519be6ae",
+      "sha256": "5e7412b83589005c285b359c0d5189ba3f13f41881ddea1540b291f5d1befc89",
       "spec_version": "2.30",
       "src": "tools/report.py"
     },
@@ -1500,7 +1500,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "2fa223309d6823b1c43846326dcaad77de73b9a1c6eeea03c2099de25db5f1cb",
+      "sha256": "8e67a01b80c570776b538afd79a5f56bf7f3617c63179153c4956f0479585515",
       "spec_version": "2.30",
       "src": "TOOLING.md"
     },
