@@ -300,6 +300,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
@@ -327,6 +328,7 @@ from _lib import (
     is_placeholder_name,
     person_surname,
     research_search_links,
+    research_search_terms,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -3183,51 +3185,6 @@ def _real_path(path: str | Path) -> Path:
 
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
-
-def _chart_year(edtf) -> str:
-    """The year a chart prints for a date, keeping what the date means: a
-    death recorded "before 1920" must not read as a death in 1920. Charts show
-    years only; the person's page carries the full date. Owner decision
-    (2026-11-22) on the short forms:
-
-    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
-      '1840?' are both '1840');
-    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
-    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
-    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
-    - an interval `1918/1920`: '1918–1920', or the one year when both ends
-      fall in it.
-
-    Anything else falls back to the first four-digit run, or '' when there is
-    none. Used by the fan and the family chart alike."""
-    if not edtf:
-        return ''
-    s = str(edtf).strip()
-    if '/' in s:
-        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
-        if ends[0] and ends[1]:
-            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
-        return ends[0] or ends[1]
-    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
-    if m:
-        return f'bef. {m.group(1)}'
-    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
-    if m:
-        return f'aft. {m.group(1)}'
-    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
-    if m:
-        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
-    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
-    if m:
-        return f'abt. {m.group(1) or m.group(2)}'
-    return _chart_bare_year(s)
-
-
-def _chart_bare_year(s: str) -> str:
-    """The first four-digit run of a date's text, or ''."""
-    m = re.search(r'\d{4}', s)
-    return m.group(0) if m else ''
-
 
 def _pedigree_years(dates: dict | None) -> str:
     """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
@@ -7131,11 +7088,46 @@ class _SiteBuilder:
         subject = self._person_research_subject(pid) if self.workbench else None
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
+        links = research_search_links(subject)
+        last = self._research_last_searches(pid)
+        for link in links:
+            # What "Nothing found" files: the person, the site's own label and
+            # what was typed in (workbench.js reads this off the link).
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
+                            'result': 'nil'}
+            link['searched'] = last.get(link['label'].casefold(), '')
         return {
-            'research_links': research_search_links(subject),
+            'research_links': links,
             'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
             'research_given': subject.get('given') or name,
         }
+
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
+
+    def _research_last_searches(self, pid: str) -> dict[str, str]:
+        """For this person, the latest logged search at each website, as the
+        words shown beside its link ("searched 2026-11-22: nothing found"),
+        keyed by the website's name in lower case. So he sees what he already
+        tried before he clicks."""
+        try:
+            rows = self.conn.execute(
+                "SELECT date, repository, result FROM search_log WHERE person_id = ? "
+                "ORDER BY date, rowid", (pid,)).fetchall()
+        except sqlite3.Error:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:                                # later rows overwrite earlier ones
+            kind = str(r['result'] or '').split(' ', 1)[0].lower()
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
+        return out
 
     def _person_research_subject(self, pid: str) -> dict | None:
         """What a search on another website may say about this person, or None

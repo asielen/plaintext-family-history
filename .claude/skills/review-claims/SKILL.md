@@ -106,7 +106,7 @@ Stage C of the pipeline, and the **only** path a drafted claim takes to `accepte
    fha confirm xref <c-a> <c-b> --as corroborates --dry-run   # preview first (writes both sources)
    fha confirm xref <c-a> <c-b> --as corroborates             # or: --as contradicts
    ```
-   A `--as contradicts` confirm automatically spawns the open question that keeps lint **E009** satisfied ("a `contradicts:` link with no open question"), so you don't hand-write that question. If you confirmed **any** xref link, **reindex again** before the view refresh below. `fha confirm xref` writes the `corroborates:`/`contradicts:` links into both sources but does not reindex, so `claim_links` (read by `fha find --related`, xref dedup, and the report's corroboration/discovery sections) would otherwise stay stale for the rest of the session:
+   A `--as contradicts` confirm automatically spawns the open question that keeps lint **E009** satisfied ("a `contradicts:` link with no open question"), so you don't hand-write that question. When he wants help deciding which of the two is right, hand off to `weigh-evidence`. If you confirmed **any** xref link, **reindex again** before the view refresh below. `fha confirm xref` writes the `corroborates:`/`contradicts:` links into both sources but does not reindex, so `claim_links` (read by `fha find --related`, xref dedup, and the report's corroboration/discovery sections) would otherwise stay stale for the rest of the session:
    ```
    fha index
    ```
