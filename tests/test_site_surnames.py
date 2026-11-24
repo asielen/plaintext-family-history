@@ -99,6 +99,61 @@ class GroupingTests(_Surnames):
         self.assertEqual(self.files(),
                          ['index.html', 'jones.html', 'smith-jones-2.html', 'smith-jones.html'])
 
+    def test_a_name_in_another_alphabet_keeps_its_own_page_and_note(self):
+        # A Russian and a Chinese family each get a page of their own whose
+        # file name never changes when another such family is added, and the
+        # note written for one never wanders onto the other's page.
+        self.person(P[0], 'Ivan Иванов', sex='M')
+        self.person(P[1], 'Wei 李', sex='M')
+        self.build()
+        first = self.files()
+        self.assertNotIn('place.html', first)
+        self.assertEqual(len(first), 3)
+        li = next(f[:-5] for f in first
+                  if f != 'index.html' and '李' in self.page(f[:-5]))
+        self.note(li, 'The Li family came from Guangdong.\n')
+        self.person(P[2], 'Nikos Αθανασίου', sex='M')
+        self.build()
+        self.assertTrue(set(first) <= set(self.files()))
+        self.assertIn('Guangdong', self.page(li))
+        for f in self.files():
+            if f not in ('index.html', f'{li}.html'):
+                self.assertNotIn('Guangdong', self.page(f[:-5]))
+
+    def test_a_family_named_place_is_not_confused_with_another_alphabet(self):
+        self.person(P[0], 'Ann Place')
+        self.person(P[1], 'Wei 李', sex='M')
+        self.build()
+        self.assertIn('Ann Place', self.page('place'))
+        self.assertNotIn('李', self.page('place'))
+
+    def test_a_name_windows_reserves_still_gets_a_page(self):
+        # "Con" or "Nul" as a file name is a device on Windows: the page
+        # would silently never be written and the home page link would break.
+        self.person(P[0], 'Ann Con')
+        self.build()
+        files = self.files()
+        self.assertNotIn('con.html', files)
+        page = next(f for f in files if f != 'index.html')
+        self.assertIn('Ann Con', self.page(page[:-5]))
+        self.assertIn(f'surnames/{page}', self.home())
+
+    def test_a_surname_written_in_the_restricted_form_is_not_printed(self):
+        self.person(P[0], 'Charley Layng', sex='M')
+        self.person(P[1], 'Ann Cole')
+        self.conn.execute("UPDATE persons SET surname = ? WHERE id = ?",
+                          ("{'value': 'Layng', 'restricted': 'true'}", P[0]))
+        self.build()
+        self.assertEqual(self.files(), ['cole.html', 'index.html'])
+        self.assertNotIn('value', self.home())
+
+    def test_a_surname_he_marked_private_gets_no_page_on_the_shared_site(self):
+        self.person(P[0], 'Mary Layng',
+                    extra='married_name: {value: Layng, restricted: true}\n')
+        self.person(P[1], 'Ann Cole')
+        self.build()
+        self.assertEqual(self.files(), ['cole.html', 'index.html'])
+
 
 class NoteTests(_Surnames):
     def test_note_also_list_merges_and_its_prose_shows(self):
@@ -111,6 +166,34 @@ class NoteTests(_Surnames):
         self.assertIn('The name means smith, from kowal.', text)
         self.assertIn('Pawel Kowalsky', text)
         self.assertIn('Also written Kowalsky.', text)
+
+    def test_also_moves_only_the_spelling_it_names(self):
+        # Listing Kowalska on the Kowalsky note must not drag every Kowalski
+        # along and make the Kowalski page (and links to it) vanish.
+        self.person(P[0], 'Jan Kowalski', sex='M')
+        self.person(P[1], 'Anna Kowalska')
+        self.person(P[2], 'Pawel Kowalsky', sex='M')
+        self.note('kowalsky', '---\nalso: [Kowalska]\n---\nAnother spelling.\n')
+        self.build()
+        self.assertEqual(self.files(), ['index.html', 'kowalski.html', 'kowalsky.html'])
+        self.assertIn('Jan Kowalski', self.page('kowalski'))
+        self.assertNotIn('Anna Kowalska', self.page('kowalski'))
+        self.assertIn('Anna Kowalska', self.page('kowalsky'))
+        self.assertNotIn('Jan Kowalski', self.page('kowalsky'))
+
+    def test_also_lists_do_not_chain(self):
+        # Hartly moves to the Hartley page; the Hartly note's own also: then
+        # has no page of its own left to gather onto, so Hartlee stays put.
+        self.person(P[0], 'Al Hartley', sex='M')
+        self.person(P[1], 'Bob Hartly', sex='M')
+        self.person(P[2], 'Cy Hartlee', sex='M')
+        self.note('hartley', '---\nalso: [Hartly]\n---\nThe Hartleys.\n')
+        self.note('hartly', '---\nalso: [Hartlee]\n---\nThe Hartlys.\n')
+        self.build()
+        self.assertEqual(self.files(), ['hartlee.html', 'hartley.html', 'index.html'])
+        self.assertIn('Bob Hartly', self.page('hartley'))
+        self.assertIn('Cy Hartlee', self.page('hartlee'))
+        self.assertNotIn('The Hartlys', self.page('hartlee'))
 
     def test_private_paragraph_in_the_note_is_withheld_in_a_shared_build(self):
         self.seed_kowalskis()

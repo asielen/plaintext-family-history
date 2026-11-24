@@ -652,6 +652,31 @@ _SITE_MARKER_NAME = '.fha-site'
 # masculine form is also among the people listed.
 _SURNAME_FEMININE_ENDINGS = (('dzka', 'dzki'), ('ska', 'ski'), ('cka', 'cki'), ('ova', ''))
 
+# File names Windows keeps for devices: a page called `con.html` is never
+# written there, so a family named Con would get a broken link.
+_WINDOWS_DEVICE_NAMES = frozenset({'con', 'prn', 'aux', 'nul'}
+                                  | {f'{d}{n}' for d in ('com', 'lpt') for n in range(10)})
+
+
+def _surname_slug(display: str) -> str:
+    """The file name (without `.html` or `.md`) of a family name's page and
+    note: the name folded to plain lowercase letters, digits and hyphens, the
+    way place notes are (`Kowalski` -> `kowalski`, `Müller` -> `muller`).
+
+    A name written in another alphabet (Иванов, 李) has no letters left after
+    folding. It gets `name-` and eight characters worked out from the name
+    itself, so its page and the note he writes for it keep one file name
+    however many other such families are added. A name Windows keeps for a
+    device (Con, Nul) gets `-family` after it, or its page would never be
+    written there."""
+    slug = re.sub(r'[^a-z0-9]+', '-', fold_accents(display).lower()).strip('-')
+    if not slug:
+        written = unicodedata.normalize('NFC', display).casefold()
+        return 'name-' + hashlib.sha1(written.encode('utf-8')).hexdigest()[:8]
+    if slug in _WINDOWS_DEVICE_NAMES:
+        return f'{slug}-family'
+    return slug
+
 # Month names for the family calendar, written out here rather than read from
 # the locale so a site built on any machine reads the same.
 _MONTH_NAMES = ('January', 'February', 'March', 'April', 'May', 'June', 'July',
@@ -11213,6 +11238,13 @@ class _SiteBuilder:
             surname = (row['surname'] or '').strip()
             if not surname or surname.lower() == 'unknown':
                 continue
+            if surname.startswith('{'):
+                # `surname: {value: ..., restricted: true}` is not a form the
+                # SPEC gives `surname:`; the index holds it as text, and
+                # printing that would show the hidden name. Leave it off.
+                continue
+            if shared and surname.lower() in self.restricted_names.get(pid, ()):
+                continue   # he marked this name private in another name field
             found.append((pid, surname))
         return found
 
@@ -11250,10 +11282,12 @@ class _SiteBuilder:
         by_key: dict[str, dict] = {}
         for pid, surname in people:
             key = fold_accents(surname).lower()
-            grp = by_key.setdefault(home_key(key), {'keys': set(), 'pids': [], 'spellings': {},
-                                                   'own': {}})
+            home = home_key(key)
+            grp = by_key.setdefault(home, {'home': home, 'keys': set(), 'pids': [],
+                                           'spellings': {}, 'own': {}, 'by_key': {}})
             grp['keys'].add(key)
             grp['pids'].append(pid)
+            grp['by_key'].setdefault(key, []).append((pid, surname))
             grp['spellings'][surname] = grp['spellings'].get(surname, 0) + 1
             if key == home_key(key):
                 grp['own'][surname] = grp['own'].get(surname, 0) + 1
@@ -11262,22 +11296,31 @@ class _SiteBuilder:
             pool = grp['own'] or grp['spellings']
             return sorted(pool, key=lambda sp: (-pool[sp], sp))[0]
 
+        def assign_slugs(groups: list[dict]) -> None:
+            used: dict[str, int] = {}
+            for grp in groups:
+                slug = _surname_slug(grp['display'])
+                used[slug] = used.get(slug, 0) + 1
+                grp['slug'] = slug if used[slug] == 1 else f'{slug}-{used[slug]}'
+
         ordered = [by_key[k] for k in sorted(by_key)]
         for grp in ordered:
             grp['display'] = display_of(grp)
-        by_slug: dict[str, dict] = {}
-        for grp in ordered:
-            by_slug.setdefault(place_note_slug(grp['display']), grp)
+        assign_slugs(ordered)
+        by_slug = {grp['slug']: grp for grp in ordered}
 
         # `also:` lists in the human's notes fold more spellings into a page.
+        # Each listed spelling moves on its own (its people, not the whole
+        # page it sat on), and only onto a page still there under its own
+        # name, so two notes never chain one family into another.
         owner = {k: grp for grp in ordered for k in grp['keys']}
         claimed: dict[str, str] = {}
         notes_dir = self.archive_root / 'notes' / 'surnames'
         note_files = sorted(notes_dir.glob('*.md')) if notes_dir.is_dir() else []
         for path in note_files:
             target = by_slug.get(path.stem.lower())
-            if target is None:
-                continue   # a note for a name nobody shown carries: nothing to say
+            if target is None or target['home'] in claimed:
+                continue   # no page of its own (any more) for this note to gather onto
             try:
                 meta = read_record(path, on_decode_error=_ignore_decode_error)['meta'] or {}
             except Exception:   # noqa: BLE001 (an unreadable note adds no spellings)
@@ -11294,20 +11337,26 @@ class _SiteBuilder:
                         f'also:; it stays on the page of {claimed[key]}.')
                     continue
                 claimed[key] = path.name
-                for k in other['keys']:
-                    owner[k] = target
-                target['keys'] |= other['keys']
-                target['pids'] += other['pids']
-                for sp, n in other['spellings'].items():
-                    target['spellings'][sp] = target['spellings'].get(sp, 0) + n
-                other['pids'] = []
+                owner[key] = target
+                other['keys'].discard(key)
+                target['keys'].add(key)
+                moving = other['by_key'].pop(key, [])
+                target['by_key'].setdefault(key, []).extend(moving)
+                for pid, surname in moving:
+                    other['pids'].remove(pid)
+                    target['pids'].append(pid)
+                    for pool in ('spellings', 'own'):
+                        if surname in other[pool]:
+                            other[pool][surname] -= 1
+                            if not other[pool][surname]:
+                                del other[pool][surname]
+                    target['spellings'][surname] = target['spellings'].get(surname, 0) + 1
         ordered = [g for g in ordered if g['pids']]
 
-        used: dict[str, int] = {}
         for grp in ordered:
-            slug = place_note_slug(grp['display'])
-            used[slug] = used.get(slug, 0) + 1
-            grp['slug'] = slug if used[slug] == 1 else f'{slug}-{used[slug]}'
+            grp['display'] = display_of(grp)
+        assign_slugs(ordered)
+        for grp in ordered:
             grp['pids'] = sorted(set(grp['pids']))
             others = sorted((sp for sp in grp['spellings'] if sp != grp['display']),
                             key=lambda sp: (fold_accents(sp).lower(), sp))
