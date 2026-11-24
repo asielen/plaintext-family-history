@@ -62,7 +62,7 @@
     {
       "path": ".agents/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "9ee37234fc3c04eefaf1be3a47f19c4d4d0c23114d39723e6b991d18fa057072",
+      "sha256": "809717683d311f6cacf2820c734b1f5c429f7ef31c57596fbc3bd4ff2835131c",
       "spec_version": "2.41",
       "src": ".claude/skills/mine-transcript/SKILL.md"
     },
@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "1c6f0aaf9b1d8ae50bc74f0c80c770629cc81b0691f58ab54f94a935a13a3f90",
+      "sha256": "0e5bc2e63ce96ff902c79b0ed10a176d7f452e2afe70305ff218a4eaa896947d",
       "spec_version": "2.41",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -167,7 +167,7 @@
     {
       "path": ".agents/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "179a4faf7bac21da684dd48ee9f05e13887fb68b75e95e47f0a0a47606111e32",
+      "sha256": "8d8df60c26e1a72cdea7b2672146807c5ab14421b1a0ff7856d59b6852a6fd72",
       "spec_version": "2.41",
       "src": ".claude/skills/transcribe-source/SKILL.md"
     },
@@ -236,7 +236,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "9ee37234fc3c04eefaf1be3a47f19c4d4d0c23114d39723e6b991d18fa057072",
+      "sha256": "809717683d311f6cacf2820c734b1f5c429f7ef31c57596fbc3bd4ff2835131c",
       "spec_version": "2.41"
     },
     {
@@ -260,7 +260,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "1c6f0aaf9b1d8ae50bc74f0c80c770629cc81b0691f58ab54f94a935a13a3f90",
+      "sha256": "0e5bc2e63ce96ff902c79b0ed10a176d7f452e2afe70305ff218a4eaa896947d",
       "spec_version": "2.41"
     },
     {
@@ -326,7 +326,7 @@
     {
       "path": ".claude/skills/transcribe-source/SKILL.md",
       "category": "operating",
-      "sha256": "179a4faf7bac21da684dd48ee9f05e13887fb68b75e95e47f0a0a47606111e32",
+      "sha256": "8d8df60c26e1a72cdea7b2672146807c5ab14421b1a0ff7856d59b6852a6fd72",
       "spec_version": "2.41"
     },
     {
@@ -1436,7 +1436,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "5c20e0597a9c65b4a6b1b28976f39a4d42c5dd20999b03cd6de8c396adc3d2e9",
+      "sha256": "bb1055dbe788a73d42404db7554352ad03f706414b50f0191d8faed9f85eee39",
       "spec_version": "2.41"
     },
     {
@@ -1479,7 +1479,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "c0810e3249ebec3da3af5fcffd78c79decc5f443865b26e607cb09f7c53131c8",
+      "sha256": "41a13747b926c95ca75693610e51b19c5e4ef713b787a111e260c44543c852d0",
       "spec_version": "2.41"
     },
     {
@@ -1521,14 +1521,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "7732a5bb716cd703012d9a535c58a4cc8c284efac52bc602874dcf0670f56b32",
+      "sha256": "90a4827d298519a887055cd819ea697618f7298db458181427695be164c76145",
       "spec_version": "2.41",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "036bbfa7a974a1b888251f91686491880ce902ec2a587738b451d9cab117730f",
+      "sha256": "6377cd1aea0b3acd749da288aa844c77334c8b6cc56554144e475f3929d1c5ed",
       "spec_version": "2.41",
       "src": "TOOLING.md"
     },
