@@ -301,7 +301,9 @@ fha date convert DATE --from julian|gregorian|hebrew
 fha repositories [--place l-id] [--year Y] [--record TYPE]   archives and record sites that hold that kind of record for the place and year, with who governed the place then; free/paid and online/in person/by letter on every line
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
-                            person stubs + suggested claims; plan first, --apply to write
+                            person stubs + suggested claims; plan first, --apply to write.
+                            A newer download of the same tree adds only what changed;
+                            --confirm-matches asks the human about likely matches
 fha backup                   dated zip of the records, written outside the archive
                             (--include-assets adds the photo/document roots; restore = unzip)
 ```
