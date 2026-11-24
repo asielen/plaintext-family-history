@@ -19265,10 +19265,10 @@ def build_ahnentafel_map(
     a shared page's family-tree number is never worked out through a tie the
     page may not show. A parent kept by one allowed claim still counts when
     another claim for the same tie is refused. A shown parent keeps the slot
-    the unfiltered walk gives them (a hidden father does not push an unsexed
-    mother into no. 2), and a shown parent that walk left unnumbered (a hidden
-    DNA father outranked the legal one) takes the slot the shown parents alone
-    give them. None (the default) walks every edge, exactly as before.
+    the unfiltered walk gives them when it fits their recorded sex (a hidden
+    father does not push an unsexed mother into no. 2); otherwise (a hidden
+    DNA father outranked the legal one) they take the slot the shown parents
+    alone give them. None (the default) walks every edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19415,12 +19415,15 @@ def build_ahnentafel_map(
 
         slots = _slots(parents, n)
         if allowed is not None:
-            # A shown parent keeps the slot the full walk gives them, so a
-            # hidden father never pushes an unsexed mother into his number.
-            # A shown parent the full walk left without a slot (a hidden DNA
-            # father outranked the legal one) takes the slot the shown parents
-            # alone would give them, when it is free.
-            kept = [e for e in slots if e[0] in allowed]
+            # A shown parent keeps the slot the full walk gives them when it
+            # fits their own recorded sex, so a hidden father never pushes an
+            # unsexed mother into his number. Otherwise (a hidden DNA father
+            # outranked the legal one, or pushed him into the mother's number)
+            # they take the slot the shown parents alone would give them, so
+            # the number never hints that a hidden parent exists.
+            def _fits(e: tuple[str, str, int, bool]) -> bool:
+                return {'M': e[2] % 2 == 0, 'F': e[2] % 2 == 1}.get(e[1], True)
+            kept = [e for e in slots if e[0] in allowed and _fits(e)]
             taken = {e[2] for e in kept}
             have = {e[0] for e in kept}
             for e in _slots([e for e in parents if e[0] in allowed], n) if allowed else []:
