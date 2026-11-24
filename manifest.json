@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b52d873f9f3058a2607a95e1acbe8da4805308529d92c207cea4bf6126fc7863",
+      "sha256": "8f119f27e4c4551df3201c7c4df30dd6e9206e6afd12cf0775e307bf45403175",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "5efa74d1dae2ccebf9bd7bd7fe6ebba42736bd9cf5d18cbb2db24bf31f19d218",
+      "sha256": "3cc00c9d6fc187a24a24f4f108b0778141a5d617e21a934a663022a0749f963d",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1387,7 +1387,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "3cffc2190bab800b3b5a247f451087637f8b8e5bcfa9d2f9d2e4a8038bb39e5d",
+      "sha256": "42f455dfe1013871b0925cd471c5126bd6825a5b9dadc4874916780271332b58",
       "spec_version": "2.31",
       "src": "tools/views.py"
     },
@@ -1479,7 +1479,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "a1ec5b2e6e3da62f95671bcd0cd9af0c6759ded243ea9479da932edae17a6323",
+      "sha256": "e7ff6c6a09ea74373255aca6a344e2820e483e71821a8c5c32efc621568351e4",
       "spec_version": "2.31"
     },
     {
@@ -1528,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "2aa72b290c44a458154e7c48524aab0535bd92b1544dc9d4ef9a095cdf4f07ed",
+      "sha256": "36cd6dae96f9dd8203a97628661415abc92a109c113443b14360047af2963e94",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
