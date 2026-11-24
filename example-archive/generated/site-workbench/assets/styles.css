@@ -635,6 +635,10 @@ details.chart > summary.chart-title::before {
     content: "\25B8"; font-size: 0.65em; color: var(--muted); transition: transform 0.15s ease; }
 details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 .chart-body { margin-top: var(--space-4); }
+/* "Save this chart" buttons (vendor/fha-save-chart.js) sit under a chart. */
+.chart-save { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-3) 0; }
+.chart-save:empty { display: none; }
+.chart-save-msg { font-size: 0.9rem; }
 
 
 /* 9. UTILITIES */
@@ -662,7 +666,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   @page { margin: 1.5cm; }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
-  .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, noscript,
+  .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, .chart-save, noscript,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
   .wb-add-hint { display: none !important; }

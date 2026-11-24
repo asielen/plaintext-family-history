@@ -68,6 +68,9 @@ PRIVACY RULES (TOOLING §8 - apply at gather time, not as a post-filter):
     longer be told from accepted prose, and the centerpiece cannot ship
     verbatim). Research copies stay byte copies by the documented round-2
     scope decision; one carrying a draft marker gets a README caution line.
+    Source records keep their drafts too (a proof argument the AI drafted
+    for his review, say), and the README names each copied source that
+    still carries draft text.
   - #75's visible purpose block, and (for a profile) #76's `## Sources`
     region, never reach a shipped copy either (`_strip_scaffolding_blocks`) -
     they are instructions for whoever works in the *archive*, and the
@@ -2684,6 +2687,7 @@ def _write_readme(
     has_asset_files: bool,
     missing_assets: list[str],
     redaction_notes: list[str],
+    source_draft_files: list[str] | None = None,
 ) -> None:
     lines = [
         f'fha packet - {person_name} ({fmt_id_display(pid)})\n',
@@ -2734,6 +2738,17 @@ def _write_readme(
         lines.append(f'\nIncluded sources ({len(included_sources)}):\n')
         for row in included_sources:
             lines.append(f'  [{fmt_id_display(row["id"])}] {row["title"]}\n')
+        if source_draft_files:
+            # Source records ship whole (only the profile's drafts are
+            # withheld), so a written argument the AI drafted and he has not
+            # yet accepted travels with them: say which files hold it.
+            lines.append(
+                '\nNOTE: these files in sources/ contain unreviewed draft text\n'
+                '(AI-DRAFT sections awaiting review) - treat those as suggestions,\n'
+                'not accepted facts:\n'
+            )
+            for name in sorted(source_draft_files):
+                lines.append(f'  {name}\n')
 
     if excluded_sources:
         # Reason, not just a count: "restricted" over a record the tool could
@@ -3254,12 +3269,14 @@ def _packet_payload(
             # ship: they carry no claim YAML, and the source itself passed
             # the source-level privacy gate.
             sources_dir = packet_dir / 'sources'
+            source_draft_files: list[str] = []
             files_dir = packet_dir / 'files'
             for row in included_rows:
                 src_record = archive_root / row['path']
                 if src_record.exists():
                     sources_dir.mkdir(exist_ok=True)
                     mode = copy_plan.get(row['id'])
+                    source_copy = None
                     if mode == 'unsafe':
                         messages.append(
                             f'WARNING: the claims in {src_record.name} could not be read, '
@@ -3274,7 +3291,7 @@ def _packet_payload(
                             'out. The record stays in your archive.'
                         )
                     elif mode == 'redact':
-                        _copy_redacted_source(
+                        source_copy = _copy_redacted_source(
                             src_record, sources_dir,
                             include_restricted=include_restricted,
                             include_dna=include_dna,
@@ -3285,10 +3302,22 @@ def _packet_payload(
                         # block still does not belong in a shipped copy, and
                         # nor does a non-portable files: entry (issue #170
                         # finding 1, P1 follow-up).
-                        _copy_source_with_scaffolding_stripped(
+                        source_copy = _copy_source_with_scaffolding_stripped(
                             src_record, sources_dir,
                             messages=messages, redaction_notes=redaction_notes,
                         )
+                    # A relative reading a proof argument the AI drafted
+                    # (weigh-evidence) before he accepted it must be told it
+                    # is a draft. Source records ship whole, like research,
+                    # so a copied record still carrying draft text gets the
+                    # same README caution - judged the way the research copy
+                    # is, on the original with fenced drafts set aside.
+                    if mode != 'unsafe' and source_copy is not None:
+                        try:
+                            if has_unfenced_draft_text(read_text_exact(src_record)):
+                                source_draft_files.append(source_copy.name)
+                        except (OSError, UnicodeError):
+                            pass
                 else:
                     messages.append(f'WARNING: source record not found on disk: {src_record}')
                 for asset_path in files_by_source.get(row['id'], []):
@@ -3450,6 +3479,7 @@ def _packet_payload(
                 other_named=other_named, photo_count=photo_count,
                 unverified_photo_count=unverified_count, research_included=research_included,
                 research_draft_caution=research_draft_caution,
+                source_draft_files=source_draft_files,
                 has_asset_files=any(files_by_source.values()), missing_assets=missing_assets,
                 redaction_notes=redaction_notes,
             )
