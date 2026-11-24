@@ -446,5 +446,26 @@ class CliTests(unittest.TestCase):
         self.assertIn('29 September 1850', proc.stdout)
 
 
+class CalendarRuleIsWrittenDownTests(unittest.TestCase):
+    """A researcher drafting a claim from an Old Style register gets one answer
+    everywhere: `date:` is today's calendar, `value` keeps the record's words.
+    SPEC §11 and every page that tells an agent how to write dates say so."""
+
+    def _read(self, rel):
+        return (ROOT / rel).read_text(encoding='utf-8')
+
+    def test_spec_says_date_is_always_gregorian(self):
+        spec = self._read('SPEC.md')
+        self.assertIn("`date:` is always a date in today's (Gregorian) calendar", spec)
+        self.assertNotIn('Julian/Gregorian judgment goes in `notes`', spec)
+
+    def test_drafting_pages_point_to_the_converter(self):
+        for rel in ('AGENTS.md', '.claude/skills/process-source/SKILL.md',
+                    '.claude/skills/mine-transcript/SKILL.md'):
+            text = self._read(rel)
+            self.assertIn("`date:` is always today's (Gregorian) calendar", text, rel)
+            self.assertIn('fha date convert', text, rel)
+
+
 if __name__ == '__main__':
     unittest.main()

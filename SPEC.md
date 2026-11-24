@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24**
+**Version 2.32, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -382,7 +382,7 @@ Each meaning has one spelling, in one bracket convention. `[1920..]` is the mirr
 
 The one exception is embedded photo metadata, which cannot hold partial dates; §20 defines the bidirectional mapping to the keyword-pattern system used there.
 
-**Calendar quirks:** a claim records the date *as written* in `value` (double dates like "11 Feb 1731/32", regnal or feast dates) with the best EDTF interpretation in `date:`. Julian/Gregorian judgment goes in `notes`.
+**Calendar quirks.** `date:` is always a date in today's (Gregorian) calendar, the calendar EDTF is defined in. `value` keeps the record's own words: a double date like "11 Feb 1731/32", an Old Style or Orthodox register date, a regnal year, a feast day or a Hebrew date. When the record used another calendar, convert it: an Old Style day becomes the same day in today's calendar, a double-dated year is read as the later year, and a feast or Hebrew date becomes its day. `notes` says which calendar the record used and that `date:` was converted. A month or a year alone is written as the record gives it, since converting it would only move its edges by days. Every tool compares `date:` values across people (ages, order, the family calendar, the plausibility checks), so they must all be in one calendar. `fha date convert` and `fha date feast` do the conversion (TOOLING §4b); never convert a date in your head.
 
 ---
 
