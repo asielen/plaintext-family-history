@@ -1281,7 +1281,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "fbe2a3db876b224ee7a7fa12d5e8daa461d161f175fa0d3a1ce68284862e814d",
+      "sha256": "6d1c089a7f9415d23acc7ef228d9eb1a41e3755624a6e8f52990ba772679130b",
       "spec_version": "2.38",
       "src": "tools/templates/person.html"
     },
