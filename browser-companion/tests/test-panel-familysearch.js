@@ -25,7 +25,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 
-const { openPanel, settle, tick, holdFirst } = require('./panel-harness.js');
+const { openPanel, settle, tick, holdFirst, PORT_CLOSED } = require('./panel-harness.js');
 const fsr = require('../src/lib/familysearch-record.js');
 
 const FIX = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
@@ -761,4 +761,27 @@ test('the page failing to answer the Full-Text question never fails the capture'
   await p.capture();
   assert.strictEqual(p.written.length, 1, p.result());
   assert.ok(!p.written[0].captureJson.assets.some((a) => a.role === 'transcript'));
+});
+
+test('a Full-Text question that gets no answer from the tab still saves an indexed record and its image', async () => {
+  const p = await open(CALVIN, { wrap: (inner) => async (msg, tab) => (msg.action === 'familysearchFullText' ? PORT_CLOSED : inner(msg, tab)) });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  const roles = p.written[0].captureJson.assets.map((a) => a.role);
+  assert.ok(roles.includes('record') && roles.includes('site-data'));
+  assert.ok(!roles.includes('transcript'));
+});
+
+test('Full-Text opened after the image was already saved is still saved with the next capture', async () => {
+  const p = await open(FROM_RECORD);
+  await p.capture();
+  FULLTEXT.text = 'Calvin Hartley and Harriet his wife';
+  try {
+    await p.capture();
+    assert.strictEqual(p.written.length, 2, p.result());
+    assert.strictEqual(fullImageFetches(p), 1, 'the image is still downloaded once');
+    assert.ok(p.written[1].captureJson.assets.some((a) => a.role === 'transcript'));
+  } finally {
+    FULLTEXT.text = null;
+  }
 });

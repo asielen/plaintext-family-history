@@ -2037,11 +2037,13 @@
   // not asked); no panel or no text is no file, and never a failed capture.
   // `-->` and `<!--` in the text are escaped so the text cannot close the
   // marker above it or open another.
-  async function fsFullTextAsset(imageId, recordUrl, accessed) {
+  // `pageIds`: the ids the tab's URL carries (the record's own for an indexed
+  // record, whose URL has no image id), for the still-on-this-page check.
+  async function fsFullTextAsset(imageId, recordUrl, accessed, pageIds) {
     let got = null;
     try {
       got = await autoFetch('FamilySearch Full-Text transcript (if the page shows it)',
-        { action: 'familysearchFullText', imageId }, { recordUrl, ids: ['3:1:' + imageId] });
+        { action: 'familysearchFullText', imageId }, { recordUrl, ids: pageIds });
     } catch (e) {
       if (e instanceof TabMoved) throw e;
     }
@@ -2108,8 +2110,11 @@
     // this; `imageId` is only the image the record links to.
     const imageSaved = !!imageKey && !provisional && assets.some((a) => a.role === 'record');
     rec.imageSaved = imageSaved;
-    if (imageKey && !sameImageAs) {
-      const tx = await fsFullTextAsset(imageKey, recordUrl, captureJson.accessedDate());
+    // Asked even when the image is already saved: that image's capture may
+    // have been made before its Full-Text panel was open (or before this
+    // feature), and the panel is only read, never clicked.
+    if (imageKey) {
+      const tx = await fsFullTextAsset(imageKey, recordUrl, captureJson.accessedDate(), ['1:1:' + rec.fsId]);
       if (tx) assets.push(tx);
     }
 
@@ -2235,7 +2240,7 @@
           'Download button, drop the file into the panel and press Capture again: that capture holds both.';
       }
     }
-    const tx = await fsFullTextAsset(imageId, recordUrl, accessed);
+    const tx = await fsFullTextAsset(imageId, recordUrl, accessed, ['3:1:' + imageId]);
     if (tx) assets.push(tx);
     const hasImage = assets.some((a) => a.role === 'record');
     if (!pageCopy && !hasImage) pageCopy = await recordPageCopy('late', true, recordUrl, ['3:1:' + imageId]);
