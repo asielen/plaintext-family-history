@@ -27,6 +27,7 @@ Contents:
 17. Sounds-alike search
 18. Site search: a script, not a data file
 19. Calendar conversion is a tool
+20. The tree fades a weak line, from the tie outward
 
 ---
 
@@ -443,3 +444,18 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
 - **Keeping the record's own day in `date:` and fixing only the year** (`1732-02-11` for "11 Feb 1731/32"). Many genealogists write old-style English dates this way, but it mixes two calendars in one field, so a Russian register's birth would read 12 days early against a Polish one, and every age, order and anniversary check compares `date:` across people. SPEC §11 keeps `date:` in today's calendar and the record's words in `value`.
 - **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.
+
+---
+
+## 20. The tree fades a weak line, from the tie outward
+
+**The rule.** The tree data rates every parent and child tie by the best confidence among the claims behind it (SPEC §8.5), and gives each person a `line_confidence`: the weakest rated tie on their strongest route back to the person the chart is drawn around. A spouse tie is never rated. On the shared site only claims a visitor could see count.
+
+**Why.** When the only thing linking Grandpa Thomas to his parents is a family story, everyone above Thomas rests on that story, however good their own records are. A chart that shows only each tie's own strength draws his great-grandparents as solid. Taking the strongest route means a person reached two ways, as in a cousin marriage, is as well tied as the better way allows. A doubtful marriage says the couple may not have married, not that the wife belongs to another family, so an in-law takes the line of the person they married. A sealed certificate cannot lift a shared family story: the shared site would then tell visitors that stronger evidence exists and is being kept from them.
+
+**Rejected.**
+
+- **Each tie's own confidence only.** It fades the one weak tie and leaves everyone beyond it looking proven.
+- **The weakest tie on any route.** A person reached through both a story and a certificate would fade although the certificate settles them.
+- **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
+- **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
