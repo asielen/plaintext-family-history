@@ -62,6 +62,7 @@ fha person set-external-id p-aaaa wikitree Hartley-6084   # note which WikiTree 
 fha views timeline p-aaaa --format html   # a printable one-page timeline (lands in generated/views/)
 fha views family-sheet p-aaaa --format html   # a family group sheet to print for a relative (lands in generated/views/)
 fha views ahnentafel p-aaaa --format html   # a numbered list of his ancestors to print (lands in generated/views/)
+fha views register p-aaaa --format html   # a book-style list of his descendants to print (lands in generated/views/)
 fha photoindex gallery --person p-aaaa    # a clickable page of someone's photos; double-click to open (lands in generated/gallery/)
 ```
 
