@@ -263,6 +263,68 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
         self.assertEqual(self._pairs(result), [frozenset((a, b))])
         self.assertIn('both born in Fairview', result['pairs'][0]['reasons'])
 
+    def test_baptism_a_week_after_the_birthday_still_pairs(self) -> None:
+        # Church registers give the christening; another tree gives the
+        # birthday. A week apart is one child, not two (Codex review, PR #474).
+        a = self.a.person('William Hartley', sex='M')
+        b = self.a.person('William Hartley', sex='M')
+        self._born(a, '1860-03-04')
+        self.a.claim('baptism', [b], date='1860-03-11')
+        self.assertEqual(self._pairs(self.a.scan()), [frozenset((a, b))])
+
+    def test_close_spelling_in_the_second_letter_is_compared(self) -> None:
+        # Hartley and Hertley, Meyer and Mayer: a vowel slip near the front
+        # of the surname must not hide the pair (Codex review, PR #474).
+        a = self.a.person('William Hartley', sex='M')
+        b = self.a.person('William Hertley', sex='M')
+        self._born(a, '1860')
+        self._born(b, '1860')
+        self.assertEqual(self._pairs(self.a.scan()), [frozenset((a, b))])
+
+    def test_undated_births_in_one_place_count_the_place(self) -> None:
+        # An incomplete record often has the town but no year (Codex review).
+        a = self.a.person('Edith Hartley', sex='F')
+        b = self.a.person('Edith Hartley', sex='F')
+        self._born(a, '', place_text='Fairview')
+        self._born(b, '', place_text='Fairview')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        self.assertIn('both born in Fairview', result['pairs'][0]['reasons'])
+
+    def test_two_people_stay_two_after_one_is_merged_with_a_copy(self) -> None:
+        # He said Rose (a) and Rose (b) are two people, then merged a copy
+        # (c) into a. The report must not ask about a and b again (Codex).
+        a = self.a.person('Rose Hartley', sex='F')
+        b = self.a.person('Rose Hartley', sex='F')
+        c = self.a.person('Rose Hartley', sex='F',
+                          extra=f'status: merged\nmerged_into: {a}\n')
+        self._born(a, '1890')
+        self._born(b, '1890')
+        result = self.a.scan({frozenset((c, b))})
+        self.assertEqual(result['pairs'], [])
+        self.assertEqual(result['dismissed_hidden'], 1)
+
+    def test_unreviewed_family_ties_from_an_import_count(self) -> None:
+        # After an import every tie is suggested; "same father" must still
+        # count, and a suggested father/son tie must still keep them apart.
+        caleb = self.a.person('Caleb Hartley', sex='M')
+        m1 = self.a.person('Margaret Hartley', sex='F')
+        m2 = self.a.person('Margaret Hartley', sex='F')
+        for child in (m1, m2):
+            self.a.claim('relationship', [child, caleb], status='suggested',
+                         roles=f'  subtype: biological\n  roles:\n    child: {child}\n'
+                               f'    parent: [{caleb}]')
+        t1 = self.a.person('Thomas Cole', sex='M')
+        t2 = self.a.person('Thomas Cole', sex='M')
+        self.a.claim('relationship', [t2, t1], status='suggested',
+                     roles=f'  subtype: biological\n  roles:\n    child: {t2}\n'
+                           f'    parent: [{t1}]')
+        self._born(t1, '1850~')
+        self._born(t2, '1851~')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((m1, m2))])
+        self.assertIn('same father, Caleb Hartley', result['pairs'][0]['reasons'])
+
     def test_same_name_alone_is_not_listed(self) -> None:
         self.a.person('Henry Cole', sex='M')
         self.a.person('Henry Cole', sex='M')

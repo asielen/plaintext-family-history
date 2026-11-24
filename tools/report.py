@@ -1681,7 +1681,7 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
     return len(waiting)
 
 
-def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
+def _section_loose_ends(conn, direct_line: tuple, ctx: dict) -> list[str]:
     """Where each line of the tree stops, who is not tied to it, and which of
     those share a surname with it (TOOLING §15a, section 3b).
 
@@ -1690,7 +1690,6 @@ def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
     written down as a question).
     """
     pid_to_pos, root_pid, root_position, root_problems = direct_line
-    ctx = completeness_context(conn)
     persons = ctx['persons']          # merged tombstones already left out
     people = set(persons)
 
@@ -2246,9 +2245,11 @@ def run_report(
     try:
         prev = {} if full else _load_snapshot(archive_root)
         current = _build_snapshot(conn, archive_root, findings, registry)
-        # One read of every person and claim, for the duplicate scan (§4b).
+        # One read of every person and claim, shared by §3b and §4b: on a big
+        # imported tree it is the slow part, so the briefing does it once.
+        ctx = completeness_context(conn)
         duplicates = possible_duplicate_people(
-            conn, completeness_context(conn), set(load_not_same_person(archive_root)))
+            conn, ctx, set(load_not_same_person(archive_root)))
 
         # One `places.run_candidates()` fetch, shared by §6b's own listing
         # and the oversight-threshold escalation below it never re-derives
@@ -2277,7 +2278,7 @@ def run_report(
             'second-look': _section_second_look(conn),
             'new-since-last': _section_new_since_last(prev, current),
             'vitals-gaps': _section_vitals_gaps(findings, registry),
-            'loose-ends': _section_loose_ends(conn, direct_line),
+            'loose-ends': _section_loose_ends(conn, direct_line, ctx),
             'contradictions': _section_contradictions(findings),
             'possible-duplicates': _section_possible_duplicates(duplicates),
             'search-log': _section_search_log(conn, current),
