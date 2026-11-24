@@ -518,3 +518,66 @@ test('fsImageCheck and fsImage reuse a description already read, asking FamilySe
   // The live description's full image sits on a FamilySearch subdomain.
   assert.ok(calls.some((u) => /^https:\/\/sg30p0\.familysearch\.org\/.*\/dist\.jpg$/.test(u)));
 });
+
+// ── a partner archive's image (the "View on wvculture.org" badge) ───────────
+
+const PARTNER = JSON.parse(fs.readFileSync(
+  path.join(REPO, 'tests', 'fixtures', 'capture-samples', 'familysearch-gedcomx-partner.json'), 'utf8'));
+const WV_VIEW = 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530';
+const artifactRecord = (artifacts, sources) => ({
+  persons: [{ id: 'p1', principal: true, sources: sources || [], names: [] }],
+  sourceDescriptions: artifacts.map((a) => Object.assign({ resourceType: 'http://gedcomx.org/DigitalArtifact' }, a)),
+});
+
+test('fsPartnerImageUrl: the badge address is the record\'s own image description, when it is not on FamilySearch', () => {
+  assert.strictEqual(fsr.fsPartnerImageUrl(PARTNER.records['HRT1-WVD1'], 'HRT1-WVD1'), WV_VIEW);
+  // The one the person's first source names wins over the first in the list.
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([
+    { id: 'a', about: 'https://other.example/a' }, { id: 'b', about: WV_VIEW }], [{ descriptionId: 'b' }]), null), WV_VIEW);
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([
+    { id: 'a', about: 'https://other.example/a' }, { id: 'b', about: WV_VIEW }]), null), 'https://other.example/a');
+  // No about: its persistent identifier, as FamilySearch's page reads it.
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([
+    { id: 'a', identifiers: { 'http://gedcomx.org/Persistent': [WV_VIEW] } }]), null), WV_VIEW);
+});
+
+test('fsPartnerImageUrl: an image on FamilySearch, no image description, or no web address is not a badge', () => {
+  assert.strictEqual(fsr.fsPartnerImageUrl(FIX.records['HRT1-CEN1'], 'HRT1-CEN1'), null);
+  assert.strictEqual(fsr.fsPartnerImageUrl(FIX.records['HRT1-DTH1'], 'HRT1-DTH1'), null);
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([{ about: 'https://sg30p0.familysearch.org/x' }]), null), null);
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([{ about: 'javascript:alert(1)' }]), null), null);
+  assert.strictEqual(fsr.fsPartnerImageUrl(artifactRecord([{ about: '' }]), null), null);
+  assert.strictEqual(fsr.fsPartnerImageUrl(null, null), null);
+});
+
+test('fsRecordFrom: a West Virginia entry names the badge\'s page, its film and image', () => {
+  const out = fsr.fsRecordFrom(PARTNER.records['HRT1-WVD1'], { fsId: 'HRT1-WVD1', viewerImageId: null });
+  assert.strictEqual(out.record.imageId, null);
+  assert.strictEqual(out.record.collection, 'West Virginia, Deaths, 1804-1999');
+  assert.strictEqual(out.record.partnerImageUrl, WV_VIEW);
+  assert.deepStrictEqual(out.record.partnerImage, {
+    site: 'wvculture', archive: 'West Virginia Archives and History', filmNumber: '1984148', imageNumber: '2530',
+    pageUrl: WV_VIEW, cite: 'image at West Virginia Archives and History, film 1984148, image 2530',
+  });
+});
+
+test('fsRecordFrom: another archive\'s badge keeps its address only; a record with its own image has neither', () => {
+  const other = fsr.fsRecordFrom(PARTNER.records['HRT1-OTH1'], { fsId: 'HRT1-OTH1', viewerImageId: null });
+  assert.strictEqual(other.record.partnerImageUrl, 'https://records.example-state-archive.example/view?id=42');
+  assert.ok(!('partnerImage' in other.record));
+  const own = fsr.fsRecordFrom(FIX.records['HRT1-CEN1'], { fsId: 'HRT1-CEN1', viewerImageId: null });
+  assert.ok(!('partnerImageUrl' in own.record) && !('partnerImage' in own.record));
+});
+
+test('fsRecordInfo on a West Virginia entry asks FamilySearch once, and nothing else', async () => {
+  const calls = [];
+  const fetch = async (url) => {
+    calls.push(url);
+    return { ok: true, status: 200, text: async () => JSON.stringify(PARTNER.records['HRT1-WVD1']) };
+  };
+  const info = await fsr.fsRecordInfo('https://www.familysearch.org/ark:/61903/1:1:HRT1-WVD1',
+    { fetch, base: 'https://www.familysearch.org/', token: TOKEN });
+  assert.ok(info.ok);
+  assert.strictEqual(info.record.partnerImage.pageUrl, WV_VIEW);
+  assert.deepStrictEqual(calls, ['https://www.familysearch.org/ark:/61903/1:1:HRT1-WVD1']);
+});

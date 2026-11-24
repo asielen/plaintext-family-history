@@ -21,6 +21,7 @@
 //   wvImageUrl        the page's image (its img src on the image host), https
 //   wvExtension       'gif' or 'jpg' from that image address
 //   wvCitation        the citation line for the source
+//   wvPartnerPage     a FamilySearch record's "View on wvculture.org" address, as a page to follow
 
 'use strict';
 
@@ -86,6 +87,31 @@ function wvCitation(info, accessed) {
   return 'West Virginia Archives and History, Vital Research Records (' + info.pageUrl +
     ' : accessed ' + accessed + '), film ' + info.filmNumber + ', image ' + info.imageNumber + '.';
 }
+
+// A FamilySearch West Virginia index entry has no image of its own; its
+// "View on wvculture.org" badge leads to the certificate or register page on
+// the state archive's site, and Capture follows it so the record itself is
+// saved beside the index. `url` is the address the badge opens (FamilySearch's
+// own data names it: lib/familysearch-record.js fsPartnerImageUrl). The page
+// to fetch (always https), its film and image number, and the citation part
+// naming where the original is; null when the address is not a view page.
+function wvPartnerPage(url) {
+  const parsed = wvParsePage(url);
+  if (!parsed) return null;
+  const u = new URL(url);
+  // Fetched by the panel, so only the archive's own page: no other port, no
+  // name or password in the address.
+  if (u.port || u.username || u.password) return null;
+  u.protocol = 'https:';
+  return {
+    site: 'wvculture',
+    archive: 'West Virginia Archives and History',
+    filmNumber: parsed.filmNumber,
+    imageNumber: parsed.imageNumber,
+    pageUrl: u.href,
+    cite: 'image at West Virginia Archives and History, film ' + parsed.filmNumber + ', image ' + parsed.imageNumber,
+  };
+}
 // FHA-SYNC-END wvculture
 
 module.exports = {
@@ -93,4 +119,5 @@ module.exports = {
   wvImageUrl,
   wvExtension,
   wvCitation,
+  wvPartnerPage,
 };
