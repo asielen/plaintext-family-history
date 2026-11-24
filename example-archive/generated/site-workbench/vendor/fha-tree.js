@@ -1,15 +1,25 @@
 /*
- * fha-tree.js - minimal, self-contained collapsible tree renderer.
+ * fha-tree.js - the family explorer, and pan/zoom for the static charts.
+ *
+ * In the explorer a husband and wife stand side by side as one pair, a
+ * later marriage sits beside the first with a dotted link, each child hangs
+ * under their own mother and father, and a person met a second time is a
+ * small "already in the tree" card that jumps to the first one. Names link
+ * to person pages; -/+ collapse and expand a family.
  *
  * This is the VENDORED rendering engine for fha site's interactive trees
- * (TOOLING §12 "borrow the engine"). It has no external dependencies (no D3,
- * no framework, no CDN) and works from file://. It draws an SVG tree of nodes
- * with expand/collapse toggles and clickable names that link to person pages.
+ * (TOOLING §12 "borrow the engine"). render() lays the tree out with D3's
+ * d3.hierarchy and d3-flextree (a tidy tree whose nodes have their own
+ * widths, so a couple takes the room of two cards), both vendored beside
+ * this file and loaded first with plain <script> tags, so it works from
+ * file:// with no CDN. wrapStatic() needs neither.
  *
  * It knows NOTHING about the archive's neutral tree-JSON contract. Its only
- * input is its own simple hierarchy format, produced by tree-adapter.js:
+ * input is the family layout model produced by tree-adapter.js: a tree of
+ * units, each one or two person cards (see that file's header):
  *
- *     { id, name, dates, url, children: [ <same shape>, ... ] }
+ *     { key, kind, people: [card, ...], main, extra, owner, edgeKind,
+ *       edgeWeak, seeKey, children: [ <same shape>, ... ] }
  *
  * Navigation: large trees render wider than the page, so the tree lives inside
  * a fixed-size viewport and is explored by dragging to pan and by wheel /
@@ -29,20 +39,25 @@
  * collapsible node hierarchy. It duplicates the pan/zoom scaffold from
  * render() below rather than sharing it, on purpose: render()'s scaffold is
  * entangled with collapse state and node layout in ways that are not worth
- * disentangling for this one extra caller, and this file has no other test
- * harness protecting it from a refactor that quietly changes the tested
- * collapsible-tree engine's behaviour. Both keep their own copy of the same
- * small pan/zoom MATH (the MIN/MAX_SCALE, FIT_PAD, DRAG_SLOP, ZOOM_STEP
+ * disentangling for this one extra caller. Both keep their own copy of the
+ * same small pan/zoom MATH (the MIN/MAX_SCALE, FIT_PAD, DRAG_SLOP, ZOOM_STEP
  * constants above are shared); only the DOM wiring is duplicated.
+ *
+ * FhaTree._layoutModel(model, collapsed) is internal, for the tests only:
+ * the unit positions render() would draw, as [{key, x, y, w}] (x the centre,
+ * y the top).
  */
 (function (global) {
   'use strict';
 
   var SVGNS = 'http://www.w3.org/2000/svg';
-  var COL_W = 228;   // horizontal spacing per leaf
-  var ROW_H = 112;   // vertical spacing per generation
-  var NODE_W = 200;  // wider card: room for a portrait + a two-line name
-  var NODE_H = 68;
+  var CARD_W = 200;     // one person's card: room for a portrait + a two-line name
+  var CARD_H = 68;
+  var COUPLE_GAP = 16;  // between husband and wife in one couple
+  var H_GAP = 28;       // between neighbouring units in a row
+  var V_GAP = 44;       // between generations
+  var REPEAT_W = 150;   // the smaller "already in the tree" card
+  var LATER_RISE = 10;  // a later-marriage link that has to pass other cards runs this far above them
 
   // Zoom is expressed as pixels-per-content-unit (1 = drawn 1:1). Fit for a
   // wide tree lands well below 1; the ceiling keeps a single card from filling
@@ -93,64 +108,100 @@
     return e;
   }
 
-  // Assign x (leaf-packed, parents centred over children) and y (= depth).
-  // A node collapsed by the user contributes no visible children.
-  function layout(root, collapsed) {
-    var nextX = 0;
-    (function walk(node, depth) {
-      node._y = depth;
-      var kids = collapsed[node.id] ? [] : (node.children || []);
-      if (kids.length === 0) {
-        node._x = nextX++;
-      } else {
-        for (var i = 0; i < kids.length; i++) walk(kids[i], depth + 1);
-        node._x = (kids[0]._x + kids[kids.length - 1]._x) / 2;
-      }
-    })(root, 0);
-    return nextX || 1;
+  function unitWidth(u) {
+    if (u.kind === 'root') return 1;
+    if (u.kind === 'repeat') return REPEAT_W;
+    var n = Math.max(u.people.length, 1);
+    return n * CARD_W + (n - 1) * COUPLE_GAP;
   }
 
-  function maxDepth(root, collapsed) {
-    var m = 0;
-    (function walk(node, depth) {
-      if (depth > m) m = depth;
-      if (!collapsed[node.id]) (node.children || []).forEach(function (c) { walk(c, depth + 1); });
-    })(root, 0);
-    return m;
+  // Place every visible unit with d3-flextree: each unit is as wide as its
+  // cards, children sit one generation below, and neighbouring units keep
+  // H_GAP apart (a little more between cousins than between siblings). A
+  // unit collapsed by the reader contributes no children. Returns the
+  // units with x (centre) and y (top), shifted so the drawing starts at 0,0.
+  function layoutUnits(model, collapsed) {
+    var flex = global.d3.flextree()
+      .nodeSize(function (n) {
+        return [unitWidth(n.data) + H_GAP, n.data.kind === 'root' ? 0 : CARD_H + V_GAP];
+      })
+      .spacing(function (a, b) { return a.parent === b.parent ? 0 : H_GAP; });
+    var h = flex.hierarchy(model, function (u) {
+      return collapsed[u.key] || !(u.children && u.children.length) ? null : u.children;
+    });
+    flex(h);
+    var placed = [];
+    var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+    h.each(function (n) {
+      if (n.data.kind === 'root') return;   // the hidden holder of several families
+      var w = unitWidth(n.data);
+      placed.push({ unit: n.data, x: n.x, y: n.y, w: w });
+      minX = Math.min(minX, n.x - w / 2); maxX = Math.max(maxX, n.x + w / 2);
+      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y + CARD_H);
+    });
+    if (!placed.length) return { units: [], width: CARD_W, height: CARD_H };
+    placed.forEach(function (p) { p.x -= minX; p.y -= minY; });
+    return { units: placed, width: maxX - minX, height: maxY - minY };
   }
 
-  // Colour each major line distinctly: every child-subtree of the root gets a
-  // branch number (1..7, cycling), inherited by its descendants. The renderer
-  // surfaces it as data-branch and the stylesheet underlines the name in the
-  // matching --branch-N colour. The root itself is left uncoloured - it is the
-  // shared subject/ancestor the branches fan out from.
-  function assignBranches(root) {
+  function layoutModel(model, collapsed) {
+    return layoutUnits(model, collapsed || {}).units.map(function (p) {
+      return { key: p.unit.key, x: p.x, y: p.y, w: p.w };
+    });
+  }
+
+  // Colour each major line distinctly: every child of the top couple gets a
+  // branch number (1..7, cycling), inherited by their descendants; a later
+  // marriage keeps its person's colour. The renderer surfaces it as
+  // data-branch and the stylesheet underlines the name in the matching
+  // --branch-N colour. The top couple itself is left uncoloured; when the
+  // first person had several marriages, each marriage is a branch.
+  function assignBranches(model) {
     var branchOf = {};
-    (root.children || []).forEach(function (child, i) {
-      var b = (i % 7) + 1;
-      (function mark(n) {
-        branchOf[n.id] = b;
-        (n.children || []).forEach(mark);
-      })(child);
+    var b = 0, lastOwner = null;
+    (model.children || []).forEach(function (u) {
+      if (model.kind === 'root' || !(u.extra && u.owner === lastOwner)) b += 1;
+      lastOwner = u.owner;
+      var n = ((b - 1) % 7) + 1;
+      (function mark(x) {
+        branchOf[x.key] = n;
+        (x.children || []).forEach(mark);
+      })(u);
     });
     return branchOf;
   }
 
-  function render(container, root, options) {
+  function render(container, model, options) {
     options = options || {};
-    var collapsed = {};   // node id -> true when the user has collapsed it
-    var branchOf = assignBranches(root);
+    var collapsed = {};   // unit key -> true when the reader has collapsed it
+    var branchOf = assignBranches(model);
 
-    // Bound the initial paint: nodes at or beyond options.initialDepth start
-    // collapsed, so a large descendant explorer renders a few generations up
-    // front and the reader expands forward on demand (the data is complete -
-    // nothing is dropped, only hidden). Omitting initialDepth shows everything.
+    // Who is where in the model: each unit's parent, and for a later
+    // marriage the first unit of the same person (its dotted link starts
+    // at that person's card there).
+    var parentOf = {}, firstOf = {}, siblingIndex = {};
+    (function index(u) {
+      var firstByOwner = {};
+      (u.children || []).forEach(function (c, i) {
+        parentOf[c.key] = u;
+        siblingIndex[c.key] = i;
+        if (!c.extra) firstByOwner[c.owner] = c;
+        else if (firstByOwner[c.owner]) firstOf[c.key] = firstByOwner[c.owner];
+        index(c);
+      });
+    })(model);
+
+    // Bound the initial paint: families at or beyond options.initialDepth
+    // generations start collapsed, so a large descendant explorer renders a
+    // few generations up front and the reader expands forward on demand
+    // (the data is complete - nothing is dropped, only hidden). Omitting
+    // initialDepth shows everything.
     if (options.initialDepth != null) {
-      (function seed(node, depth) {
-        var kids = node.children || [];
-        if (depth >= options.initialDepth && kids.length) collapsed[node.id] = true;
+      (function seed(u, depth) {
+        var kids = u.children || [];
+        if (depth >= options.initialDepth && kids.length) collapsed[u.key] = true;
         kids.forEach(function (c) { seed(c, depth + 1); });
-      })(root, 0);
+      })(model, model.kind === 'root' ? -1 : 0);
     }
 
     // ---- viewport scaffold (built once; survives collapse redraws) ----------
@@ -272,63 +323,63 @@
       zoomAt(rect.left + rect.width / 2, rect.top + rect.height / 2, factor);
     }
 
-    // Find a node by id among the CURRENTLY VISIBLE set only: a node inside a
-    // collapsed subtree is skipped (its _x/_y would be stale), so the caller can
-    // treat "not found" as "not reachable right now". The node's own collapsed
-    // flag hides its children, not itself, so it still matches.
-    function visibleNodeById(id) {
-      var found = null;
-      (function walk(node) {
-        if (found) return;
-        if (node.id === id) { found = node; return; }
-        if (collapsed[node.id]) return;   // don't descend into a collapsed subtree
-        (node.children || []).forEach(walk);
-      })(root);
-      return found;
-    }
+    // Where each visible unit was drawn last (unit key -> {unit, x, y, w}).
+    var pos = {};
 
-    // Find a node anywhere in the hierarchy, ignoring collapsed state, and
-    // return the ancestor path (root ... node). Used by home() to expand any
-    // collapsed ancestor so the home person becomes reachable.
-    function findNodeAny(id) {
-      var path = null;
-      (function walk(node, trail) {
-        if (path) return;
-        trail = trail.concat([node]);
-        if (node.id === id) { path = trail; return; }
-        (node.children || []).forEach(function (c) { walk(c, trail); });
-      })(root, []);
-      return path;
-    }
+    function cardLeft(p, i) { return p.x - p.w / 2 + i * (CARD_W + COUPLE_GAP); }
 
-    // Home: centre + zoom on the designated home person at a comfortable scale
-    // (node + immediate neighbours in frame). Falls back to Fit when no homeId
-    // was given or the person isn't in the tree at all; if the home person is
-    // under a collapsed ancestor, expand the ancestor path so Home works.
-    function home() {
-      var n = options.homeId != null ? visibleNodeById(options.homeId) : null;
-      if (!n && options.homeId != null) {
-        var trail = findNodeAny(options.homeId);
-        if (trail) {
-          // Expand every ancestor (not the node itself, whose collapsed flag
-          // hides only its own descendants).
-          for (var i = 0; i < trail.length - 1; i++) {
-            if (collapsed[trail[i].id]) collapsed[trail[i].id] = false;
-          }
-          layout(root, collapsed); draw();
-          n = visibleNodeById(options.homeId);
+    // Centre on one unit at a comfortable scale (the family and its
+    // neighbours in frame), first opening any collapsed family above it so
+    // it is drawn. With a person id, centre on that person's card. Falls
+    // back to Fit when the unit is not in the tree.
+    function focusUnit(key, pid) {
+      var u = null;
+      (function find(x) {
+        if (u) return;
+        if (x.key === key) { u = x; return; }
+        (x.children || []).forEach(find);
+      })(model);
+      if (!u) { fit(); return; }
+      var opened = false;
+      for (var a = parentOf[key]; a; a = parentOf[a.key]) {
+        if (collapsed[a.key]) { collapsed[a.key] = false; opened = true; }
+      }
+      if (opened || !pos[key]) draw();
+      var p = pos[key];
+      if (!p) { fit(); return; }
+      var cx = p.x;
+      if (pid != null && u.kind !== 'repeat') {
+        for (var i = 0; i < u.people.length; i++) {
+          if (u.people[i] && u.people[i].id === pid) cx = cardLeft(p, i) + CARD_W / 2;
         }
       }
-      if (!n) { fit(); return; }
       userInteracted = true;
       var sc = clampScale(HOME_SCALE);
       var vpW = viewportW();
       vw = vpW / sc; vh = VH / sc;
-      var nx = n._x * COL_W + COL_W / 2;   // same node-centre math as draw()'s px/py
-      var ny = n._y * ROW_H + NODE_H / 2;
-      vx = nx - vw / 2;
-      vy = ny - vh / 2;
+      vx = cx - vw / 2;
+      vy = p.y + CARD_H / 2 - vh / 2;
       applyView();
+    }
+
+    // Home: centre + zoom on the designated home person. Prefers the unit
+    // the person heads over one where they appear as someone's husband or
+    // wife; falls back to Fit when no homeId was given or the person is not
+    // in the tree.
+    function home() {
+      if (options.homeId == null) { fit(); return; }
+      var heads = null, appears = null;
+      (function find(x) {
+        if (heads) return;
+        if (x.kind !== 'repeat' && x.kind !== 'root') {
+          if (x.main >= 0 && x.people[x.main].id === options.homeId) { heads = x; return; }
+          if (!appears && x.people.some(function (c) { return c && c.id === options.homeId; })) appears = x;
+        }
+        (x.children || []).forEach(find);
+      })(model);
+      var target = heads || appears;
+      if (!target) { fit(); return; }
+      focusUnit(target.key, options.homeId);
     }
 
     // ---- wheel / pinch zoom --------------------------------------------------
@@ -415,105 +466,188 @@
     });
 
     // ---- draw: rebuild the content group from the current collapse state -----
+    function line(cls, d) { content.appendChild(svg('path', { 'class': cls, d: d })); }
+
+    function edgeClass(kind, weak) {
+      // Edge kind decides the dash pattern the page CSS draws (genetic solid,
+      // legal long-dash, other dotted); a tie rated low is also thin and
+      // broken (chart plan 08-7).
+      return 'fha-tree-edge'
+        + (kind === 'legal' ? ' fha-tree-edge-legal'
+           : kind === 'other' ? ' fha-tree-edge-other' : '')
+        + (weak ? ' fha-tree-edge-weak' : '');
+    }
+
+    // The later-marriage link: from the person's card in their first couple
+    // to the new spouse. Beside it, a straight dotted line at mid-height;
+    // past other cards, up over them and down into the spouse's card.
+    // Returns the point the couple's children hang from.
+    function laterLink(p) {
+      var first = firstOf[p.unit.key] && pos[firstOf[p.unit.key].key];
+      var sx = cardLeft(p, 0);
+      var midY = p.y + CARD_H / 2;
+      if (!first || first.unit.main < 0) return { x: sx + CARD_W / 2, y: p.y + CARD_H };
+      var mx = cardLeft(first, first.unit.main);
+      var beside = first.unit.main === first.unit.people.length - 1 &&
+                   siblingIndex[p.unit.key] === siblingIndex[first.unit.key] + 1;
+      if (beside) {
+        line('fha-tree-couple fha-tree-couple-later',
+             'M' + (mx + CARD_W) + ',' + midY + ' H' + sx);
+        return { x: (mx + CARD_W + sx) / 2, y: midY };
+      }
+      var top = p.y - LATER_RISE;
+      line('fha-tree-couple fha-tree-couple-later',
+           'M' + (mx + CARD_W - LATER_RISE * 2) + ',' + p.y + ' V' + top +
+           ' H' + (sx + CARD_W / 2) + ' V' + p.y);
+      return { x: sx + CARD_W / 2, y: p.y + CARD_H };
+    }
+
+    function cardBox(c, unit, isAnchor) {
+      var box = document.createElement('div');
+      box.className = 'fha-node' + (c.url ? '' : ' fha-node-nolink')
+        + (c['private'] ? ' fha-node-private' : '') + (c.weak ? ' fha-node-weak' : '');
+      // A Private card shows no line colour, as on the family chart.
+      if (branchOf[unit.key] && !c['private']) box.setAttribute('data-branch', branchOf[unit.key]);
+      if (c.weak) box.setAttribute('title', 'Linked to the first person in this tree only through a low-confidence record.');
+
+      var kids = unit.children || [];
+      if (isAnchor && kids.length) {
+        var toggle = document.createElement('button');
+        toggle.type = 'button';
+        toggle.className = 'fha-toggle';
+        toggle.textContent = collapsed[unit.key] ? '+' : '−'; // minus sign
+        toggle.setAttribute('aria-label', collapsed[unit.key] ? 'Show this family\'s children' : 'Hide this family\'s children');
+        toggle.onclick = function (ev) {
+          ev.preventDefault();
+          collapsed[unit.key] = !collapsed[unit.key];
+          userInteracted = true;   // keep the reader's pan/zoom across the redraw
+          draw();
+        };
+        box.appendChild(toggle);
+      }
+
+      // A small fixed-size portrait square, or a monogram placeholder when the
+      // person has no profile photo (a Private card gets a blank square).
+      // Size is locked in CSS so it never changes the card geometry.
+      var portrait;
+      if (c.photo) {
+        portrait = document.createElement('img');
+        portrait.className = 'fha-portrait';
+        portrait.src = c.photo;
+        portrait.alt = '';
+        portrait.loading = 'lazy';
+      } else {
+        portrait = document.createElement('span');
+        portrait.className = 'fha-portrait fha-portrait-empty';
+        portrait.setAttribute('aria-hidden', 'true');
+        if (!c['private']) portrait.textContent = ((c.name || c.id || '?').charAt(0) || '?').toUpperCase();
+      }
+      box.appendChild(portrait);
+
+      var text = document.createElement('div');
+      text.className = 'fha-node-text';
+      var name = document.createElement(c.url ? 'a' : 'span');
+      name.className = 'fha-name';
+      name.textContent = c.name || c.id;
+      if (c.url) name.setAttribute('href', c.url);
+      text.appendChild(name);
+      if (c.dates) {
+        var d = document.createElement('small');
+        d.className = 'fha-dates';
+        d.textContent = c.dates;
+        text.appendChild(d);
+      }
+      if (c.repeatOf) {
+        // This husband or wife is also drawn elsewhere in the tree.
+        var also = document.createElement('button');
+        also.type = 'button';
+        also.className = 'fha-also-shown';
+        also.textContent = 'Also in the tree: go there';
+        also.onclick = function (ev) { ev.preventDefault(); focusUnit(c.repeatOf, c.id); };
+        text.appendChild(also);
+      }
+      box.appendChild(text);
+      return box;
+    }
+
+    // A person met a second time: a smaller card that jumps to the first.
+    function repeatBox(c, unit) {
+      var box = document.createElement('div');
+      box.className = 'fha-node fha-node-repeat' + (c['private'] ? ' fha-node-private' : '');
+      if (branchOf[unit.key] && !c['private']) box.setAttribute('data-branch', branchOf[unit.key]);
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'fha-repeat-link';
+      var name = document.createElement('span');
+      name.className = 'fha-name';
+      name.textContent = c.name || c.id;
+      var note = document.createElement('small');
+      note.className = 'fha-dates';
+      note.textContent = 'Already in the tree: go there';
+      b.appendChild(name);
+      b.appendChild(note);
+      b.onclick = function (ev) { ev.preventDefault(); focusUnit(unit.seeKey, c.id); };
+      box.appendChild(b);
+      return box;
+    }
+
+    function place(box, x, w, y) {
+      var fo = svg('foreignObject', { x: x, y: y, width: w, height: CARD_H });
+      fo.appendChild(box);
+      content.appendChild(fo);
+    }
+
     function draw() {
-      var leaves = layout(root, collapsed);
-      var depth = maxDepth(root, collapsed);
-      var width = Math.max(leaves * COL_W, COL_W);
-      var height = (depth + 1) * ROW_H;
-      contentW = width; contentH = height;
+      var lay = layoutUnits(model, collapsed);
+      contentW = Math.max(lay.width, CARD_W);
+      contentH = Math.max(lay.height, CARD_H);
+      pos = {};
+      lay.units.forEach(function (p) { pos[p.unit.key] = p; });
 
       while (content.firstChild) content.removeChild(content.firstChild);
 
-      var px = function (n) { return n._x * COL_W + COL_W / 2; };
-      var py = function (n) { return n._y * ROW_H + NODE_H / 2; };
-
-      // Edges first, so nodes sit on top.
-      (function edges(node) {
-        if (collapsed[node.id]) return;
-        (node.children || []).forEach(function (c) {
-          // Edge kind decides the dash pattern the page CSS draws (genetic solid,
-          // legal long-dash, other dotted). Fall back to the older genetic
-          // boolean (false ⇒ legal) when no explicit kind is present.
-          var kind = c.edgeKind || (c.edgeGenetic === false ? 'legal' : 'genetic');
-          var edgeClass = 'fha-tree-edge'
-            + (kind === 'legal' ? ' fha-tree-edge-legal'
-               : kind === 'other' ? ' fha-tree-edge-other' : '');
-          var p = svg('path', {
-            'class': edgeClass,
-            d: 'M' + px(node) + ',' + (py(node) + NODE_H / 2) +
-               ' C' + px(node) + ',' + (py(node) + ROW_H / 2) +
-               ' ' + px(c) + ',' + (py(c) - ROW_H / 2) +
-               ' ' + px(c) + ',' + (py(c) - NODE_H / 2)
-          });
-          content.appendChild(p);
-          edges(c);
-        });
-      })(root);
-
-      // Nodes.
-      (function nodes(node) {
-        var fo = svg('foreignObject', {
-          x: px(node) - NODE_W / 2, y: py(node) - NODE_H / 2, width: NODE_W, height: NODE_H
-        });
-        var box = document.createElement('div');
-        box.className = 'fha-node' + (node.url ? '' : ' fha-node-nolink');
-        if (branchOf[node.id]) box.setAttribute('data-branch', branchOf[node.id]);
-        var kids = node.children || [];
-
-        if (kids.length) {
-          var toggle = document.createElement('button');
-          toggle.type = 'button';
-          toggle.className = 'fha-toggle';
-          toggle.textContent = collapsed[node.id] ? '+' : '−'; // minus sign
-          toggle.setAttribute('aria-label', collapsed[node.id] ? 'Expand' : 'Collapse');
-          toggle.onclick = function (ev) {
-            ev.preventDefault();
-            collapsed[node.id] = !collapsed[node.id];
-            userInteracted = true;   // keep the reader's pan/zoom across the redraw
-            draw();
-          };
-          box.appendChild(toggle);
-        }
-
-        // A small fixed-size portrait square, or a monogram placeholder when the
-        // person has no profile photo. Size is locked in CSS so it never changes
-        // the node's card geometry.
-        var portrait;
-        if (node.photo) {
-          portrait = document.createElement('img');
-          portrait.className = 'fha-portrait';
-          portrait.src = node.photo;
-          portrait.alt = '';
-          portrait.loading = 'lazy';
+      // Lines first, so the cards sit on top. Each unit's children hang from
+      // one point: the middle of the couple's join, the middle of a later
+      // marriage's dotted link, or the bottom of a lone card.
+      var hangFrom = {};
+      lay.units.forEach(function (p) {
+        var u = p.unit, midY = p.y + CARD_H / 2;
+        if (u.kind === 'repeat') return;
+        if (u.extra) { hangFrom[u.key] = laterLink(p); return; }
+        if (u.people.length === 2) {
+          var gapL = cardLeft(p, 0) + CARD_W, gapR = cardLeft(p, 1);
+          line('fha-tree-couple', 'M' + gapL + ',' + midY + ' H' + gapR);
+          hangFrom[u.key] = { x: (gapL + gapR) / 2, y: midY };
         } else {
-          portrait = document.createElement('span');
-          portrait.className = 'fha-portrait fha-portrait-empty';
-          portrait.setAttribute('aria-hidden', 'true');
-          portrait.textContent = ((node.name || node.id || '?').charAt(0) || '?').toUpperCase();
+          hangFrom[u.key] = { x: cardLeft(p, 0) + CARD_W / 2, y: p.y + CARD_H };
         }
-        box.appendChild(portrait);
+      });
+      lay.units.forEach(function (p) {
+        var u = p.unit;
+        if (collapsed[u.key] || !hangFrom[u.key]) return;
+        var from = hangFrom[u.key];
+        (u.children || []).forEach(function (c) {
+          var q = pos[c.key];
+          if (!q || c.extra) return;   // a later marriage has its dotted link instead
+          var tx = c.kind === 'repeat' ? q.x : cardLeft(q, Math.max(c.main, 0)) + CARD_W / 2;
+          var elbow = q.y - V_GAP / 2;
+          line(edgeClass(c.edgeKind, c.edgeWeak),
+               'M' + from.x + ',' + from.y + ' V' + elbow + ' H' + tx + ' V' + q.y);
+        });
+      });
 
-        var text = document.createElement('div');
-        text.className = 'fha-node-text';
-
-        var name = document.createElement(node.url ? 'a' : 'span');
-        name.className = 'fha-name';
-        name.textContent = node.name || node.id;
-        if (node.url) name.setAttribute('href', node.url);
-        text.appendChild(name);
-
-        if (node.dates) {
-          var d = document.createElement('small');
-          d.className = 'fha-dates';
-          d.textContent = node.dates;
-          text.appendChild(d);
+      // Cards.
+      lay.units.forEach(function (p) {
+        var u = p.unit;
+        if (u.kind === 'repeat') {
+          place(repeatBox(u.people[0], u), p.x - p.w / 2, p.w, p.y);
+          return;
         }
-        box.appendChild(text);
-        fo.appendChild(box);
-        content.appendChild(fo);
-
-        if (!collapsed[node.id]) kids.forEach(nodes);
-      })(root);
+        var anchor = u.extra ? 0 : Math.max(u.main, 0);
+        u.people.forEach(function (c, i) {
+          place(cardBox(c, u, i === anchor), cardLeft(p, i), CARD_W, p.y);
+        });
+      });
     }
 
     draw();
@@ -722,5 +856,5 @@
     }
   }
 
-  global.FhaTree = { render: render, wrapStatic: wrapStatic };
+  global.FhaTree = { render: render, wrapStatic: wrapStatic, _layoutModel: layoutModel };
 })(window);

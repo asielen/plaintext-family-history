@@ -135,6 +135,8 @@
 <div class="fha-tree" id="fha-tree"></div>
 <p class="fha-tree-note">Descendants of Harriet Frances Webb - click a name to open that person; use −/+ to collapse or expand.</p>
 <script type="application/json" id="fha-tree-data">{"version": 2, "seed": "p-8h9jkambne", "mode": "descendants", "nodes": [{"p_id": "p-8h9jkambne", "name": "Harriet Frances Webb", "sex": "F", "vitals": {"birth": null, "death": null}, "url": "p-8h9jkambne.html", "photo": null, "line_confidence": null}, {"p_id": "p-6f7g8h9jka", "name": "Warren Calvin Hartley", "sex": "M", "vitals": {"birth": null, "death": null}, "url": "p-6f7g8h9jka.html", "photo": null, "line_confidence": "medium"}, {"p_id": "p-5e6f7g8h9j", "name": "Edith Louise Hartley", "sex": "F", "vitals": {"birth": null, "death": null}, "url": "p-5e6f7g8h9j.html", "photo": null, "line_confidence": "medium"}, {"p_id": "p-2b3c4d5e6f", "name": "James Robert Bradford", "sex": "M", "vitals": {"birth": "1955-03-15", "death": "2015-11-03"}, "url": "p-2b3c4d5e6f.html", "photo": null, "line_confidence": "medium"}, {"p_id": "p-0a1b2c3d4e", "name": "Alex James Bradford", "sex": "unknown", "vitals": {"birth": null, "death": null}, "url": "p-0a1b2c3d4e.html", "photo": null, "line_confidence": "medium"}], "edges": [{"type": "child", "from": "p-8h9jkambne", "to": "p-6f7g8h9jka", "claim_id": "c-fa0000002b", "subtype": "biological", "genetic": true, "kind": "genetic", "confidence": "medium", "dates": {"start": null, "end": null}}, {"type": "child", "from": "p-6f7g8h9jka", "to": "p-5e6f7g8h9j", "claim_id": "c-fc0000001a", "subtype": "biological", "genetic": true, "kind": "genetic", "confidence": "medium", "dates": {"start": null, "end": null}}, {"type": "child", "from": "p-5e6f7g8h9j", "to": "p-2b3c4d5e6f", "claim_id": "c-fc0000002b", "subtype": "biological", "genetic": true, "kind": "genetic", "confidence": "high", "dates": {"start": null, "end": null}}, {"type": "child", "from": "p-2b3c4d5e6f", "to": "p-0a1b2c3d4e", "claim_id": "c-fc0000003c", "subtype": "biological", "genetic": true, "kind": "genetic", "confidence": "high", "dates": {"start": null, "end": null}}]}</script>
+<script src="../vendor/d3.min.js"></script>
+<script src="../vendor/d3-flextree.js"></script>
 <script src="../vendor/fha-tree.js"></script>
 <script src="../vendor/tree-adapter.js"></script>
 <script>
@@ -145,10 +147,10 @@
   function renderTree() {
     try {
       var data = JSON.parse(holder.textContent);
-      var root = window.FhaTreeAdapter.fromNeutral(data);
+      var model = window.FhaTreeAdapter.fromNeutral(data);
       var opts = { initialDepth: 4,
                    homeId: null };
-      window.FhaTree.render(mount, root, opts);
+      window.FhaTree.render(mount, model, opts);
     } catch (e) { /* a bad tree must never blank the page */ }
   }
   var host = mount.closest ? mount.closest('details') : null;
