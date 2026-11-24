@@ -4286,6 +4286,28 @@ def _page_filename(record_id: str) -> str:
     return f'{normalize_id(record_id)}.html'
 
 
+def _chart_name(who: str, kind: str) -> str:
+    """The name a saved chart file gets, e.g. `margaret-cole-ancestor-fan`.
+
+    A relative who saves a chart finds a file named for the person and the
+    chart. It is built only from the name the page already shows, as a plain
+    ASCII slug (never an id), so the file name tells nobody more than the
+    page does. `who` empty gives just `kind`."""
+    slug = re.sub(r'[^a-z0-9]+', '-', (who or '').lower()).strip('-')
+    return f'{slug}-{kind}' if slug else kind
+
+
+def _tag_chart(svg: str, name: str) -> str:
+    """Mark a chart's root <svg> as one a reader can save (fha-save-chart.js).
+
+    Only the attribute is added; the chart's drawing is not touched, so a
+    change to a chart's shape (the fan's angle, say) is saved as it is shown."""
+    if not name or not svg.startswith('<svg'):
+        return svg
+    end = svg.index('>')   # the opening tag only; the chart's own attributes keep their order
+    return svg[:end] + f' data-fha-chart="{html.escape(name, quote=True)}"' + svg[end:]
+
+
 def _json_for_script(obj) -> str:
     """Serialize `obj` for safe embedding inside an inline <script> element.
 
@@ -6596,9 +6618,10 @@ class _SiteBuilder:
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
         has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
-        pedigree = (self._markup(_render_pedigree_svg(
+        pedigree = (self._markup(_tag_chart(_render_pedigree_svg(
                         ped_labels, wings['spouses'], wings['children'],
-                        missing_parent_of=ped_missing, workbench=self.workbench))
+                        missing_parent_of=ped_missing, workbench=self.workbench),
+                        _chart_name(name, 'family-chart')))
                    if has_pedigree else None)
         # Same condition _render_pedigree_svg uses for its SVG aria-label (a
         # sighted reader on the page and a screen-reader user on the SVG must
@@ -6607,7 +6630,9 @@ class _SiteBuilder:
         # ancestors-only chart gets the honest 'Ancestors' heading instead of
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
-        fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
+        fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, _FAN_GENERATIONS),
+                                       _chart_name(name, 'ancestor-fan')))
+               if len(ahnen) > 1 else None)
         # Descendant explorer (#115): demoted from the home page (which now
         # carries the marriage-aware ancestor pedigree instead) to a
         # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/
@@ -6622,7 +6647,8 @@ class _SiteBuilder:
         # below is what actually bounds the client's initial paint.
         descendants_tree = self._make_tree_ctx(
             pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
-            f'Descendants of {name}', initial_depth=4)
+            f'Descendants of {name}', initial_depth=4,
+            chart_name=_chart_name(name, 'descendants'))
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -6630,8 +6656,10 @@ class _SiteBuilder:
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
+            'pedigree_chart': _chart_name(name, 'family-chart') if pedigree else None,
             'chart_title': chart_title,
             'fan': fan,
+            'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
             'descendants_tree': descendants_tree,
             'summary': summary,
             'burial_visit': self._burial_visit(pid, page_dir),
@@ -10326,7 +10354,7 @@ class _SiteBuilder:
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
-                       home_id: str | None = None) -> dict | None:
+                       home_id: str | None = None, chart_name: str = '') -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
         None when the tree has no edges (a lone node is not worth rendering), so
@@ -10344,7 +10372,8 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
         return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption,
                 'initial_depth': initial_depth,
-                'home_id': fmt_id_display(home_id) if home_id else None}
+                'home_id': fmt_id_display(home_id) if home_id else None,
+                'chart_name': chart_name}
 
     def _copy_vendor(self) -> None:
         """Copy the vendored tree renderer + adapter into the site so it stays
@@ -10561,7 +10590,14 @@ class _SiteBuilder:
             ahnen, wings['spouses'], wings['children'], missing_parent_of=missing_parent_of,
             workbench=self.workbench, siblings=wings.get('siblings'),
             ancestor_generations=depth, branch_color=bool(depth), axis_label=axis_label, home=True)
-        return {'svg': self._markup(svg), 'caption': caption, 'note': note}
+        # The saved file is named for the family's surname, shown on the page;
+        # a private or unnamed hub gives just "family-tree".
+        hub_surname = ''
+        if hub_meta and not hub_private and hub_name != _LIVING_LABEL:
+            hub_surname = person_surname(hub_name, self._shown_row(hub_meta)['surname']) or ''
+        chart_name = _chart_name(hub_surname, 'family-tree')
+        return {'svg': self._markup(_tag_chart(svg, chart_name)), 'caption': caption,
+                'note': note, 'chart_name': chart_name}
 
     # - index / home page -
 

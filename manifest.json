@@ -652,7 +652,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "b2108afd311113c6ee7ed602195c7f70c206d7511c4e65aa1ad2c01e66cdccc2",
+      "sha256": "c85aa3b7a53e28a9984011d80af722103b5654b366e8b68a0b3c563d18040baa",
       "spec_version": "2.31",
       "src": "design/styles.css"
     },
@@ -666,7 +666,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "ca2116dbc9222185ee20307728aaa91b594efb83eb23ed9fd92a913aea4e9b20",
+      "sha256": "665458e8e9d801ebfc16d8917fdeaddf345c13369249ce3b39ecf6db6b68fc05",
       "spec_version": "2.31",
       "src": "docs/DESIGN.md"
     },
@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "3aad536cf0b337feeddc801f2d644c71648cc82b3614fa4d3368fba6a77ab52e",
+      "sha256": "77af8e4e799b6e1ad272dabfe52e70609e6699a69a19569f3fe8aca0fe9324df",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1191,21 +1191,21 @@
     {
       "path": ".fha/tools/templates/_pedigree_home.html",
       "category": "operating",
-      "sha256": "b6138af981858f5fff281228d9e8d94ef7e8bd0889122ebe0b2636776e2abf23",
+      "sha256": "873bc3f6b0468621092703c65360896519dc360b36014a7eaf0b01f9317bb24d",
       "spec_version": "2.31",
       "src": "tools/templates/_pedigree_home.html"
     },
     {
       "path": ".fha/tools/templates/_tree.html",
       "category": "operating",
-      "sha256": "ec33ef49ccb1ab58ab2e35fefb3aa20ccfd94aab9e6b9f1b78860ee241a53994",
+      "sha256": "9431da52cb338f5d24970f266b5c50ee296880a0006d5be5d8c04da4e227cf9d",
       "spec_version": "2.31",
       "src": "tools/templates/_tree.html"
     },
     {
       "path": ".fha/tools/templates/base.html",
       "category": "operating",
-      "sha256": "132a8e46ddfc77b1050a6e243d404315175bb410a2674887bfa240bdd75d940e",
+      "sha256": "7324a849d599502f08d742d23b2729a0c0e21392388926409f66c15d09f0e40a",
       "spec_version": "2.31",
       "src": "tools/templates/base.html"
     },
@@ -1268,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "2fbfffb0c9086eec57f55a6ca7d9c3ff2b79c035fde3c09ab0cc9c8f6afde212",
+      "sha256": "d4784da243a3386b00520ca5dbc960ada18dc7ef3a0d2347a0da9d5738a753d7",
       "spec_version": "2.31",
       "src": "tools/templates/person.html"
     },
@@ -1308,6 +1308,13 @@
       "src": "tools/templates/vendor/d3.min.js"
     },
     {
+      "path": ".fha/tools/templates/vendor/fha-save-chart.js",
+      "category": "operating",
+      "sha256": "53c299369678d12f55c00c90de6c598459e3317cb5a25f3afb92c86ad3f09fe7",
+      "spec_version": "2.31",
+      "src": "tools/templates/vendor/fha-save-chart.js"
+    },
+    {
       "path": ".fha/tools/templates/vendor/fha-search.js",
       "category": "operating",
       "sha256": "fad0c5fdeebcdd706c1dc75e9a965d76be6fa9b633b34ef5623353feffa68965",
@@ -1324,14 +1331,14 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "8eafca6fa58b4ea8e4305c649eb979cdb7b50334520857c92f3657a6bb7a57d0",
+      "sha256": "6526b00e6ffb3f3d94e903a7edfb9416f8626158e79505fd7dbb777eeae4a371",
       "spec_version": "2.31",
       "src": "tools/templates/vendor/fha-tree.js"
     },
     {
       "path": ".fha/tools/templates/vendor/licenses/README.txt",
       "category": "operating",
-      "sha256": "4e3f6c1852994283f30ffe5eee31140c4bf671649ac7430eceaf80530ab69991",
+      "sha256": "0814a9e1284d1667d8556aaa85dbbabdf42cd19f5ceb4c6f719ec039dbf0ac69",
       "spec_version": "2.31",
       "src": "tools/templates/vendor/licenses/README.txt"
     },
@@ -1528,7 +1535,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "1b8121b7039c5cbda7145097a2b01163950924f2ed42d33d81475acb853b6ab7",
+      "sha256": "0a899817b79f85c98c95f4ceb7d522c0f64f025ed6190a139c8e713d4c50d190",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
