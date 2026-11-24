@@ -331,6 +331,7 @@ from _lib import (
     EXIT_WARNINGS,
     extract_bare_ids,
     FhaConfigError,
+    place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
     humanize_edtf as _humanize_edtf,
     id_type_of,
@@ -6568,6 +6569,8 @@ class _SiteBuilder:
             or any(e['unconfirmed'] or e['confidence'] == 'low'
                    for group in timeline for e in group['entries'])
         )
+        has_place_history = any(e.get('kind') == 'context'
+                                for group in timeline for e in group['entries'])
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
@@ -6651,6 +6654,7 @@ class _SiteBuilder:
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'has_qa_badges': has_qa_badges,
+            'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
             # no fha.yaml switch; the switch is for the shared site.
             'completeness': (self._person_completeness(pid)
@@ -7590,7 +7594,7 @@ class _SiteBuilder:
                          else "c.status = 'accepted'")
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
-            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id, "
+            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value, c.place_id, c.place_text, c.source_id, "
             "c.status, c.confidence, c.reviewed "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
@@ -7610,7 +7614,18 @@ class _SiteBuilder:
                 return (1, 0)   # undated sorts after every dated decade
             return (0, int(decade[:-1]))   # '1930s' -> 1930
 
-        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        # Place-history context rows: when a place the person was recorded at
+        # changed government between their first and last record there, the
+        # timeline says so, marked as background about the place. A shared
+        # (standalone) page names only places that have a page.
+        keep = None if self.linked else (lambda p: p in self.place_pages)
+        context = place_history_context(self.conn, place_visits_from_rows(rows, keep))
+        if keep:
+            context = [c for c in context if keep(c['place_id'])]
+        rows = insert_context_rows(list(rows), context)
+
+        rows_with_decade = [(r, _decade_header(r['date_iso'] if isinstance(r, dict) else r['date_edtf']))
+                            for r in rows]
         rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
 
         groups: list[dict] = []
@@ -7622,6 +7637,19 @@ class _SiteBuilder:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            if isinstance(r, dict):
+                # Background about the place, not a record of the family:
+                # no citation, no age, no confidence flag.
+                name = _escape(r['name'])
+                sentence = _escape(place_history_phrase(r))
+                if name and r['place_id'] in self.place_pages:
+                    href = html.escape(_rel_href(self.places_dir / _page_filename(r['place_id']), page_dir), quote=True)
+                    sentence = sentence.replace(name, f'<a href="{href}">{name}</a>', 1)
+                entries.append({'kind': 'context', 'date': r['date_iso'], 'type': 'place history',
+                                'sentence': self._markup(sentence), 'value': '', 'place': '',
+                                'place_redundant': True, 'source_html': '', 'status': '',
+                                'confidence': '', 'unconfirmed': False, 'parked': ''})
+                continue
             # Scrubbed the same as value_text below (adversarial review,
             # round 4 audit): place_label feeds `_place_trailing_remainder`,
             # whose OWN output is spliced straight into the rendered sentence

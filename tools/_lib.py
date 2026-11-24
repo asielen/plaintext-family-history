@@ -20690,6 +20690,108 @@ def place_hierarchy_in_year(
     return place_hierarchy_at(conn, place_id, year, year)
 
 
+def place_history_context(
+    conn: sqlite3.Connection, visits: dict[str, tuple[str, str]],
+) -> list[dict]:
+    """Background lines for a person's timeline: when a place they lived at
+    changed hands, the timeline says so, between their first and last record
+    there, so a place left in childhood does not narrate its later history.
+
+    `visits` is {place_id: (first_iso, last_iso)}: the earliest date_min and
+    latest date_max of the person's own dated rows at that place. A place
+    reached through `within:` (a house inside Fairview) counts as a visit to
+    the containing place too, one hop only (SPEC A.9).
+
+    For each `history:` entry of a visited place, in date order: a row at the
+    entry's date_min (unless it is open, 0001-01-01), and, when no entry of
+    that place starts the day after the entry's date_max, a row the day after
+    date_max for the place's present hierarchy (unless open, 9999-12-31).
+    A row is kept only inside the person's window at that place. Returns
+    [{'kind': 'context', 'place_id', 'name', 'date_iso', 'year', 'hierarchy',
+      'sort_key': (0, date_iso, 2, place_id, date_iso)}].
+    """
+    windows: dict[str, tuple[str, str]] = dict(visits)
+    for pid, (lo, hi) in visits.items():
+        up = conn.execute('SELECT within FROM places WHERE id = ?', (pid,)).fetchone()
+        outer = up[0] if up and up[0] else None
+        if outer and outer != pid:
+            cur = windows.get(outer)
+            windows[outer] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
+    out: list[dict] = []
+    for pid in sorted(windows):
+        lo, hi = windows[pid]
+        place = conn.execute('SELECT name, hierarchy FROM places WHERE id = ?', (pid,)).fetchone()
+        if place is None:
+            continue
+        entries = []
+        for r in conn.execute(
+                'SELECT date_min, date_max, hierarchy FROM place_history WHERE place_id = ? '
+                'ORDER BY date_min, rowid', (pid,)).fetchall():
+            elo, ehi = _date_edge(r[0], False), _date_edge(r[1], True)
+            if elo is not None and r[2]:
+                entries.append((elo, ehi, str(r[2])))
+        starts = {e[0] for e in entries}
+        rows: list[tuple[str, str]] = []
+        for elo, ehi, hier in entries:
+            if elo > '0001-12-31':
+                rows.append((elo, hier))
+            if ehi is not None and ehi < '9999-01-01' and place[1]:
+                nxt = (datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat()
+                if nxt not in starts:
+                    rows.append((nxt, str(place[1])))
+        for iso, hier in sorted(set(rows)):
+            if lo <= iso <= hi:
+                out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
+                            'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
+                            'sort_key': (0, iso, 2, pid, iso)})
+    out.sort(key=lambda r: r['sort_key'])
+    return out
+
+
+def place_visits_from_rows(rows, keep=None) -> dict[str, tuple[str, str]]:
+    """{place_id: (first_iso, last_iso)} from a person's own dated timeline
+    rows (each with place_id, date_min, date_max). `keep(place_id)` limits it
+    to places that may be named (the shared site: only places with a page)."""
+    visits: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        pid = r['place_id']
+        lo = _date_edge(r['date_min'], False)
+        hi = _date_edge(r['date_max'], True) or lo
+        if not pid or lo is None or (keep is not None and not keep(pid)):
+            continue
+        cur = visits.get(pid)
+        visits[pid] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, max(hi, lo))
+    return visits
+
+
+def insert_context_rows(rows: list, context: list[dict]) -> list:
+    """The person's own rows (already in date order) with each place-history
+    row put just before the first own row that starts later, so a context line
+    never jumps ahead of a record from the same day."""
+    out = list(rows)
+    for c in context:
+        at = len(out)
+        for i, r in enumerate(out):
+            if isinstance(r, dict):
+                continue
+            lo = _date_edge(r['date_min'], False)
+            if lo is None or lo > c['date_iso']:
+                at = i
+                break
+        out.insert(at, c)
+    return out
+
+
+def place_history_phrase(row: dict) -> str:
+    """The one sentence the site and the timeline view both print for a
+    place-history row: "From 1861, Fairview was in Breton Co., Kansas, USA."
+    """
+    hier, name = row['hierarchy'], row['name']
+    if name and hier.startswith(f'{name}, '):
+        return f"From {row['year']}, {name} was in {hier[len(name) + 2:]}."
+    return f"From {row['year']}, this place was recorded as {hier}."
+
+
 REPOSITORIES_PATH = Path(__file__).resolve().parent / 'repositories.json'
 _repositories_cache: list | None = None
 

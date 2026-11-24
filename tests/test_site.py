@@ -4373,6 +4373,59 @@ class FileOpeningLinkTargetTests(_Base):
         self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
+class TimelinePlaceHistoryTests(_Base):
+    """A reader sees, in grey, when the place a person lived at changed
+    government while they lived there: background, not a family record."""
+
+    def _seed(self, years, *, history=None):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census')
+        self.conn.execute(
+            'INSERT INTO places(id, name, hierarchy) VALUES (?,?,?)',
+            ('l-1111111111', 'Fairview', 'Fairview, Breton Co., Kansas, USA'))
+        for dmin, dmax, hier in history or (
+                ('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),
+                ('1861-01-29', '1889-12-31', 'Fairview, Breton Co., Kansas, USA'),
+                ('1890-01-01', '1899-12-31', 'Fairview, Kansas')):
+            self.conn.execute(
+                'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) '
+                'VALUES (?,?,?,?,?)', ('l-1111111111', f'{dmin}/{dmax}', dmin, dmax, hier))
+        for n, y in enumerate(years):
+            cid = f'c-{n + 1:010d}'
+            self.conn.execute(
+                'INSERT INTO claims(id, source_id, type, value, status, place_id, date_edtf, '
+                'date_min, date_max) VALUES (?,?,?,?,?,?,?,?,?)',
+                (cid, 's-1111111111', 'residence', f'Lived in Fairview {y}', 'accepted',
+                 'l-1111111111', str(y), f'{y}-01-01', f'{y}-12-31'))
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,0)',
+                (cid, 'p-aaaaaaaaaa'))
+
+    def test_changes_inside_the_stay_appear_labelled(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="tl-context"', page)
+        self.assertEqual(page.count('class="tl-context"'), 2)   # 1858 and 1861, not 1890
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', page.replace(
+            '<a href="../places/l-1111111111.html">Fairview</a>', 'Fairview'))
+        self.assertIn('From 1861, ', page)
+        self.assertIn('Place history', page)
+        self.assertIn('background about the places', page)
+
+    def test_a_single_visit_after_the_changes_gets_none(self):
+        self._seed((1871,), history=(('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),))
+        self._run(linked=True)
+        self.assertNotIn('tl-context', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_context_rows_sit_between_own_rows(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertLess(page.index('1856 - residence'), page.index('From 1858'))
+        self.assertLess(page.index('From 1861'), page.index('1875 - residence'))
+
+
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,
                     alt_names=(), history=()):

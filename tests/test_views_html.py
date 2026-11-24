@@ -276,6 +276,46 @@ class TimelineTagTests(_ViewsHtmlBase):
         self.assertIn('[low confidence]', text)
 
 
+class TimelinePlaceHistoryViewTests(_ViewsHtmlBase):
+    """The timeline view says, on one line marked `place history`, when a
+    place the person lived at changed government during their stay."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / 'places').mkdir()
+        (self.root / 'places' / 'places.yaml').write_text(
+            '- id: L-cccccccccc\n  name: Fairview\n'
+            '  hierarchy: Fairview, Breton Co., Kansas, USA\n'
+            '  history:\n'
+            '    - period: "1858/1861"\n'
+            '      hierarchy: Fairview, Kansas Territory\n', encoding='utf-8')
+        claims = ''.join(
+            f'- value: "Cur Hartley lived in Fairview {y}"\n  id: C-{n}{n}{n}{n}{n}{n}{n}{n}{n}{n}\n'
+            f'  type: residence\n  persons: [{PID}]\n  date: {y}\n  place: L-cccccccccc\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n  confidence: medium\n'
+            '  information: primary\n  evidence: direct\n  notes: x.\n'
+            for n, y in ((4, 1856), (5, 1875)))
+        src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
+        src.write_text(src.read_text(encoding='utf-8').replace('```\n', claims + '```\n', 1),
+                       encoding='utf-8')
+        self._reindex()
+
+    def test_one_place_history_line_between_the_visits(self):
+        res = views.run_timeline(self.root, person_id=PID)
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        lines = [ln for ln in text.splitlines() if 'place history:' in ln]
+        self.assertEqual(len(lines), 2, text)
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', lines[0])
+        self.assertIn('From 1862, Fairview was in Breton Co., Kansas, USA.', lines[1])
+        self.assertLess(text.index('lived in Fairview 1856'), text.index('place history:'))
+        self.assertLess(text.rindex('place history:'), text.index('lived in Fairview 1875'))
+
+    def test_html_twin_carries_the_same_lines(self):
+        res = views.run_timeline(self.root, person_id=PID, fmt='html')
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertIn('place history: From 1858, Fairview was in Kansas Territory.', text)
+
+
 class HtmlFormatMatrixTests(_ViewsHtmlBase):
     def test_html_lands_under_generated_views_with_marker_before_doctype(self):
         for runner, kind in self._runners():
