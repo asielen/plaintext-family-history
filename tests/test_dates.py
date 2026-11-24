@@ -477,6 +477,13 @@ class CalendarRuleIsWrittenDownTests(unittest.TestCase):
         self.assertIn('began the year on 25 March', spec)
         self.assertIn('A Hebrew month or year alone covers parts of two', spec)
         self.assertIn('the human is asked', spec)
+        # "Candlemas 1731" in an English register is February 1732, and
+        # `fha date feast` prints no caution for it.
+        self.assertIn('give `fha date feast` the later year', spec)
+        self.assertIn('England, Ireland and the British colonies', spec)
+        for rel in ('.claude/skills/process-source/SKILL.md',
+                    '.claude/skills/mine-transcript/SKILL.md'):
+            self.assertIn('`fha date feast` gives no such caution', self._read(rel), rel)
 
     def test_spec_hebrew_year_example_is_what_the_tool_gives(self):
         # SPEC tells the agent to convert a Hebrew year's first and last day
