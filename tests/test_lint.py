@@ -4335,6 +4335,67 @@ class ParentageDerivationParityTests(unittest.TestCase):
         self.assertEqual(len(self._codes(root, 'E013')), 1)
 
 
+class ParentEdgeClaimsParityTests(unittest.TestCase):
+    """The "born after her mother died" check (W167) and the bracket and
+    numbering checks (W103, W110) read one set of parent ties.
+
+    `_build_parent_edge_claims` keeps the claim ids behind each tie, so a
+    date warning can name the tie it doubts; `_build_child_edges` is its
+    projection. A second, separately written reader could drift from the
+    one the tree is built from, and then lint would doubt a tie the tree
+    does not have."""
+
+    A, B, C = 'P-6aaaaaaaaa', 'P-6bbbbbbbbb', 'P-6ccccccccc'
+
+    def _registry(self):
+        from _lib import load_fha_yaml
+        root = Path(tempfile.mkdtemp())
+        self.addCleanup(lambda: __import__('shutil').rmtree(root, ignore_errors=True))
+        (root / 'people').mkdir()
+        (root / 'sources' / 'notes').mkdir(parents=True)
+        (root / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        for pid, name, sex in ((self.A, 'Ada Hartley', 'F'), (self.B, 'Ben Hartley', 'M'),
+                               (self.C, 'Cara Hartley', 'F')):
+            first, last = name.lower().split()
+            (root / 'people' / f'{last}__{first}_{pid}.md').write_text(
+                f'---\nid: {pid}\nname: {name}\nsex: {sex}\nliving: false\n'
+                f'tier: stub\n---\n\n# {name}\n', encoding='utf-8')
+
+        def claim(cid, ctype, parent, child, *, subtype='', extra='', status='accepted'):
+            sub = f'  subtype: {subtype}\n' if subtype else ''
+            return (f'- id: {cid}\n  type: {ctype}\n{sub}  persons: [{parent}, {child}]\n'
+                    f'  roles: {{parent: [{parent}], child: [{child}]}}\n'
+                    f'  value: "x"\n  status: {status}\n  reviewed: 2026-01-01\n'
+                    f'  confidence: high\n{extra}')
+
+        claims = (claim('C-6000000001', 'relationship', self.A, self.B, subtype='biological')
+                  + claim('C-6000000002', 'relationship', self.A, self.B, subtype='adoptive')
+                  + claim('C-6000000003', 'birth', self.A, self.C)
+                  + claim('C-6000000004', 'relationship', self.B, self.C,
+                          extra='  negated: true\n')
+                  + claim('C-6000000005', 'relationship', self.C, self.B, status='suggested'))
+        (root / 'sources' / 'notes' / 'rec_s-6aaaaaaaaa.md').write_text(
+            '---\nid: S-6aaaaaaaaa\ntitle: Rec\nsource_type: note\n---\n\n'
+            f'## Claims\n```yaml\n{claims}```\n', encoding='utf-8')
+        _findings, registry = lint._run_lint_core(root, load_fha_yaml(root))
+        return registry
+
+    def test_child_edges_are_unchanged(self) -> None:
+        a, b, c = (p.lower() for p in (self.A, self.B, self.C))
+        self.assertEqual(lint._build_child_edges(self._registry()),
+                         {a: {b: {'biological', 'adoptive'}, c: {''}}})
+
+    def test_child_edges_are_the_projection_of_edge_claims(self) -> None:
+        registry = self._registry()
+        a, b, c = (p.lower() for p in (self.A, self.B, self.C))
+        edges = lint._build_parent_edge_claims(registry)
+        self.assertEqual({p: {k: set(e.natures) for k, e in kids.items()}
+                          for p, kids in edges.items()},
+                         lint._build_child_edges(registry))
+        self.assertEqual(edges[a][b].claims, ['c-6000000001', 'c-6000000002'])
+        self.assertEqual(edges[a][c].claims, ['c-6000000003'])
+
+
 class BracketListBlankChildNameTests(unittest.TestCase):
     """`_check_bracket_lists` (W103) read a candidate bracket child's name as
     `str(registry.person_meta.get(cpid, {}).get('name', ''))` - the '' default

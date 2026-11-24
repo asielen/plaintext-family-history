@@ -6,8 +6,9 @@ description: >
   language, then offers one concrete next action, and once per run, if §0 has a real win to show, asks
   whether to log it. Writes only what the human confirms while acting on the briefing: a win via
   `fha confirm discovery`, or an answer to a narrated connection ("yes, they were neighbors" / "no, stop
-  suggesting that pair") via `fha confirm cooccur` / `fha confirm dismiss`; or taking one of those back
-  via `fha confirm undismiss`.
+  suggesting that pair") via `fha confirm cooccur` / `fha confirm dismiss`; a "those are two different
+  people" via `fha confirm dismiss --not-same-person`; or taking one of those back via
+  `fha confirm undismiss`.
 ---
 
 # today
@@ -21,7 +22,7 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
 ## The contract for this skill
 
 - **Reads by default.** The skill computes nothing and writes nothing on its own. `fha report` does its own refresh (incremental photoindex, index rebuild, lint) as step one, so you do **not** re-run those. One narrow exception lives inside that refresh: if the archive still has an un-migrated `.cache/cooccur_dismissed.json`, §8's `fha cooccur` call moves it to `notes/cooccur_dismissed.json` the first time it reads it. That moves a decision the human already made, and the report names it in §8 whenever it happens.
-- **The only writes it can make** are the human acting on the briefing, each through its deterministic verb and never by hand: "yes, log that win" → `fha confirm discovery`; "yes, connect those two" → `fha confirm cooccur` (minted `suggested` unless his answer is the review; see step 6); "stop suggesting that pair" → `fha confirm dismiss`; "that was a mistake, suggest it again" → `fha confirm undismiss`. Each is echoed with `--dry-run` first and applied only on his confirmation.
+- **The only writes it can make** are the human acting on the briefing, each through its deterministic verb and never by hand: "yes, log that win" → `fha confirm discovery`; "yes, connect those two" → `fha confirm cooccur` (minted `suggested` unless his answer is the review; see step 6); "stop suggesting that pair" → `fha confirm dismiss`; "those two are different people" (a §4b pair) → `fha confirm dismiss --not-same-person`; "that was a mistake, suggest it again" → `fha confirm undismiss`. Each is echoed with `--dry-run` first and applied only on his confirmation.
 - **Speak the report in plain words** (_STANDARD.md §4). No lint codes, no c-ids, no "W101" said to the human without a plain gloss.
 
 ## Flow
@@ -41,9 +42,11 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
 3. **Summarize the working state, briefly and in plain language.** Pull the few things that matter and skip the rest:
    - **§1 Review queue:** suggested claims waiting on the human, oldest source first. *"Three sources have drafted facts waiting for your yes or no. The oldest is the 1880 census."* A GEDCOM-import source can carry thousands of suggested claims. Present that count as normal: it is reviewed gradually, person by person or family by family, never front to back, and none of it is urgent.
    - **§3 Vitals gaps:** people missing a birth, marriage or death. *"Thomas Hartley still has no death record."* (This is the example archive's one known gap; don't alarm him with it.)
+   - **§4b Possible duplicate people:** name the strongest pair in one sentence with its reasons, as a lead and never a fact. *"Margaret Cole may be in the tree twice: same name, both born 1849, same father."* On interest, hand off to `merge-identities`. If he says they are different people, `fha confirm dismiss <p-a> <p-b> --not-same-person --dry-run`, then apply on his yes.
    - **§8 Possible connections:** co-occurrence leads, clearly labeled as leads and never as facts.
    - Mention these only when they hold something to act on, and don't read empty sections aloud:
      - §1b, claims to look at again: parked claims and thin facts to revisit when a new record turns up. Present them as "someday" leads, not chores.
+     - §3b, loose ends: where a line of the family stops (an ancestor with no parents recorded) and people the tree does not yet reach, including ones who share a surname with it. Present them as leads, never as defects: *"Caleb Hartley's line stops with him. Nobody's parents are recorded yet, so a record naming them would take the tree back a generation."*
      - §2, new since last time.
      - §5b, answerable questions.
      - §6b, place candidates. A large one can win step 4's one next action; see step 4.
@@ -80,7 +83,7 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
 
 ## Guardrails
 
-- **Never** move a claim to `accepted`, draft a claim, or edit a record; this skill reads and narrates. Acting on an item is a hand-off to the skill that owns it (`review-claims`, `process-source`, `research-next`, …). The exceptions are the two in steps 5 and 6: a discovery he asks to log, and a §8 connection candidate he answers, which this skill handles with `fha confirm cooccur` / `fha confirm dismiss` (and `fha confirm undismiss` when he takes one back).
+- **Never** move a claim to `accepted`, draft a claim, or edit a record; this skill reads and narrates. Acting on an item is a hand-off to the skill that owns it (`review-claims`, `process-source`, `research-next`, …). The exceptions are the two in steps 5 and 6: a discovery he asks to log, and a §8 connection candidate he answers, which this skill handles with `fha confirm cooccur` / `fha confirm dismiss` (and `fha confirm undismiss` when he takes one back). A §4b pair he says are two different people is recorded the same way, with `fha confirm dismiss --not-same-person`; a merge is never made here (that is `merge-identities`).
 - **Never** confirm or dismiss a pair the human didn't explicitly rule on. Silence, a change of subject, or "interesting" is not a decision. Never use `--accept` for a hedged answer.
 - The step 2 discovery offer is made **once per run**, right after narrating §0. Don't make it once per item, and don't repeat it if he already declined or ignored it earlier in the conversation. Silence on the offer is treated like silence on a §8 candidate: no decision, so nothing is written.
 - **Never** hand-edit `notes/discoveries.md`; the only write path is `fha confirm discovery`, and only on an explicit human decision.
@@ -95,6 +98,6 @@ Session start, or "what should I work on?", "what's new?", "where do things stan
 - §0b is narrated right after discoveries in one or two sentences that say nothing its lines do not say. An empty week is skipped or named in one clause.
 - When §0 lists at least one real item, the discoveries narration ends with one offer to log it (*"Want me to log any of these as a discovery?"*), made once per run and not repeated once he has answered. When §0 is empty (*"No discoveries since last session."*), no offer is made this run.
 - It makes **zero** archive writes unless the human confirms one, and a confirmed discovery lands via `fha confirm discovery`, never by hand-editing `notes/discoveries.md`. The one exception is the idempotent §8 housekeeping move above, which needs no confirmation because it decides nothing, and which the report names when it happens.
-- When the human answers a narrated connection ("yes, neighbors" / "no, drop it"), the skill echoes the exact `fha confirm cooccur`/`dismiss` command with `--dry-run` (and `undismiss` if he takes an answer back), applies it only on his confirmation, and mints `suggested` unless he explicitly treated the answer as the review.
+- When the human answers a narrated connection ("yes, neighbors" / "no, drop it") or says a §4b pair are two different people, the skill echoes the exact `fha confirm cooccur`/`dismiss` (or `dismiss --not-same-person`) command with `--dry-run` (and `undismiss` if he takes an answer back), applies it only on his confirmation, and mints `suggested` unless he explicitly treated the answer as the review.
 - When §6b's largest unlinked **place-text** cluster outsizes §1's oldest review backlog (or the backlog is empty), that cluster takes the one next-action slot and the offer hands off to `place-research` without writing anything. The comparison uses the counts this run's `fha report` printed: a cluster's claim count against the backlog's suggested-claim count, never a GPS line's photo count and never a number hardcoded for one archive. The offer calls the cluster **unlinked**, which is what §6b reports; whether the town is registered is a registry question this skill never asks.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9), so the skill added nothing new.
