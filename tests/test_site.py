@@ -11594,6 +11594,22 @@ class TimelineFamilyRowsTests(_Base):
         self.assertNotIn('unconfirmed', ethel[0])
         self.assertTrue(ethel[0].startswith('<li class="tl-family">1902 - '), ethel[0])
 
+    def test_undated_accepted_record_does_not_hide_dated_family_row(self):
+        # An accepted bible entry with no date cannot place Ethel's birth on
+        # the timeline; the dated parked register entry still gives the
+        # labelled row (flagged), not two bare "birth" lines.
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf=NULL, date_min=NULL, date_max=NULL "
+                          "WHERE id='c-eb0000001'")
+        self._seed_source('s-7777777777', 'Fairview register', source_type='vital-record')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel register entry',
+                         date_edtf='1902-05-04', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'},
+                         status='suggested', reviewed='2026-01-01')
+        tl = self._timeline(linked=True)
+        self.assertRegex(tl, r'Her daughter .*?unconfirmed')
+        self.assertNotIn('Ethel register entry', tl)
+
     def test_marriage_to_living_person_dropped(self):
         self._family()
         self._brother()

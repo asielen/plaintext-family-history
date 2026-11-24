@@ -23583,13 +23583,15 @@ def family_life_events(
             out.append(r)
         return out
 
-    # A record he accepted is picked over a parked one, however exact the
-    # parked date: in his private preview the birth he accepted must not
-    # hide behind an "unconfirmed" row.
+    # A dated record he accepted is picked over a parked one, however exact
+    # the parked date: in his private preview the birth he accepted must not
+    # hide behind an "unconfirmed" row. A dated record still comes first of
+    # all, because an undated one cannot place the event or give an age.
     def _own(person: str, ctype: str, rows: list[dict]) -> list[dict]:
         return sorted((r for r in rows if r['type'] == ctype
                        and claim_is_own_vital(conn, person, r['id'], ctype, cache)),
-                      key=lambda r: (r['status'] != 'accepted', vital_pick_key(r)))
+                      key=lambda r: (_family_bound(r) is None, r['status'] != 'accepted',
+                                     vital_pick_key(r)))
 
     own_rows = _claims_naming(pid, None)
     births = _own(pid, 'birth', own_rows)
