@@ -50,6 +50,7 @@
 //   fsImageInfoFrom      film, image number and catalog title from the film viewer's answers
 //   fsImageCitation      the citation for a bare film image
 //   fsImageTitle         "{catalog title}, image {n}"
+//   fsFullTextFrom       FamilySearch's own machine reading of the image, from its Full-Text panel
 //   fsJson / fsRecordInfo / fsImageDescription / fsFilmData / fsImageCheck / fsImage   the data-service calls
 
 'use strict';
@@ -340,6 +341,31 @@ function fsImageTitle(info) {
   return parts.length ? parts.join(', ') : 'FamilySearch image ' + (i.imageId || '');
 }
 
+// FamilySearch's own machine reading of the image, when the page the human has
+// open shows it (the viewer's Full-Text panel, `?view=fullText`). Checked on a
+// live page 2026-11-23: the page makes no data call the panel can repeat from
+// a page script (its transcript service is on another host that refuses the
+// page's origin), so the text is read from the panel itself, by its own
+// test id. FamilySearch draws it one word to a span with no line breaks, so
+// the text comes back as one run of words. Nothing is clicked or fetched: no
+// panel on the page, or a panel for another image, is `{ ok: true, text: null }`,
+// never a failed capture. `href` is the page's address; `imageId` the image the
+// capture is of, so the text of a different image is never filed with this one.
+function fsFullTextFrom(doc, href, imageId) {
+  const none = { ok: true, text: null };
+  const id = String(imageId || '').toUpperCase();
+  const m = /\/ark:\/61903\/3:1:([A-Z0-9-]+)/i.exec(String(href || ''));
+  if (!id || !m || m[1].toUpperCase() !== id) return none;
+  let el = null;
+  try {
+    el = doc && doc.querySelector('[data-testid="full-text-transcript"]');
+  } catch (e) {
+    return none;
+  }
+  const text = el ? String(el.textContent || '').replace(/\s+/g, ' ').trim() : '';
+  return { ok: true, text: text || null };
+}
+
 // The full-image link in an image description; null when there is none
 // (a restricted image often has none).
 function fsImageLink(j) {
@@ -529,6 +555,7 @@ module.exports = {
   fsImageInfoFrom,
   fsImageCitation,
   fsImageTitle,
+  fsFullTextFrom,
   fsImageDescription,
   fsFilmData,
   fsImageIdFromHref,
