@@ -260,6 +260,23 @@ _CM_NO_HALF_ROW = ('The chart gives no figure for the {form} form of this tie, s
                    'reading cannot be checked.')
 
 
+_CM_ROUTES = ('They are related by more than one route, which can mean more DNA than one '
+              'tie shares; the chart gives no figure for that.')
+
+
+def _routes_high(blood: dict, table: dict) -> float:
+    """The most the recorded routes could share together: each route's
+    highest usual figure (its half reading too when it may be half), added
+    up, and never more than a parent and child share."""
+    total = 0
+    for route in blood.get('routes') or [blood]:
+        halves = [False, True] if route['half'] is None else [bool(route['half'])]
+        highs = [r['high'] for h in halves
+                 if (r := expected_shared_cm(route['gens_a'], route['gens_b'], h, table))]
+        total += max(highs, default=0)
+    return min(total, _cm_ceiling(table))
+
+
 def _cm_ceiling(table: dict) -> float:
     """The most any relationship in the chart shares (a parent and child)."""
     return max(r['high'] for r in table['rows'])
@@ -314,10 +331,15 @@ def _dna_answer(blood: dict | None, n_routes: int, cm: float | None) -> dict | N
     if cm is not None:
         if any(r['low'] <= cm <= r['high'] for r in rows):
             dna['fits_recorded'] = True
-        elif unlisted or (n_routes > 1 and cm > max(r['high'] for r in rows)):
-            # The chart has no figure for a tie joined twice (double
-            # cousins), so more than one route's row is not a misfit.
+        elif unlisted:
             dna['fits_recorded'] = None
+        elif n_routes > 1 and max(r['high'] for r in rows) < cm <= _routes_high(blood, table):
+            # The chart has no figure for a tie joined twice (double
+            # cousins): an amount the routes together can reach is not a
+            # misfit. A distant second route adds little, so far too much
+            # DNA for the nearest route still is one.
+            dna['fits_recorded'] = None
+            dna['note'] = _CM_ROUTES
         else:
             dna['fits_recorded'] = False
         here = {r['key'] for r in rows}
@@ -341,7 +363,7 @@ def _misfit_causes(rows: list[dict], cm: float) -> str:
     only for a full collateral tie with too little, never for half-siblings,
     for a grandparent, or for too much."""
     if cm > max(r['high_cm'] for r in rows):
-        return ('A closer tie, a second route between them the tree does not show, or a '
+        return ('A closer tie, another route between them the tree does not show, or a '
                 'wrong parent in the tree could explain it.')
     table = {r['key']: r for r in shared_cm_table().get('rows') or []}
     full = [table[r['key']] for r in rows if r['key'] in table and not table[r['key']]['half']]
@@ -388,10 +410,9 @@ def _dna_lines(dna: dict) -> list[str]:
                          + '; '.join(_usual(r) for r in rows) + ').')
             if dna.get('note'):
                 lines.append(dna['note'])
-            if dna['more_than_one_route'] and cm > max(r['high_cm'] for r in rows):
-                lines.append((f'It fits: {also}. ' if also else '')
-                             + 'They are related by more than one route, which can mean more '
-                             'DNA than one tie shares; the chart gives no figure for that.')
+            if dna['note'] == _CM_ROUTES:
+                if also:
+                    lines.append(f'It fits: {also}.')
                 routes_said = True
             else:
                 lines.append((f'It fits: {also}. ' if also else '') + _misfit_causes(rows, cm))

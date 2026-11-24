@@ -346,5 +346,43 @@ class MisfitCauseTests(unittest.TestCase):
         self.assertNotIn('decide which', out)
 
 
+def _build_far_route() -> tuple[Path, str, str]:
+    """First cousins A and B who are also third cousins through their
+    mothers: a second route that adds only a little DNA."""
+    ids = iter(f'P-9a9a9a9a{i:02x}' for i in range(1, 40))
+    G, A1, B1, A, B, T, t1, t2, u1, u2, MA, MB = (next(ids) for _ in range(12))
+    k = iter(range(1, 99))
+    claims = ''
+    for child, parents in ((A1, [G]), (B1, [G]), (t1, [T]), (t2, [T]), (u1, [t1]),
+                           (u2, [t2]), (MA, [u1]), (MB, [u2]), (A, [A1, MA]), (B, [B1, MB])):
+        claims += tr._child_of(f'C-a0000000{next(k):02d}', child, parents)
+    sex = {p: 'M' for p in (G, A1, B1, A, B, T, t1, t2, u1, u2)}
+    sex.update({MA: 'F', MB: 'F'})
+    return tr._write_archive(claims, sex, {p: f'Pers {i}' for i, p in enumerate(sex)}), A, B
+
+
+class FarRouteTests(unittest.TestCase):
+    """A distant second route cannot explain far too much DNA."""
+
+    def test_far_second_route_does_not_excuse_too_much(self):
+        root, a, b = _build_far_route()
+        res, _, out, _ = _run(root, a, b, cm='2500')
+        self.assertTrue(res.data['dna']['more_than_one_route'])
+        self.assertFalse(res.data['dna']['fits_recorded'])
+        self.assertNotIn('which can mean more DNA', out)
+        self.assertIn('wrong parent', out)
+
+    def test_second_route_does_not_excuse_too_little(self):
+        res, _, out, _ = _run(_build_double(), C3, C4, cm='100')
+        self.assertFalse(res.data['dna']['fits_recorded'])
+        self.assertNotIn('which can mean more DNA', out)
+
+    def test_far_second_route_within_sum_is_unknown(self):
+        root, a, b = _build_far_route()
+        res, _, out, _ = _run(root, a, b, cm='1420')
+        self.assertIsNone(res.data['dna']['fits_recorded'])
+        self.assertIn('which can mean more DNA', out)
+
+
 if __name__ == '__main__':
     unittest.main()
