@@ -481,6 +481,11 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
+#  Possible duplicate people (fha report §4b): one person entered twice, scored
+#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_NAME_RATIO: thresholds
+#    person_vital_window       : a birth or death as a year window (baptism stands in)
+#    possible_duplicate_people : ranked pairs with plain reasons; hard stops drop a pair
+#
 #  Dates that cannot all be true (fha lint W163+, the GEDCOM import plan): one
 #  engine over plain data, firing only when a conflict holds for every reading
 #    PLAUSIBLE_MAX_LIFESPAN_YEARS, W165_LIFE_TYPES - the thresholds and types
@@ -20759,7 +20764,8 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
       persons:         pid -> persons row as a dict (merged records left out:
                        the index already credits their claims to the survivor)
       claims:          cid -> {type, subtype, status, parked, negated,
-                       information, source_id, place_id, date, y_lo, y_hi}
+                       information, source_id, place_id, place_text, date,
+                       y_lo, y_hi}
                        (`parked`: PARKED_CLAIM_SQL, read for the
                        review-queue mode)
       claim_people:    cid -> [(pid, role), ...] via claim_role_pairs
@@ -20778,7 +20784,7 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
     claims: dict[str, dict] = {}
     for r in conn.execute(
             'SELECT c.id, c.type, c.subtype, c.status, c.negated, c.information, '
-            'c.source_id, c.place_id, c.date_edtf, c.date_min, c.date_max, '
+            'c.source_id, c.place_id, c.place_text, c.date_edtf, c.date_min, c.date_max, '
             f'{PARKED_CLAIM_SQL} AS parked FROM claims c'):
         lo, hi = _claim_year(r['date_min'], r['date_max'], r['date_edtf'])
         claims[r['id']] = {
@@ -20790,6 +20796,7 @@ def completeness_context(conn: sqlite3.Connection) -> dict:
             'information': (r['information'] or '').strip().lower(),
             'source_id': r['source_id'],
             'place_id': normalize_id(str(r['place_id'])) if r['place_id'] else None,
+            'place_text': (r['place_text'] or '').strip(),
             'date': (r['date_edtf'] or '').strip(),
             'y_lo': lo, 'y_hi': hi,
             # Day-precision bounds (ISO), read only where y_lo/y_hi are set.
@@ -21899,6 +21906,497 @@ def archive_metrics(conn: sqlite3.Connection, ctx: dict, *,
                             'sources_with_text': len(with_text)},
         'thinnest_direct_line': thinnest,
     }
+
+
+# ── Possible duplicate people (fha report §4b; TOOLING §15a) ─────────────────
+#
+# After an Ancestry or FamilySearch import the same grandmother often lands in
+# the archive twice, "Margaret Cole" from one tree and "Margaret A. Cole" from
+# another. This finds the pairs that look like one person entered twice, so
+# the report can name them and the merge-identities skill can walk the
+# evidence with him. It only proposes: nothing here writes, and nothing merges
+# unless he says so (`fha confirm merge`).
+#
+# The rule, in order:
+#   * names: the first given name and the surname of some recorded name of
+#     each match after folding case and accents, or are close spellings
+#     ("Hartley", "Hartly"). No nickname table, no initials, no Soundex.
+#   * hard stops, any one of which means "two people": a different recorded
+#     sex, a different generational suffix (Jr and Sr), a parent, child,
+#     spouse or ancestor tie between them, or birth or death dates that cannot
+#     be one person (two exact dates that differ, approximate ones more than
+#     DUPLICATE_DATE_SLACK_YEARS apart). The date stop matters most: a child
+#     who died young often had the name given again to the next one.
+#   * what they share adds weight: birth, death, a parent, a spouse, a
+#     birthplace. A same-name pair with nothing else is not listed (one import
+#     can hold dozens of undated namesakes).
+# Points are internal. He sees "strong" or "worth a look" and the reasons in
+# words: a number would claim a precision this guess does not have.
+#
+# It reads the index, unlike `fha gedcom import`'s own duplicate check, which
+# reads the tree on disk because an import may run before any index exists.
+#
+#   DUPLICATE_*                : the thresholds (points, date slack, spelling)
+#   person_vital_window        : one person's birth or death as a year window
+#   possible_duplicate_people  : the scored, ranked pairs for the report
+
+DUPLICATE_LISTED_POINTS = 50      # a pair below this is not shown
+DUPLICATE_STRONG_POINTS = 70      # shown as "strong"; below it as "worth a look"
+DUPLICATE_DATE_SLACK_YEARS = 2    # same slack as gedcom_import._DEDUPE_YEAR_SLACK
+DUPLICATE_NAME_RATIO = 0.8        # difflib ratio for a close given name or surname
+_DUPLICATE_ANCESTOR_GENERATIONS = 15
+_EXACT_DATE_RE = re.compile(r'^\d{4}(-\d{2}(-\d{2})?)?$')
+
+
+def person_vital_window(ctx: dict, pid: str, kind: str,
+                        statuses: tuple[str, ...]) -> dict | None:
+    """One person's birth or death as a window of years, or None when nothing
+    dates it.
+
+    Returns `{'lo', 'hi', 'exact', 'baptism', 'text', 'place_id',
+    'place_text', 'place_label'}`. `lo`/`hi` are the earliest and latest year any reading
+    allows (None for an open end, "before 1880"). `exact` is the one date every
+    reading gives when it is a plain year, month or day (`1849`, `1849-03`,
+    `1849-03-04`), else None: only two exact dates can rule a pair out at a
+    finer grain than the slack. `text` is that date in words, or the span.
+
+    Birth reads the person's own birth claims (a son's birth record that names
+    her as mother does not count, SPEC §8.3) and the provisional `birth:` on
+    the record; with neither, a baptism stands in, because a church register
+    often holds only the christening and without it an 1876 christening could
+    never rule out an 1903 birth. `baptism` is True when it did: a christening
+    a week after the birthday is the same child, so a stand-in date is never
+    held to the exact-date rule against a real birth date. Death reads own death claims and the
+    provisional `death:`; a burial does not stand in (it can come long after,
+    and the slack covers the usual case). The place comes from the most
+    narrowly dated of those claims.
+    """
+    person = ctx['persons'].get(pid) or {}
+    types = ('birth',) if kind == 'birth' else ('death',)
+    readings: list[tuple[int | None, int | None, str, str, dict | None]] = []
+
+    def _from_claims(claim_types: tuple[str, ...]) -> None:
+        for cid, c in _own_vital_claims(ctx, pid, statuses, claim_types):
+            if c['y_lo'] is None and c['y_hi'] is None:
+                continue   # an undated claim says nothing about when
+            readings.append((c['y_lo'], c['y_hi'], c['date'], cid, c))
+
+    _from_claims(types)
+    provisional = str(person.get(kind) or '').strip()
+    if provisional and is_valid_edtf(provisional):
+        lo, hi = _claim_year(*edtf_bounds(provisional), provisional)
+        if lo is not None or hi is not None:
+            readings.append((lo, hi, provisional, '', None))
+    baptism = False
+    if not readings and kind == 'birth':
+        _from_claims(('baptism',))
+        baptism = bool(readings)
+    if not readings:
+        return None
+
+    los = [r[0] for r in readings]
+    his = [r[1] for r in readings]
+    lo = None if any(v is None for v in los) else min(los)
+    hi = None if any(v is None for v in his) else max(his)
+    dates = {r[2] for r in readings}
+    only = next(iter(dates)) if len(dates) == 1 else None
+    exact = only if only and _EXACT_DATE_RE.match(only) else None
+    if only:
+        text = humanize_edtf(only)
+    elif lo is not None and hi is not None:
+        text = str(lo) if lo == hi else f'{lo} to {hi}'
+    else:
+        text = humanize_edtf(readings[0][2])
+    if baptism:
+        text = f'baptised {text}'
+
+    place_id = place_text = place_label = None
+    dated_claims = [r for r in readings if r[4] is not None]
+    if dated_claims:
+        def _width(r):
+            if r[0] is None or r[1] is None:
+                return 10 ** 6
+            return r[1] - r[0]
+        best = min(dated_claims, key=lambda r: (_width(r), r[3]))[4]
+        if best.get('place_id'):
+            place_id = best['place_id']
+        elif best.get('place_text'):
+            place_text = normalize_place_text(best['place_text'])
+            place_label = best['place_text']
+    return {'lo': lo, 'hi': hi, 'exact': exact, 'baptism': baptism, 'text': text,
+            'place_id': place_id, 'place_text': place_text, 'place_label': place_label}
+
+
+def _vital_relation(a: dict | None, b: dict | None) -> str:
+    """'same', 'compatible', 'different' or 'unknown' for two vital windows.
+
+    Two exact dates are compared at the precision both carry (1849 and
+    1849-03-04 agree; 1850-03-04 and 1852 do not). Otherwise the windows must
+    come within DUPLICATE_DATE_SLACK_YEARS of each other: a census age drifts
+    by a year or two, so approximate dates get that much grace. A baptism
+    standing in for one birth but not the other is held only to the slack:
+    the christening falls days or weeks after the birthday."""
+    if a is None or b is None:
+        return 'unknown'
+    if a['exact'] and b['exact'] and a.get('baptism') == b.get('baptism'):
+        pa, pb = a['exact'].split('-'), b['exact'].split('-')
+        for x, y in zip(pa, pb):
+            if x != y:
+                return 'different'
+        return 'same'
+    slack = DUPLICATE_DATE_SLACK_YEARS
+    if a['hi'] is not None and b['lo'] is not None and a['hi'] + slack < b['lo']:
+        return 'different'
+    if b['hi'] is not None and a['lo'] is not None and b['hi'] + slack < a['lo']:
+        return 'different'
+    return 'compatible'
+
+
+def _duplicate_shared_text(a: dict, b: dict) -> str:
+    """The date both exact windows share, in words, at the coarser precision
+    ("both born 1849" when one says 1849 and the other 4 March 1849)."""
+    shorter = a['exact'] if len(a['exact']) <= len(b['exact']) else b['exact']
+    return humanize_edtf(shorter)
+
+
+def _as_written_word(word: str) -> str:
+    """A name word for a reason line: an all-capitals surname, as some trees
+    export them ("HARTLEY"), is shown as "Hartley"; any other spelling is
+    left exactly as he typed it."""
+    return word[:1].upper() + word[1:].lower() if word.isupper() and len(word) > 1 else word
+
+
+def _duplicate_name_forms(conn: sqlite3.Connection,
+                          persons: dict) -> dict[str, list[dict]]:
+    """Every person's comparable name forms: {pid: [{given, surname, suffix,
+    main, words}]}, the main `name:` first.
+
+    The main name uses the indexed sort surname (a hand-set one wins, SPEC
+    §13). Other names come from `name_variants` and the index's name aliases,
+    so a married woman is found under her birth name. A form with fewer than
+    two words (a lone given name) cannot be compared and is skipped.
+    """
+    raw: dict[str, list[tuple[str, bool]]] = {pid: [] for pid in persons}
+    surnames: dict[str, str] = {}
+    for r in conn.execute('SELECT id, surname FROM persons'):
+        if r['id'] in raw and r['surname']:
+            surnames[r['id']] = str(r['surname'])
+    for pid, p in persons.items():
+        raw[pid].append((str(p.get('name') or ''), True))
+    for sql in ('SELECT person_id AS pid, variant AS form FROM person_variants',
+                "SELECT canonical_id AS pid, alias AS form FROM aliases "
+                "WHERE kind IN ('name', 'variant')"):
+        try:
+            rows = conn.execute(sql).fetchall()
+        except sqlite3.OperationalError:
+            continue   # an older or partial index: the main names still compare
+        for r in rows:
+            pid = normalize_id(str(r['pid'] or ''))
+            if pid in raw and r['form']:
+                raw[pid].append((str(r['form']), False))
+    out: dict[str, list[dict]] = {}
+    for pid, forms in raw.items():
+        seen: set[tuple] = set()
+        kept: list[dict] = []
+        for text, main in forms:
+            if is_placeholder_name(text):
+                continue
+            core, suffix = strip_generational_suffix(name_words(text))
+            if len(core) < 2:
+                continue
+            given = person_name_key(core[0])
+            surname_word = core[-1]
+            if main and surnames.get(pid):
+                surname_word = surnames[pid]
+            surname = person_name_key(surname_word)
+            if not given or not surname:
+                continue
+            key = (given, surname, suffix)
+            if key in seen:
+                continue
+            seen.add(key)
+            kept.append({'given': given, 'surname': surname, 'suffix': suffix,
+                         'main': main, 'given_word': core[0], 'surname_word': surname_word})
+        if kept:
+            out[pid] = kept
+    return out
+
+
+def _duplicate_name_match(fa: list[dict], fb: list[dict], ratio) -> tuple[int, str] | None:
+    """The best name match across two people's forms: (points, reason) or None.
+
+    The same name is 40 points, a close spelling 30. A reason never quotes a
+    name other than the two main `name:` fields: another name may be one he
+    marked restricted, and the report must not print it."""
+    best: tuple[int, str] | None = None
+    for a in fa:
+        for b in fb:
+            if a['suffix'] and b['suffix'] and a['suffix'] != b['suffix']:
+                continue
+            if a['given'][:1] != b['given'][:1]:
+                continue
+            same_given = a['given'] == b['given']
+            same_surname = a['surname'] == b['surname']
+            if not same_given and ratio(a['given'], b['given']) < DUPLICATE_NAME_RATIO:
+                continue
+            if not same_surname and ratio(a['surname'], b['surname']) < DUPLICATE_NAME_RATIO:
+                continue
+            both_main = a['main'] and b['main']
+            if same_given and same_surname:
+                found = (40, 'same name' if both_main else 'a name on record matches')
+            elif both_main:
+                pairs = []
+                if not same_given:
+                    pairs.append((a['given_word'], b['given_word']))
+                if not same_surname:
+                    pairs.append((a['surname_word'], b['surname_word']))
+                shown = ', '.join(
+                    f'{_as_written_word(x)}, {_as_written_word(y)}' for x, y in pairs)
+                found = (30, f'similar names ({shown})')
+            else:
+                found = (30, 'a name on record is spelled almost the same')
+            if best is None or found[0] > best[0]:
+                best = found
+    return best
+
+
+def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
+                              not_same: set) -> dict:
+    """Pairs of people who look like one person entered twice, best first.
+
+    `ctx` is `completeness_context(conn)` (built once per report run and
+    shared); `not_same` is the set of frozenset id pairs he has said are two
+    different people (`load_not_same_person`), which are never listed but
+    are counted so the report can say how many it is keeping quiet about.
+
+    Returns `{'pairs': [{'person_a', 'person_b', 'name_a', 'name_b', 'points',
+    'strength', 'reasons'}], 'dismissed_hidden': int}`, `person_a` the lower id.
+
+    Speed on a big imported tree (thousands of people): people are compared
+    only within a block that shares the first letters of the given name and
+    the surname, spelling comparisons are cached, and the ancestor walk runs only for the few pairs that survive the rest.
+    """
+    statuses = COMPLETENESS_MODES['include-suggested']
+    persons = {pid: p for pid, p in ctx['persons'].items()
+               if not is_placeholder_name(p.get('name'))}
+    forms = _duplicate_name_forms(conn, persons)
+
+    parents: dict[str, set[str]] = {}
+    spouses: dict[str, set[str]] = {}
+    children: dict[str, set[str]] = {}
+    try:
+        rel_rows = conn.execute(
+            "SELECT person_id, rel, other_id FROM relationships "
+            "WHERE rel IN ('parent', 'child', 'spouse')").fetchall()
+    except sqlite3.OperationalError:
+        rel_rows = []
+    for r in rel_rows:
+        a, b = normalize_id(str(r['person_id'])), normalize_id(str(r['other_id']))
+        if r['rel'] == 'parent':
+            parents.setdefault(a, set()).add(b)
+            children.setdefault(b, set()).add(a)
+        elif r['rel'] == 'child':
+            children.setdefault(a, set()).add(b)
+            parents.setdefault(b, set()).add(a)
+        else:
+            spouses.setdefault(a, set()).add(b)
+            spouses.setdefault(b, set()).add(a)
+    # A fresh import's family ties are all suggested, and the index's
+    # relationships table holds accepted ties only. Read the suggested ones
+    # from the claims by the same role rules `fha index` uses, so "same
+    # father" counts the morning after an import, and a suggested father and
+    # son of one name are still kept apart.
+    for cid, c in ctx['claims'].items():
+        if c['status'] != 'suggested' or c['negated'] or c['type'] not in (
+                'relationship', 'birth', 'marriage'):
+            continue
+        pairs_roles = ctx['claim_people'].get(cid, [])
+        if c['type'] == 'relationship':
+            ties = relationship_claim_parties(pairs_roles, c['subtype'])
+        elif c['type'] == 'birth':
+            kids, pars = parentage_parties(pairs_roles)
+            ties = [('parentage', (kids, pars))] if kids and pars else []
+        else:
+            ties = [('spouse', spouse_parties(pairs_roles))]
+        for kind, parties in ties:
+            if kind == 'parentage':
+                for kid in parties[0]:
+                    for par in parties[1]:
+                        if kid != par:
+                            parents.setdefault(kid, set()).add(par)
+                            children.setdefault(par, set()).add(kid)
+            elif kind == 'spouse':
+                for x in parties:
+                    for y in parties:
+                        if x != y:
+                            spouses.setdefault(x, set()).add(y)
+
+    # A "two different people" he recorded before merging either record into
+    # another copy still holds for the survivor: compare through merge chains.
+    try:
+        survivors = {normalize_id(k): normalize_id(v)
+                     for k, v in index_merge_survivors(conn).items()}
+    except sqlite3.OperationalError:
+        survivors = {}   # an older or partial index: compare the ids as stored
+    not_same = {frozenset(survivors.get(normalize_id(x), normalize_id(x)) for x in pair)
+                for pair in not_same}
+
+    place_names: dict[str, str] = {}
+    try:
+        for r in conn.execute('SELECT id, name FROM places'):
+            if r['name']:
+                place_names[normalize_id(str(r['id']))] = str(r['name'])
+    except sqlite3.OperationalError:
+        pass
+
+    # Blocks by the first letters of the given name and surname. The given
+    # names must share their first letter anyway, and keying on only the
+    # surname's first letter keeps a vowel slip near the front (Hartley and
+    # Hertley, Meyer and Mayer) inside one block.
+    blocks: dict[str, list[str]] = {}
+    for pid in sorted(forms):
+        for key in sorted({f['given'][:1] + f['surname'][:1] for f in forms[pid]}):
+            blocks.setdefault(key, []).append(pid)
+
+    ratio_cache: dict[tuple[str, str], float] = {}
+
+    def ratio(x: str, y: str) -> float:
+        k = (x, y) if x <= y else (y, x)
+        if k not in ratio_cache:
+            ratio_cache[k] = difflib.SequenceMatcher(None, k[0], k[1]).ratio()
+        return ratio_cache[k]
+
+    windows: dict[tuple[str, str], dict | None] = {}
+
+    def window(pid: str, kind: str) -> dict | None:
+        if (pid, kind) not in windows:
+            windows[(pid, kind)] = person_vital_window(ctx, pid, kind, statuses)
+        return windows[(pid, kind)]
+
+    def is_ancestor(anc: str, pid: str) -> bool:
+        frontier, seen = {pid}, {pid}
+        for _gen in range(_DUPLICATE_ANCESTOR_GENERATIONS):
+            frontier = {p for f in frontier for p in parents.get(f, ()) if p not in seen}
+            if not frontier:
+                return False
+            if anc in frontier:
+                return True
+            seen |= frontier
+        return False
+
+    def name_of(pid: str) -> str:
+        p = ctx['persons'].get(pid) or {}
+        return str(p.get('name') or fmt_id_display(pid))
+
+    def kin_word(pid: str, male: str, female: str, other: str) -> str:
+        sex = str((ctx['persons'].get(pid) or {}).get('sex') or '').upper()
+        return male if sex == 'M' else female if sex == 'F' else other
+
+    def birth_place(pid: str) -> tuple[str, str] | None:
+        w = window(pid, 'birth')
+        place_id, place_text = (w['place_id'], w['place_text']) if w else (None, None)
+        label = w['place_label'] if w else None
+        if not place_id and not place_text:
+            # An undated birth claim still says where: an incomplete record
+            # often has the town but no year.
+            for _cid, c in sorted(_own_vital_claims(ctx, pid, statuses, ('birth',))):
+                if c.get('place_id') or c.get('place_text'):
+                    place_id = c.get('place_id')
+                    if not place_id:
+                        place_text = normalize_place_text(c['place_text'])
+                        label = c['place_text']
+                    break
+        if place_id:
+            return ('id:' + place_id, place_names.get(place_id) or place_id)
+        if place_text:
+            return ('text:' + place_text, label)
+        return None
+
+    seen_pairs: set[tuple[str, str]] = set()
+    kept: list[dict] = []
+    hidden = 0
+    for members in blocks.values():
+        for i, pa in enumerate(members):
+            for pb in members[i + 1:]:
+                pair = (pa, pb) if pa < pb else (pb, pa)
+                if pair in seen_pairs:
+                    continue
+                seen_pairs.add(pair)
+                sa = str(persons[pa].get('sex') or '').upper()
+                sb = str(persons[pb].get('sex') or '').upper()
+                if sa in ('M', 'F') and sb in ('M', 'F') and sa != sb:
+                    continue
+                ma, mb = forms[pa][0], forms[pb][0]
+                if (ma['main'] and mb['main'] and ma['suffix'] and mb['suffix']
+                        and ma['suffix'] != mb['suffix']):
+                    continue
+                match = _duplicate_name_match(forms[pa], forms[pb], ratio)
+                if match is None:
+                    continue
+                points, name_reason = match
+                reasons = [name_reason]
+
+                birth = _vital_relation(window(pa, 'birth'), window(pb, 'birth'))
+                death = _vital_relation(window(pa, 'death'), window(pb, 'death'))
+                if 'different' in (birth, death):
+                    continue
+                for kind, rel, same_pts, fit_pts, verb in (
+                        ('birth', birth, 25, 10, 'born'), ('death', death, 15, 5, 'died')):
+                    wa, wb = window(pa, kind), window(pb, kind)
+                    if rel == 'same':
+                        points += same_pts
+                        if wa.get('baptism') and wb.get('baptism'):
+                            verb = 'baptised'
+                        reasons.append(f'both {verb} {_duplicate_shared_text(wa, wb)}')
+                    elif rel == 'compatible':
+                        points += fit_pts
+                        noun = 'birth' if kind == 'birth' else 'death'
+                        if wa['text'] == wb['text']:
+                            reasons.append(f'{noun} years fit ({wa["text"]})')
+                        else:
+                            reasons.append(f'{noun} years fit ({wa["text"]} and {wb["text"]})')
+
+                shared_parents = sorted(parents.get(pa, set()) & parents.get(pb, set()))
+                if shared_parents:
+                    points += 20
+                    for par in shared_parents:
+                        reasons.append(
+                            f'same {kin_word(par, "father", "mother", "parent")}, {name_of(par)}')
+                shared_spouses = sorted(spouses.get(pa, set()) & spouses.get(pb, set()))
+                if shared_spouses:
+                    points += 15
+                    for sp in shared_spouses:
+                        reasons.append(
+                            f'same {kin_word(sp, "husband", "wife", "spouse")}, {name_of(sp)}')
+                # The town counts only beside other evidence: cousins named
+                # for one grandfather are often all born in the same town, so
+                # a bare name match plus an undated birthplace is not listed.
+                bpa, bpb = birth_place(pa), birth_place(pb)
+                if bpa and bpb and bpa[0] == bpb[0] and points > match[0]:
+                    points += 10
+                    reasons.append(f'both born in {bpa[1]}')
+
+                if points < DUPLICATE_LISTED_POINTS:
+                    continue
+                a, b = pair
+                if (b in parents.get(a, ()) or b in children.get(a, ())
+                        or b in spouses.get(a, ())):
+                    continue
+                if is_ancestor(a, b) or is_ancestor(b, a):
+                    continue
+                if frozenset(pair) in not_same:
+                    hidden += 1
+                    continue
+                kept.append({
+                    'person_a': a, 'person_b': b,
+                    'name_a': name_of(a), 'name_b': name_of(b),
+                    'points': points,
+                    'strength': 'strong' if points >= DUPLICATE_STRONG_POINTS else 'worth a look',
+                    'reasons': reasons,
+                })
+    kept.sort(key=lambda p: (-p['points'], p['name_a'], p['name_b'],
+                             p['person_a'], p['person_b']))
+    return {'pairs': kept, 'dismissed_hidden': hidden}
 
 
 # ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────

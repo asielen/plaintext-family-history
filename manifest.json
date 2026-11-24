@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "78dc40693e8596574cc52791c02077fc6ae7bd1eaeef2c781bd7cc625222bb3a",
+      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
       "spec_version": "2.30",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -132,7 +132,7 @@
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
+      "sha256": "c233558dae523857fdfd1ac5e4d4fb0e8b1a5ee55c949298874324de86b7c8ad",
       "spec_version": "2.30",
       "src": ".claude/skills/today/SKILL.md"
     },
@@ -230,7 +230,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "78dc40693e8596574cc52791c02077fc6ae7bd1eaeef2c781bd7cc625222bb3a",
+      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
       "spec_version": "2.30"
     },
     {
@@ -296,7 +296,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
+      "sha256": "c233558dae523857fdfd1ac5e4d4fb0e8b1a5ee55c949298874324de86b7c8ad",
       "spec_version": "2.30"
     },
     {
@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b64ce5217c9e20692a33aaf5813194ec863fa82a5ad41b87489591d57340b8c5",
+      "sha256": "b845cf5b9133966ad41dabb3dc670e863bc739b8b3057bdfdfdf0e4a377838f2",
       "spec_version": "2.30",
       "src": "tools/_lib.py"
     },
@@ -939,7 +939,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "7eb0fb4053a4f5429c36ea64075818662817c81df2a35558ad2c7fe0c0373e96",
+      "sha256": "771f8efd80645abc4555e27388bf87dde9d48923fe4520fbe4b4e7bc519be6ae",
       "spec_version": "2.30",
       "src": "tools/report.py"
     },
@@ -1458,7 +1458,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "cd29a434078a529e06669aeeba9a7bee2127fd3caec8de652fc12d6463d11892",
+      "sha256": "48de57c627b038460f522e60ec9e5434dcc2b1ce246a9ba7a1ff471f393f197b",
       "spec_version": "2.30"
     },
     {
@@ -1507,7 +1507,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d0e992d92a48e546a47d041c05188fc94e2962227a2b67f23b6e7be8f216a5f9",
+      "sha256": "c2bfa200665e39e0d21ddd318ad125b523eb81d8700c0f6a4a39020763e1f4c4",
       "spec_version": "2.30",
       "src": "TOOLING.md"
     },
