@@ -1891,6 +1891,104 @@ class PromotionCandidatesTests(unittest.TestCase):
         self.assertIn('## 7b. Promotion candidates', result['markdown'])
 
 
+class PossibleDuplicatesSectionTests(unittest.TestCase):
+    """Section 4b (possible-duplicates): after an import the briefing names the
+    pairs that look like one person entered twice, with the reasons in words
+    and the exact command to say "these are two people". Nothing merges."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name)
+        (self.root / 'people' / 'stubs').mkdir(parents=True)
+        (self.root / 'sources' / 'notes').mkdir(parents=True)
+        (self.root / 'fha.yaml').write_text('roots:\n  documents: documents\n',
+                                            encoding='utf-8')
+        self._n = 0
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _twins(self, count: int) -> list[tuple[str, str]]:
+        """`count` pairs of same-named people with the same birth year."""
+        claims, out = [], []
+        given = ['Ada', 'Bess', 'Cora', 'Dora', 'Edna', 'Faye', 'Gwen', 'Hope',
+                 'Iris', 'June', 'Kate', 'Lena', 'Mae']
+        for i in range(count):
+            pair = []
+            for _side in range(2):
+                self._n += 1
+                pid = f'P-{self._n:010d}'
+                name = f'{given[i]} Hartley'
+                (self.root / 'people' / 'stubs' / f'hartley__x{self._n}_{pid}.md').write_text(
+                    f'---\nid: {pid}\nname: {name}\nsex: F\nliving: false\ntier: stub\n'
+                    f'birth: "18{60 + i}"\n---\n\n# {name}\n', encoding='utf-8')
+                pair.append(pid.lower())
+            out.append(tuple(pair))
+        (self.root / 'sources' / 'notes' / 'empty_s-0000000000.md').write_text(
+            '---\nid: S-0000000000\ntitle: Empty\nsource_type: other\n---\n\nx\n',
+            encoding='utf-8')
+        return out
+
+    def _run(self, **kw):
+        return report.run_report(self.root, _lib.load_fha_yaml(self.root), full=True, **kw)
+
+    def test_registry_carries_the_4b_row_after_contradictions(self) -> None:
+        keys = [key for key, _n, _t in report.SECTIONS]
+        self.assertIn(('possible-duplicates', '4b', 'Possible duplicate people'),
+                      report.SECTIONS)
+        self.assertEqual(keys.index('possible-duplicates'), keys.index('contradictions') + 1)
+
+    def test_a_pair_renders_with_reasons_and_the_two_people_command(self) -> None:
+        (a, b), = self._twins(1)
+        result = self._run()
+        self.assertIn('## 4b. Possible duplicate people', result['markdown'])
+        body = result['sections']['possible-duplicates']
+        line = next(x for x in body if x.startswith('- '))
+        self.assertIn(f'Ada Hartley [{a}] and Ada Hartley [{b}]', line)
+        self.assertIn('same name, both born 1860', line)
+        self.assertIn('are these the same person?', line)
+        self.assertIn(f'`{FHA} confirm dismiss {a} {b} --not-same-person`', line)
+        # No score is ever shown: the only digits are dates and ids.
+        bare = line.replace(a, '').replace(b, '').replace('1860', '')
+        self.assertFalse(re.search(r'\d', bare.replace(FHA, '')), line)
+
+    def test_data_carries_the_raw_pairs(self) -> None:
+        (a, b), = self._twins(1)
+        pairs = self._run()['possible_duplicates']
+        self.assertEqual([(p['person_a'], p['person_b']) for p in pairs], [(a, b)])
+
+    def test_empty_state_is_one_plain_line(self) -> None:
+        self._twins(0)
+        body = self._run()['sections']['possible-duplicates']
+        self.assertEqual(body, ['No possible duplicate people found.'])
+
+    def test_at_most_ten_lines_then_and_n_more(self) -> None:
+        self._twins(12)
+        body = self._run()['sections']['possible-duplicates']
+        self.assertEqual(len([x for x in body if x.startswith('- ') and '[' in x]), 10)
+        self.assertTrue(any('and 2 more' in x for x in body), body)
+        self.assertIn('**12 possible duplicates.**', body[0])
+
+    def test_footer_only_when_a_pair_is_hidden(self) -> None:
+        (a, b), = self._twins(1)
+        body = self._run()['sections']['possible-duplicates']
+        self.assertFalse(any('undismiss --list' in x for x in body))
+        (self.root / 'notes').mkdir(exist_ok=True)
+        (self.root / 'notes' / 'cooccur_dismissed.json').write_text(json.dumps(
+            {'pairs': [], 'not_same_person': [{'persons': [a, b], 'date': '2026-11-22'}]}),
+            encoding='utf-8')
+        body = self._run()['sections']['possible-duplicates']
+        self.assertEqual(body[0], 'No possible duplicate people found.')
+        self.assertIn(f'`{FHA} confirm undismiss --list`', body[-1])
+        self.assertIn('1 pair you said are two different people is not shown', body[-1])
+
+    def test_section_filter_prints_only_4b(self) -> None:
+        self._twins(1)
+        md = self._run(section='possible-duplicates')['markdown']
+        self.assertIn('## 4b. Possible duplicate people', md)
+        self.assertNotIn('## 4. Contradictions', md)
+
+
 class ReportUndecodableFileVerdictTests(unittest.TestCase):
     """`fha report`'s exit code IS the lint verdict, so a lint finding it
     cannot see is an archive certified clean over a file nobody read (#68).
