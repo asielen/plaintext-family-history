@@ -6025,9 +6025,24 @@ def _ahn_walk(rp: _ReportPrivacy, root: str, generations: int):
     return at, also, edge_sources
 
 
-def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[str], bool]:
-    """The report as markdown, and whether anyone in it is shown by name."""
+def _ahn_no_parents(rp: _ReportPrivacy, root: str) -> str:
+    """Why nobody is numbered above no. 1: an Ahnentafel follows birth
+    parents only, so a person whose only parents on record are adoptive or
+    step parents is told that, not that everyone is living or private."""
+    why = 'No birth parents are on record for this person, so nobody is numbered above no. 1.'
+    if rp.ties(root, 'parent'):
+        why += (' This report follows birth parents only; adoptive, step and other '
+                'parents are not numbered.')
+    return why
+
+
+def _ahn_lines(rp: _ReportPrivacy, root: str,
+               generations: int) -> tuple[list[str], bool, str]:
+    """The report as markdown, whether anyone in it is shown by name, and
+    (when nobody is numbered above no. 1 and more than one generation was
+    asked for) the sentence saying why."""
     at, also, edge_sources = _ahn_walk(rp, root, generations)
+    no_parents = _ahn_no_parents(rp, root) if len(at) == 1 and generations > 1 else ''
     fn = _Footnotes(rp)
     tally = _SheetTally(rp)
     body: list[str] = []
@@ -6059,7 +6074,11 @@ def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[st
             # marriages of his own spouses. A man met again at a second number
             # beside a second wife gets that marriage there.
             if pos == 1:
-                partners = sorted(rp.ties(pid, 'spouse'))
+                # In the order they married (undated last, then id), as on
+                # the family sheet.
+                spouse_ties = rp.ties(pid, 'spouse')
+                partners = sorted(spouse_ties, key=lambda s: (
+                    spouse_ties[s]['date'] is None, spouse_ties[s]['date'] or '', s))
             elif pos % 2 == 0 and at.get(pos + 1) not in (None, pid):
                 partners = [at[pos + 1]]
             else:
@@ -6084,10 +6103,12 @@ def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[st
     if k:
         summary += (f' {k} living relatives are counted but not named.' if k != 1
                     else ' 1 living relative is counted but not named.')
+    if no_parents:
+        summary += ' ' + no_parents
     notes = fn.lines()
     if notes:
         body += ['## Notes', ''] + notes + ['']
-    return [f'# {title}', '', summary, ''] + body, shown
+    return [f'# {title}', '', summary, ''] + body, shown, no_parents
 
 
 def run_ahnentafel(
@@ -6135,14 +6156,17 @@ def run_ahnentafel(
                 print(f'{fmt_id_display(pid)} is marked private (restricted), so it is left out '
                       f'of printed reports. Nothing was written.', file=sys.stderr)
             return _views_result(EXIT_ERRORS)
-        lines, shown = _ahn_lines(rp, pid, generations)
+        lines, shown, no_parents = _ahn_lines(rp, pid, generations)
         if not shown:
             # A file that would not read may be what cut off the only
             # deceased branch: name it and the fix before refusing.
             for warning in rp.unreadable_warnings():
                 print(warning, file=sys.stderr)
-            print('Everyone this report would list is living or private, so there is '
-                  'nothing to print.', file=sys.stderr)
+            if no_parents:
+                print(f'{no_parents} There is nothing to print.', file=sys.stderr)
+            else:
+                print('Everyone this report would list is living or private, so there is '
+                      'nothing to print.', file=sys.stderr)
             return _views_result(EXIT_ERRORS)
         out = _render_report(archive_root, 'ahnentafel', pid, lines, fmt)
         warnings = rp.unreadable_warnings()

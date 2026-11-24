@@ -716,11 +716,25 @@ class AhnentafelTests(_SheetBase):
         self.assertNotIn('Walter', text)
 
     def test_nobody_shown_is_refused(self):
+        # Ruth is living and her only parent on record is living too.
+        mother = 'p-rrrrrrrr01'
+        (self.root / 'people' / 'stubs' / f'x__{mother}.md').write_text(
+            _person(mother, 'Rose Elder', 'F', 'true'), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_ruth.md').write_text(
+            _source('s-ruth000001', 'Ruth parentage', 'Bible.',
+                    _rel('c-parRuth000', LIVSPOUSE, [mother])), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
         result, _out, err = self.run_ahn(LIVSPOUSE)
         self.assertEqual(result.exit_code, EXIT_ERRORS)
         self.assertIn('Everyone this report would list is living or private, '
                       'so there is nothing to print.', err)
         self.assertEqual(result.changed, [])
+
+    def test_a_living_subject_with_no_parents_is_told_so(self):
+        result, _out, err = self.run_ahn(LIVSPOUSE)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('No birth parents are on record', err)
+        self.assertNotIn('adoptive', err)
 
     def test_restricted_subject_is_refused_without_a_name(self):
         result, _out, err = self.run_ahn(CR)
@@ -804,3 +818,43 @@ class AhnentafelTests(_SheetBase):
         self.assertIn('(also no. 4)', text)
         self.assertEqual(text.count('Married: Alice First, 1880'), 1)
         self.assertEqual(text.count('Married: Betty Second, 1890'), 1)
+
+    def test_number_ones_wives_print_in_marriage_order(self):
+        # His second wife's record id sorts before his first wife's: the
+        # weddings must still read in the order they happened.
+        early = 'p-aaaaaaaaab'
+        (self.root / 'people' / 'stubs' / f'x__{early}.md').write_text(
+            _person(early, 'Edna Early', 'F', 'false'), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_marr_e.md').write_text(
+            _source('s-marrE00001', 'Second marriage', 'Marriage Book C.',
+                    _claim('c-marrE00000', 'marriage', [T, early], '1890',
+                           roles=f'{{spouse: [{T}, {early}]}}', place='Fairview')),
+            encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text()
+        self.assertLess(text.index('Married: Margaret Cole'), text.index('Married: Edna Early'))
+
+    def _adopted_only(self, child, living):
+        (self.root / 'people' / 'stubs' / f'x__{child}.md').write_text(
+            _person(child, 'Adam Adopted', 'M', living), encoding='utf-8')
+        (self.root / 'sources' / 'vital-record' / 'x_adopt.md').write_text(
+            _source('s-adopt00001', 'Adoption decree', 'Breton County Probate Court.',
+                    _claim('c-adopt00000', 'relationship', [child, T, M], '',
+                           roles=f'{{child: {child}, parent: [{T}, {M}]}}',
+                           subtype='adoptive')), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+
+    def test_a_living_son_with_only_adoptive_parents_is_told_why(self):
+        # Not "living or private": his adoptive parents are neither.
+        self._adopted_only('p-adadad0001', 'true')
+        result, _out, err = self.run_ahn('p-adadad0001')
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertNotIn('living or private', err)
+        self.assertIn('birth parents', err)
+        self.assertIn('adoptive', err)
+
+    def test_a_deceased_person_with_only_adoptive_parents_says_so(self):
+        self._adopted_only('p-adadad0002', 'false')
+        text = self.text('p-adadad0002')
+        self.assertIn('No birth parents are on record', text)
+        self.assertNotIn('Thomas Edward Hartley', text)
