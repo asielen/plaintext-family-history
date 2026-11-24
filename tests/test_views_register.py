@@ -1,8 +1,8 @@
 """
-test_views_register.py - `fha views register`, the printed NGSQ register report.
+test_views_register.py - `fha views register`, the printed register report.
 
 A relative who reads genealogy books is handed everyone descended from Thomas
-Hartley the way the National Genealogical Society Quarterly prints a family:
+Hartley the way the New England Historical and Genealogical Register prints a family:
 each person who has children gets a number and a short paragraph, their
 children are listed with Roman numerals, and a child whose own family follows
 later carries the number to turn to. Numbers run generation by generation.

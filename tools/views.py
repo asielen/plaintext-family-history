@@ -172,7 +172,8 @@ from _lib import (
     format_w120_message,  # the W120 wording - shared with lint so the twins agree,
     is_generated_text,    # GENERATED-header ownership test (first non-blank line),
     is_genetic_parent_subtype,
-    is_placeholder_name,  # 'unknown'/'None'/'' - never written into a folder name,
+    is_placeholder_name,
+    line_confidence,      # each person's weakest tie on their best route to the seed,  # 'unknown'/'None'/'' - never written into a folder name,
     folder_name_text,     # a name made safe for a folder name on every OS,
     load_fha_yaml,
     load_view_css,        # cached design/view.css loader -> (css, warning_or_None),
@@ -192,7 +193,8 @@ from _lib import (
     resolve_root_arg,      # --root flag, else find_archive_root(), shared error message,
     resolve_root_generation,   # validate fha.yaml root_generation: 'self'|'children' (#72),
     root_generation_seed_position,  # 'self'|'children' -> the Ahnentafel seed position,
-    spouse_extended_base,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
+    spouse_extended_base,
+    stronger_confidence,  # the better of two claim confidence words,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
     vital_pick_key,       # which accepted vital is the node label: most exact first (#201),
@@ -3648,7 +3650,8 @@ def _collect_edges(
     as repeated edges in the traversal.
 
     Returns a list of internal edge dicts:
-        {type, from, to, claim_id, date_start, date_end}
+        {type, from, to, claim_id, subtype, genetic, confidence, date_start, date_end}
+    `confidence` is the backing claim's (SPEC §8.5), None when unrated.
     IDs are lowercase as stored; callers apply fmt_id_display at output time.
     date_start / date_end are None when the table holds an empty string.
     """
@@ -3658,6 +3661,7 @@ def _collect_edges(
     rows = conn.execute(
         f"""
         SELECT DISTINCT r.rel, r.other_id, r.claim_id, r.date_start, r.date_end, c.subtype,
+               c.confidence,
                EXISTS(SELECT 1 FROM relationships r2 WHERE r2.claim_id = r.claim_id
                       AND r2.rel IN ('parent', 'child')) AS records_parentage
         FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
@@ -3684,11 +3688,30 @@ def _collect_edges(
             # distinctly; unset/legacy subtypes default to genetic, back-compatibly.
             'subtype': nature(row),
             'genetic': is_genetic_parent_subtype(nature(row)),
+            'confidence': row['confidence'] or None,
             'date_start': row['date_start'] or None,
             'date_end': row['date_end'] or None,
         }
         for row in rows
     ]
+
+
+def _merge_edge(edges: dict[tuple, dict], edge: dict) -> None:
+    """Add one edge to the traversal, one per `(from, to, type)`. A tie that
+    a family story and a certificate both record is as strong as the
+    certificate, so a repeat lifts the kept edge's `confidence`. Its
+    `claim_id` and nature stay the first claim's, except that a birth record
+    beats an adoption record by the same parent: he is drawn as the father,
+    as his pedigree seats him."""
+    ekey = (edge['from'], edge['to'], edge['type'])
+    kept = edges.get(ekey)
+    if kept is None:
+        edges[ekey] = edge
+        return
+    confidence = stronger_confidence(kept['confidence'], edge['confidence'])
+    if not kept.get('genetic', True) and edge.get('genetic', True):
+        edges[ekey] = kept = edge
+    kept['confidence'] = confidence
 
 
 def _traverse_tree(
@@ -3744,9 +3767,7 @@ def _traverse_tree(
         # Expand BFS edges (hop-limit check gates further enqueuing, not edge collection)
         if max_hops is None or depth < max_hops:
             for edge in _collect_edges(conn, pid, traverse_rels):
-                ekey = (edge['from'], edge['to'], edge['type'])
-                if ekey not in edges:
-                    edges[ekey] = edge
+                _merge_edge(edges, edge)
                 other = edge['to']
                 if other not in visited:
                     visited.add(other)
@@ -3758,9 +3779,7 @@ def _traverse_tree(
         # Collect extra_rels as leaf nodes - never enqueued (in-law lineages
         # appear in the tree but their own ancestry is not followed).
         for edge in _collect_edges(conn, pid, extra_rels):
-            ekey = (edge['from'], edge['to'], edge['type'])
-            if ekey not in edges:
-                edges[ekey] = edge
+            _merge_edge(edges, edge)
             other = edge['to']
             if other not in pids_seen:
                 pids_in_order.append(other)
@@ -3770,21 +3789,34 @@ def _traverse_tree(
     return nodes, edges
 
 
+_SOCIAL_EDGE_TYPES = frozenset({'friend', 'associate', 'neighbor'})
+
+
 def _edge_to_json_dict(edge: dict) -> dict:
     """Convert an internal edge dict to the TOOLING §7 JSON edge schema.
 
     dates.start / dates.end are populated only for spouse edges; all other
     relationship types use null per TOOLING §7.  The claim_id and P-ids are
-    written in the one all-lowercase ID form (SPEC §10).
+    written in the one all-lowercase ID form (SPEC §10). `kind` is the one
+    the site's explorer draws by (SPEC §12.2): 'genetic', 'legal' for an
+    adoptive, step, foster or guardian parent tie, 'other' for a friend,
+    associate or neighbour.
     """
     is_spouse = edge['type'] == 'spouse'
+    genetic = edge.get('genetic', True)
+    if edge['type'] in _SOCIAL_EDGE_TYPES:
+        kind = 'other'
+    else:
+        kind = 'genetic' if genetic else 'legal'
     return {
         'type': edge['type'],
         'from': fmt_id_display(edge['from']),
         'to': fmt_id_display(edge['to']),
         'claim_id': fmt_id_display(edge['claim_id']) if edge['claim_id'] else None,
         'subtype': edge.get('subtype'),
-        'genetic': edge.get('genetic', True),
+        'genetic': genetic,
+        'kind': kind,
+        'confidence': edge.get('confidence'),
         'dates': {
             'start': edge['date_start'] if is_spouse else None,
             'end': edge['date_end'] if is_spouse else None,
@@ -3800,11 +3832,21 @@ def _tree_to_json(
     The JSON is the stable data contract between fha views tree and the site
     generator (TOOLING §7 D3).  The renderer adapter in fha site maps this
     shape to whatever tree library is vendored.
+
+    Version 2 only adds keys, so a version 1 reader keeps working: `kind` and
+    `confidence` on every edge, and each node's `line_confidence` (the
+    weakest rated parent or child tie on the person's best route to the
+    seed, `_lib.line_confidence`), which lets a chart fade the part of his
+    tree that rests on a family story. Social ties never weaken anyone.
     """
+    lines = line_confidence(seed_pid, [
+        (e['from'], e['to'], e['type'], e['confidence']) for e in edges.values()
+        if e['type'] in ('parent', 'child', 'spouse')])
     out = {
+        'version': 2,
         'seed': fmt_id_display(seed_pid),
         'mode': mode,
-        'nodes': list(nodes.values()),
+        'nodes': [{**node, 'line_confidence': lines.get(pid)} for pid, node in nodes.items()],
         'edges': [_edge_to_json_dict(e) for e in edges.values()],
     }
     return json.dumps(out, indent=2, ensure_ascii=False)
@@ -5515,8 +5557,10 @@ def _claim_year(claim) -> str:
 
 
 def _cite_all(fn: '_Footnotes', sources) -> str:
-    """` [3, 5]` for the records a line rests on, or ''."""
-    notes = sorted({fn.cite(sid) for sid in sources if sid})
+    """` [3, 5]` for the records a line rests on, or ''. The records are
+    numbered in id order, not in the order a set hands them over (which changes
+    from run to run), so printing the report again gives the same page."""
+    notes = sorted({fn.cite(sid) for sid in sorted(s for s in sources if s)})
     return f" [{', '.join(str(n) for n in notes)}]" if notes else ''
 
 
@@ -5849,7 +5893,8 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
     return title, '\n'.join(parts) + '\n'
 
 
-def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fmt: str) -> Path:
+def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fmt: str,
+                   html_builder=None) -> Path:
     """Write one report to generated/views/ as `report_{kind}_{p-id}.{md|html}`:
     the GENERATED marker, then the report. Returns the path."""
     lines = [ln for i, ln in enumerate(lines) if ln or (i and lines[i - 1])]   # one blank at most
@@ -5857,7 +5902,7 @@ def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fm
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = _existing_spelling(out_dir / f'report_{kind}_{fmt_id_display(pid)}.{fmt}')
     if fmt == 'html':
-        title, body = _report_md_to_html(lines)
+        title, body = (html_builder or _report_md_to_html)(lines)
         text = _render_view_html(archive_root, kind, title, body, banner=_REPORT_BANNER)
     else:
         first = next(i for i, ln in enumerate(lines) if ln.startswith('# '))
@@ -5976,14 +6021,16 @@ def run_family_sheet(
         conn.close()
 
 
-# ── Register report (NGSQ style) ──────────────────────────────────────────────
+# ── Register report (Register style) ──────────────────────────────────────────
 #
 # A relative who reads genealogy books gets everyone descended from one
-# ancestor the way the National Genealogical Society Quarterly prints a
-# family: each person who has children gets a number and a short paragraph of
+# ancestor the way the New England Historical and Genealogical Register prints
+# a family: each person who has children gets a number and a short paragraph of
 # fixed fact sentences, children are listed with Roman numerals, and a child
 # whose own family follows is marked with the number to turn to. Numbers run
-# generation by generation (not down one line to the bottom first). Living
+# generation by generation (not down one line to the bottom first). The NGSQ
+# form differs only in numbering every child; a child with no family to follow
+# gets no number here, so every number on the page leads somewhere. Living
 # descendants are counted under their parent and never named, dated or placed,
 # and their own descendants are left out, as in every printed report.
 
@@ -6001,70 +6048,6 @@ def _roman_lower(n: int) -> str:
             out += glyph
             n -= value
     return out
-
-
-def _reg_child_ties(rp: _ReportPrivacy, pid: str) -> dict[str, dict]:
-    """The people whose parent tie names `pid`, from either side of the tie:
-    `{child: {subtypes, sources}}`. Ties to a restricted person are already
-    cut by `rp.ties`."""
-    found: dict[str, dict] = {}
-    for c, info in rp.ties(pid, 'child').items():
-        found[c] = {'subtypes': list(info['subtypes']), 'sources': set(info['sources'])}
-    for c in rp.parented_by(pid):
-        info = rp.ties(c, 'parent').get(pid)
-        if info is not None:
-            mine = found.setdefault(c, {'subtypes': [], 'sources': set()})
-            mine['subtypes'] += info['subtypes']
-            mine['sources'] |= info['sources']
-    return found
-
-
-def _reg_is_birth(info: dict) -> bool:
-    return not info['subtypes'] or any(is_genetic_parent_subtype(s) for s in info['subtypes'])
-
-
-def _reg_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
-    """Everyone descended from a living (or not-known-dead) descendant of
-    `root`. A printed page may neither name nor count them, even when their
-    other parent is a deceased cousin the report does list. People on the line
-    from `root` down to that living person are never among them, so a tie
-    keyed backwards cannot take a branch off the page."""
-    reached, living = {root}, set()
-    parents: dict[str, set[str]] = {}
-    frontier = [root]
-    while frontier:
-        following = []
-        for pid in frontier:
-            for c in _reg_child_ties(rp, pid):
-                state = rp.state(c)
-                if state == _PERSON_RESTRICTED:
-                    continue
-                parents.setdefault(c, set()).add(pid)
-                if state == _PERSON_LIVING:
-                    living.add(c)
-                elif c not in reached:
-                    reached.add(c)
-                    following.append(c)
-        frontier = following
-    below: set[str] = set()
-    for person in sorted(living):
-        line_up, stack = set(), [person]
-        while stack:
-            for par in parents.get(stack.pop(), ()):
-                if par not in line_up:
-                    line_up.add(par)
-                    stack.append(par)
-        seen, frontier = set(), [person]
-        while frontier:
-            following = []
-            for pid in frontier:
-                for c in _reg_child_ties(rp, pid):
-                    if c not in seen and c not in line_up and c != person:
-                        seen.add(c)
-                        following.append(c)
-            frontier = following
-        below |= seen
-    return below
 
 
 def _reg_other_parent(rp: _ReportPrivacy, child: str, pid: str, spouses) -> str | None:
@@ -6095,19 +6078,11 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
     counted."""
     spouses = rp.ties(pid, 'spouse')
     by_other: dict = {}
-    living_n = 0
-    for c, info in _reg_child_ties(rp, pid).items():
-        if c in hidden:
-            continue
-        state = rp.state(c)
-        if state == _PERSON_LIVING:
-            living_n += 1
-        elif state == _PERSON_SHOWN:
-            birth = _report_pick_vital(rp, c, 'birth')
-            other = _reg_other_parent(rp, c, pid, spouses) if _reg_is_birth(info) else _REG_NONBIRTH
-            by_other.setdefault(other, []).append(
-                (not _reg_is_birth(info), birth['date_min'] if birth and birth['date_min'] else '9999',
-                 rp.name(c), c, info, birth))
+    listed, living_n = _desc_shown_children(rp, pid, hidden)
+    for nonbirth, _date, _name, c, info in listed:
+        birth = _report_pick_vital(rp, c, 'birth')
+        other = _REG_NONBIRTH if nonbirth else _reg_other_parent(rp, c, pid, spouses)
+        by_other.setdefault(other, []).append((c, info, birth))
 
     def family_key(other):
         if other is None:
@@ -6123,8 +6098,7 @@ def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list,
         by_other.setdefault(couples[0] if couples else None, []).extend(adopted)
     families = []
     for other in sorted(by_other, key=family_key):
-        kids = sorted(by_other[other], key=lambda t: t[:4])
-        families.append((other, [(t[3], t[4], t[5]) for t in kids]))
+        families.append((other, by_other[other]))
     return families, living_n
 
 
@@ -6187,7 +6161,7 @@ def _reg_child_line(rp: _ReportPrivacy, fn: _Footnotes, c: str, info: dict, birt
     sits before the numeral only when the child's own family follows."""
     lead = f'- {number} {numeral}. ' if number else f'- {numeral}. '
     kind = ''
-    if not _reg_is_birth(info):
+    if not _desc_is_birth(info):
         kind = f" ({nonbirth_bracket_label(info['subtypes'][0]) or info['subtypes'][0]})"
     name = f'{rp.name(c)}{kind}{_cite_all(fn, info.get("sources") or ())}'
     if listed_under is not None:
@@ -6208,7 +6182,7 @@ def _reg_child_line(rp: _ReportPrivacy, fn: _Footnotes, c: str, info: dict, birt
 def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str]:
     """The register as small markdown: a title, a summary, a `## Generation N`
     heading, then for each numbered person a paragraph and their children."""
-    hidden = _reg_below_living(rp, root)
+    hidden = _desc_below_living(rp, root)
     families_of: dict[str, tuple[list, int]] = {}
 
     def families(pid: str):
@@ -6218,9 +6192,11 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
 
     # Number the people who carry the line, generation by generation. A person
     # met a second time (cousins who married) is listed in full once, at the
-    # shortest line, and pointed to afterwards.
+    # generation their shortest line puts them (the descendant report's own
+    # rule, so a longer line reaching them first never cuts off their
+    # children), and pointed to everywhere else.
+    nearest = _desc_nearest_generation(rp, root, generations, hidden)
     number_of: dict[str, int] = {root: 1}
-    depth_of: dict[str, int] = {root: 1}
     listed_in: dict[str, int] = {}          # child -> number of the family that lists them
     level = [root]
     layout: list[tuple[int, list[str]]] = []
@@ -6233,8 +6209,7 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
             fams, living_n = families(pid)
             for _other, kids in fams:
                 for c, _info, _birth in kids:
-                    if c not in depth_of:
-                        depth_of[c] = depth + 1
+                    if c not in listed_in and nearest.get(c) == depth + 1:
                         listed_in[c] = number_of[pid]
                         following.append(c)
         level = []
@@ -6275,7 +6250,7 @@ def _register_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str
                         listed_in[c] if again else None))
                 body.append('')
             if living_n:
-                for c in _reg_child_ties(rp, pid):
+                for c in _desc_children(rp, pid):
                     if c not in hidden:
                         tally.see(c)
                 body += [f"- {_living_count_phrase(living_n, 'child', 'children')}", '']
@@ -6640,6 +6615,408 @@ def _cmd_family_sheet(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+# ── Descendant report ─────────────────────────────────────────────────────────
+#
+# A relative with a paper copy can find any branch: everyone descended from
+# one ancestor, numbered the d'Aboville way (1, 1.1, 1.2, 1.1.1). A living
+# descendant is counted under their parent and never named, dated or placed,
+# and their own descendants are left out altogether: counting grandchildren
+# under an unnamed parent would say more than the report may.
+
+_DESC_DEFAULT_GENERATIONS = 5
+_DESC_MAX_GENERATIONS = 12
+
+
+def _desc_years(rp: _ReportPrivacy, pid: str) -> tuple[str, set[str]]:
+    """` (1810-1881)` for a shown person, worded as the family sheet words a
+    parent's years (`born 1815` when only one year is known), and the records
+    those years rest on."""
+    born = _report_pick_vital(rp, pid, 'birth')
+    died = _report_pick_vital(rp, pid, 'death')
+    by, dy = (_claim_year(born) if born else ''), (_claim_year(died) if died else '')
+    if by.isdigit() and dy.isdigit():
+        years = f' ({by}-{dy})'
+    elif by and dy:
+        years = f' (born {by}, died {dy})'
+    elif by:
+        years = f' (born {by})'
+    elif dy:
+        years = f' (died {dy})'
+    else:
+        years = ''
+    return years, {c['source_id'] for c in (born, died) if c and _claim_year(c)}
+
+
+def _desc_children(rp: _ReportPrivacy, pid: str) -> dict[str, dict]:
+    """The people whose parent tie names `pid`, from either side of the tie:
+    `{child: {subtypes, sources}}`. Ties to a restricted person are already
+    cut by `rp.ties`."""
+    found: dict[str, dict] = {}
+    for c, info in rp.ties(pid, 'child').items():
+        found[c] = {'subtypes': list(info['subtypes']), 'sources': set(info['sources'])}
+    for c in rp.parented_by(pid):
+        info = rp.ties(c, 'parent').get(pid)
+        if info is None:
+            continue
+        mine = found.setdefault(c, {'subtypes': [], 'sources': set()})
+        mine['subtypes'] += info['subtypes']
+        mine['sources'] |= info['sources']
+    return found
+
+
+def _desc_is_birth(info: dict) -> bool:
+    subtypes = info['subtypes']
+    return not subtypes or any(is_genetic_parent_subtype(s) for s in subtypes)
+
+
+def _desc_marriage_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
+                         pid: str, hidden: set[str]) -> list[str]:
+    """`Married Ann Price, 1838 [3]` for each spouse, earliest first. A living
+    spouse is the shared label with no date; a restricted one, or one in
+    `hidden` (a living person's descendant), is left out."""
+    ties = rp.ties(pid, 'spouse')
+    lines = []
+    for sp in sorted(ties, key=lambda s: (ties[s]['date'] is None, ties[s]['date'] or '', s)):
+        if sp in hidden:
+            continue
+        state = tally.see(sp)
+        if state == _PERSON_RESTRICTED:
+            continue
+        sources = set(ties[sp]['sources'])
+        year = ''
+        if state == _PERSON_SHOWN:
+            marriage = _report_marriage(rp, pid, sp)
+            if marriage is not None:
+                sources.add(marriage['source_id'])
+                year = _claim_year(marriage)
+        lines.append(f"Married {rp.name(sp)}{', ' + year if year else ''}{_cite_all(fn, sources)}")
+    return lines
+
+
+def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
+    """Everyone descended from a living (or not-known-dead) descendant of
+    `root`. SPEC §21: a living person's own descendants are neither named nor
+    counted, so these people stay off the page even when their other parent
+    is a cousin the report lists (cousins who married, one still living).
+    A person on the line from `root` down to that living person is never
+    among them: a tie keyed backwards (a man recorded as his own living
+    daughter's child) must not take his branch off the page."""
+    reached, living = {root}, set()
+    parents: dict[str, set[str]] = {}     # within the report's lines
+    frontier = [root]
+    while frontier:
+        following = []
+        for pid in frontier:
+            for c in _desc_children(rp, pid):
+                state = rp.state(c)
+                if state == _PERSON_LIVING:
+                    living.add(c)
+                    parents.setdefault(c, set()).add(pid)
+                elif state == _PERSON_SHOWN:
+                    parents.setdefault(c, set()).add(pid)
+                    if c not in reached:
+                        reached.add(c)
+                        following.append(c)
+        frontier = following
+    below: set[str] = set()
+    for person in sorted(living):
+        line_up, stack = set(), [person]
+        while stack:
+            for par in parents.get(stack.pop(), ()):
+                if par not in line_up:
+                    line_up.add(par)
+                    stack.append(par)
+        seen, frontier = set(), [person]
+        while frontier:
+            following = []
+            for pid in frontier:
+                for c in _desc_children(rp, pid):
+                    if c not in seen and c not in line_up and c != person:
+                        seen.add(c)
+                        following.append(c)
+            frontier = following
+        below |= seen
+    return below
+
+
+def _desc_shown_children(rp: _ReportPrivacy, pid: str,
+                         hidden: set[str]) -> tuple[list[tuple], int]:
+    """The children the report may name, in listing order (birth children
+    oldest first, undated last, then by name and id; then the adopted and
+    step children the same way), and how many living children are counted.
+    A child in `hidden` (a living person's descendant) is neither.
+    Each entry is `(nonbirth, date, name, child, info)`."""
+    listed, living_n = [], 0
+    for c, info in _desc_children(rp, pid).items():
+        if c in hidden:
+            continue
+        state = rp.state(c)
+        if state == _PERSON_LIVING:
+            living_n += 1
+        elif state == _PERSON_SHOWN:
+            birth = _report_pick_vital(rp, c, 'birth')
+            listed.append((not _desc_is_birth(info),
+                           birth['date_min'] if birth and birth['date_min'] else '9999',
+                           rp.name(c), c, info))
+    listed.sort(key=lambda t: t[:4])
+    return listed, living_n
+
+
+def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int,
+                             hidden: set[str]) -> dict[str, int]:
+    """Each shown descendant's generation by their shortest line from `root`
+    (root is 1). When cousins of different generations married, their
+    children are listed in full where that shortest line puts them, so no one
+    within `--generations` is cut off by the longer line reaching them first."""
+    nearest = {root: 1}
+    frontier = [root]
+    while frontier:
+        following = []
+        for pid in frontier:
+            depth = nearest[pid]
+            if depth >= generations:
+                continue
+            for entry in _desc_shown_children(rp, pid, hidden)[0]:
+                c = entry[3]
+                if c not in nearest:
+                    nearest[c] = depth + 1
+                    following.append(c)
+        frontier = following
+    return nearest
+
+
+def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str]:
+    """The descendant report as small markdown: a title, a summary, a nested
+    bullet list (two spaces per generation) and the notes."""
+    hidden = _desc_below_living(rp, root)
+    nearest = _desc_nearest_generation(rp, root, generations, hidden)
+
+    def walk(listed_at: dict[str, str]) -> tuple[list[str], _Footnotes, _SheetTally, dict, int]:
+        """One pass over the tree. A person on two lines of descent is listed
+        in full once, at their nearest generation; every other place points
+        there with `(see N)`. `listed_at` is that number for each person, from
+        an earlier pass, so a pointer met before the full entry still says
+        where to look."""
+        fn = _Footnotes(rp)
+        tally = _SheetTally(rp)
+        out: list[str] = []
+        full: dict[str, str] = {}   # person -> the number of their full entry
+        deepest = 1
+
+        def person(pid: str, number: str, depth: int, mark: str, tie_sources) -> None:
+            nonlocal deepest
+            pad = '  ' * (depth - 1)
+            name = rp.name(pid)
+            tally.see(pid)
+            deepest = max(deepest, depth)
+            if pid in full or depth != nearest.get(pid, depth):
+                # Descended from two people in this report (cousins who
+                # married): listed in full once, with a pointer here. The
+                # pointer still cites the tie that puts them on this line.
+                where = full.get(pid) or listed_at.get(pid, '')
+                out.append(f'{pad}- {number} {name}{mark} (see {where})'
+                           f'{_cite_all(fn, set(tie_sources))}')
+                return
+            full[pid] = number
+            years, year_sources = _desc_years(rp, pid)
+            out.append(f'{pad}- {number} {name}{mark}{years}'
+                       f'{_cite_all(fn, set(tie_sources) | year_sources)}')
+            inner = '  ' * depth
+            for line in _desc_marriage_lines(rp, fn, tally, pid, hidden):
+                out.append(f'{inner}- {line}')
+            listed, living_n = _desc_shown_children(rp, pid, hidden)
+            if depth >= generations:
+                # Nobody below is on the page, so nobody below is counted.
+                if listed or living_n:
+                    out.append(f'{inner}- More descendants are not shown in this report.')
+                return
+            for k, (nonbirth, _date, _name, c, info) in enumerate(listed, 1):
+                kind = ''
+                if nonbirth:
+                    kind = nonbirth_bracket_label(info['subtypes'][0]) or info['subtypes'][0]
+                person(c, f'{number}.{k}', depth + 1, f' ({kind})' if kind else '', info['sources'])
+            if living_n:
+                for c in _desc_children(rp, pid):
+                    if c not in hidden:
+                        tally.see(c)
+                # Always "and N living ...": a line starting with a bare
+                # number would read as a person numbered N.
+                out.append(f"{inner}- {_living_count_phrase(living_n, 'child', 'children')}")
+
+        person(root, '1', 1, '', ())
+        return out, fn, tally, full, deepest
+
+    listed_at = walk({})[3]
+    out, fn, tally, _full, deepest = walk(listed_at)
+    k = len(tally.living)
+    summary = (f'This report names {len(tally.named)} people and shows '
+               f"{deepest} generation{'' if deepest == 1 else 's'}.")
+    if k:
+        summary += (f' {k} living relatives are counted but not named.' if k != 1
+                    else ' 1 living relative is counted but not named.')
+    lines = [f'# Descendants of {rp.name(root)}', '', summary, ''] + out + ['']
+    notes = fn.lines()
+    if notes:
+        lines += ['## Notes', ''] + notes + ['']
+    return lines
+
+
+_DESC_NUM_RE = re.compile(r'^(\d+(?:\.\d+)*) (.*)$')
+
+
+def _descendant_md_to_html(lines: list[str]) -> tuple[str, str]:
+    """`(title, body_html)` for the descendant report's markdown: the nested
+    bullets become nested lists with each number in a `report-num` span."""
+    title = ''
+    parts = ['<section class="report-sheet">']
+    depth = 0       # <ul> elements open
+    in_notes = False
+
+    def close_lists() -> None:
+        nonlocal depth
+        while depth:
+            parts.append('</li></ul>')
+            depth -= 1
+
+    for line in lines:
+        if not line.strip() or line.startswith('>'):
+            if not line.strip():
+                close_lists()
+            continue
+        m = re.match(r'^( *)- (.*)$', line)
+        if m:
+            level = len(m.group(1)) // 2 + 1
+            while depth > level:
+                parts.append('</li></ul>')
+                depth -= 1
+            if depth == level:
+                parts.append('</li>')
+            while depth < level:
+                parts.append('<ul class="report-tree" style="list-style:none;padding-left:1.6em">')
+                depth += 1
+            num = _DESC_NUM_RE.match(m.group(2))
+            if num:
+                parts.append(f'<li><span class="report-num" style="font-weight:bold">'
+                             f'{html_escape(num.group(1))}</span> {_report_inline_html(num.group(2))}')
+            else:
+                parts.append(f'<li>{_report_inline_html(m.group(2))}')
+            continue
+        close_lists()
+        m = re.match(r'^(#{1,6}) (.*)$', line)
+        if m:
+            if in_notes:
+                parts.append('</ol>')
+                in_notes = False
+            if not title and len(m.group(1)) == 1:
+                title = m.group(2)
+                continue
+            level = len(m.group(1))
+            parts.append(f'<h{level}>{html_escape(m.group(2))}</h{level}>')
+            if m.group(2) == 'Notes':
+                parts.append('<ol class="report-notes">')
+                in_notes = True
+            continue
+        m = re.match(r'^(\d+)\. (.*)$', line)
+        if m and in_notes:
+            parts.append(f'<li value="{m.group(1)}">{html_escape(m.group(2))}</li>')
+            continue
+        parts.append(f'<p>{_report_inline_html(line)}</p>')
+    close_lists()
+    if in_notes:
+        parts.append('</ol>')
+    parts.append('</section>')
+    return title, '\n'.join(parts) + '\n'
+
+
+def run_descendants(
+    archive_root: Path,
+    person_id: str | None,
+    generations: int | None = None,
+    fmt: str = 'md',
+) -> Result:
+    """Write the printed descendant report for one deceased person. Exit codes:
+    0 written; 1 person not in the index, or a file left out because it would
+    not read; 2 refused (living, private, or a bad --generations); 3 no usable
+    index."""
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
+    gens = _DESC_DEFAULT_GENERATIONS if generations is None else generations
+    if not 1 <= gens <= _DESC_MAX_GENERATIONS:
+        print(f'--generations must be between 1 and {_DESC_MAX_GENERATIONS} '
+              f'(you gave {gens}). Nothing was written.', file=sys.stderr)
+        return _views_result(EXIT_ERRORS)
+    conn = _open_index_or_explain(archive_root)
+    if conn is None:
+        return _views_result(EXIT_FAILURE)
+    try:
+        rp = _ReportPrivacy(conn, archive_root)
+        pid = rp.canon(person_id or '')
+        if pid is None:
+            print(f'No person {fmt_id_display(person_id or "")} in the index. '
+                  f'Run fha find "their name" to look them up by name, or fha index '
+                  f'if you just added them.', file=sys.stderr)
+            return _views_result(EXIT_WARNINGS)
+        shown_id = fmt_id_display(pid)
+        state = rp.state(pid)
+        if state == _PERSON_RESTRICTED:
+            unread = sorted(rp.unreadable_paths(pid))
+            if unread:
+                print(f'Could not read {", ".join(unread)} to check whether {shown_id} '
+                      f'asked to be kept private, so no report about them can be printed. '
+                      f'Nothing was written. Repair the file (`fha lint` points at '
+                      f'what is wrong), run `fha index`, then try again.', file=sys.stderr)
+            else:
+                print(f'{shown_id} is marked private (restricted), so it is left out of '
+                      f'printed reports. Nothing was written.', file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+        if state == _PERSON_LIVING:
+            name = rp.lookup(pid)['name']
+            they, them = _pronouns(rp.sex(pid))
+            has = 'have' if they == 'they' else 'has'
+            print(f'{name} is recorded as living, or nobody has recorded yet whether '
+                  f'{they} died, so a printed report about {them} would name a living '
+                  f'person. Choose a deceased ancestor instead. If {they} {has} died, '
+                  f'record it first: fha person set-living {shown_id} false',
+                  file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+
+        lines = _descendant_lines(rp, pid, gens)
+        out = _render_report(archive_root, 'descendants', pid, lines, fmt,
+                             html_builder=_descendant_md_to_html)
+        warnings = rp.unreadable_warnings()
+        for warning in warnings:
+            print(warning, file=sys.stderr)
+        rel = _rel_display(out, archive_root)
+        if fmt == 'html':
+            print(f'Wrote {rel}. Open it in a browser and print it, or choose Save as PDF '
+                  f'in the print box.')
+        else:
+            print(f'Wrote {rel}.')
+        return _views_result(EXIT_WARNINGS if warnings else EXIT_CLEAN, changed=[str(out)])
+    except GeneratedFileRefused as e:
+        return _views_result(_refused_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
+    finally:
+        conn.close()
+
+
+def _cmd_descendants(args: argparse.Namespace) -> int:
+    """argparse → run_descendants bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_descendants(
+        archive_root,
+        getattr(args, 'person_id', None),
+        getattr(args, 'generations', None),
+        getattr(args, 'format', 'md') or 'md',
+    ).exit_code
+
+
 # ── Parser registration ───────────────────────────────────────────────────────
 
 # User-facing --help text (the module docstring stays developer-facing).
@@ -6657,6 +7034,7 @@ Build always-current summary pages from your records.
   fha views family-sheet <p-id>    A printable family group sheet for a couple
   fha views register <p-id>        A printable book-style register of a person's descendants
   fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
+  fha views descendants <p-id>     A printable numbered list of a person's descendants
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -6873,7 +7251,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
         'register',
         help="Print a book-style register of a person's descendants, each fact with its source.",
         description=(
-            "Write a printed NGSQ register report to generated/views/: the person is\n"
+            "Write a printed register report to generated/views/: the person is\n"
             "1, each descendant who has children gets the next number (generation by\n"
             "generation) and a short paragraph, and children are listed with Roman\n"
             "numerals. Living descendants are counted under their parent, never\n"
@@ -6902,6 +7280,23 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     _add_ahnentafel_args(ah)
     ah.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     ah.set_defaults(func=_cmd_ahnentafel)
+
+    # ── descendants ───────────────────────────────────────────────────────────
+    de = vsubs.add_parser(
+        'descendants',
+        help="Print a numbered list of a person's descendants, each fact with its source.",
+        description=(
+            "Write a printed descendant report to generated/views/: the person is\n"
+            "1, their children 1.1, 1.2 (oldest first), their grandchildren 1.1.1,\n"
+            "and so on, with years, marriages and a note for each fact. Living\n"
+            "descendants are counted under their parent, never named, and their own\n"
+            "children are left out; private records are left out.\n"
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
+    )
+    _add_descendants_args(de)
+    de.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    de.set_defaults(func=_cmd_descendants)
 
     # ── clean ─────────────────────────────────────────────────────────────────
     cl = vsubs.add_parser(
@@ -7034,6 +7429,11 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     ah.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     ah.set_defaults(func=_cmd_ahnentafel)
 
+    de = subs.add_parser('descendants', help="Print a numbered list of a person's descendants, each fact with its source.")
+    _add_descendants_args(de)
+    de.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    de.set_defaults(func=_cmd_descendants)
+
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
@@ -7055,6 +7455,14 @@ def _add_ahnentafel_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', metavar='p-id', help='The person whose ancestors are listed (a living person is allowed).')
     p.add_argument('--generations', type=int, metavar='N', default=None,
                    help=f'How many generations to print, the person being the first (default {_AHN_DEFAULT_GENERATIONS}, most {_AHN_MAX_GENERATIONS}).')
+    p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                   help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
+
+
+def _add_descendants_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument('person_id', metavar='p-id', help='A deceased person; everyone descended from them is listed.')
+    p.add_argument('--generations', type=int, metavar='N', default=None,
+                   help=f'How many generations to print, the person being the first (default {_DESC_DEFAULT_GENERATIONS}, most {_DESC_MAX_GENERATIONS}).')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
                    help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
 
