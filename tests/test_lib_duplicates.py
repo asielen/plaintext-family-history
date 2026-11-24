@@ -406,6 +406,22 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
                     self.assertEqual(result['pairs'], [])
                     self.assertEqual(result['impossible_hidden'], 1)
 
+    def test_a_second_wife_known_by_her_child_the_next_year_is_not_offered(self) -> None:
+        # The first Mary died in 1880; the second is known only as mother of
+        # Ada, born 1881. A mother and her child are two events, so the
+        # year-only slack for one event written twice does not apply.
+        m1 = self.a.person('Mary Cole', sex='F')
+        m2 = self.a.person('Mary Cole', sex='F')
+        self._born(m1, '1850')
+        self._born(m2, '1850')
+        self.a.claim('death', [m1], date='1880')
+        ada = self.a.person('Ada Hartley', sex='F')
+        self._born(ada, '1881')
+        self.a.parent(ada, m2)
+        result = self.a.scan()
+        self.assertEqual(result['pairs'], [])
+        self.assertEqual(result['impossible_hidden'], 1)
+
     def test_a_year_one_placeholder_date_does_not_break_the_report(self) -> None:
         # An imported placeholder birth in year 1 must not crash the scan.
         m1 = self.a.person('Mary Cole', sex='F')

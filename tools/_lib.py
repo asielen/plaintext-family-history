@@ -22249,8 +22249,9 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
 
     - dates known to the day or month are widened by a few months before
       the joined reading, so two sources a few days apart never count, and
-      a clash only among births, baptisms, deaths and burials must also
-      survive their year-only dates widened (one death, two registers);
+      a clash only among one person's own birth, baptism, death and burial
+      must also survive their year-only dates widened (one death, two
+      registers);
     - a problem the records already have apart does not count, and neither
       does any new one built on a claim already in such a problem: a death
       typed before the birth on one record is lint's to report there, not
@@ -22279,9 +22280,10 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
     tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
     joined_raw = plausibility_input_from_claims(
         picked_claims, persons, None, {b: a}, statuses=statuses)
-    # A clash only between births, baptisms, deaths and burials may be one
-    # event written twice, so it must also hold with year-only dates
-    # widened; a clash with a marriage or a census is two events.
+    # A clash among one person's own birth, baptism, death and burial may
+    # be one event written twice (a death index's 1881, a burial register's
+    # 1880), so it must also hold with year-only dates widened. A clash with
+    # a marriage, a census or a child's birth is two events.
     loose = {(pr.kind, pr.pids) for pr in problems(
         _widened_plausibility_input(joined_raw, vitals_too=True))}
 
@@ -22289,7 +22291,8 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
         claims_in = [dc for side in pr.claims for dc in side]
         if (pr.kind, pr.pids) in before or any(dc.claim_id in tainted for dc in claims_in):
             return False
-        if all(dc.ctype in _PLAUSIBILITY_VITAL_TYPES for dc in claims_in):
+        if (len(set(pr.pids)) == 1
+                and all(dc.ctype in _PLAUSIBILITY_VITAL_TYPES for dc in claims_in)):
             return (pr.kind, pr.pids) in loose
         return True
 
