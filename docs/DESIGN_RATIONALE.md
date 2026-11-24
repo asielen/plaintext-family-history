@@ -401,6 +401,7 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **American Soundex as the matcher.** It keeps only the first letter and three sounds and splits Slavic spellings D-M keeps together (Moskowitz M232, Moskovitz M213); it is printed for the census cards, not used to match.
 - **Edit distance (fuzzy spelling).** It groups names that look alike, not names that sound alike (Hart and Hurt), and its threshold has no right value.
 - **Rewriting or normalising names.** A name stays as each record wrote it; the spelling is evidence. The search reads the spellings and changes none.
+- **One-click normalising of a spelling group.** `fha find --spelling-groups` lists the surnames that sound alike (grouped by the first D-M code, so groups do not chain) and stops there. Grouping is advisory: names stay as the source wrote them, and the researcher decides which spellings are one family.
 - **Showing names straight from the index.** The index keeps private prior names beside the public ones, and an older copy of a name made private can linger in `aliases:`; the index only narrows the search, and each match is checked against the public names in the person's own record, so a private name is never shown.
 
 ---
