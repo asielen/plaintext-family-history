@@ -9374,13 +9374,20 @@ class _SiteBuilder:
         if section_starts:
             self._discovery_entries = chunks
         else:
+            # The top level is the indent of the first bullet (a log may be
+            # written with every bullet a space or tab in); deeper is a sub-bullet.
             entries: list[list[str]] = []
             open_entry = False
+            top: int | None = None
             for ln in lines:
-                if re.match(r'^[-*]\s+', ln):
+                bullet = _LIST_RE.match(ln)
+                indent = len(ln) - len(ln.lstrip(' \t'))
+                if bullet and top is None:
+                    top = indent
+                if bullet and indent <= top:
                     entries.append([ln])
                     open_entry = True
-                elif open_entry and (ln[:1] in (' ', '\t') or not ln.strip()
+                elif open_entry and (indent > top or not ln.strip()
                                      or entries[-1][-1].strip()):
                     entries[-1].append(ln)    # indented, blank, or a lazy continuation
                 else:

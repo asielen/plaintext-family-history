@@ -187,6 +187,25 @@ class ContentTests(_Base):
         self.assertIn('filed under her married name', october)
         self.assertNotIn('parish book', page)
 
+    def test_a_log_written_with_indented_bullets_still_lists(self):
+        # The discoveries page and the home teaser accept a bullet that starts
+        # with a space or a tab; What's new must not quietly drop them.
+        for indent in (' ', '\t'):
+            with self.subTest(indent=repr(indent)):
+                notes = self.root / 'notes'
+                notes.mkdir(exist_ok=True)
+                (notes / 'discoveries.md').write_text(
+                    f'# Discoveries\n{indent}- 2026-10-02: Found the Hartley farm deed.\n'
+                    f'{indent}  - Signed 1871-03-04 by both brothers.\n'
+                    f'{indent}- 2026-09-01: Found the 1880 census page.\n',
+                    encoding='utf-8')
+                self.build()
+                page = self.page()
+                self.assertIn('Hartley farm deed', self.month(page, 'October 2026'))
+                self.assertIn('both brothers', self.month(page, 'October 2026'))
+                self.assertIn('1880 census page', self.month(page, 'September 2026'))
+                self.assertNotIn('1871</h2>', page)
+
     def test_since_select_needs_script_and_page_works_without_it(self):
         self.build()
         page = self.page()
