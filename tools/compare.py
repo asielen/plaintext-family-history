@@ -61,11 +61,15 @@ from _lib import (
     record_collection_group,
     record_collection_index,
     resolve_root_arg,
+    role_meaning,
+    roles_by_person,
     same_record_subject,
     site_data_reader,
     source_record_subjects,
     source_dates_agree,
     source_site_collection,
+    spouse_parties,
+    VITAL_SUBJECT_ROLES,
     vital_subjects,
 )
 
@@ -129,8 +133,11 @@ def _about(pid: str, fact: str, claim_type: str, pairs) -> bool:
     named = {p for p, _ in pairs}
     if pid not in named:
         return False
-    roles = {p: {r for q, r in pairs if q == p and r} for p in named}
-    if fact in ('birth', 'death', 'marriage'):
+    # `mother`, `son` and the other kin words read as `parent`/`child` (§8.3).
+    roles = {p: set(rs) for p, rs in roles_by_person(pairs).items()}
+    if fact in ('birth', 'death', 'marriage') or (fact == claim_type and fact in VITAL_SUBJECT_ROLES):
+        # A ceremony asked for by name (`--fact baptism`) is still only his own:
+        # a child's baptism names the mother, but it is not her baptism.
         subjects = vital_subjects(claim_type, pairs)
         return pid in named if subjects is None else pid in subjects
     if fact == 'parents':
@@ -273,7 +280,9 @@ def _rows(conn, claims: list[dict], pid: str, archive_root: Path, fha_config: di
             s = conn.execute('SELECT * FROM sources WHERE id=?', (c['source_id'],)).fetchone()
             sources[c['source_id']] = dict(s) if s else {'id': c['source_id'], 'title': c['source_id'], 'path': ''}
     metas = {sid: _source_meta(archive_root, s) if s.get('path') else {} for sid, s in sources.items()}
-    people_of = {c['id']: {p for p, _ in _claim_people(conn, c['id'])} for c in claims}
+    # Which wedding a record is of: the couple, not everyone named on it, so a
+    # record that also names a witness is still the same wedding.
+    people_of = {c['id']: frozenset(spouse_parties(_claim_people(conn, c['id']))) for c in claims}
     number = {c['id']: i + 1 for i, c in enumerate(claims)}
     rows = []
     for i, c in enumerate(claims):
@@ -282,7 +291,7 @@ def _rows(conn, claims: list[dict], pid: str, archive_root: Path, fha_config: di
         for p, role in conn.execute(
                 'SELECT cp.person_id, cp.role FROM claim_persons cp WHERE cp.claim_id=? '
                 'ORDER BY cp.position', (c['id'],)):
-            if 'informant' in str(role or '').split(CLAIM_ROLE_SEP):
+            if 'informant' in {role_meaning(r) for r in str(role or '').split(CLAIM_ROLE_SEP)}:
                 name = conn.execute('SELECT name FROM persons WHERE id=?', (p,)).fetchone()
                 informants.append(name[0] if name and name[0] else fmt_id_display(p))
         links = [{'rel': rel, 'target': tgt, 'row': number.get(tgt)}
@@ -315,22 +324,53 @@ def _rows(conn, claims: list[dict], pid: str, archive_root: Path, fha_config: di
             'confidence': c['confidence'],
             'links': links,
             'anchor': c['anchor'],
-            '_people': people_of[c['id']],
+            '_couple': people_of[c['id']],
             '_date_min': c['date_min'], '_date_max': c['date_max'],
         })
     _same_origin(rows, sources, metas, conn, archive_root, fha_config)
     return rows
 
 
-def _place_key(row: dict) -> str | None:
-    if row['place_id']:
-        return 'id:' + str(row['place_id'])
-    text = str(row['place_text'] or '').split(',')[0]
-    text = ' '.join(re.sub(r'[^\w\s]', ' ', text.casefold()).split())
-    return 'text:' + text if text else None
+def _place_parts(text) -> tuple[str, ...]:
+    """`Easton, Washington County, New York` -> its parts, smallest first,
+    case and punctuation folded."""
+    parts = (' '.join(re.sub(r'[^\w\s]', ' ', p.casefold()).split())
+             for p in str(text or '').split(','))
+    return tuple(p for p in parts if p)
 
 
-def _disagree(rows: list[dict]) -> bool:
+def _within_chain(conn, place_id) -> list[str]:
+    """The place and every registered place it sits inside, smallest first."""
+    chain, pid = [], str(place_id or '')
+    while pid and pid not in chain:
+        chain.append(pid)
+        try:
+            row = conn.execute('SELECT within FROM places WHERE id=?', (pid,)).fetchone()
+        except Exception:  # an index without the places table: no nesting known
+            row = None
+        pid = str(row[0] or '') if row else ''
+    return chain
+
+
+def _places_differ(conn, a: dict, b: dict) -> bool:
+    """Do two records name places that rule each other out? A coarser place is
+    not a different one: a census that says only "New York" agrees with a
+    birth record from Easton, New York, and Fairview agrees with Kansas."""
+    if a['place_id'] and b['place_id']:
+        ca, cb = _within_chain(conn, a['place_id']), _within_chain(conn, b['place_id'])
+        return ca[0] not in cb and cb[0] not in ca
+    if a['place_id'] or b['place_id']:
+        return False  # one registered, one free text: nothing safe to compare
+    pa, pb = _place_parts(a['place_text']), _place_parts(b['place_text'])
+    if not pa or not pb:
+        return False
+    short, long_ = sorted((pa, pb), key=len)
+    # One is the other with the smaller parts left off, or with the larger
+    # parts left off ("Easton" against "Easton, New York"): the same place.
+    return not (long_[-len(short):] == short or long_[:len(short)] == short)
+
+
+def _disagree(rows: list[dict], conn) -> bool:
     """Two rows whose date ranges do not overlap, or whose places differ."""
     for i, a in enumerate(rows):
         for b in rows[i + 1:]:
@@ -338,15 +378,22 @@ def _disagree(rows: list[dict]) -> bool:
             # weddings are different events: they may differ without a conflict.
             if a['type'] != b['type']:
                 continue
-            if a['type'] == 'marriage' and a['_people'] != b['_people']:
+            if a['type'] == 'marriage' and a['_couple'] != b['_couple']:
                 continue
             if (_dated(a['_date_min'], a['_date_max']) and _dated(b['_date_min'], b['_date_max'])
                     and (a['_date_max'] < b['_date_min'] or b['_date_max'] < a['_date_min'])):
                 return True
-            pa, pb = _place_key(a), _place_key(b)
-            if pa and pb and pa != pb and pa[:3] == pb[:3]:
+            if _places_differ(conn, a, b):
                 return True
     return False
+
+
+def _waiting_text(name: str, pid: str, fact: str | None = None) -> str:
+    """--accepted-only found nothing, but records are waiting for review: say
+    so, rather than telling him there is no evidence at all."""
+    what = f'{fact} records' if fact else 'records'
+    return (f'None of the {what} about {name} {fmt_id_display(pid)} is accepted yet: they are '
+            'not reviewed. Leave out --accepted-only to see them.')
 
 
 def _public(rows: list[dict]) -> list[dict]:
@@ -413,9 +460,12 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
                     continue
                 existing.append({'fact': k, 'records': len(claims)})
                 rows = _rows(conn, claims, pid, archive_root, fha_config)
-                if len(claims) > 1 and _disagree(rows):
-                    years = sorted({_year(c['date_min']) for c in claims
-                                    if _dated(c['date_min'], c['date_max'])} - {None})
+                if len(claims) > 1 and _disagree(rows, conn):
+                    # The years the records give, not the index's search bounds:
+                    # "before 1840" is 1840, not year 1, and "about 1840" is 1840.
+                    years = sorted({int(y) for c in claims
+                                    if _dated(c['date_min'], c['date_max'])
+                                    for y in re.findall(r'(?<!\d)\d{4}(?!\d)', str(c['date_edtf'] or ''))})
                     summary.append({'fact': k, 'records': len(claims),
                                     'first_year': years[0] if years else None,
                                     'last_year': years[-1] if years else None})
@@ -426,7 +476,9 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
             if not existing:
                 r = Result(ok=False, exit_code=EXIT_WARNINGS,
                            data={**base, 'error': 'no-claims', 'facts': []})
-                r.add('warning', f'No records name {name} {fmt_id_display(pid)} yet.')
+                waiting = accepted_only and _available_facts(conn, pid, _DEFAULT_STATUSES)
+                r.add('warning', _waiting_text(name, pid) if waiting else
+                      f'No records name {name} {fmt_id_display(pid)} yet.')
                 return r
             return Result(data={**base, 'fact': None, 'disagreeing': summary, 'facts': existing})
 
@@ -436,7 +488,10 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
             r = Result(ok=False, exit_code=EXIT_WARNINGS,
                        data={**base, 'error': 'no-claims', 'fact': fact, 'facts': existing})
             have = (', '.join(existing) + '.') if existing else 'none yet.'
-            r.add('warning', f'No {fact} records for {name}. Facts that have records: {have}')
+            if accepted_only and _fact_claims(conn, pid, fact, _DEFAULT_STATUSES):
+                r.add('warning', _waiting_text(name, pid, fact))
+            else:
+                r.add('warning', f'No {fact} records for {name}. Facts that have records: {have}')
             return r
         rows = _rows(conn, claims, pid, archive_root, fha_config)
         return Result(data={**base, 'fact': fact, 'rows': _public(rows)})

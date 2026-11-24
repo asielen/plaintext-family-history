@@ -406,5 +406,63 @@ class ReviewRoundTests(_Base):
         self.assertEqual(self.rows()[0]['origin_notes'], [])
 
 
+class SecondReviewTests(_Base):
+    """Cases the second review found: each would tell him something false."""
+
+    def test_a_wedding_record_that_also_names_a_witness_still_disagrees_on_the_year(self):
+        self.a.person('p-eeeeeeeeee', 'Mary One')
+        self.a.source([{'type': 'marriage', 'persons': [TOM, 'p-eeeeeeeeee'], 'date': '1860',
+                        'roles': {'spouse': [TOM, 'p-eeeeeeeeee']}}])
+        self.a.source([{'type': 'marriage', 'persons': [TOM, 'p-eeeeeeeeee', BOB], 'date': '1863',
+                        'roles': {'spouse': [TOM, 'p-eeeeeeeeee'], 'witness': [BOB]}}])
+        self.assertEqual([f['fact'] for f in self.a.run().data['disagreeing']], ['marriage'])
+
+    def test_a_childs_baptism_never_shows_as_the_mothers_own_baptism(self):
+        self.a.source([{'type': 'baptism', 'persons': [TOM, ANN], 'date': '1840-04-01',
+                        'roles': {'child': TOM, 'parent': [ANN]}}], source_type='church')
+        r = self.a.run(person=ANN, fact='baptism')
+        self.assertFalse(r.ok)
+        self.assertEqual(len(self.a.run(person=TOM, fact='baptism').data['rows']), 1)
+
+    def test_mother_and_son_roles_count_as_parent_and_child(self):
+        self.a.source([{'type': 'relationship', 'persons': [TOM, ANN], 'value': 'son of Ann',
+                        'roles': {'son': TOM, 'mother': ANN}}])
+        self.a.source([{'type': 'birth', 'persons': [TOM, ANN], 'date': '1840-03-01',
+                        'roles': {'child': TOM, 'mother': ANN}}], source_type='vital-record')
+        r = self.a.run(fact='parents')
+        self.assertTrue(r.ok, [m.text for m in r.messages])
+        self.assertEqual(sorted(row['type'] for row in r.data['rows']), ['birth', 'relationship'])
+        self.assertIn('parents', self.a.run(fact='death').data['facts'])
+
+    def test_a_state_only_birthplace_agrees_with_the_town_in_that_state(self):
+        self.a.source([_birth('1840~', place_text='New York')])
+        self.a.source([_birth('1840-03-01', place_text='Easton, Washington County, New York')])
+        self.assertEqual(self.a.run().data['disagreeing'], [])
+
+    def test_a_town_registered_inside_a_state_agrees_with_the_state(self):
+        (self.a.root / 'places' / 'places.yaml').write_text(
+            '- id: l-aaaaaaaaaa\n  name: Kansas\n'
+            '- id: l-bbbbbbbbbb\n  name: Fairview\n  within: l-aaaaaaaaaa\n', encoding='utf-8')
+        self.a.source([_birth('1840', place='l-aaaaaaaaaa')])
+        self.a.source([_birth('1840', place='l-bbbbbbbbbb')])
+        self.assertEqual(self.a.run().data['disagreeing'], [])
+
+    def test_the_summary_years_are_the_years_the_records_give(self):
+        self.a.source([_birth('[..1840]')])
+        self.a.source([_birth('1845')])
+        self.a.source([_birth('1843~')])
+        f = self.a.run().data['disagreeing'][0]
+        self.assertEqual((f['first_year'], f['last_year']), (1840, 1845))
+
+    def test_accepted_only_with_only_unreviewed_records_says_they_are_waiting(self):
+        self.a.source([_birth('1840', status='suggested')])
+        for kw in ({}, {'fact': 'birth'}):
+            r = self.a.run(accepted_only=True, **kw)
+            self.assertEqual(r.exit_code, EXIT_WARNINGS)
+            text = ' '.join(m.text for m in r.messages)
+            self.assertNotIn('No records name', text)
+            self.assertIn('not reviewed', text)
+
+
 if __name__ == '__main__':
     unittest.main()
