@@ -673,7 +673,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "75f3d1f0370bec12da4d38acaee9bc634538a5286db449f1358463f9d1e8d6b3",
+      "sha256": "dc82436d3c1dfb1f8dbb9cc1ba8af10160c705c50cb71ed34005aa590b5c1b54",
       "spec_version": "2.31",
       "src": "tools/README.md"
     },
@@ -797,6 +797,13 @@
       "src": "tools/cooccur.py"
     },
     {
+      "path": ".fha/tools/dates.py",
+      "category": "operating",
+      "sha256": "29aa6d000cbed7ac9e5faf05a1fd0985b511db5358d833ac67b4e090728213bc",
+      "spec_version": "2.31",
+      "src": "tools/dates.py"
+    },
+    {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
       "sha256": "bd44dbccdc9c0eb06a0011775a9f06ccd76d468a24fb24f4990c3e5718f92d05",
@@ -806,7 +813,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "86f501ac4770f0714d80826a7be6a1a15178161256dfc073400398cedf946df8",
+      "sha256": "a17fc98aafcc0c592c5053b4f0e054d89b6019b56192623c8f53f9613fa61238",
       "spec_version": "2.31",
       "src": "tools/fha.py"
     },
@@ -1415,7 +1422,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "a38c1e7d68b0f13f43a0f70f29a22b2f5e2f240674a56e61e298eacc26fe4979",
+      "sha256": "1dd18a23e501144b2bc2c175d70c31078c2222d4d5ac8725eeb03567fee899e8",
       "spec_version": "2.31"
     },
     {
@@ -1434,13 +1441,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "b4d5074dea580f4c3134ffdace58ed6e7539209b789d073fdb6bcea870f19653",
+      "sha256": "805170aff7274f3ea24da2b6b10191ec0454e1eead9c420163074690c7cfeb02",
       "spec_version": "2.31"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "f48f5bef9c8b2b9aa386ac8aca6f1d2c1fb437fd2025ac941a6fdccccd4ea442",
+      "sha256": "cf239ade9ef78fb8ba431216da7d8344ea8f517fa57f716b00966f5e3a65ac9c",
       "spec_version": "2.31"
     },
     {
@@ -1458,7 +1465,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "6cfab78b74bbe7a46c0eff2f581ddde82cc19eb595c804d6b82fd38a15b18e8c",
+      "sha256": "1e571a4ae75d77b7e4bedb3f5f109354828ee8dba657d3e36ace540171cd847f",
       "spec_version": "2.31"
     },
     {
@@ -1507,7 +1514,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "1c1e86ae39ea22d9d54612f428ee3fc74cd7477c19f7b35c80d76eb33bd45d01",
+      "sha256": "e58bee7a0c38006567fe50c7e72fd591e32eeecb81934abe670f1505fed68460",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
