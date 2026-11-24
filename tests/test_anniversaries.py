@@ -610,6 +610,16 @@ class WallCalendarTests(unittest.TestCase):
         self.assertEqual(text.count('<style>'), 1)
         self.assertIn('Private research companion', text)
 
+    def test_print_css_fits_one_month_to_a_page(self):
+        # Measured in headless Chrome at A4 and Letter landscape: with taller
+        # cells or the page padding left on, January (which also carries the
+        # banner) spills onto a thirteenth page.
+        text = self.page()
+        printed = text[text.index('@media print {', text.index('.wall-month-block')):]
+        self.assertIn('.wall-month td { height: 4rem; }', printed)
+        self.assertIn('break-after: page', printed)
+        self.assertIn('main { padding: 0; }', printed)
+
     def test_rewrite_after_no_change_is_byte_identical(self):
         first = self.page()
         self.assertEqual(first, self.page())

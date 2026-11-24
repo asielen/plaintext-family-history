@@ -263,7 +263,14 @@ _WALL_CSS = """
 .wall-month .day-num { font-weight: 600; }
 .wall-month .wall-line { display: block; line-height: 1.25; }
 .wall-legend, .wall-more { font-size: 0.8rem; margin: 0.4rem 0; }
-@media print { @page { size: landscape; } .wall-month-block { break-after: page; } }
+@media print {
+  @page { size: landscape; margin: 10mm; }
+  .wall-month-block { break-after: page; break-inside: avoid; margin-bottom: 0; }
+  .wall-month td { height: 4rem; }
+  main { padding: 0; }
+  h1 { font-size: 1.3rem; margin: 0.2rem 0; }
+  .view-banner { margin: 0 0 0.3rem; padding: 0.2rem 0.5rem; }
+}
 """
 
 
