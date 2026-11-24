@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24**
+**Version 2.33, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -382,7 +382,7 @@ Each meaning has one spelling, in one bracket convention. `[1920..]` is the mirr
 
 The one exception is embedded photo metadata, which cannot hold partial dates; §20 defines the bidirectional mapping to the keyword-pattern system used there.
 
-**Calendar quirks:** a claim records the date *as written* in `value` (double dates like "11 Feb 1731/32", regnal or feast dates) with the best EDTF interpretation in `date:`. Julian/Gregorian judgment goes in `notes`.
+**Calendar quirks.** `date:` is always a date in today's (Gregorian) calendar, the calendar EDTF is defined in. `value` keeps the record's own words: a double date like "11 Feb 1731/32", an Old Style or Orthodox register date, a regnal year, a feast day or a Hebrew date. When the record used another calendar, convert it: an Old Style day becomes the same day in today's calendar (10 to 13 days later since 1582, by century: "11 Feb 1731/32" is 1732-02-22), a double-dated year is read as the later year, and a feast or Hebrew date becomes its day. Before 1752 England, Ireland and the British colonies began the year on 25 March (Scotland from 1600 began it on 1 January), so a date or a feast from 1 January to 24 March written with one year usually belongs to the next year by today's count: when the record counts years that way (an English parish register usually does), convert it as the double year it stands for, or give `fha date feast` the later year (`notes` says the record wrote one year), and when that is unclear, keep the year as written and say so in `notes`. `notes` says which calendar the record used and that `date:` was converted. An Old Style month alone is written as the record gives it (with the same 25 March rule for January to March), since converting it would only move its edges by days; a year alone is written as the record gives it too, though where the year began on 25 March it reached into the next one. A Hebrew month or year alone covers parts of two of today's months or years, so `date:` is the interval from its first day to its last, each converted on its own ("1 Tishrei 5650" and "29 Elul 5650" give 1889-09-26/1890-09-14). When a conversion has two answers (a Western feast between 1582 and 1752, plain Adar in a Hebrew leap year), the record's place or context picks one, and when nothing does, the human is asked. Every tool compares `date:` values across people (ages, order, the family calendar, the plausibility checks), so they must all be in one calendar. `fha date convert` and `fha date feast` do the conversion (TOOLING §4b); never convert a date in your head.
 
 ---
 
@@ -430,6 +430,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/home.md`: the site homepage's introduction, plain markdown written by the human (or drafted by an AI and accepted); `fha site` shows it when present.
 - `notes/discoveries.md`: the log of research wins, appended by `fha confirm discovery`.
 - `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, and pairs he has said are *not the same person*, written by `fha confirm dismiss` and taken back by `fha confirm undismiss`, so the report stops suggesting them.
+- `notes/gedcom-imports/{slug}_{s-id}.csv`: one per `fha gedcom import`, saying which person record each person in the imported file became, so a newer download of the same tree finds the same people (TOOLING §13a2).
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
 - `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
