@@ -1743,6 +1743,98 @@ def run_add_discovery(
 _AI_DRAFT_RE = re.compile(r'<!--(\s*)AI-DRAFT\b(.*?)-->', re.S)
 
 
+def _accept_draft_in_source(
+    archive_root: Path, source_id: str, result: Result, *, dry_run: bool,
+) -> Result:
+    """Accept the AI drafts in a source record's body (a proof argument).
+
+    He can mark a written argument as his own once he has read it, the same way
+    he marks a biography. Only markers in the body count: the frontmatter and
+    the `## Claims` fence are never touched (a claim is accepted with
+    `fha claim`, not here). A damaged marker refuses and names its line.
+    """
+    sid = normalize_id(source_id)
+    result.data['person_id'] = fmt_id_display(sid)
+    record = find_source_record_path(archive_root, sid)
+    if record is None:
+        return _notfound(result,
+                         f'No source record found for {fmt_id_display(sid)} under '
+                         f'{archive_root / "sources"}.',
+                         next_step='fha find ' + fmt_id_display(sid))
+    result.data['profile'] = str(record)
+    try:
+        before = read_text_exact(record)
+    except OSError as e:
+        return _fail(result, 'failed', f'cannot read {record}: {e}')
+
+    lines = before.split('\n')
+    protected: list[tuple[int, int]] = []     # (first, last+1) line indexes
+    for span in (frontmatter_fence_span(lines), _find_claims_block(lines)):
+        if span is not None:
+            protected.append((span[0], span[1] + 1))
+    starts = [0]
+    for ln in lines:
+        starts.append(starts[-1] + len(ln) + 1)
+
+    def _line_of(offset: int) -> int:
+        return max(i for i, st in enumerate(starts) if st <= offset)
+
+    def _in_protected(offset: int) -> bool:
+        i = _line_of(offset)
+        return any(a <= i < b for a, b in protected)
+
+    today = _today()
+    count = 0
+
+    def _flip(m: re.Match) -> str:
+        nonlocal count
+        if _in_protected(m.start()):
+            return m.group(0)
+        count += 1
+        return f'<!--{m.group(1)}AI-ACCEPTED{m.group(2).rstrip()} (accepted {today}) -->'
+
+    after = _AI_DRAFT_RE.sub(_flip, before)
+    result.data['count'] = count
+
+    # A marker left unfinished (no closing `-->`) is not flipped; name its line
+    # instead of accepting around it.
+    for m in re.finditer(r'AI-DRAFT', after):
+        if not _in_protected(m.start()):
+            return _fail(result, 'damaged-marker',
+                         f'{record.name} line {_line_of(m.start()) + 1} has an '
+                         'AI-DRAFT marker that never closes with "-->". Fix that '
+                         'line by hand, then run this again. Nothing was written.')
+
+    if count == 0:
+        result.data['status'] = 'none'
+        result.exit_code = EXIT_WARNINGS
+        result.ok = False
+        result.add('warning',
+                   f'No <!-- AI-DRAFT … --> markers found in the body of {record.name}. '
+                   'Nothing to accept.')
+        return result
+
+    if dry_run:
+        result.data['status'] = 'ok'
+        result.add('info', f'[dry-run] Would accept {count} AI-DRAFT marker(s) in {record.name}.')
+        for dline in difflib.unified_diff(
+            before.splitlines(), after.splitlines(),
+            fromfile=f'{record} (before)', tofile=f'{record} (after)', lineterm='',
+        ):
+            result.add('info', dline)
+        result.add('info', '[dry-run] No file written.')
+        return result
+
+    try:
+        write_text_exact_atomic(record, reapply_newline(after, before))
+    except OSError as e:
+        return _fail(result, 'failed', f'cannot write {record}: {e}')
+    result.data['status'] = 'ok'
+    result.note_changed(record)
+    result.add('info', f'Accepted {count} AI-DRAFT marker(s) in {record.name}.', path=record)
+    return result
+
+
 def run_accept_draft(
     archive_root: Path, *, person_id: str, dry_run: bool = False,
 ) -> Result:
@@ -1756,9 +1848,12 @@ def run_accept_draft(
     """
     result = Result(data={'status': None, 'person_id': None, 'profile': None, 'count': 0})
 
+    if is_valid_id(person_id) and id_type_of(person_id) == 'S':
+        return _accept_draft_in_source(archive_root, person_id, result, dry_run=dry_run)
     if not (is_valid_id(person_id) and id_type_of(person_id) == 'P'):
         return _fail(result, 'invalid-id',
-                     f'{person_id!r} is not a valid person ID. p-ids look like p-2b3c4d5e6f.')
+                     f'{person_id!r} is not a valid person or source ID. p-ids look like '
+                     'p-2b3c4d5e6f; s-ids look like s-2b3c4d5e6f.')
     pid = normalize_id(person_id)
     result.data['person_id'] = fmt_id_display(pid)
 
@@ -4034,8 +4129,11 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     root_arg(dv_p)
     dv_p.set_defaults(func=_cmd_discovery)
 
-    dr_p = subs.add_parser('draft', help='Accept AI-DRAFT prose markers in a person profile')
-    dr_p.add_argument('person_id', metavar='p-id', help='The person whose profile to accept drafts in.')
+    dr_p = subs.add_parser(
+        'draft', help='Accept AI-DRAFT prose markers in a person profile or a source record')
+    dr_p.add_argument('person_id', metavar='p-id|s-id',
+                      help='The person profile or source record (a proof argument) '
+                           'whose drafts to accept.')
     dr_p.add_argument('--dry-run', action='store_true', dest='dry_run',
                       help='Preview the change without writing.')
     root_arg(dr_p)

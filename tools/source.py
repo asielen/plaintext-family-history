@@ -241,6 +241,13 @@ from _lib import (
     path_to_alias,
     read_embedded_keywords,
     record_display_names,
+    humanize_edtf,
+    is_valid_edtf,
+    link_list_lines,
+    mint_ids,
+    scan_ids_in_tree,
+    scan_person_record_ids,
+    SOURCE_PURPOSE_BLOCK,
     restore_undo_copy,
     run_undo_steps,
     slugify,
@@ -3184,6 +3191,162 @@ def _add_set_primary_arguments(sub: argparse._SubParsersAction) -> None:
     sp.set_defaults(func=_cmd_source_set_primary)
 
 
+_PROOF_SECTIONS = ('The question', 'The evidence', 'The reasoning', 'Conclusion')
+
+_NEW_REFUSE_OTHER_TYPE = (
+    'Other kinds of source start from a document or a photo. Put the file in '
+    'the inbox and run `fha process <file>`.')
+
+
+def _proof_record_text(sid: str, title: str, date: str, people: list[str],
+                       names: dict[str, str], links) -> str:
+    """The text of a new proof-argument record: SPEC §14 frontmatter (no
+    `files:`, there is no file), the purpose block, an empty claims fence, and
+    one empty heading per part of the written argument."""
+    lines = [
+        '---',
+        f'id: {sid}',
+        f'aliases: [{sid}]',
+        f'title: {yaml_inline(title)}',
+        'source_type: proof-argument',
+        f'source_date: {yaml_inline(date)}',
+        'source_class: authored',
+        'repository: this archive',
+        'citation: >',
+        f'  Proof argument, "{title}," written for this archive, {humanize_edtf(date)}.',
+    ]
+    if people:
+        lines += link_list_lines('people', people, names, links=links)
+    else:
+        lines.append('people: []')
+    lines += [
+        f'created: {datetime.date.today().isoformat()}',
+        '---', '', SOURCE_PURPOSE_BLOCK, '', '## Claims', '```yaml', '```', '',
+    ]
+    for heading in _PROOF_SECTIONS:
+        lines += [f'## {heading}', '']
+    lines += ['## Notes', '']
+    return '\n'.join(lines)
+
+
+def run_source_new(
+    archive_root: Path, *, title: str, source_type: str = 'proof-argument',
+    people: str | None = None, date: str | None = None, dry_run: bool = False,
+) -> Result:
+    """Start a written proof argument as a source record (the one source made
+    without a file); return a Result.
+
+    Writes `sources/proofs/{slug}_{s-id}.md`. `data` is {'status', 'source_id',
+    'path'}. Any other `source_type` is refused with a pointer to
+    `fha process`; unknown `--people` ids, a blank title and an unreadable
+    `--date` are refused before anything is written.
+    """
+    result = Result(data={'status': None, 'source_id': None, 'path': None})
+
+    def _refuse(message: str) -> Result:
+        return result_fail(result, 'refused', message)
+
+    if source_type != 'proof-argument':
+        return _refuse(f'{_NEW_REFUSE_OTHER_TYPE} (--type {source_type!r} was given; '
+                       'only --type proof-argument starts without a file.)')
+    title = (title or '').strip()
+    if not title:
+        return _refuse('A proof argument needs a title, for example '
+                       '--title "When Thomas Edward Hartley was born".')
+    date = (date or '').strip() or datetime.date.today().isoformat()
+    if not is_valid_edtf(date):
+        return _refuse(f'{date!r} is not a date this archive can read. Use a form '
+                       'like 2026-11-22, or 2026-11 for a month.')
+    ids: list[str] = []
+    known = scan_person_record_ids(archive_root)
+    for tok in re.split(r'[,;\s]+', (people or '').strip()):
+        if not tok:
+            continue
+        if not (is_valid_id(tok) and id_type_of(tok) == 'P'):
+            return _refuse(f'{tok!r} is not a valid p-id. p-ids look like '
+                           'p-de957bcda1. Run `fha find <name>` to look one up.')
+        pid = normalize_id(tok)
+        if pid not in known:
+            return _refuse(f'{fmt_id_display(pid)} is not a known person in this '
+                           'archive. Run `fha find <name>` to look up the right p-id.')
+        ids.append(fmt_id_display(pid))
+
+    sid = mint_ids('S', 1, archive_root)[0]
+    record_dir = archive_root / 'sources' / 'proofs'
+    path = record_dir / f'{slugify(title)}_{sid}.md'
+    rel = path.relative_to(archive_root).as_posix()
+    text = _proof_record_text(
+        sid, title, date, ids, record_display_names(archive_root, ids),
+        link_writer(archive_root, load_fha_yaml(archive_root)))
+    result.data.update(source_id=fmt_id_display(sid), path=str(path))
+    if path.exists():
+        return _refuse(f'{rel} already exists. Nothing was written.')
+    if dry_run:
+        result.data['status'] = 'dry-run'
+        result.add('info', f'[dry-run] Would write {rel}')
+        result.add('info', text)
+        result.add('info', '[dry-run] No file written.')
+        return result
+    try:
+        record_dir.mkdir(parents=True, exist_ok=True)
+        write_text_exact_atomic(path, text)
+    except OSError as e:
+        return _refuse(f'cannot write {rel}: {e}')
+    result.data['status'] = 'ok'
+    result.note_changed(path)
+    result.add('info',
+               f'Started the proof argument {fmt_id_display(sid)} at {rel}. '
+               'Write the question, the evidence, the reasoning and the '
+               'conclusion in it, then add its claims with `fha claim`.',
+               path=path)
+    return result
+
+
+def _cmd_source_new(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args, command='fha source new')
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_source_new(
+        archive_root, title=args.title, source_type=args.source_type,
+        people=args.people, date=args.date,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
+_NEW_DESCRIPTION = """\
+Start a written proof argument as a source record.
+
+  fha source new --type proof-argument --title "When Thomas Edward Hartley was born" \\
+      [--people p-de957bcda1,p-075114a0f8] [--date 2026-11-22]
+
+Writes sources/proofs/{title}_{s-id}.md with the question, evidence, reasoning
+and conclusion headings empty, ready to write in. It is the one kind of source
+made without a file. Other kinds start from a document or a photo: put the file
+in the inbox and run `fha process <file>`. Preview with --dry-run."""
+
+
+def _add_new_arguments(sub: argparse._SubParsersAction) -> None:
+    """Register the new verb on a group subparser (shared by both mains)."""
+    n = sub.add_parser(
+        'new',
+        help='Start a written proof argument as a source record (no file needed).',
+        description=_NEW_DESCRIPTION,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    n.add_argument('--type', metavar='TYPE', required=True, dest='source_type',
+                   help='Only proof-argument starts without a file.')
+    n.add_argument('--title', metavar='TITLE', required=True,
+                   help='What the argument settles, e.g. "When Thomas Edward Hartley was born".')
+    n.add_argument('--people', metavar='P-IDS', default=None,
+                   help='Comma-separated p-ids the argument is about.')
+    n.add_argument('--date', metavar='EDTF', default=None,
+                   help='When it was written (default: today).')
+    n.add_argument('--root', metavar='PATH', default=argparse.SUPPRESS,
+                   help='Archive root (auto-detected if omitted).')
+    n.add_argument('--dry-run', action='store_true', dest='dry_run',
+                   help='Preview the path and file text without writing.')
+    n.set_defaults(func=_cmd_source_new)
+
+
 def _cmd_source_note(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args, command='fha source note')
     if archive_root is None:
@@ -4360,6 +4523,7 @@ _CLI_DESCRIPTION = """\
 Update a source record directly, one field or section at a time, or merge
 two records of one piece of evidence into one.
 
+  fha source new --type proof-argument --title "..." [--people p-...]
   fha source note s-2b3c4d5e6f --text "..."
   fha source edit-note s-2b3c4d5e6f --old-text "..." --text "..."
   fha source extract s-2b3c4d5e6f [--pages 1-60] [--copy LABEL]
@@ -4367,7 +4531,8 @@ two records of one piece of evidence into one.
   fha source set-primary s-2b3c4d5e6f --file "front-scan.tif"
   fha source merge s-2b3c4d5e6f s-7q2x9c4m1k
 
-note appends a hand-written paragraph to a source's ## Notes section;
+new starts a written proof argument as a source record with no file; note
+appends a hand-written paragraph to a source's ## Notes section;
 edit-note rewrites one existing paragraph there (named by its exact current
 text) and leaves the rest untouched; extract dumps the source PDF's embedded
 text layer into a derived [Page N]-labeled companion file (needs the pypdf
@@ -4454,6 +4619,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     p.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = p.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
+    _add_new_arguments(sub)
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)
@@ -4472,6 +4638,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     parser.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     sub = parser.add_subparsers(dest='source_command', metavar='SUBCOMMAND')
     _add_note_arguments(sub)
+    _add_new_arguments(sub)
     _add_edit_note_arguments(sub)
     _add_extract_arguments(sub)
     _add_clear_keyword_arguments(sub)

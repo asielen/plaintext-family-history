@@ -1131,6 +1131,66 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn(result['status'], ('none', 'not-found'))
         self.assertNotEqual(result.exit_code, EXIT_CLEAN)
 
+    # draft in a source record (a proof argument) ----------------------------------
+
+    PROOF = 's-3p8v6n0d5t'
+
+    def _proof_path(self) -> Path:
+        return next((self.root / 'sources' / 'proofs').glob(f'*_{self.PROOF}.md'))
+
+    def _seed_proof_drafts(self) -> str:
+        """Four AI-DRAFT markers, one at the end of each argument section, plus
+        one inside the claims fence and one in the frontmatter that must stay."""
+        path = self._proof_path()
+        text = path.read_text(encoding='utf-8')
+        marker = '<!-- AI-DRAFT 2026-11-22 test-model - seeded -->'
+        for heading in ('## The evidence', '## The reasoning', '## Conclusion'):
+            text = text.replace(heading + '\n', heading + '\n\nDrafted words.\n\n' + marker + '\n', 1)
+        text = text.replace('## The question\n', '## The question\n\nDrafted words.\n\n' + marker + '\n', 1)
+        text = text.replace('title: Parents of', f'title: {marker} Parents of', 1)
+        text = text.replace('  confidence: medium\n', f'  confidence: medium\n  # {marker}\n', 1)
+        path.write_text(text, encoding='utf-8')
+        return text
+
+    def test_draft_accept_in_source_flips_every_body_marker(self) -> None:
+        before = self._seed_proof_drafts()
+        result = confirm.run_accept_draft(self.root, person_id=self.PROOF)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, [m.text for m in result.messages])
+        self.assertEqual(result['count'], 4)
+        after = self._proof_path().read_text(encoding='utf-8')
+        self.assertEqual(after.count('AI-ACCEPTED'), 4)
+        self.assertIn('(accepted ', after)
+        # The frontmatter and the claims fence are byte-for-byte as they were.
+        fm_end = before.index('\n---\n', 4)
+        self.assertEqual(after[:fm_end], before[:fm_end])
+        claims_a = after[after.index('## Claims'):after.index('## The question')]
+        claims_b = before[before.index('## Claims'):before.index('## The question')]
+        self.assertEqual(claims_a, claims_b)
+
+    def test_draft_accept_in_source_dry_run_writes_nothing(self) -> None:
+        self._seed_proof_drafts()
+        before = self._proof_path().read_bytes()
+        result = confirm.run_accept_draft(self.root, person_id=self.PROOF, dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._proof_path().read_bytes(), before)
+
+    def test_draft_accept_in_source_refuses_a_damaged_marker(self) -> None:
+        path = self._proof_path()
+        text = path.read_text(encoding='utf-8')
+        text = text.replace('## The question\n', '## The question\n\nWords.\n\n<!-- AI-DRAFT 2026-11-22 oops\n', 1)
+        path.write_text(text, encoding='utf-8')
+        before = path.read_bytes()
+        result = confirm.run_accept_draft(self.root, person_id=self.PROOF)
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('line', ' '.join(m.text for m in result.messages))
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_draft_accept_in_source_unknown_id_and_no_marker(self) -> None:
+        self.assertNotEqual(
+            confirm.run_accept_draft(self.root, person_id='s-zzzzzzzzzz').exit_code, EXIT_CLEAN)
+        result = confirm.run_accept_draft(self.root, person_id=self.PROOF)
+        self.assertEqual(result['status'], 'none')
+
 
 # ── The cooccur idempotency gate reads every taught persons: form ────────────────
 
