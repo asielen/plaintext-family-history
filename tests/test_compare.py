@@ -480,6 +480,11 @@ class SecondReviewTests(_Base):
                 a.source([_birth('1840', place_text=full)])
                 self.assertEqual(a.run().data['disagreeing'], [])
 
+    def test_one_town_name_in_two_states_still_disagrees(self):
+        self.a.source([_birth('1840', place_text='Easton, Pennsylvania')])
+        self.a.source([_birth('1840', place_text='Easton, Washington County, New York')])
+        self.assertEqual([f['fact'] for f in self.a.run().data['disagreeing']], ['birth'])
+
     def test_two_towns_in_one_county_still_disagree(self):
         self.a.source([_birth('1840', place_text='Salem, Washington County, New York')])
         self.a.source([_birth('1840', place_text='Easton, Washington County, New York')])

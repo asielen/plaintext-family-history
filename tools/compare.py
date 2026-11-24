@@ -364,8 +364,6 @@ def _places_differ(conn, a: dict, b: dict) -> bool:
     pa, pb = _place_parts(a['place_text']), _place_parts(b['place_text'])
     if not pa or not pb:
         return False
-    if pa[0] == pb[0]:
-        return False  # the same town, however much of the rest each wrote
     short, long_ = sorted((pa, pb), key=len)
     # The shorter is the longer with some parts left off (the town, the
     # county, the country): "Kansas" against "Fairview, Breton County,
