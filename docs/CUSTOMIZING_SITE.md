@@ -14,7 +14,7 @@ If you've already edited a page by hand and want to keep the change, see [Keepin
 
 ## What you can change, and where
 
-There are four places. All are plain files you edit in a normal text editor (Notepad or TextEdit, not Word), or ask the assistant to edit for you.
+There are five places. All are plain files you edit in a normal text editor (Notepad or TextEdit, not Word), or ask the assistant to edit for you.
 
 ### 1. The homepage welcome: `notes/home.md`
 
@@ -42,6 +42,7 @@ site:
   calendar: true                       # "This month in the family" on the homepage
   questions_page: true                 # a "Questions for the family" page
   search: true                         # the search box on every page (on unless set to false)
+  surname_pages: true                  # a page for each family name (on unless set to false)
 ```
 
 - **`archive_name`** is the title at the top of every page.
@@ -54,6 +55,7 @@ site:
 - **`calendar`** (off unless set to `true`) adds "This month in the family" to the homepage: the births, baptisms, marriages, deaths, burials and arrivals recorded to the month or the day, each name linked to that person's page. Every month is built into the page and the visitor sees their own current month, with all twelve listed below. It uses accepted facts only, and leaves out a living person's own birth, marriage or death, anything naming a private person, and anything resting on a private record. A grandfather's death stays when his living son reported it; the son is not named. The private workbench (`fha serve`) shows "This week in the family" on its home page instead, living relatives included.
 - **`questions_page`** (off unless set to `true`) adds a "Questions for the family" page to the shareable site, so relatives can see what you are still trying to find out. Only the questions you mark yourself appear: add the line `- share: family` to a question that is still open. The page shows the question's heading and who it is about, never your guess, your reasons or your notes. A question is left off if it is about someone living, someone whose living status is unknown, or someone you marked private.
 - **`search`** (on unless set to `false`) puts a search box at the top of every page. It finds people, places and records by name, forgives the usual spelling differences in old records (Kowalski, Kowalsky), and finds a woman by her married name. It only knows what the site already shows: nobody living, nothing private. It works from a USB stick with no internet.
+- **`surname_pages`** (on unless set to `false`) gives each family name its own page: the people who carried it, from the first year to the last, the places they are most often found, and the records that mention them. A Polish or Czech feminine form (Kowalska, Nováková) shares the page of the masculine form when that form is on the site too. A name only living or private people carry gets no page, and no page says how many people are left out.
 
 The photo you name in `image` is handled like every other photo on the site: a web-sized copy is made, its hidden location and camera data is removed, and if it shows a living person it's left out of the shareable version.
 
@@ -79,7 +81,22 @@ Or ask your assistant to open the stylesheet for you.
 
 ### 4. The facts themselves: your records
 
-Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history. That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
+Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history (a person who lived there while it changed hands gets a grey "Place history" line on their timeline). That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
+
+### 5. A page about a family name: `notes/surnames/`
+
+To add your own words to a family name's page, make a file named for the name in plain lowercase letters, such as `notes/surnames/kowalski.md`, and write about the name: where it comes from, how it was spelled, what the family says about it. To put other spellings on the same page, add a line at the top between two `---` lines:
+
+```
+---
+also: [Kowalsky, Kovalski]
+---
+The name comes from *kowal*, the Polish word for smith.
+```
+
+Private paragraphs and unaccepted drafts stay off the shared site, as everywhere else. If no one who may be shown carries the name, the file is left unused.
+
+For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
 ## Putting a photo in your writing
 
