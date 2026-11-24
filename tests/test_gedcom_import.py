@@ -3629,6 +3629,22 @@ class PlausibilityReimportPlanTestCase(_ReimportCase):
         self.assertIn('mother Rose Hartley', born_after[0])
         self.assertIn('Dates that cannot all be true', out)
 
+    def test_a_death_he_rejected_is_not_listed_again(self) -> None:
+        # He rejected Rose's 1950 death last year. The newer download still
+        # says it, beside a son born after it; the plan imports nothing of
+        # that death, so it must not list it as a conflict to review.
+        import claim as claim_mod
+        cid = self._v1_claim('death', 'Rose Hartley')['id']
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rr = claim_mod.run_claim(self.archive, claim_id=cid, status='rejected',
+                                     notes='the 1950 death is another Rose')
+        self.assertEqual(rr.exit_code, EXIT_CLEAN)
+        ged = self._edited('small-v2-late.ged', SMALL_V2, ('2 DATE 1899\n', '2 DATE 1955\n'))
+        result, _out, _err = self._run(ged)
+        self.assertEqual(result.data['mode'], 'update')
+        self.assertEqual([m for m in result.data['plausibility'] if 'but his mother' in m], [])
+
     def test_newer_download_without_conflicts_has_no_section(self) -> None:
         result, out, _err = self._run(SMALL_V2)
         self.assertEqual(result.data['plausibility'], [])

@@ -3699,7 +3699,9 @@ def _plan_plausibility(plan: ImportPlan, incoming: list[_Incoming]) -> list[str]
     file's name and record number; a claim is pointed at by its line in the
     file."""
     if plan.mode == 'update':
-        claims = [fact.claim for fact in plan.facts]
+        # A statement he already rejected, replaced or deleted is not imported
+        # again, so it is not a conflict for him to review either.
+        claims = [fact.claim for fact in plan.facts if fact.outcome != 'decided']
         sex_of = {person.xref: person.sex for person in incoming}
         people = {m.pid: (m.person.label, xref, sex_of.get(xref, ''))
                   for xref, m in plan.matches.items() if m.person.state == 'present'}
