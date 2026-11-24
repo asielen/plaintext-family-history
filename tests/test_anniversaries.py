@@ -527,7 +527,18 @@ class BirthdayListTests(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             anniversaries._cmd_birthdays(r)
-        self.assertIn('2 living relatives have a birth year or month only', out.getvalue())
+        self.assertIn('2 living relatives have a birth date not recorded to the exact day',
+                      out.getvalue())
+
+    def test_a_plain_day_wins_over_a_surer_but_uncertain_one(self):
+        # Two records agree on her birthday; the more trusted one marks it "?".
+        # She still gets her card reminder, from the plain date.
+        pid = self.person('Margaret Cole', 'true', '1946-06-14', confidence='medium')
+        self.a.source([{'type': 'birth', 'persons': [pid], 'date': '1946-06-14?',
+                        'confidence': 'high'}])
+        r = self.listing(datetime.date(2026, 6, 2))
+        self.assertEqual(self.names(r), ['Margaret Cole'])
+        self.assertEqual(r.data['inexact'], 0)
 
     def test_the_110_year_rule_at_the_boundary(self):
         self.person('Edge Ten', 'true', '1916-06-14')       # 110 in 2026: listed

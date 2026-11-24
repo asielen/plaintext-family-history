@@ -296,8 +296,8 @@ def _cmd_birthdays(result: Result, use_json: bool = False) -> int:
     tail = ''
     if d['inexact']:
         k = d['inexact']
-        tail = (f" {k} living relative{' has' if k == 1 else 's have'} a birth year "
-                'or month only.')
+        tail = (f" {k} living relative{' has' if k == 1 else 's have'} a birth date "
+                'not recorded to the exact day.')
     print('Only birthdays recorded to the day appear (1946-06-14).' + tail)
     return result.exit_code
 

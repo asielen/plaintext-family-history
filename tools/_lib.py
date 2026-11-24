@@ -24378,8 +24378,9 @@ def living_birthdays(conn: sqlite3.Connection, today: datetime.date, days: int =
     People are living or unknown (`person_is_living`, merges followed; a
     merged tombstone is skipped). The birth date is the person's own best
     accepted, non-negated birth claim (`claim_is_own_vital`, `vital_pick_key`);
-    only a date recorded to the day counts, since "June 1946" has no day to
-    celebrate (`inexact` counts those people). Someone born more than
+    only a plain date recorded to the day counts, since "June 1946" has no
+    day to celebrate (`inexact` counts those people), and such a date is
+    preferred over a surer but qualified one. Someone born more than
     `LIVING_CUTOFF_YEARS` years before this year goes in `too_old`: probably
     dead, but the record does not say so."""
     rows = conn.execute(
@@ -24388,13 +24389,20 @@ def living_birthdays(conn: sqlite3.Connection, today: datetime.date, days: int =
            FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
            WHERE LOWER(c.type) = 'birth' AND c.status = 'accepted'
              AND COALESCE(c.negated, 0) = 0""").fetchall()
+    # A date exact to the day ranks ahead of everything else, so a cousin
+    # with a plain "1946-06-14" is still listed when a higher-confidence
+    # "1946-06-14?" sits beside it; within each group the headline pick holds.
+    def _rank(claim: Any) -> tuple:
+        parts = calendar_date_parts(claim['date_edtf'])
+        return (0 if parts is not None and parts[2] is not None else 1,
+                vital_pick_key(claim))
     best: dict[str, Any] = {}
     cache: dict[str, list[str] | None] = {}
     for r in rows:
         pid = normalize_id(str(r['person_id']))
         if not claim_is_own_vital(conn, pid, r['id'], 'birth', cache):
             continue
-        if pid not in best or vital_pick_key(r) < vital_pick_key(best[pid]):
+        if pid not in best or _rank(r) < _rank(best[pid]):
             best[pid] = r
     names = {r['id']: (r['name'], r['status']) for r in conn.execute(
         'SELECT id, name, status FROM persons')}

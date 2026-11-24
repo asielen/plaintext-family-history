@@ -51,11 +51,14 @@ OTTO_BORN = '1949-11-05'
 WALTER_BORN = '1911-02-17'
 
 # Every way an output could print one of the three dates: the year, the
-# ISO day, the day and month in either order and in EDTF's yearless form.
+# ISO day, the day and month in either order (with or without a leading zero
+# or an ordinal), in EDTF's yearless form, and with slashes.
 LEAK = re.compile(
     r'1947|1949|1911|08-23|11-05|02-17'
-    r'|\b23 aug|\baug(?:ust)?\.? 23\b|\b5 nov|\bnov(?:ember)?\.? 5\b'
-    r'|\b17 feb|\bfeb(?:ruary)?\.? 17\b', re.IGNORECASE)
+    r'|\b23(?:rd)? aug|\baug(?:ust)?\.? 23(?:rd)?\b'
+    r'|\b0?5(?:th)? nov|\bnov(?:ember)?\.? 0?5(?:th)?\b'
+    r'|\b17(?:th)? feb|\bfeb(?:ruary)?\.? 17(?:th)?\b'
+    r'|\b0?8/23\b|\b23/0?8\b|\b11/0?5\b|\b0?5/11\b|\b0?2/17\b|\b17/0?2\b', re.IGNORECASE)
 
 
 def _leaks(text: str) -> list[str]:
@@ -82,6 +85,12 @@ class _BirthdayBase(R._SheetBase):
         (self.root / 'fha.yaml').write_text(
             'site:\n  archive_name: Test Archive\n  calendar: true\n  search: true\n',
             encoding='utf-8')
+        # Curate everyone, the living included: a stub gets no person page,
+        # no tree and no packet, so a test over stubs would pass for that
+        # reason and never reach the living-person rules it is meant to prove.
+        for record in (self.root / 'people').rglob('*.md'):
+            record.write_text(record.read_text(encoding='utf-8').replace(
+                'tier: stub', 'tier: curated'), encoding='utf-8')
         index_mod.build_index(self.root, load_fha_yaml(self.root))
 
     def assert_no_birthday(self, name: str, text: str) -> None:
@@ -115,20 +124,26 @@ class ThePrivateListStillSeesThem(_BirthdayBase):
 
 
 class SharedSiteTests(_BirthdayBase):
-    def test_no_page_json_or_script_of_the_shared_site_carries_a_birthday(self):
-        out = self.root / '.cache' / 'site'
+    def setUp(self):
+        super().setUp()
+        self.out = self.root / '.cache' / 'site'
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            site.run_site(self.root, out, linked=False)
-        self.assertGreater(self.assert_folder_clean(out), 5)
-        self.assertTrue(list(out.rglob('search-data.js')), 'search file was not built')
+            site.run_site(self.root, self.out, linked=False)
+
+    def test_no_page_json_or_script_of_the_shared_site_carries_a_birthday(self):
+        # Prove each surface was built, so a clean scan means a clean site.
+        self.assertTrue(list(self.out.rglob(f'*{R.T}*.html')), 'no person page was built')
+        self.assertTrue(list(self.out.rglob('tree_*.json')), 'no family-tree data was built')
+        self.assertTrue(list(self.out.rglob('search-data.js')), 'search file was not built')
+        self.assertGreater(self.assert_folder_clean(self.out), 5)
 
     def test_the_shared_calendar_panel_leaves_a_living_birthday_out(self):
-        out = self.root / '.cache' / 'site'
-        with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-            site.run_site(self.root, out, linked=False)
-        for page in out.rglob('*.html'):
-            text = page.read_text(encoding='utf-8')
-            self.assert_no_birthday(page.name, text)
+        home = (self.out / 'index.html').read_text(encoding='utf-8')
+        start = home.find('class="family-calendar"')
+        self.assertGreater(start, -1, 'the calendar panel was not built')
+        panel = home[start:home.find('</section>', start)]
+        self.assertIn('Died:', panel)      # the dead are on it
+        self.assert_no_birthday('calendar panel', panel)
 
 
 class ExportTests(_BirthdayBase):
@@ -151,16 +166,12 @@ class ExportTests(_BirthdayBase):
             self.assert_no_birthday(f'wikitree {pid}', res['text'] or '')
         for pid in (R.CL, R.CU, R.MF):
             res = wikitree.run_wikitree(self.root, pid)
-            self.assertNotEqual(res['status'], 'ok', pid)
+            self.assertEqual(res['status'], 'living-subject', pid)
             self.assert_no_birthday(f'wikitree living {pid}', res['text'] or '')
 
     def test_packet_folder_and_zip_carry_no_living_birthday(self):
         out = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, out, True)
-        record = next((self.root / 'people' / 'stubs').glob(f'*{R.T}.md'))
-        record.write_text(record.read_text(encoding='utf-8').replace(
-            'tier: stub', 'tier: curated'), encoding='utf-8')
-        index_mod.build_index(self.root, load_fha_yaml(self.root))
         with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             res = packet.run_packet(self.root, R.T, out, no_photos=True)
         self.assertEqual(res['status'], 'ok', res.get('messages'))
@@ -177,21 +188,28 @@ class ExportTests(_BirthdayBase):
         for pid in (R.CL, R.CU, R.MF):
             with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
                 res = packet.run_packet(self.root, pid, out, no_photos=True)
-            self.assertNotEqual(res['status'], 'ok', pid)
+            self.assertEqual(res['status'], 'living-subject', pid)
         if out.exists():
             self.assert_folder_clean(out)
 
 
 class PrintedReportTests(_BirthdayBase):
     def test_printed_reports_count_living_relatives_without_dating_them(self):
+        # Lena's own Ahnentafel is allowed (she is printed as a label); the
+        # others reach the living as children or a grandfather.
         for runner, args in ((views.run_family_sheet, (R.T, None)),
                              (views.run_descendants, (R.T,)),
-                             (views.run_ahnentafel, (R.C1,))):
-            with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
-                res = runner(self.root, *args)
-            for written in res.changed:
-                self.assert_no_birthday(f'{runner.__name__} {written}',
-                                        Path(written).read_text(encoding='utf-8'))
+                             (views.run_descendants, (R.TF,)),
+                             (views.run_ahnentafel, (R.C1,)),
+                             (views.run_ahnentafel, (R.CL,))):
+            for fmt in ('md', 'html'):
+                with contextlib.redirect_stdout(io.StringIO()), \
+                        contextlib.redirect_stderr(io.StringIO()):
+                    res = runner(self.root, *args, fmt=fmt)
+                self.assertTrue(res.changed, f'{runner.__name__} {args} {fmt} wrote nothing')
+                for written in res.changed:
+                    self.assert_no_birthday(f'{runner.__name__} {written}',
+                                            Path(written).read_text(encoding='utf-8'))
 
 
 class OnlyTheCalendarCommandReadsTheList(unittest.TestCase):
