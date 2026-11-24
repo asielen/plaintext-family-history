@@ -314,7 +314,9 @@ def _dna_answer(blood: dict | None, n_routes: int, cm: float | None) -> dict | N
     if cm is not None:
         if any(r['low'] <= cm <= r['high'] for r in rows):
             dna['fits_recorded'] = True
-        elif unlisted:
+        elif unlisted or (n_routes > 1 and cm > max(r['high'] for r in rows)):
+            # The chart has no figure for a tie joined twice (double
+            # cousins), so more than one route's row is not a misfit.
             dna['fits_recorded'] = None
         else:
             dna['fits_recorded'] = False
@@ -355,6 +357,7 @@ def _dna_lines(dna: dict) -> list[str]:
     """The DNA line and the lines under it, without the label column."""
     rows, cm = dna['expected'], dna.get('cm')
     lines: list[str] = []
+    routes_said = False
     if not rows and dna.get('note'):
         lines.append(dna['note'])
     if cm is None:
@@ -385,7 +388,13 @@ def _dna_lines(dna: dict) -> list[str]:
                          + '; '.join(_usual(r) for r in rows) + ').')
             if dna.get('note'):
                 lines.append(dna['note'])
-            lines.append((f'It fits: {also}. ' if also else '') + _misfit_causes(rows, cm))
+            if dna['more_than_one_route'] and cm > max(r['high_cm'] for r in rows):
+                lines.append((f'It fits: {also}. ' if also else '')
+                             + 'They are related by more than one route, which can mean more '
+                             'DNA than one tie shares; the chart gives no figure for that.')
+                routes_said = True
+            else:
+                lines.append((f'It fits: {also}. ' if also else '') + _misfit_causes(rows, cm))
         else:
             documents = _CM_DOCUMENTS if len(dna['fits']) > 1 else 'Documents decide.'
             lines.append(f'{_fig(cm)} cM fits: {also}. {documents}' if also
@@ -395,7 +404,7 @@ def _dna_lines(dna: dict) -> list[str]:
             lines.append(_CM_TOO_SMALL)
         elif table and cm > _cm_ceiling(table):
             lines.append(_CM_TOO_BIG)
-    if dna['more_than_one_route']:
+    if dna['more_than_one_route'] and not routes_said:
         lines.append('Because they are related by more than one route, they may share more '
                      'than this.')
     if dna.get('credit'):

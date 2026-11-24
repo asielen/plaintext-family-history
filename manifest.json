@@ -925,7 +925,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "85d731c5a3b7388fb74641051a0b2f525055da828cf272ca26c1fa2ce39255f5",
+      "sha256": "984e03094251d277c0efabc695aa12002dfc0778560683f4802e05a6cc544bf0",
       "spec_version": "2.31",
       "src": "tools/relate.py"
     },
@@ -1514,7 +1514,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "2963b94dd247bac83b8b2350e8e607b7799beaea6fa00e8e6d422cde86cc2fa7",
+      "sha256": "5199b25a0d101e64253c49f6de9c8f559d98074adaed30915db96c7467ea8740",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },

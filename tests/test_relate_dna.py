@@ -90,6 +90,14 @@ class DnaTests(unittest.TestCase):
         self.assertTrue(res.data['dna']['more_than_one_route'])
         self.assertIn('more than one route', out)
 
+    def test_double_cousins_above_single_range_is_not_a_misfit(self):
+        # 1,700 cM is normal for double first cousins, though above the
+        # single first-cousin range; the second route is in the tree.
+        res, _, out, _ = _run(self.double, C3, C4, cm='1700')
+        self.assertIsNone(res.data['dna']['fits_recorded'])
+        self.assertNotIn('does not show', out)
+        self.assertIn('more than one route', out)
+
     def test_one_route_does_not_say_it(self):
         res, _, out, _ = _run(self.family, tr.A, tr.B)
         self.assertFalse(res.data['dna']['more_than_one_route'])
