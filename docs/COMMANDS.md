@@ -590,8 +590,13 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --format html   A printable wall calendar for this year
+  fha calendar --format html --year 2027
+                               The same, for another year
 
-Only dates recorded to the month or day appear. Read-only: nothing is written.
+Only dates recorded to the month or day appear. The text views write nothing;
+the wall calendar writes one private page under generated/views/ and names
+living relatives, so keep it to yourself.
 ```
 
 | Argument | What it does |
@@ -600,6 +605,8 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
+| `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
+| `--year` `YYYY` | With --format html: the year to print (default: this year) |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha date`

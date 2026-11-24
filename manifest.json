@@ -69,7 +69,7 @@
     {
       "path": ".agents/skills/on-this-day/SKILL.md",
       "category": "operating",
-      "sha256": "e0f2cc95130dd1c57aafdba283eb0b6dcb310ff6e4c82eaeab96a9db90dd3cd5",
+      "sha256": "abc6bd7596bedc55bf0d87b19d41140c2dcef59fa77c09036827c38ea0f58e38",
       "spec_version": "2.31",
       "src": ".claude/skills/on-this-day/SKILL.md"
     },
@@ -242,7 +242,7 @@
     {
       "path": ".claude/skills/on-this-day/SKILL.md",
       "category": "operating",
-      "sha256": "e0f2cc95130dd1c57aafdba283eb0b6dcb310ff6e4c82eaeab96a9db90dd3cd5",
+      "sha256": "abc6bd7596bedc55bf0d87b19d41140c2dcef59fa77c09036827c38ea0f58e38",
       "spec_version": "2.31"
     },
     {
@@ -680,14 +680,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b285f72685296671cefb3565421ce22b60be14a7ab0f63f8cf825aca94666efd",
+      "sha256": "747376f640db10602a8516d80e1d922fad076269591d092a88cda64e87da5bfd",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "7493b4b0db36dc2df1a43bc6f3444267933c49c678d4e34417623aa16bbded9b",
+      "sha256": "26a642b96c765b507d4d519d90be531e40a1b024874a8fdffc9bac44c713a644",
       "spec_version": "2.31",
       "src": "tools/anniversaries.py"
     },
@@ -1352,7 +1352,7 @@
     {
       "path": ".fha/tools/templates/view.html",
       "category": "operating",
-      "sha256": "e712ff34f1c883d297454da9c6b6bfad026ec00a0850ef680f5352f7adfb106e",
+      "sha256": "88bc1afb58aea345a6272b4824899e5ec27bb9c51814e4abde725695ed6bc842",
       "spec_version": "2.31",
       "src": "tools/templates/view.html"
     },
@@ -1461,7 +1461,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "adcbd0951a6ebca197a79d3aa42879aecc5f9ee119dc51a7a86155b599c7c1de",
+      "sha256": "2a92b9d7ad2090630320af25fb771d8bb86873a5aeef5452b0421227fca21137",
       "spec_version": "2.31"
     },
     {
@@ -1528,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "b9d834eddd9a0a2d1dea1daa5af21cd44cc9521721f6280614371f8b56f52956",
+      "sha256": "bbbd5ee6b8c50fc22ab1c3ec8aefcea29a73bd8cc748053d13ee45c14c5b4f7a",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
