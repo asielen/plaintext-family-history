@@ -5551,6 +5551,15 @@ class TreeFamilyKeyTests(_Base):
                 self.assertEqual(self._keys(tree), self._keys(want))
                 self.assertEqual({n['p_id'] for n in tree['nodes']},
                                  {n['p_id'] for n in want['nodes']})
+                # Every field a chart draws by agrees too, not just the keys.
+                fields = ('subtype', 'genetic', 'kind', 'confidence')
+                self.assertEqual(
+                    {(e['type'], e['from'], e['to']): tuple(e[f] for f in fields)
+                     for e in tree['edges']},
+                    {(e['type'], e['from'], e['to']): tuple(e[f] for f in fields)
+                     for e in want['edges']})
+                self.assertEqual({n['p_id']: n['line_confidence'] for n in tree['nodes']},
+                                 {n['p_id']: n['line_confidence'] for n in want['nodes']})
 
     def test_each_child_hangs_under_its_mothers_family_c1(self):
         case = self._case('C1')
@@ -5592,6 +5601,113 @@ class TreeFamilyKeyTests(_Base):
         self.assertNotIn('1985', text)
         for pid in case['living']:
             self.assertNotIn(pid, text)
+
+    def test_no_tie_to_a_private_card_names_a_record_or_a_rating_c13(self):
+        # Owner decision (08-8 review): a living person's ties stay home. A
+        # parent or child tie to a Private card still draws, but carries no
+        # record id, date or confidence, so a relative cannot look up the
+        # record or learn how well it proves a living person's parentage.
+        case = self._case('C13')
+        self._run(linked=False)
+        tree = self._tree(case['seed'])
+        touching = [e for e in tree['edges']
+                    if e['from'].startswith('private-') or e['to'].startswith('private-')]
+        self.assertEqual({e['type'] for e in touching}, {'child', 'spouse'})
+        for edge in touching:
+            with self.subTest(edge=(edge['type'], edge['from'], edge['to'])):
+                self.assertIsNone(edge['claim_id'])
+                self.assertIsNone(edge['confidence'])
+                self.assertEqual(edge['dates'], {'start': None, 'end': None})
+                self.assertTrue(edge['family'])
+        nodes = {n['p_id']: n for n in tree['nodes']}
+        self.assertIsNone(nodes['private-1']['line_confidence'])
+        self.assertIsNone(nodes['private-2']['line_confidence'])
+        # The line is still worked out through them: their dead daughter's
+        # descent is rated, as the faded-line chart (08-7) needs.
+        self.assertEqual(nodes[case['people']['grandchild']]['line_confidence'], 'high')
+        claims = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT claim_id FROM relationships WHERE claim_id IS NOT NULL "
+            "AND (person_id IN ({0}) OR other_id IN ({0}))".format(
+                ','.join('?' * len(case['living']))), list(case['living']) * 2)}
+        self.assertTrue(claims)
+        for path in self.out_dir.rglob('*'):
+            if path.suffix in ('.html', '.json', '.js'):
+                text = path.read_text(encoding='utf-8')
+                for cid in claims:
+                    self.assertNotIn(cid, text, f'{cid} leaked into {path.name}')
+        # The linked preview still names them.
+        self._run(linked=True)
+        self.assertTrue(any(e['claim_id'] for e in self._tree(case['seed'])['edges']
+                            if e['type'] == 'child'))
+
+    def _weak_grandson(self):
+        # Thomas Hartley's son Samuel is on a birth record (high). Samuel's
+        # son Gus rests on one family story (low). Gus's mother Ann, Samuel's
+        # wife, is on Gus's birth record (high).
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        people = {'tom': 'p-aaaaaaaaaa', 'sam': 'p-bbbbbbbbbb',
+                  'ann': 'p-cccccccccc', 'gus': 'p-dddddddddd'}
+        for key, name, sex in (('tom', 'Thomas Hartley', 'M'), ('sam', 'Samuel Hartley', 'M'),
+                               ('ann', 'Ann Hartley', 'F'), ('gus', 'Gus Hartley', 'M')):
+            self._seed_person(people[key], name, surname='Hartley', sex=sex)
+        for n, (child, parent, conf) in enumerate((('sam', 'tom', 'high'),
+                                                   ('gus', 'sam', 'low'),
+                                                   ('gus', 'ann', 'high')), 1):
+            cid = f'c-p{n:09d}'
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                             confidence=conf, persons=(people[child], people[parent]),
+                             roles={people[child]: 'child', people[parent]: 'parent'})
+            self._seed_rel(people[child], 'parent', people[parent], claim_id=cid)
+            self._seed_rel(people[parent], 'child', people[child], claim_id=cid)
+        self._seed_claim('c-m000000001', 's-1111111111', 'marriage', 'married',
+                         confidence='high', persons=(people['sam'], people['ann']))
+        for a, b in (('sam', 'ann'), ('ann', 'sam')):
+            self._seed_rel(people[a], 'spouse', people[b], claim_id='c-m000000001')
+        return people
+
+    def test_a_wife_does_not_lift_her_husbands_weak_line_to_his_son(self):
+        # Thomas's tree must still show that Gus's descent from Thomas rests
+        # on a family story: the strong tie Gus has to his mother, who
+        # married in, is not a route from Thomas.
+        import views
+        p = self._weak_grandson()
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                self._run(linked=linked)
+                lines = {n['p_id']: n['line_confidence']
+                         for n in self._tree(p['tom'])['nodes']}
+                self.assertEqual(lines[p['gus']], 'low')
+                self.assertEqual(lines[p['sam']], 'high')
+                # The wife takes the line of the man she married.
+                self.assertEqual(lines[p['ann']], 'high')
+        nodes, edges = views._traverse_tree(self.conn, p['tom'], 'descendants', None)
+        want = json.loads(views._tree_to_json(p['tom'], 'descendants', nodes, edges))
+        self.assertEqual({n['p_id']: n['line_confidence'] for n in want['nodes']}, lines)
+
+    def test_a_marriage_on_a_stepmother_record_is_a_plain_marriage(self):
+        # One record says Ann is Gus's stepmother and Samuel's wife. Its
+        # "step" describes her tie to Gus, not the marriage, so the site and
+        # `fha views tree` both give the marriage no subtype.
+        import views
+        p = self._weak_grandson()
+        self._seed_claim('c-s000000001', 's-1111111111', 'relationship', 'stepmother',
+                         confidence='high', subtype='step',
+                         persons=(p['gus'], p['ann'], p['sam']),
+                         roles={p['gus']: 'child', p['ann']: 'parent', p['sam']: 'spouse'})
+        self.conn.execute("DELETE FROM relationships WHERE rel = 'spouse'")
+        self._seed_rel(p['gus'], 'parent', p['ann'], claim_id='c-s000000001')
+        self._seed_rel(p['ann'], 'child', p['gus'], claim_id='c-s000000001')
+        for a, b in (('sam', 'ann'), ('ann', 'sam')):
+            self._seed_rel(p[a], 'spouse', p[b], claim_id='c-s000000001')
+        self._run(linked=True)
+        spouse = [(e['from'], e['to'], e['subtype'], e['genetic'], e['kind'])
+                  for e in self._tree(p['tom'])['edges'] if e['type'] == 'spouse']
+        nodes, edges = views._traverse_tree(self.conn, p['tom'], 'descendants', None)
+        want = [(e['from'], e['to'], e['subtype'], e['genetic'], e['kind'])
+                for e in json.loads(views._tree_to_json(p['tom'], 'descendants', nodes, edges))['edges']
+                if e['type'] == 'spouse']
+        self.assertEqual(spouse, [(p['sam'], p['ann'], None, True, 'genetic')])
+        self.assertEqual(spouse, want)
 
     def _tom_and_partners(self):
         # Tom (dead) has a son by Ann and a daughter by Bea; both women are

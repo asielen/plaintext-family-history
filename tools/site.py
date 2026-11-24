@@ -9742,8 +9742,8 @@ class _SiteBuilder:
         husbands and wives, as one-hop leaves the walk never follows, the
         way `fha views tree` does; the families are the same in both
         (`_tree_families`). A tie to anyone left out is not in the data and
-        never in a key. A spouse tie touching a Private card carries no date,
-        record id or confidence.
+        never in a key. Any tie touching a Private card (parent, child or
+        spouse) still draws but carries no date, record id or confidence.
 
         PRIVATE CARDS (shared build, chart plan 13-2, owner decisions D16 and
         D20): every person past the seed is sorted by `_tree_card_kind`. A
@@ -9834,8 +9834,11 @@ class _SiteBuilder:
                     if r['other_id'] != cur and tie_shown(cur, r['other_id'], r):
                         add_tie(ties, cur, r['other_id'], 'spouse', r)
                         add_node(r['other_id'])
+        leaf_keys = set()
         for key, tie in coparent_ties.items():
-            ties.setdefault(key, tie)
+            if key not in ties:
+                ties[key] = tie
+                leaf_keys.add(key)
         # A private card's id never reaches the shared site: a placeholder
         # stands in for it, numbered in the order the walk reached them.
         shown_id: dict[str, str] = {}
@@ -9848,12 +9851,24 @@ class _SiteBuilder:
                 shown_id[pid] = fmt_id_display(pid)
         families = self._tree_families(ties, shown_id, tie_shown)
         edges: list[dict] = []
+        # (from, to, type, confidence before any Private card's is
+        # blanked), one per edge, for the line search below.
+        edge_keys: list[tuple[str, str, str, str | None]] = []
         for (cur, other, etype), tie in ties.items():
             r = tie['row']
             # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
             # (adoptive, step, foster, guardian, …) draws distinctly from the
             # genetic line. Unset/legacy subtypes default to genetic.
             subtype = _tree_row_subtype(r)
+            if etype == 'spouse' and subtype and self.conn.execute(
+                    "SELECT 1 FROM relationships WHERE claim_id = ? "
+                    "AND rel IN ('parent', 'child') LIMIT 1", (r['claim_id'],)).fetchone():
+                # On a claim that also records a parent tie, `subtype:` is
+                # that tie's nature (SPEC §8.2): a wife named on a
+                # stepmother record is a wife, not a "step" marriage. Same
+                # rule as `fha views tree`. Asked only of a marriage with a
+                # subtype, which is rare.
+                subtype = None
             genetic = is_genetic_parent_subtype(subtype)
             edge = {
                 'type': etype, 'from': shown_id[cur], 'to': shown_id[other],
@@ -9869,18 +9884,22 @@ class _SiteBuilder:
                 'confidence': tie['confidence'],
                 'dates': {'start': None, 'end': None},
             }
+            touches_private = (shown_id[cur].startswith('private-')
+                               or shown_id[other].startswith('private-'))
+            if touches_private:
+                # A living person's ties stay home: the line still draws,
+                # but with no record id a relative could look up, no
+                # wedding date, no word on how well a record proves it.
+                edge['claim_id'] = edge['confidence'] = None
             if etype == 'spouse':
-                if shown_id[cur].startswith('private-') or shown_id[other].startswith('private-'):
-                    # A living person's wedding stays home: no date, no
-                    # record id, no word on how well a record proves it.
-                    edge['claim_id'] = edge['confidence'] = None
-                else:
+                if not touches_private:
                     edge['dates'] = {'start': r['date_start'] or None,
                                      'end': r['date_end'] or None}
                 edge['family'] = family_key([shown_id[cur], shown_id[other]])
             else:
                 child, parent = (cur, other) if etype == 'parent' else (other, cur)
                 edge['family'] = families[child][parent]
+            edge_keys.append((cur, other, etype, tie['confidence']))
             edges.append(edge)
         if truncated:
             # Should not happen in any real archive (see `_DESCENDANT_TREE_
@@ -9890,8 +9909,16 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        # A co-parent's tie to the child brings them in but is never a route
+        # onward, so a wife's strong tie to her son cannot hide that his
+        # descent rests on a family story. The line is worked out through a
+        # Private card (a dead grandchild below one still fades), but the
+        # card itself says nothing about it (below).
         lines = line_confidence(shown_id[seed], [
-            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
+            (e['from'], e['to'], e['type'], key[3])
+            for key, e in zip(edge_keys, edges) if key[:3] not in leaf_keys
+        ], leaf_ties=[(e['from'], e['to'], key[3])
+                      for key, e in zip(edge_keys, edges) if key[:3] in leaf_keys])
         nodes = []
         for pid in order:
             if shown_id[pid].startswith('private-'):
@@ -9899,7 +9926,8 @@ class _SiteBuilder:
                         'sex': None, 'vitals': {'birth': None, 'death': None}, 'url': None}
             else:
                 node = self._tree_node(pid, page_dir)
-            node['line_confidence'] = lines.get(shown_id[pid])
+            node['line_confidence'] = (None if node.get('private')
+                                       else lines.get(shown_id[pid]))
             nodes.append(node)
         return {
             'version': 2,

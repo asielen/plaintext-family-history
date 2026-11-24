@@ -760,7 +760,7 @@ def weaker_confidence(a: str | None, b: str | None) -> str | None:
     return _CONFIDENCE_WORD.get(min(ra, rb))
 
 
-def line_confidence(seed: str, edges) -> dict[str, str | None]:
+def line_confidence(seed: str, edges, leaf_ties=()) -> dict[str, str | None]:
     """For each person reachable from `seed`, the weakest rated parent or
     child tie on their strongest route from the seed: 'low' | 'medium' |
     'high', or None when no rated tie lies on that route (the seed itself, or
@@ -779,7 +779,13 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
     topola's propagateConfidence (https://github.com/PeWu/topola,
     src/confidence.ts, Apache-2.0); this is a fresh implementation.
     Deterministic: ties between equal values go by person id, and the result
-    is sorted by person id."""
+    is sorted by person id.
+
+    `leaf_ties` holds (leaf, person, confidence) for a parent or child tie
+    that brings in a one-hop leaf (a grandson's mother, who married in): it
+    gives the leaf a line, the weaker of the person's and the tie's, but is
+    never a route onward, so a wife's strong tie to her son cannot hide that
+    his descent from the seed rests on a family story."""
     adjacency: dict[str, list[tuple[str, int]]] = {}
     for a, b, etype, conf in edges:
         if etype == 'spouse':
@@ -803,6 +809,11 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
             if nxt not in settled and value > best.get(nxt, 0):
                 best[nxt] = value
                 heapq.heappush(heap, (-value, nxt))
+    for leaf, pid, conf in leaf_ties:
+        if pid in settled:
+            value = min(best[pid], CONFIDENCE_RANK.get(conf or '', _UNRATED))
+            if value > best.get(leaf, 0):
+                best[leaf] = value
     return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 

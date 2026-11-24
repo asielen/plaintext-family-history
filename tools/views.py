@@ -3810,7 +3810,9 @@ def _traverse_tree(
             add_node(edge['to'])
 
     for ekey, edge in coparent_edges.items():
-        edges.setdefault(ekey, edge)
+        if ekey not in edges:
+            # Brings a leaf in, never a route onward (`_tree_to_json`).
+            edges[ekey] = {**edge, 'leaf_tie': True}
     families: dict[str, dict[str, str]] = {}
     for edge in edges.values():
         if edge['type'] == 'spouse':
@@ -3904,7 +3906,9 @@ def _tree_to_json(
     """
     lines = line_confidence(seed_pid, [
         (e['from'], e['to'], e['type'], e['confidence']) for e in edges.values()
-        if e['type'] in ('parent', 'child', 'spouse')])
+        if e['type'] in ('parent', 'child', 'spouse') and not e.get('leaf_tie')
+    ], leaf_ties=[(e['from'], e['to'], e['confidence']) for e in edges.values()
+                  if e.get('leaf_tie')])
     out = {
         'version': 2,
         'seed': fmt_id_display(seed_pid),
