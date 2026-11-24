@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.32, 2026-11-24**
+**Version 2.39, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -911,6 +911,7 @@ An entry is an `## Q:` heading, then one markdown list line per field. The `- ` 
 - `refs:`: a bracketed list of bare IDs, `[p-…, c-…]`, naming who and what the question is about.
 - `id:`, `guess:`, `basis:`, `verify:`: present once the question has a working answer (step 2 of the ladder). The `h-` id is added with the guess and never changes or is reused; the people in `refs:` are the people the working answer is about.
 - `context:`: dated, origin-attributed findings indented beneath it and appended over time.
+- `share:`: optional; `family` puts the question on the shared site's questions page (`TOOLING.md` §12) when that page is turned on. Only the question's heading and the people and sources in `refs:` are shown there; the working answer and `context:` never leave the archive. Absent means the question stays in the working archive. Like `status:`, it is the human's to set.
 
 Tooling may propose answers and closures and append context; status changes require human confirmation.
 

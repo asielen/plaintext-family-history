@@ -7797,7 +7797,7 @@ QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
 # an indented `context:` finding that happens to say "guess:" is never read.
 _QUESTION_FIELD_RES = {
     name: re.compile(rf'^- {name}:[ \t]*(.*)$', re.M)
-    for name in ('origin', 'id', 'guess', 'basis', 'verify')
+    for name in ('origin', 'id', 'guess', 'basis', 'verify', 'share')
 }
 # Where one entry's own field lines end: the next `#`/`##` heading of any
 # kind. The last question in a research file is followed by other sections
@@ -7849,7 +7849,9 @@ def parse_question_blocks(text: str) -> dict[str, dict]:
     heading of any kind - so a field line in a later section is never taken
     for this question's. `id` is the working answer's normalized `h-` id
     (SPEC §17a step 2), '' when the question has no guess yet; `guess`,
-    `basis`, `verify` and `origin` are the field text, '' when absent.
+    `basis`, `verify`, `origin` and `share` (SPEC §17b: `family` puts the
+    question on the shared site's questions page) are the field text, ''
+    when absent.
     """
     out: dict[str, dict] = {}
     blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
