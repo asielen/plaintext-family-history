@@ -3408,7 +3408,8 @@ def _film_positions(data_files) -> list[tuple[str, int]]:
             continue
         dgs = str(image.get('dgs') or '')
         number = image.get('imageNumber')
-        if re.fullmatch(r'[0-9]+', dgs) and isinstance(number, int) \n                and not isinstance(number, bool) and number > 0:
+        if re.fullmatch(r'[0-9]+', dgs) and isinstance(number, int) \
+                and not isinstance(number, bool) and number > 0:
             out.append((dgs.lstrip('0') or '0', number))
     return out
 
