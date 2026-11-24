@@ -3664,9 +3664,11 @@ class ProcessTestCase(unittest.TestCase):
     def test_attach_to_in_a_lone_notes_file_is_refused_not_ignored(self) -> None:
         # Only a bundle folder's notes.md is read for attach_to; a lone notes
         # file saying it would otherwise quietly make a new source.
-        scan = self.archive / 'inbox' / 'deed-page.jpg'
+        # A text file, so the refusal is what is tested on a machine without
+        # exiftool too (a scan would first stop on "install exiftool").
+        scan = self.archive / 'inbox' / 'deed-page.txt'
         scan.parent.mkdir(parents=True, exist_ok=True)
-        scan.write_bytes(b'\xff\xd8\xff image')
+        scan.write_text('Page two of the deed.\n', encoding='utf-8')
         scan.with_name('deed-page.notes.md').write_text(
             '---\nattach_to: s-0a1b2c3d4e\nsource_type: land-record\n---\nPage two.\n', encoding='utf-8')
         before = self._snapshot_tree(self.archive)
