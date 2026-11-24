@@ -499,5 +499,28 @@ class BornByTests(unittest.TestCase):
         self.assertEqual(_lib.born_by_estimate(data, {a: {}}, {}, {}, lived)[a].year, 1950)
 
 
+class RoleAndCalendarTableTests(unittest.TestCase):
+    def test_role_table_holds_the_spec_synonyms(self) -> None:
+        for word in _lib.CLAIM_ROLE_SYNONYMS:
+            self.assertIn(word, _lib.SEX_IMPLYING_ROLES)
+
+    def test_role_table_is_closed(self) -> None:
+        self.assertEqual(
+            {w for w, s in _lib.SEX_IMPLYING_ROLES.items() if s == 'F'},
+            {'mother', 'wife', 'daughter', 'bride', 'widow'})
+        self.assertEqual(
+            {w for w, s in _lib.SEX_IMPLYING_ROLES.items() if s == 'M'},
+            {'father', 'husband', 'son', 'groom', 'bridegroom', 'widower'})
+
+    def test_calendar_gap_of_needs_the_whole_range_inside(self) -> None:
+        self.assertIsNotNone(_lib.calendar_gap_of('1752-09-03'))
+        self.assertIsNotNone(_lib.calendar_gap_of('1752-09-03/1752-09-13'))
+        self.assertIsNone(_lib.calendar_gap_of('1752-09-02/1752-09-04'))
+        self.assertIsNone(_lib.calendar_gap_of('1752-09'))
+        self.assertIsNone(_lib.calendar_gap_of('1752'))
+        self.assertIsNone(_lib.calendar_gap_of('1752-09-05~'))
+        self.assertIsNone(_lib.calendar_gap_of(''))
+
+
 if __name__ == '__main__':
     unittest.main()
