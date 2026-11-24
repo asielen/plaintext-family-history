@@ -1925,7 +1925,7 @@ serve           ← _lib, jinja2, capture, claim, confirm, cooccur, find, index,
 
 ## 16. The research workbench & skills (the AI interface)
 
-> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** (harness configuration, the `fha serve` localhost workbench (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview`, `on-this-day`, `write-records-request`) all nineteen authored and shipped). Build order: §15.
+> **Full design: [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md)** (harness configuration, the `fha serve` localhost workbench (its §1b), and every workflow skill under `.claude/skills/` (`process-source`, `review-claims`, `mine-transcript`, `write-biography`, `today`, `research-next`, `merge-identities`, `place-research`, `reconcile-site-edits`, `find-photos`, `share-and-export`, `photo-context`, `import-notes`, `import-recordings`, `transcribe-audio`, `transcribe-source`, `setup-interview`, `on-this-day`, `write-records-request`, `weigh-evidence`) all twenty authored and shipped). Build order: §15.
 
 Skills follow the operating principles at the top of this document. They are portable `.claude/skills/{name}/SKILL.md` files: instructions plus `fha` calls, no harness APIs. `AGENTS.md` is the canonical operating instruction; `CLAUDE.md` defers to it.
 
@@ -1951,6 +1951,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. Repository names come from `fha repositories`. |
 | `write-records-request` skill (A) | "Write to the county for the death certificate." Drafts a short records request from accepted facts, in the conversation, with placeholders and "(check this)" on every address and fee; saves it under `notes/research/letters/` on a yes; logs `result: requested` once he says it went. Sends nothing. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
+| `weigh-evidence` skill (A) | "Which birth year is right?" Lays the records side by side with `fha compare`, explains why they differ, and on a yes drafts a proof argument (`fha source new --type proof-argument`) marked AI-DRAFT, its claim `suggested`. Frontier tier; never rules. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
 | `fha find --spelling-groups` (T C) | "Which of my surnames are probably one family?" Surnames in the records that sound alike, with how many people write each (§4a). Advisory; nothing is renamed. |
 | `fha find --sounds-like "NAME"` (T C) | "Is she spelled another way somewhere?" The people whose names sound like NAME in any spelling, grouped by spelling, with the Daitch-Mokotoff and census Soundex codes (§4a). A hint, never a merge; `merge-identities` and `research-next` use it. |
