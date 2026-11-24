@@ -280,13 +280,23 @@ fha find --json <ID|text>    machine-readable result list ([{id,type,label,detai
 fha find --sounds-like "NAME"   people whose names sound like NAME in any spelling
 fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), advisory, changes nothing
                             (Daitch-Mokotoff; Jan also finds John); a hint, never a merge
-fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
+fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path,
+                            and how much DNA such relatives usually share
+fha relate --cm <N>          which relationships N shared cM fits (several; never a percentage)
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
                             counts unreviewed claims too)
+fha compare <p-id> [--fact birth|death|…]   every record about one fact for one person, side by side: what it
+                            says, when it was written, who told it, firsthand or not, and which records
+                            are copies of one another
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
                             day, or in the week ahead (--week)
+fha date convert DATE --from julian|gregorian|hebrew
+                            a date in the old calendar or the Hebrew one, as today's day
+                            (never convert in your head); fha date feast NAME YEAR
+                            [--church orthodox] for a feast day
+fha repositories [--place l-id] [--year Y] [--record TYPE]   archives and record sites that hold that kind of record for the place and year, with who governed the place then; free/paid and online/in person/by letter on every line
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
                             person stubs + suggested claims; plan first, --apply to write
@@ -327,7 +337,7 @@ Record the issue number against the local entry, and the local entry in the issu
 
 ### Playbooks (workflow skills)
 
-Eighteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
+Nineteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
 
 If your harness loads skills natively, prefer the matching skill over improvising. If it does not (any harness reading this file without a skill loader), treat them as documentation: when a request matches a playbook's trigger, **read that SKILL.md and follow it** before doing the task freehand. The playbooks restate the contract above; they never relax it, and they bind the same in every harness.
 

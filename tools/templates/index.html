@@ -132,6 +132,10 @@
     {% for pl in places %}<li><a href="{{ pl.href }}">{{ pl.name }}</a></li>{% endfor %}
   </ul>
   {% endif %}
+  {#- Outside the Places block: burials written only as words still list. -#}
+  {%- if has_graves %}
+  <p><a href="graves.html">Graves to visit</a></p>
+  {%- endif %}
 
   <h2 id="sources">Sources</h2>
   {% if source_groups %}

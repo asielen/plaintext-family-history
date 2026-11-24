@@ -3464,6 +3464,42 @@ class ProcessTestCase(unittest.TestCase):
         self.assertEqual(by_original['transcript.txt']['is_primary'], 'true')
         self.assertTrue(by_original['transcript.txt']['file'].endswith('-transcript_' + record.stem.split('_')[-1] + '.txt'))
 
+    def test_familysearch_full_text_transcript_keeps_its_role_and_makes_the_source_searchable(self) -> None:
+        # A deed image from FamilySearch's Full-Text: the machine reading comes
+        # as transcript.md under an AI-DRAFT marker. He can search the deed's
+        # words, and the source is not reported as "pictures nobody has written
+        # out" (SPEC section 13, a text role makes a source searchable).
+        from _lib import files_carry_searchable_text
+        bundle = self.archive / 'inbox' / 'fs-fulltext-bundle'
+        bundle.mkdir(parents=True)
+        (bundle / 'notes.md').write_text(
+            '---\n'
+            'title: Deeds, 1785-1851, image 11\n'
+            'source_type: land-record\n'
+            'roles:\n'
+            '  record.jpg: record\n'
+            '  record-data.json: site-data\n'
+            '  transcript.md: transcript\n'
+            '---\n'
+            'Captured from FamilySearch.\n',
+            encoding='utf-8',
+        )
+        (bundle / 'record.jpg').write_bytes(b'\xff\xd8\xff image')
+        (bundle / 'record-data.json').write_text('{"note": "x"}\n', encoding='utf-8')
+        (bundle / 'transcript.md').write_text(
+            '<!-- AI-DRAFT FamilySearch machine transcription, unchecked, captured 2026-11-23 -->\n\n'
+            'Samuel Hartley sold to Thomas Hartley the tract --&gt; named Fox Run\n',
+            encoding='utf-8',
+        )
+        rc = self._run([str(bundle)])
+        self.assertEqual(rc, EXIT_CLEAN)
+        record = next((self.archive / 'sources' / 'land-record').glob('*_s-*.md'))
+        files = read_record(record)['meta']['files']
+        by_original = {item['original_filename']: item for item in files}
+        self.assertEqual(by_original['transcript.md']['role'], 'transcript')
+        self.assertEqual(by_original['record.jpg']['role'], 'record')
+        self.assertTrue(files_carry_searchable_text([(f['role'], f['file']) for f in files]))
+
     def test_bundle_keeps_the_portrait_as_main_image_not_its_envelope(self) -> None:
         # #209 review: once the parser stopped splitting words off names,
         # both files read as plain scans and '-' sorts before '.', so the
