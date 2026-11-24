@@ -863,7 +863,7 @@
     {
       "path": ".fha/tools/person.py",
       "category": "operating",
-      "sha256": "24d05ff5ae040b1f4954ece537252fa95b124dd90ec25abfcda412fa893ba67a",
+      "sha256": "103d650acaeac510959e15f5ac87f0683bb2a720f46328572c9d73e5d358eb7b",
       "spec_version": "2.29",
       "src": "tools/person.py"
     },

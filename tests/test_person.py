@@ -3492,6 +3492,27 @@ class SetExternalIdTests(unittest.TestCase):
             self.assertEqual(result.exit_code, EXIT_FAILURE, (key, value))
         self.assertEqual(self.curated.read_bytes(), before)
 
+    def test_an_id_that_does_not_fit_the_site_is_refused(self) -> None:
+        before = self.curated.read_bytes()
+        for key, value in (
+                ('wikitree', 'https://www.wikitree.com/wiki/Hartley-6084'),
+                ('wikitree', 'Hartley'),
+                ('findagrave', 'abc'),
+                ('ancestry', 'Hartley-6084'),
+                ('familysearch', 'K')):
+            result = self._set(key=key, value=value)
+            self.assertEqual(result.exit_code, EXIT_FAILURE, (key, value))
+            self.assertEqual(result.data['status'], 'refused', (key, value))
+        self.assertEqual(self.curated.read_bytes(), before)
+
+    def test_a_familysearch_id_is_written_in_capitals_and_other_sites_as_typed(self) -> None:
+        self._set(key='familysearch', value='kwcd-4pq')
+        self._set(key='geni', value='6000000012345')
+        meta = person.safe_load_yaml(person.FRONT_RE.match(
+            self.curated.read_text(encoding='utf-8')).group(1))
+        self.assertEqual(meta['external_ids']['familysearch'], 'KWCD-4PQ')
+        self.assertEqual(str(meta['external_ids']['geni']), '6000000012345')
+
     def test_a_merged_tombstone_points_to_the_survivor(self) -> None:
         tomb = _mk_merged_tombstone(self.root)
         result = self._set(pid='P-dddddddddd')

@@ -808,6 +808,17 @@ def run_set_sex(
 
 _EXTERNAL_ID_KEY_RE = re.compile(r'^[a-z][a-z0-9_]*$')
 
+# What each known site's own profile id looks like (the same shapes capture
+# reads out of an address). A pasted address or a half-typed id would otherwise
+# land on the record and make every later match for that person fail quietly.
+# A site not listed here is taken as typed.
+_EXTERNAL_ID_SHAPES = {
+    'wikitree': (re.compile(r'^[A-Za-z][^/?#\s:]*-\d+$'), 'Hartley-6084'),
+    'findagrave': (re.compile(r'^\d+$'), '12345678'),
+    'ancestry': (re.compile(r'^\d+$'), '382013742308'),
+    'familysearch': (re.compile(r'^[A-Za-z0-9]{4}-[A-Za-z0-9]{2,4}$'), 'KWCD-4PQ'),
+}
+
 
 def _external_id_holder(archive_root: Path, pid: str, key: str, value: str) -> tuple[str, str] | None:
     """(p-id, name) of ANOTHER person whose `external_ids:` already holds `key: value`.
@@ -869,6 +880,16 @@ def run_set_external_id(
             result, 'refused',
             'The id must be one word with no spaces, as the site shows it '
             '(for example Hartley-6084). Nothing was written.')
+    shape = _EXTERNAL_ID_SHAPES.get(key)
+    if shape is not None:
+        if not shape[0].match(value):
+            return _refuse_result(
+                result, 'refused',
+                f'{value!r} does not look like a {key} id (they look like '
+                f'{shape[1]}). Give just the id, not the whole web address. '
+                'Nothing was written.')
+        if key == 'familysearch':
+            value = value.upper()
     result.data.update(key=key, new=value)
 
     located = _locate_person(archive_root, person_id, result)
