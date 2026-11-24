@@ -3633,11 +3633,20 @@ class PlausibilityReimportPlanTestCase(_ReimportCase):
         # He rejected Rose's 1950 death last year. The newer download still
         # says it, beside a son born after it; the plan imports nothing of
         # that death, so it must not list it as a conflict to review.
+        self._settled_death_is_not_listed('rejected')
+
+    def test_a_death_he_disputed_is_not_listed_again(self) -> None:
+        # Disputing is what the plan's own message suggests; once he has, the
+        # next download must not raise the same conflict again (fha lint
+        # stops naming a disputed claim too).
+        self._settled_death_is_not_listed('disputed')
+
+    def _settled_death_is_not_listed(self, status: str) -> None:
         import claim as claim_mod
         cid = self._v1_claim('death', 'Rose Hartley')['id']
         with contextlib.redirect_stdout(io.StringIO()), \
                 contextlib.redirect_stderr(io.StringIO()):
-            rr = claim_mod.run_claim(self.archive, claim_id=cid, status='rejected',
+            rr = claim_mod.run_claim(self.archive, claim_id=cid, status=status,
                                      notes='the 1950 death is another Rose')
         self.assertEqual(rr.exit_code, EXIT_CLEAN)
         ged = self._edited('small-v2-late.ged', SMALL_V2, ('2 DATE 1899\n', '2 DATE 1955\n'))

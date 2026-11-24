@@ -1708,6 +1708,7 @@ class _OldFact:
     # is not planned as a second claim.
     now_key: tuple | None = None
     raw_date: str = ''             # the filed copy's unread date wording
+    disputed: bool = False         # he marked the claim disputed (still live)
 
 
 @dataclass(eq=False)
@@ -1789,6 +1790,9 @@ class _Fact:
     named_text: str = ''
     # Parents of a tie he rejected or deleted, left out of the planned tie.
     turned_down: frozenset[str] = frozenset()
+    # Repeats what the archive says only in claims he marked disputed: he has
+    # already questioned it, so the plan does not list it as a date conflict.
+    doubted: bool = False
 
 
 @dataclass(eq=False)
@@ -2274,7 +2278,7 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
     return _OldFact(
         kind=kind, key=key, text=text, date=str(claim.get('date') or '').strip(),
         place=str(claim.get('place_text') or '').strip(),
-        live=status not in _SETTLED_STATUSES,
+        live=status not in _SETTLED_STATUSES, disputed=status == 'disputed',
         cid=normalize_id(str(claim.get('id') or '')), people=people, value=value,
         parents=parents, orig_parents=orig_parents, joined=source is not None,
         orig_key=orig_key, now_key=now_key,
@@ -2798,6 +2802,8 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
             parents_now[fact.key] = parents_now.get(fact.key, frozenset()) | fact.parents
     for fact in facts:
         _judge(fact, olds.get(fact.key, []), parents_now.get(fact.key, frozenset()))
+        live = [o for o in olds.get(fact.key, []) if o.live]
+        fact.doubted = fact.outcome == 'same' and bool(live) and all(o.disputed for o in live)
         if fact.turned_down and fact.outcome != 'decided':
             # The tie is planned with only the parents he has not turned down.
             claim = fact.claim
@@ -3699,9 +3705,10 @@ def _plan_plausibility(plan: ImportPlan, incoming: list[_Incoming]) -> list[str]
     file's name and record number; a claim is pointed at by its line in the
     file."""
     if plan.mode == 'update':
-        # A statement he already rejected, replaced or deleted is not imported
-        # again, so it is not a conflict for him to review either.
-        claims = [fact.claim for fact in plan.facts if fact.outcome != 'decided']
+        # A statement he already rejected, replaced, deleted or disputed is
+        # not his to settle again here (lint skips disputed claims too).
+        claims = [fact.claim for fact in plan.facts
+                  if fact.outcome != 'decided' and not fact.doubted]
         sex_of = {person.xref: person.sex for person in incoming}
         people = {m.pid: (m.person.label, xref, sex_of.get(xref, ''))
                   for xref, m in plan.matches.items() if m.person.state == 'present'}
