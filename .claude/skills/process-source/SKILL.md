@@ -43,7 +43,7 @@ The everyday intake path: an inbox item (a scan, a photo, a capture stub, a bund
    **Who keeps the original?** A scan of something on paper (a letter, a certificate, a page from a family Bible) is a copy; the original may be what a later researcher needs (SPEC A.6). When filing one into the documents root (not a web capture), ask once, plainly: "Who has the original of this now?" Pass the answer as `--physical-location "Aunt Ruth"`; if he does not know or would rather skip, pass nothing. `fha process` asks this itself only at a terminal, never through you.
 
 2. **If the item is a source stub, it seeds the record and is consumed** (SPEC §12.1):
-   - A **`*.notes.md` sidecar** or a **bundle folder** carries a hint block (`source_type`, `source_date`, `people` name hints, `files` roles) plus freeform prose. Its frontmatter pre-fills the §14 record; its parsed person and vital hints seed Stage B; its prose flows into the record's `## Notes`.
+   - A **`*.notes.md` sidecar** or a **bundle folder** carries a hint block (`source_type`, `source_date`, `people` name hints, `files` roles) plus freeform prose. Its frontmatter pre-fills the §14 record; its parsed person and vital hints seed Stage B; its prose flows into the record's `## Notes`. A notes file pasted from a "Tell me what you know" email starts `About: Name (p-…)`; that ID names the person it is about. Confirm it with `fha find` like any other name.
    - The stub or bundle is **promoted into the record**: after processing, the inbox item is gone and the `sources/…` record is the truth.
    - A **bare file** with no sidecar starts Stage B from scratch.
 

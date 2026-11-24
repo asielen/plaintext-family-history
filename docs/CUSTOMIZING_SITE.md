@@ -39,6 +39,7 @@ site:
   completeness_rings: true             # a "how well documented" ring on each person's page
   calendar: true                       # "This month in the family" on the homepage
   search: true                         # the search box on every page (on unless set to false)
+  contact_email: me@example.com        # a "Tell me what you know" link on each person's page
 ```
 
 - **`archive_name`** is the title at the top of every page.
@@ -49,6 +50,7 @@ site:
 - **`completeness_rings`** (off unless set to `true`) puts a small ring on each person's page showing how well documented they are, in five parts: a birth record, the censuses they lived through, their parents, their marriage records, and a death or burial. A filled part means found, half filled means partly found, an empty outline means not found yet, and a faint dotted outline means it doesn't apply. A list beside the ring says the same in words. It counts only facts you've accepted, the same way `fha metrics` does. Nobody living, or whose living status is unknown, gets a ring, and a record you marked private doesn't count toward one on the shareable site. The private workbench (`fha serve`) always shows the ring, whatever this setting says, and names under each gap the kind of record that would fill it.
 - **`calendar`** (off unless set to `true`) adds "This month in the family" to the homepage: the births, baptisms, marriages, deaths, burials and arrivals recorded to the month or the day, each name linked to that person's page. Every month is built into the page and the visitor sees their own current month, with all twelve listed below. It uses accepted facts only, and leaves out a living person's own birth, marriage or death, anything naming a private person, and anything resting on a private record. A grandfather's death stays when his living son reported it; the son is not named. The private workbench (`fha serve`) shows "This week in the family" on its home page instead, living relatives included.
 - **`search`** (on unless set to `false`) puts a search box at the top of every page. It finds people, places and records by name, forgives the usual spelling differences in old records (Kowalski, Kowalsky), and finds a woman by her married name. It only knows what the site already shows: nobody living, nothing private. It works from a USB stick with no internet.
+- **`contact_email`** (optional) puts a "Tell me what you know" link at the bottom of every person's page on the shareable site. It opens an email to this address with the person's name and record number filled in, and a few questions to answer. Anyone who has a copy of the site can see the address. The private preview and the workbench don't show the link. When a relative writes back, save the reply into your `inbox` folder as a `.notes.md` file (and put any photo they attached beside it) and process it like any other note.
 
 The photo you name in `image` is handled like every other photo on the site: a web-sized copy is made, its hidden location and camera data is removed, and if it shows a living person it's left out of the shareable version.
 

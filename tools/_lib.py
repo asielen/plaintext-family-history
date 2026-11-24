@@ -344,6 +344,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_valid_id               - syntactic validity check
 #    id_type_of                - extract P/S/C/L/H type prefix
 #    fmt_id_display            - the one written/shown ID form: all lowercase (P-XXX → p-xxx)
+#    contribution_mailto       - the "Tell me what you know" mailto: link for one person (site, TOOLING §12)
 #    contradiction_question_heading - value:-quoting ## Q: heading for a
 #                              contradicts: pair, shared by lint.py's
 #                              --spawn-questions and confirm.py's xref write
@@ -9253,6 +9254,43 @@ def fmt_id_display(id_str: str) -> str:
     if len(id_str) > 1 and id_str[1] == '-' and id_str[0].upper() in ID_TYPES:
         return id_str[0].lower() + id_str[1:]
     return id_str
+
+
+_CONTRIBUTION_BODY = (
+    'About: {name} ({pid})\r\n'
+    '\r\n'
+    'What do you know about {name}?\r\n'
+    '(A story, a correction, a date or a place, or who else might know)\r\n'
+    '\r\n'
+    'How do you know it?\r\n'
+    '(You were there, someone told you, or you have a letter, photo or paper)\r\n'
+    '\r\n'
+    'About when?\r\n'
+    '(A year, a decade or a guess is fine)\r\n'
+    '\r\n'
+    'Do you have a photo or a paper to share?\r\n'
+    "(Attach it to this email. Please don't rename the file.)\r\n"
+    '\r\n'
+    "Your name, and how you're related:\r\n"
+)
+
+
+def contribution_mailto(email: str, name: str, pid: str) -> str:
+    """The link behind "Tell me what you know" on a person's page of the
+    shared site: a relative clicks it and a ready-written email opens,
+    addressed to the keeper, with the person's name and record number in the
+    subject and the same questions the inbox notes form asks in the body. The
+    keeper pastes the reply into `inbox/{anything}.notes.md`; its first line,
+    `About: Name (p-...)`, says who it is about.
+
+    Pure: the same inputs give the same text. The body uses CRLF line ends so
+    mail programs keep the blank lines."""
+    shown = fmt_id_display(pid)
+    subject = f'[{shown}] {name}'
+    body = _CONTRIBUTION_BODY.format(name=name, pid=shown)
+    return (f"mailto:{urllib.parse.quote(email, safe='@')}"
+            f"?subject={urllib.parse.quote(subject, safe='')}"
+            f"&body={urllib.parse.quote(body, safe='')}")
 
 
 def contradiction_question_heading(cid: str, cval: str | None, tid: str, tval: str | None) -> str:

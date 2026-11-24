@@ -150,6 +150,8 @@ CODE MAP
     _site_switch               - an on/off fha.yaml `site:` setting (the two
                                  optional panels, off unless it says yes; search,
                                  on unless it says no)
+    _site_contact_email        - fha.yaml `site: contact_email`: the address behind
+                                 each person page's "Tell me what you know" link
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -335,6 +337,7 @@ from _lib import (
     extract_bare_ids,
     FhaConfigError,
     fmt_id_display,
+    contribution_mailto,
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
@@ -2514,6 +2517,24 @@ def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool,
                    f'leaving it off. Write `{key}: true` to turn it on.')
 
 
+def _site_contact_email(site_cfg: dict) -> tuple[str | None, str | None]:
+    """fha.yaml `site: contact_email`: the address a relative's "Tell me what
+    you know" email goes to. Left out means no link and no warning. Something
+    that does not look like an address leaves the link off with a warning,
+    because a link that opens a mail to nowhere is worse than none.
+
+    Returns (address or None, warning or None)."""
+    raw = site_cfg.get('contact_email')
+    if raw is None:
+        return None, None
+    value = str(raw).strip() if isinstance(raw, str) else ''
+    if re.fullmatch(r'[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+', value):
+        return value, None
+    return None, (f'WARNING: fha.yaml site.contact_email {raw!r} does not look like an email '
+                  f'address, so the "Tell me what you know" link is left off. '
+                  f'Write it like  contact_email: name@example.com')
+
+
 def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
     """Was `src` last modified long enough ago to trust its size and time
     (`_DERIVATIVE_SETTLE_SECONDS`), and is it still the file `st` described?
@@ -4463,7 +4484,11 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
-        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # The "Tell me what you know" mailto at the foot of each person page of
+        # the shared build; never the linked preview or the workbench.
+        self.contact_email, contact_warning = _site_contact_email(site_cfg)
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
+                                             contact_warning) if w]
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -6687,6 +6712,8 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            'contribute_href': (contribution_mailto(self.contact_email, name, pid)
+                                if self.contact_email and not self.linked else None),
             **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',

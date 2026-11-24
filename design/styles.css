@@ -351,6 +351,8 @@ img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); 
 mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
+/* "Tell me what you know" at the foot of a shared person page (site: contact_email). */
+.contribute { margin-top: var(--space-6); padding-top: var(--space-3); border-top: var(--border); font-size: var(--text-sm); }
 
 /* A person named but without a page of their own - dotted underline, no link
    (mirrors the tree's stub-node convention). */
@@ -647,7 +649,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, noscript,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
-  .wb-add-hint { display: none !important; }
+  .wb-add-hint, .contribute { display: none !important; }
   /* The whole year prints under its "All months" heading, without the arrow. */
   .cal-all > summary { list-style: none; font-weight: 600; margin-top: var(--space-4); }
   .cal-all > summary::-webkit-details-marker { display: none; }
