@@ -3973,6 +3973,14 @@ class ReimportReviewFixesTestCase(_ReimportCase):
         self.assertFalse(result.data['applied'])
         self.assertEqual(_tree_digest(self.archive), before)
         self.assertIn('the next download will ask again', out)
+        self.assertNotIn('--apply', out)
+
+    def test_nothing_new_never_tells_him_to_apply(self) -> None:
+        for apply in (False, True):
+            _result, out, _err = self._run(self._same_tree_redownloaded(), apply=apply)
+            self.assertIn('Nothing new', out)
+            self.assertNotIn('--apply', out)
+            self.assertNotIn('Source record:', out)
 
     def test_a_deleted_statement_is_not_brought_back_without_the_earlier_copy(self) -> None:
         text = self.record1.read_text(encoding='utf-8')

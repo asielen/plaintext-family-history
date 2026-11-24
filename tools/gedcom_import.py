@@ -4232,11 +4232,6 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool, applied: bool = False,
     elif nothing:
         lines.append('  Nothing new for the people matched for certain, and nothing is '
                      f'added for the others (listed below). {wrote}')
-    if nothing and plan.confirmed:
-        # The yes is kept in the list an import writes, and with nothing to
-        # add no import is written: say so rather than let him think it stuck.
-        lines.append(f'  Your yes to the {plan.confirmed:,} likely matches is not kept, '
-                     'because nothing else was added: the next download will ask again.')
     else:
         # A plan has no source id yet, so it names the two folders.
         slash = '' if applied else '/'
@@ -4248,6 +4243,11 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool, applied: bool = False,
         ]
         if not applied:
             lines.append('  To add these, run the same command again with --apply.')
+    if nothing and plan.confirmed:
+        # The yes is kept in the list an import writes, and with nothing to
+        # add no import is written: say so rather than let him think it stuck.
+        lines.append(f'  Your yes to the {plan.confirmed:,} likely matches is not kept, '
+                     'because nothing else was added: the next download will ask again.')
 
     changed = [f for f in plan.facts if f.outcome == 'changed']
     lines += section(f'Changed ({len(changed):,}):', [compared(f) for f in changed])
