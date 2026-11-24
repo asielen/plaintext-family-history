@@ -139,6 +139,8 @@ Each node (200×64) also carries a **small fixed-size portrait square** (`.fha-p
 | Legal | long dash | adoptive / step / foster / guardian / in-law | `.fha-tree-edge-legal` |
 | Other | dotted | friend / coworker / associate (affiliations) | `.fha-tree-edge-other` |
 
+**Couples.** In the explorer a husband and wife stand side by side, joined by a short line (`.fha-tree-couple`); their children hang from the middle of it. A person's later marriages sit to their right, each spouse joined to them by a dotted line (`.fha-tree-couple-later`, the explorer's version of the family chart's `ped-link-later`). A person met a second time is a smaller dashed card (`.fha-node-repeat`) whose button (`.fha-repeat-link`) reads "Already in the tree: go there"; a husband or wife also drawn elsewhere carries the same link (`.fha-also-shown`). On the shared site a living adult is a `.fha-node-private` card: "Private" in small capitals, a blank portrait, no line colour.
+
 The stylesheet also keeps `.fha-tree-edge-social` as an alias for `-legal`. The legal/other split is a drawing distinction: the data model (SPEC §12.2) numbers only genetic parent edges into the pedigree and marks the rest, and "other" overlaps the affiliations model.
 
 ---

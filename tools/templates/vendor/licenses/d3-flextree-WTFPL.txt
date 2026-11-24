@@ -1,0 +1,24 @@
+d3-flextree 2.1.2 by Chris Maloney, https://github.com/Klortho/d3-flextree
+(commit af196220927218bbe7ac6cad8e059f56430befb6, src/flextree.js)
+Shipped as vendor/d3-flextree.js, sha256 87bc42c5f28cfbf64c81bb6d9cba80c97965a0088a19b82c9b2d3ac265166d23
+Changed for Plaintext Family History: loads from a plain script tag and uses
+D3 7's d3.hierarchy instead of bundling d3-hierarchy 1. The import lines and
+the package.json version lookup are replaced by a small wrapper; the layout
+code is unchanged.
+
+Upstream licence, verbatim:
+
+        DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+                    Version 2, December 2004
+
+ Copyright (C) 2004 Sam Hocevar <sam@hocevar.net>
+
+ Everyone is permitted to copy and distribute verbatim or modified
+ copies of this license document, and changing it is allowed as long
+ as the name is changed.
+
+            DO WHAT THE FUCK YOU WANT TO PUBLIC LICENSE
+   TERMS AND CONDITIONS FOR COPYING, DISTRIBUTION AND MODIFICATION
+
+  0. You just DO WHAT THE FUCK YOU WANT TO.
+  

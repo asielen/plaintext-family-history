@@ -5792,6 +5792,297 @@ class TreeFamilyKeyTests(_Base):
         self.assertNotIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
 
 
+_NODE = shutil.which('node')
+_TREE_HARNESS = ROOT / 'tests' / 'js' / 'tree_harness.js'
+
+
+class TreeExplorerCouplesTests(_Base):
+    """The family explorer draws a husband and wife side by side, a later
+    marriage beside the first with a dotted link, each child under their own
+    mother and father, and a person met twice as a small "already in the
+    tree" card (chart plan 08-9). The explorer runs in the reader's browser,
+    so most of these run the real scripts under node with
+    tests/js/tree_harness.js; CI has no node and skips them, so run them by
+    hand before changing tree-adapter.js or fha-tree.js. The tests that read
+    the built page run everywhere."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _case(self, name, *, linked=True):
+        self.tearDown()
+        self.setUp()
+        case = chart_cases.build_case(self.conn, self.archive_root, name)
+        self._run(linked=linked)
+        return case
+
+    def _tree(self, seed):
+        path = self.out_dir / 'data' / f'tree_{seed}_descendants.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def _explore(self, tree, options=None):
+        import subprocess
+        path = self.archive_root / 'tree-under-test.json'
+        path.write_text(json.dumps(tree), encoding='utf-8')
+        args = [_NODE, str(_TREE_HARNESS), str(path)]
+        if options is not None:
+            args.append(json.dumps(options))
+        r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    @staticmethod
+    def _units(model):
+        out = []
+
+        def walk(u, parent):
+            out.append((u, parent))
+            for c in u['children']:
+                walk(c, u)
+        walk(model, None)
+        return out
+
+    @staticmethod
+    def _ids(unit):
+        return [c['id'] for c in unit['people']]
+
+    @staticmethod
+    def _first_ids(units):
+        return [u['people'][0]['id'] for u in units]
+
+    def _unit_headed_by(self, model, pid):
+        for u, _ in self._units(model):
+            if (u['kind'] in ('family', 'single') and u['main'] >= 0
+                    and u['people'][u['main']]['id'] == pid):
+                return u
+        self.fail(f'no unit headed by {pid}')
+
+    # - couples (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_five_wives_are_one_couple_then_four_later_marriages_in_order_c1(self):
+        case = self._case('C1')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        # Ezra heads five families, so a hidden holder carries them side by side.
+        self.assertEqual(model['kind'], 'root')
+        fams = model['children']
+        self.assertEqual([u['kind'] for u in fams], ['family'] * 5)
+        self.assertEqual([u['extra'] for u in fams], [False, True, True, True, True])
+        # First marriage: Ezra on the right of his first wife, so each later
+        # wife lines up beside him.
+        self.assertEqual(self._ids(fams[0]), [p['wife1'], p['husband']])
+        self.assertEqual([self._ids(u) for u in fams[1:]],
+                         [[p[f'wife{n}']] for n in (2, 3, 4, 5)])
+        kids = [sorted(self._first_ids(u['children'])) for u in fams]
+        self.assertEqual(kids, [sorted([p['kid1a'], p['kid1b']]), [p['kid2']], [],
+                                [p['kid4']], []])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_half_siblings_hang_under_their_own_mothers_c15(self):
+        case = self._case('C15')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        first, later = model['children']
+        self.assertEqual(self._ids(first), [p['wife1'], p['father']])
+        self.assertEqual(self._ids(later), [p['wife2']])
+        self.assertEqual(self._first_ids(first['children']), [p['half1']])
+        self.assertEqual(self._first_ids(later['children']), [p['half2']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_cousin_marriage_draws_each_person_once_c16(self):
+        case = self._case('C16')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        units = [u for u, _ in self._units(model)]
+        # Yvonne is drawn beside Xavier; met again as her mother's daughter
+        # she is a small card pointing back at that couple, and their son
+        # Kit is drawn once, not under both of his grandmothers.
+        xav = self._unit_headed_by(model, p['x'])
+        self.assertEqual(self._ids(xav), [p['x'], p['y']])
+        repeats = [u for u in units if u['kind'] == 'repeat']
+        self.assertEqual([(u['people'][0]['id'], u['seeKey']) for u in repeats],
+                         [(p['y'], xav['key'])])
+        shown = [c['id'] for u in units if u['kind'] != 'repeat' for c in u['people']]
+        self.assertEqual(len(shown), len(set(shown)), shown)
+        self.assertEqual(shown.count(p['k']), 1)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_person_who_is_their_own_ancestor_ends_in_a_repeat_card_c12(self):
+        case = self._case('C12')
+        model = self._explore(self._tree(case['seed']))['model']
+        repeats = [u for u, _ in self._units(model) if u['kind'] == 'repeat']
+        self.assertEqual([u['people'][0]['id'] for u in repeats], [case['seed']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_step_children_show_under_their_own_parents_and_again_as_a_repeat_c2(self):
+        case = self._case('C2')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        first, joint = model['children']
+        self.assertEqual(self._ids(first), [p['late_wife'], p['widower']])
+        self.assertEqual(self._ids(joint), [p['widow']])
+        self.assertEqual(sorted(self._first_ids(first['children'])),
+                         sorted(p[f'webb{n}'] for n in (1, 2, 3)))
+        under_joint = {c['people'][0]['id']: c for c in joint['children']}
+        for n in (1, 2):
+            self.assertEqual(under_joint[p[f'joint{n}']]['edgeKind'], 'genetic')
+            # Ada's daughters by Walter are Tom's step-daughters: a long-dash tie.
+            self.assertEqual(under_joint[p[f'cole{n}']]['edgeKind'], 'legal')
+        for n in (1, 2, 3):
+            again = under_joint[p[f'webb{n}']]
+            self.assertEqual((again['kind'], again['edgeKind']), ('repeat', 'legal'))
+            self.assertEqual(again['seeKey'], p[f'webb{n}'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_children_go_by_birth_then_the_undated_ones_c8(self):
+        case = self._case('C8')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        dated = [p[f'kid{n:02d}'] for n in range(9, 0, -1)]     # born 1851, 1853, ...
+        undated = sorted(p[f'kid{n:02d}'] for n in (10, 11, 12))
+        self.assertEqual(self._first_ids(model['children']), dated + undated)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_old_tree_data_without_families_still_draws_one_person_per_card(self):
+        case = self._case('C1')
+        p = case['people']
+        tree = self._tree(case['seed'])
+        tree.pop('version', None)
+        for e in tree['edges']:
+            e.pop('family', None)
+        model = self._explore(tree)['model']
+        self.assertEqual((model['kind'], self._ids(model)), ('single', [p['husband']]))
+        self.assertEqual(sorted(self._first_ids(model['children'])),
+                         sorted(p[k] for k in ('kid1a', 'kid1b', 'kid2', 'kid4')))
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_no_two_families_overlap_and_children_sit_below(self):
+        for name in ('C1', 'C2', 'C8', 'C16'):
+            with self.subTest(case=name):
+                case = self._case(name)
+                out = self._explore(self._tree(case['seed']))
+                self.assertEqual(out['layout'], out['layout2'])   # same data, same picture
+                rows = {}
+                for u in out['layout']:
+                    rows.setdefault(u['y'], []).append(u)
+                for row in rows.values():
+                    row.sort(key=lambda u: u['x'])
+                    for a, b in zip(row, row[1:]):
+                        gap = (b['x'] - b['w'] / 2) - (a['x'] + a['w'] / 2)
+                        self.assertGreaterEqual(gap, 20, (a['key'], b['key']))
+                at = {u['key']: u for u in out['layout']}
+                for u, parent in self._units(out['model']):
+                    if parent is None or parent['kind'] == 'root':
+                        continue
+                    self.assertGreater(at[u['key']]['y'], at[parent['key']]['y'], u['key'])
+
+    # - drawing (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_couples_are_joined_and_a_later_marriage_is_dotted(self):
+        case = self._case('C15')
+        classes = [d['cls'] for d in self._explore(self._tree(case['seed']))['drawn']]
+        self.assertEqual(classes.count('fha-tree-couple'), 1)
+        self.assertEqual(classes.count('fha-tree-couple fha-tree-couple-later'), 1)
+        self.assertEqual(classes.count('fha-tree-edge'), 2)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_repeat_card_is_a_button_that_jumps_to_the_first(self):
+        case = self._case('C16')
+        drawn = self._explore(self._tree(case['seed']))['drawn']
+        self.assertEqual(len([d for d in drawn if 'fha-node-repeat' in d['cls']]), 1)
+        self.assertEqual(len([d for d in drawn if d['cls'] == 'fha-repeat-link']), 1)
+        self.assertIn('Already in the tree', ''.join(d['text'] for d in drawn))
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_weak_line_keeps_its_faded_card_and_thin_tie(self):
+        # The fields chart plan 08-7 draws by: a child linked only through a
+        # family story is faded, and the tie to them is thin.
+        tree = {'version': 2, 'seed': 'p-aaaaaaaaaa', 'mode': 'descendants',
+                'nodes': [{'p_id': 'p-aaaaaaaaaa', 'name': 'Tom Webb', 'vitals': {},
+                           'url': None, 'line_confidence': None},
+                          {'p_id': 'p-bbbbbbbbbb', 'name': 'Sam Webb', 'vitals': {},
+                           'url': None, 'line_confidence': 'low'}],
+                'edges': [{'type': 'child', 'from': 'p-aaaaaaaaaa', 'to': 'p-bbbbbbbbbb',
+                           'kind': 'genetic', 'confidence': 'low',
+                           'family': 'fam:p-aaaaaaaaaa'}]}
+        out = self._explore(tree)
+        sam = out['model']['children'][0]
+        self.assertTrue(sam['people'][0]['weak'])
+        self.assertTrue(sam['edgeWeak'])
+        classes = [d['cls'] for d in out['drawn']]
+        self.assertIn('fha-tree-edge fha-tree-edge-weak', classes)
+        self.assertIn('fha-node fha-node-nolink fha-node-weak', classes)
+
+    # - privacy (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_private_couple_is_two_blank_cards_c13(self):
+        case = self._case('C13', linked=False)
+        out = self._explore(self._tree(case['seed']), {'initialDepth': 4})
+        couple = [u for u, _ in self._units(out['model'])
+                  if any(c['private'] for c in u['people'])]
+        self.assertEqual(len(couple), 1)
+        for c in couple[0]['people']:
+            self.assertEqual((c['name'], c['dates'], c['url'], c['photo'], c['weak']),
+                             ('Private', '', None, None, False))
+        private = [d for d in out['drawn'] if 'fha-node-private' in d['cls']]
+        self.assertEqual(len(private), 2)
+        for d in private:
+            # No line colour and no tooltip on a Private card.
+            self.assertNotIn('data-branch', d['attrs'])
+            self.assertNotIn('title', d['attrs'])
+        text = ''.join(d['text'] + json.dumps(d['attrs']) for d in out['drawn'])
+        for pid in case['living']:
+            self.assertNotIn(pid, text)
+        for word in ('Jessamy', 'Fenwick', '1985'):
+            self.assertNotIn(word, text)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_withheld_partner_leaves_no_card_and_no_gap(self):
+        TreeFamilyKeyTests._tom_and_partners(self)
+        self._run(linked=False)
+        out = self._explore(self._tree('p-aaaaaaaaaa'))
+        model = out['model']
+        # Tom's children by the two withheld women hang straight from his
+        # own card: no partner card, no blank, no "unknown" placeholder.
+        self.assertEqual((model['kind'], self._ids(model)), ('family', ['p-aaaaaaaaaa']))
+        self.assertEqual(sorted(self._first_ids(model['children'])),
+                         ['p-dddddddddd', 'p-eeeeeeeeee'])
+        cards = {c['id'] for u, _ in self._units(model) for c in u['people']}
+        self.assertEqual(cards, {'p-aaaaaaaaaa', 'p-dddddddddd', 'p-eeeeeeeeee'})
+        self.assertEqual(len([d for d in out['drawn'] if d['tag'] == 'foreignObject']), 3)
+        self.assertNotIn('fha-tree-couple', [d['cls'] for d in out['drawn']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_our_vendor_scripts_parse(self):
+        import subprocess
+        for name in ('fha-tree.js', 'tree-adapter.js', 'd3-flextree.js'):
+            r = subprocess.run([_NODE, '--check', str(ROOT / 'tools' / 'templates' / 'vendor' / name)],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, name + ': ' + r.stderr)
+
+    # - the built page (runs everywhere) -
+
+    def test_the_tree_page_loads_d3_before_the_tree(self):
+        case = self._case('C15')
+        page = self._read(f"persons/{case['seed']}.html")
+        order = [page.index(f'vendor/{name}"') for name in
+                 ('d3.min.js', 'd3-flextree.js', 'fha-tree.js', 'tree-adapter.js')]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(page.count('vendor/d3.min.js"'), 1)
+
+    def test_a_page_with_no_explorer_loads_no_d3(self):
+        case = self._case('C6')
+        self.assertNotIn('d3.min.js', self._read(f"persons/{case['seed']}.html"))
+
+
 class PedigreeGeometryGuardTests(unittest.TestCase):
     """#115: `row_index()`'s generalization from a hardcoded 2-generation
     formula to an arbitrary-depth closed form is the single highest-risk
@@ -12296,12 +12587,32 @@ class VendoredLibraryTests(_Base):
                                 f'{entries[name]} named for {name} does not exist')
 
     def test_the_licence_records_the_checksum_of_the_shipped_file(self):
-        licence = (self.LICENCES / 'd3-ISC.txt').read_text(encoding='utf-8')
-        m = re.search(r'sha256 ([0-9a-f]{64})', licence)
-        self.assertIsNotNone(m, 'd3-ISC.txt must record the sha256 of d3.min.js')
-        digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
-        self.assertEqual(m.group(1), digest,
-                         'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
+        # Every third-party file, not only D3: a changed byte in any of them
+        # means the site no longer runs what its licence note describes.
+        entries = self._readme_entries()
+        for name in sorted(p.name for p in self.VENDOR.iterdir()
+                           if p.is_file() and p.name not in self.OWN_CODE):
+            with self.subTest(name):
+                licence = (self.LICENCES / entries[name]).read_text(encoding='utf-8')
+                m = re.search(r'sha256 ([0-9a-f]{64})', licence)
+                self.assertIsNotNone(m, f'{entries[name]} must record the sha256 of {name}')
+                digest = hashlib.sha256((self.VENDOR / name).read_bytes()).hexdigest()
+                self.assertEqual(m.group(1), digest,
+                                 f'{name} does not match the sha256 pinned in {entries[name]}')
+
+    def test_flextree_is_vendored_with_its_licence(self):
+        # The explorer's couple layout (chart plan 08-9): d3-flextree 2.1.2,
+        # WTFPL, ported from its source file to load from a script tag. It
+        # must not bundle a second, older D3 (the published build does).
+        js = (self.VENDOR / 'd3-flextree.js').read_text(encoding='utf-8')
+        self.assertIn('af196220927218bbe7ac6cad8e059f56430befb6', js)
+        self.assertIn("var version = '2.1.2';", js)
+        self.assertIn('global.d3.hierarchy', js)
+        self.assertIsNone(re.search(r'^\s*(import|export)\b', js, flags=re.MULTILINE))
+        self.assertEqual(self._readme_entries().get('d3-flextree.js'), 'd3-flextree-WTFPL.txt')
+        licence = (self.LICENCES / 'd3-flextree-WTFPL.txt').read_text(encoding='utf-8')
+        self.assertIn('Version 2, December 2004', licence)
+        self.assertIn('Changed for Plaintext Family History', licence)
 
     def test_a_site_build_carries_d3_and_its_licence(self):
         self._seed_person('p-aaaaaaaaaa', 'Solo')
