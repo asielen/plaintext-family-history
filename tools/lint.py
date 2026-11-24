@@ -7439,7 +7439,10 @@ def _sex_from_name_leads(registry: Registry) -> list[tuple[str, str]]:
 
     out: list[tuple[str, str]] = []
     for pid, meta in registry.person_meta.items():
-        if is_merged_meta(meta) or not sex_slot_is_defaulted(meta.get('sex')):
+        # Only an absent or blank `sex:`: a value written as a word (`male`,
+        # `f`) is a sex he stated in the wrong spelling, which W141 asks him
+        # to fix; calling it "no sex recorded" could steer him the other way.
+        if is_merged_meta(meta) or str(meta.get('sex') or '').strip():
             continue
         tally = counts.get(key_of(meta))
         if not tally:

@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.29",
-  "generated": "2026-11-23",
+  "generated": "2026-11-24",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -828,7 +828,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "ad9f61013e279bb4b13e78f77e0efd8c6a58a23341386dd118d216c64ac87994",
+      "sha256": "0a8ff9cf3a1226140d8c39182071ee485b56e4220d53ec330cc1c7913b8c2954",
       "spec_version": "2.29",
       "src": "tools/lint.py"
     },

@@ -384,6 +384,15 @@ class LeadsToCheckTests(_PlausibilityBase):
         self._unsexed('')
         self.assertEqual(len(self._leads()), 1)
 
+    def test_sex_lead_silent_for_a_sex_written_as_a_word(self) -> None:
+        # He wrote `sex: male` (W141 asks him to spell it M); the lead must not
+        # call that "no sex recorded" and steer him to the name's F.
+        for written in ('male', 'Male', 'f', 'female'):
+            with self.subTest(written=written):
+                self._margarets(20)
+                self._unsexed(written)
+                self.assertEqual(self._leads(), [])
+
     def test_sex_lead_skips_titled_wife_names(self) -> None:
         self._margarets(20)
         self._unsexed(None, name='Mrs. Doe')
