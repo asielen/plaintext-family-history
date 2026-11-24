@@ -1,6 +1,6 @@
 d3-flextree 2.1.2 by Chris Maloney, https://github.com/Klortho/d3-flextree
-(commit af196220927218bbe7ac6cad8e059f56430befb6, src/flextree.js)
-Shipped as vendor/d3-flextree.js, sha256 87bc42c5f28cfbf64c81bb6d9cba80c97965a0088a19b82c9b2d3ac265166d23
+https://github.com/Klortho/d3-flextree/blob/af196220927218bbe7ac6cad8e059f56430befb6/src/flextree.js
+Shipped as vendor/d3-flextree.js, sha256 4c45b3000a2388fac3187771a1ac9d5e6df0adc10bb465cee6d96465a8f7a866
 Changed for Plaintext Family History: loads from a plain script tag and uses
 D3 7's d3.hierarchy instead of bundling d3-hierarchy 1. The import lines and
 the package.json version lookup are replaced by a small wrapper; the layout

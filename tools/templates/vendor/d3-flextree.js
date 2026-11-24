@@ -4,7 +4,8 @@
  * it so a couple's card pair takes the room of two cards and a person's
  * later marriages fit beside the first.
  *
- * Source: https://github.com/Klortho/d3-flextree/blob/af196220927218bbe7ac6cad8e059f56430befb6/src/flextree.js
+ * Source: GitHub Klortho/d3-flextree, src/flextree.js at commit
+ * af196220927218bbe7ac6cad8e059f56430befb6 (the full link is in the licence file).
  * Licence: WTFPL v2, see licenses/d3-flextree-WTFPL.txt
  *
  * Changed for Plaintext Family History: loads from a plain script tag and

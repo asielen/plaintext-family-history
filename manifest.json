@@ -1316,7 +1316,7 @@
     {
       "path": ".fha/tools/templates/vendor/d3-flextree.js",
       "category": "operating",
-      "sha256": "87bc42c5f28cfbf64c81bb6d9cba80c97965a0088a19b82c9b2d3ac265166d23",
+      "sha256": "4c45b3000a2388fac3187771a1ac9d5e6df0adc10bb465cee6d96465a8f7a866",
       "spec_version": "2.33",
       "src": "tools/templates/vendor/d3-flextree.js"
     },
@@ -1365,7 +1365,7 @@
     {
       "path": ".fha/tools/templates/vendor/licenses/d3-flextree-WTFPL.txt",
       "category": "operating",
-      "sha256": "0cf1c0d3c17f98651c1e6f3dfba2d9aa19d4da3d544f7b9b979e0d4bfe5966aa",
+      "sha256": "82afbc8a09a91c813f863a462db79cd760e010279b7ceb07440bf31c542f335a",
       "spec_version": "2.33",
       "src": "tools/templates/vendor/licenses/d3-flextree-WTFPL.txt"
     },
