@@ -320,6 +320,9 @@ from _lib import (
     ASSET_ROOT_ALIASES,
     bracket_given_name,
     claim_is_own_vital,
+    age_between,
+    age_phrase,
+    family_life_events,
     edtf_bounds,
     is_placeholder_name,
     person_surname,
@@ -6651,6 +6654,8 @@ class _SiteBuilder:
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'has_qa_badges': has_qa_badges,
+            'has_family_rows': any(e.get('kind') == 'family'
+                                   for group in timeline for e in group['entries']),
             # The workbench is the owner's private view, so its ring needs
             # no fha.yaml switch; the switch is for the shared site.
             'completeness': (self._person_completeness(pid)
@@ -7590,7 +7595,7 @@ class _SiteBuilder:
                          else "c.status = 'accepted'")
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
-            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id, "
+            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value, c.place_id, c.place_text, c.source_id, "
             "c.status, c.confidence, c.reviewed "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
@@ -7605,23 +7610,47 @@ class _SiteBuilder:
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
+        # Family rows: her father's death and her children's births sit
+        # between her own records, each saying how old she was
+        # (`_lib.family_life_events`). A claim shown as a family row is not
+        # shown again as her own bare "birth" line.
+        family = self._family_events(pid)
+        family_claims = {ev['claim_id'] for ev in family['events']}
+        rows = [r for r in rows if r['id'] not in family_claims]
+        own_birth, own_death = family['birth'], family['death']
+
+        # Own rows keep the SQL order; a family row goes after own rows on
+        # the same day, in source and claim id order, so two builds match.
+        items: list[tuple] = []
+        for seq, r in enumerate(rows):
+            bound = (r['date_max'] if (r['date_edtf'] or '').startswith('[..')
+                     else r['date_min'])
+            items.append(((0 if r['date_min'] else 1, bound or '', 0, (seq,)), r, None))
+        for ev in family['events']:
+            items.append(((0, ev['sort_key'][1], 1, ev['sort_key'][3:]), None, ev))
+        items.sort(key=lambda item: item[0])
+
         def _decade_sort_key(decade: str | None) -> tuple[int, int]:
             if decade is None:
                 return (1, 0)   # undated sorts after every dated decade
             return (0, int(decade[:-1]))   # '1930s' -> 1930
 
-        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        rows_with_decade = [((r, ev), _decade_header((r or ev)['date_edtf']))
+                            for _key, r, ev in items]
         rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
 
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
-        for r, decade in rows_with_decade:
+        for (r, ev), decade in rows_with_decade:
             if decade != current:
                 if entries:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            if ev is not None:
+                entries.append(self._family_entry(pid, ev, page_dir))
+                continue
             # Scrubbed the same as value_text below (adversarial review,
             # round 4 audit): place_label feeds `_place_trailing_remainder`,
             # whose OWN output is spliced straight into the rendered sentence
@@ -7658,10 +7687,108 @@ class _SiteBuilder:
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'unconfirmed': r['status'] == 'suggested',
                 'parked': r['reviewed'] or '',
+                'kind': 'own',
+                'age_text': self._own_age_text(pid, r, own_birth, own_death),
             })
         if entries:
             groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
         return groups
+
+    def _family_events(self, pid: str) -> dict:
+        """The family rows for one person's timeline, under this build's
+        privacy line (`_lib.family_life_events`).
+
+        The shared site shows a relative only when their own page could be
+        shown (not living, unknown or restricted, merges followed): a living
+        brother gives no row at all, not a "Living Person" row, since a
+        family tie is itself personal (SPEC §21: a kept claim adds no one to
+        any list of the family). Every claim used must be publishable
+        (accepted, not restricted, not on a restricted or DNA source) and
+        not withheld for a living person's sake; a record kept because it
+        only names a living godparent is fine, as the row names only the
+        relative. Each tie must rest on a publishable claim, the rule the
+        Family section uses (`_has_public_parent_edge`). The linked preview
+        and the workbench show everything, parked claims flagged."""
+        if self.linked:
+            person_ok = claim_ok = edge_ok = None
+        else:
+            def person_ok(other: str) -> bool:
+                meta = self.person_meta.get(other)
+                return meta is not None and not self._person_is_redacted(meta)
+
+            def claim_ok(row: dict) -> bool:
+                return (self._claim_row_is_publishable(row['id'], row['source_id'], row['status'])
+                        and self._claim_verdicts.get(row['id']) != CLAIM_WITHHELD)
+
+            def edge_ok(person_id, rel, other_id, claim_id) -> bool:
+                if claim_id is None:
+                    return True
+                row = self.conn.execute(
+                    'SELECT source_id, status FROM claims WHERE id = ?', (claim_id,)).fetchone()
+                if row is None:
+                    return True     # a bare edge with nothing behind it to hide
+                return self._claim_row_is_publishable(claim_id, row['source_id'], row['status'])
+        return family_life_events(
+            self.conn, pid, include_parked=self.linked, person_ok=person_ok,
+            claim_ok=claim_ok, edge_ok=edge_ok, cache=self._vital_subjects)
+
+    def _own_age_text(self, pid: str, r, own_birth: dict | None,
+                      own_death: dict | None) -> str:
+        """"aged 21 or 22" for one of the person's own timeline lines, or ''.
+
+        None on their own birth, with no recorded birth, when the dates are
+        too loose to say within a year (`_lib.age_between`), and on a record
+        dated after their death (a will proved years later is not something
+        they did at 60)."""
+        if own_birth is None or not r['date_edtf']:
+            return ''
+        if r['type'] == 'birth' and claim_is_own_vital(
+                self.conn, pid, r['id'], 'birth', self._vital_subjects):
+            return ''
+        if (own_death is not None and own_death['date_max'] and r['date_min']
+                and r['date_min'] > own_death['date_max']):
+            return ''
+        age = age_between(own_birth['date_edtf'], r['date_edtf'])
+        if age is None:
+            return ''
+        phrase = age_phrase(age)
+        return phrase if age[0] == 0 else f'aged {phrase}'
+
+    def _family_entry(self, pid: str, ev: dict, page_dir: Path) -> dict:
+        """One family row as a timeline entry: "Her father Caleb Comstock
+        Hartley died at Easton. She was 5 or 6." Possessive and pronoun come
+        from the person's recorded sex only; with none, the first word of
+        their name stands in ("Margaret's father", "Margaret was 5"), never a
+        guess from the name. The relative's name links to their page when
+        there is one. Flags match the person's own rows, so `has_qa_badges`
+        and the legend still work."""
+        row = self.person_meta.get(pid)
+        sex = ((row['sex'] if row is not None else '') or '').strip().upper()
+        first = ((row['name'] if row is not None else '') or fmt_id_display(pid)).split()[0]
+        possessive, subject = {'M': ('His', 'He'), 'F': ('Her', 'She')}.get(
+            sex, (f"{first}'s", first))
+        name = self._person_link(ev['relative_id'], page_dir)
+        place = str(self._place_html(ev['place_text'], ev['place_id'], page_dir))
+        at = f' at {place}' if place else ''
+        verb = {'birth': 'was born', 'death': 'died', 'burial': 'was buried'}.get(ev['type'])
+        if ev['type'] == 'marriage':
+            other = f" {self._person_link(ev['other_id'], page_dir)}" if ev['other_id'] else ''
+            what = f'married{other}{at}.'
+        else:
+            what = f'{verb}{at}.'
+        sentence = f'{_escape(possessive)} {_escape(ev["relation"])} {name} {what}'
+        if ev['age'] is not None:
+            sentence += f' {_escape(subject)} was {_escape(age_phrase(ev["age"]))}.'
+        return {
+            'kind': 'family', 'date': ev['date_edtf'] or '(undated)', 'type': ev['type'],
+            'sentence': self._markup(sentence),
+            'source_html': (self._markup(self._source_link(ev['source_id'], page_dir))
+                            if ev['source_id'] else ''),
+            'status': ev['status'], 'confidence': ev['confidence'] or '',
+            'unconfirmed': ev['status'] == 'suggested',
+            'parked': ev['reviewed'] or '',
+            'age_text': '',
+        }
 
     def _person_sources(self, pid: str, page_dir: Path) -> list[dict]:
         """The person's Sources as a numbered footnote list - each source's human

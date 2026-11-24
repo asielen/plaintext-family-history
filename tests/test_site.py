@@ -11399,6 +11399,228 @@ class FanChartStyleTests(unittest.TestCase):
         self.assertIn('font-size', m.group(1))
 
 
+class TimelineFamilyRowsTests(_Base):
+    """Margaret's page says her father died when she was 5 or 6 and when her
+    daughter was born, in lighter lines between her own records, and each of
+    her own records says how old she was. A living, unknown or restricted
+    relative gives no row at all on the shared site (SPEC §21)."""
+
+    M, F, E, B = 'p-m000000001', 'p-f000000001', 'p-e000000001', 'p-b000000001'
+
+    def _family(self, *, margaret_sex='F', death=True, father_source_restricted=0,
+                father_claim_restricted=False, tie_source_restricted=0,
+                father_death_status='accepted', father_death_reviewed=None):
+        M, F, E = self.M, self.F, self.E
+        self._seed_person(M, 'Margaret Cole', surname='Cole', sex=margaret_sex)
+        self._seed_person(F, 'Caleb Comstock Hartley', surname='Hartley', sex='M')
+        self._seed_person(E, 'Ethel Cole', surname='Cole2', sex='F')
+        self._seed_source('s-1111111111', 'Margaret vital records', source_type='vital-record')
+        self._seed_claim('c-mb0000001', 's-1111111111', 'birth', 'Margaret born',
+                         date_edtf='1871', persons=[M], roles={M: 'child'})
+        if death:
+            self._seed_claim('c-md0000001', 's-1111111111', 'death', 'Margaret died',
+                             date_edtf='1923', persons=[M], roles={M: 'deceased'})
+        self._seed_claim('c-mm0000001', 's-1111111111', 'residence', 'lived in Fairview',
+                         date_edtf='1893', persons=[M])
+        fm = None
+        if father_claim_restricted:
+            fm = ('---\nid: s-2222222222\ntitle: Caleb death\nsource_type: vital-record\n'
+                  'citation: "A citation."\n---\n\n## Claims\n```yaml\n'
+                  '- id: c-fd0000001\n  type: death\n  value: "private"\n'
+                  '  status: accepted\n  restricted: true\n```\n')
+        self._seed_source('s-2222222222', 'Caleb death', source_type='vital-record',
+                          restricted=father_source_restricted, frontmatter=fm)
+        self._seed_claim('c-fd0000001', 's-2222222222', 'death', 'Caleb died',
+                         date_edtf='1877', place_text='Easton', persons=[F],
+                         roles={F: 'deceased'}, status=father_death_status,
+                         reviewed=father_death_reviewed)
+        self._seed_source('s-3333333333', 'Family bible', source_type='vital-record',
+                          restricted=tie_source_restricted)
+        self._seed_claim('c-rel000001', 's-3333333333', 'relationship', 'Caleb is her father',
+                         persons=[M, F], roles={M: 'child', F: 'parent'})
+        self._seed_rel(M, 'parent', F, claim_id='c-rel000001')
+        self._seed_rel(F, 'child', M, claim_id='c-rel000001')
+        self._seed_source('s-4444444444', 'Ethel birth', source_type='vital-record')
+        self._seed_claim('c-eb0000001', 's-4444444444', 'birth', 'Ethel birth entry',
+                         date_edtf='1902', place_text='Fairview', persons=[E, M],
+                         roles={E: 'child', M: 'parent'})
+        self._seed_rel(E, 'parent', M, claim_id='c-eb0000001')
+        self._seed_rel(M, 'child', E, claim_id='c-eb0000001')
+
+    def _brother(self, *, living='false', born='1875'):
+        B, F = self.B, self.F
+        self._seed_person(B, 'Benjamin Hartley', surname='Hartley2', sex='M', living=living)
+        self._seed_source('s-5555555555', 'Benjamin birth', source_type='vital-record')
+        self._seed_claim('c-bb0000001', 's-5555555555', 'birth', 'Benjamin born',
+                         date_edtf=born, persons=[B], roles={B: 'child'})
+        self._seed_claim('c-brel00001', 's-5555555555', 'relationship', 'Caleb is his father',
+                         persons=[B, F], roles={B: 'child', F: 'parent'})
+        self._seed_rel(B, 'parent', F, claim_id='c-brel00001')
+        self._seed_rel(F, 'child', B, claim_id='c-brel00001')
+
+    def _timeline(self, *, linked=False):
+        self._run(linked=linked)
+        page = self._read(f'persons/{self.M}.html')
+        start = page.index('<h2>Timeline</h2>')
+        return page[start:page.index('</div>', page.index('class="timeline"', start))]
+
+    def test_parent_death_shows_with_age(self):
+        self._family()
+        tl = self._timeline()
+        self.assertIn('class="tl-family"', tl)
+        self.assertRegex(tl, r'Her father <a [^>]*>Caleb Comstock Hartley</a> died at Easton\.')
+        self.assertIn('She was 5 or 6.', tl)
+
+    def test_child_birth_appears_once_as_family_row(self):
+        self._family()
+        tl = self._timeline()
+        self.assertNotIn('Ethel birth entry', tl)
+        rows = re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+        ethel = [r for r in rows if 'Ethel Cole' in r]
+        self.assertEqual(len(ethel), 1)
+        self.assertIn('Her daughter', ethel[0])
+        self.assertIn('was born at Fairview.', ethel[0])
+        self.assertIn('She was 30 or 31.', ethel[0])
+        self.assertEqual(tl.count('Ethel Cole'), 1)
+
+    def test_living_relative_gives_no_row(self):
+        self._family()
+        self._brother(living='true')
+        tl = self._timeline()
+        self.assertNotIn('Her brother', tl)
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('Living Person', tl)
+        # The private preview shows him.
+        self.assertIn('Her brother', self._timeline(linked=True))
+
+    def test_unknown_relative_gives_no_row(self):
+        self._family()
+        self._brother(living='unknown')
+        self.assertNotIn('Benjamin', self._timeline())
+
+    def test_event_outside_lifespan_left_out(self):
+        self._family()
+        self._brother(born='1930')
+        self.assertNotIn('Benjamin', self._timeline())
+
+    def test_no_death_does_not_project_forward(self):
+        self._family(death=False)
+        self._brother(born='1875')
+        self._seed_claim('c-bd0000001', 's-5555555555', 'death', 'Benjamin died',
+                         date_edtf='1950', persons=[self.B], roles={self.B: 'deceased'})
+        tl = self._timeline()
+        self.assertIn('Benjamin Hartley</a> was born', tl)      # 1875, inside her life
+        self.assertNotIn('Benjamin Hartley</a> died', tl)        # 1950, after her last record
+
+    def test_restricted_claim_gives_no_row(self):
+        self._family(father_claim_restricted=True)
+        self.assertNotIn('Her father', self._timeline())
+        self.assertIn('Her father', self._timeline(linked=True))
+
+    def test_hard_restricted_source_gives_no_row(self):
+        self._family(father_source_restricted=1)
+        self.assertNotIn('Her father', self._timeline())
+        self.assertIn('Her father', self._timeline(linked=True))
+
+    def test_tie_on_restricted_source_gives_no_row(self):
+        # The only record that he is her father is restricted (a DNA match,
+        # say): the shared page does not say "her father" on its strength.
+        self._family(tie_source_restricted=1)
+        self.assertNotIn('Her father', self._timeline())
+
+    def test_parked_relative_claim_linked_only(self):
+        self._family(father_death_status='suggested', father_death_reviewed='2026-01-01')
+        self.assertNotIn('Her father', self._timeline())
+        tl = self._timeline(linked=True)
+        self.assertRegex(tl, r'Her father .*?unconfirmed - parked 2026-01-01')
+
+    def test_marriage_to_living_person_dropped(self):
+        self._family()
+        self._brother()
+        self._seed_person('p-w000000001', 'Ada Moore', surname='Moore', sex='F', living='true')
+        self._seed_claim('c-bm0000001', 's-5555555555', 'marriage', 'Benjamin married Ada',
+                         date_edtf='1900', persons=[self.B, 'p-w000000001'],
+                         roles={self.B: 'spouse', 'p-w000000001': 'spouse'})
+        tl = self._timeline()
+        self.assertNotIn('married', tl)
+        self.assertNotIn('Ada', tl)
+        self.assertIn('Ada Moore', self._timeline(linked=True))
+
+    def test_sibling_marriage_to_deceased_person_shown(self):
+        self._family()
+        self._brother()
+        self._seed_person('p-w000000001', 'Ada Moore', surname='Moore', sex='F')
+        self._seed_claim('c-bm0000001', 's-5555555555', 'marriage', 'Benjamin married Ada',
+                         date_edtf='1900', persons=[self.B, 'p-w000000001'],
+                         roles={self.B: 'spouse', 'p-w000000001': 'spouse'})
+        self.assertRegex(self._timeline(),
+                         r'Her brother <a [^>]*>Benjamin Hartley</a> married '
+                         r'<a [^>]*>Ada Moore</a>\. She was 28 or 29\.')
+
+    def test_record_naming_a_living_witness_still_gives_the_row(self):
+        # SPEC §21: a record about the dead that also names a living person
+        # keeps its fact; the row names only the relative, never the witness.
+        self._family()
+        self._seed_person('p-x000000001', 'Walter Living', surname='Living', sex='M',
+                          living='true')
+        self.conn.execute(
+            'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+            ('c-fd0000001', 'p-x000000001', 5, 'informant'))
+        tl = self._timeline()
+        self.assertIn('Her father', tl)
+        self.assertNotIn('Walter', tl)
+        self.assertNotIn('Living Person', tl)
+
+    def test_own_row_age(self):
+        self._family()
+        tl = self._timeline()
+        self.assertRegex(tl, r'lived in Fairview.*?<span class="tl-age">aged 21 or 22</span>')
+        own_birth = re.search(r'<li>1871 - birth:.*?</li>', tl, re.S).group(0)
+        self.assertNotIn('tl-age', own_birth)
+
+    def test_half_sibling_word(self):
+        self._family()
+        self._brother()
+        tl = self._timeline()
+        self.assertIn('Her brother', tl)       # his mother unrecorded: plain
+        self._seed_person('p-mo00000001', 'Ann Cole', surname='Cole3', sex='F')
+        self._seed_person('p-mo00000002', 'Sarah Lane', surname='Lane', sex='F')
+        self._seed_claim('c-mrel00001', 's-3333333333', 'relationship', 'Ann is her mother',
+                         persons=[self.M, 'p-mo00000001'],
+                         roles={self.M: 'child', 'p-mo00000001': 'parent'})
+        self._seed_rel(self.M, 'parent', 'p-mo00000001', claim_id='c-mrel00001')
+        self._seed_rel('p-mo00000001', 'child', self.M, claim_id='c-mrel00001')
+        self._seed_claim('c-brel00002', 's-5555555555', 'relationship', 'Sarah is his mother',
+                         persons=[self.B, 'p-mo00000002'],
+                         roles={self.B: 'child', 'p-mo00000002': 'parent'})
+        self._seed_rel(self.B, 'parent', 'p-mo00000002', claim_id='c-brel00002')
+        self._seed_rel('p-mo00000002', 'child', self.B, claim_id='c-brel00002')
+        self.assertIn('Her half-brother', self._timeline())
+
+    def test_unknown_sex_uses_name(self):
+        self._family(margaret_sex='')
+        tl = self._timeline()
+        self.assertIn("Margaret's father", tl)
+        self.assertIn('Margaret was 5 or 6.', tl)
+
+    def test_legend_only_with_family_rows(self):
+        self._family()
+        self.assertIn('timeline-legend', self._read_page_after_run())
+        self.conn.execute('DELETE FROM relationships')
+        self.assertNotIn('timeline-legend', self._read_page_after_run())
+
+    def _read_page_after_run(self):
+        self._run()
+        return self._read(f'persons/{self.M}.html')
+
+    def test_build_is_byte_identical(self):
+        self._family()
+        self._brother()
+        first = self._read_page_after_run()
+        second = self._read_page_after_run()
+        self.assertEqual(first, second)
+
+
 class CommittedShowcaseAssetTests(unittest.TestCase):
     """`_copy_assets` copies design/styles.css verbatim into every build's
     assets/, and the two example sites under example-archive/generated/ are

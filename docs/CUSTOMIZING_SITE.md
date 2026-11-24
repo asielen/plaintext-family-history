@@ -76,6 +76,8 @@ Or ask your assistant to open the stylesheet for you.
 
 Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history. That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
 
+The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+
 ## Putting a photo in your writing
 
 In `notes/home.md` (and other writing), you can place a specific photo using the same double-bracket style the archive uses everywhere, with a `!` in front to mean "show the picture here":
