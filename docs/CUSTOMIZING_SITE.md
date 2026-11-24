@@ -42,6 +42,7 @@ site:
   calendar: true                       # "This month in the family" on the homepage
   search: true                         # the search box on every page (on unless set to false)
   surname_pages: true                  # a page for each family name (on unless set to false)
+  statistics: true                     # a "Family statistics" page (off unless set to true)
 ```
 
 - **`archive_name`** is the title at the top of every page.
@@ -54,6 +55,7 @@ site:
 - **`calendar`** (off unless set to `true`) adds "This month in the family" to the homepage: the births, baptisms, marriages, deaths, burials and arrivals recorded to the month or the day, each name linked to that person's page. Every month is built into the page and the visitor sees their own current month, with all twelve listed below. It uses accepted facts only, and leaves out a living person's own birth, marriage or death, anything naming a private person, and anything resting on a private record. A grandfather's death stays when his living son reported it; the son is not named. The private workbench (`fha serve`) shows "This week in the family" on its home page instead, living relatives included.
 - **`search`** (on unless set to `false`) puts a search box at the top of every page. It finds people, places and records by name, forgives the usual spelling differences in old records (Kowalski, Kowalsky), and finds a woman by her married name. It only knows what the site already shows: nobody living, nothing private. It works from a USB stick with no internet.
 - **`surname_pages`** (on unless set to `false`) gives each family name its own page: the people who carried it, from the first year to the last, the places they are most often found, and the records that mention them. A Polish or Czech feminine form (Kowalska, Nováková) shares the page of the masculine form when that form is on the site too. A name only living or private people carry gets no page, and no page says how many people are left out.
+- **`statistics`** (off unless set to `true`) adds a "Family statistics" page, linked from the homepage under People. It says how long the family lived and how old they were when they married, by century of birth, how many children families had, the commonest first names and surnames, and, for the direct line from the person the homepage chart centres on, how many ancestors are known in each generation (when that person is you and you're living, the line starts with your parents). It uses the middle figure (the median), not an average, so one very long life doesn't skew it, and it counts only dates known to within a couple of years. A figure from fewer than three people says "Too few to say." Living relatives and anyone you marked private are never counted, even in the private preview.
 
 The photo you name in `image` is handled like every other photo on the site: a web-sized copy is made, its hidden location and camera data is removed, and if it shows a living person it's left out of the shareable version.
 

@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.37, 2026-11-24**
+**Version 2.38, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -561,6 +561,7 @@ site:                         # `fha site` presentation
   completeness_rings: false   # a completeness ring on each person page (TOOLING §12; default off)
   calendar: false             # "This month in the family" on the homepage (TOOLING §12; default off)
   search: true                # a search box on every page (TOOLING §12; default on)
+  statistics: false           # a "Family statistics" page (TOOLING §12; default off)
 ```
 
 **How a path resolves.** Every record path keeps the alias form (`photos/1880/…`); tools resolve the first segment through the mapping (absolute → used as-is, relative → joined to the archive root, missing → an internal folder of that name). Moving a library is a one-line edit and **no record changes**. The spec's internal structure (`photos/{year}`, `documents/{type}`) describes the tree *under each root*, wherever it lives.

@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Family statistics - {{ site_title }}{% endblock %}
+{% block content %}
+{#- The optional statistics page (fha.yaml `site: statistics: true`). Every
+    number is worked out in Python from the people this site already shows;
+    each chart is plain inline SVG with the same numbers in a table below it,
+    so a screen reader or a printout loses nothing. No script. -#}
+{% macro age_table(rows, caption) %}
+<table class="claims">
+  <caption class="note">{{ caption }}</caption>
+  <thead><tr><th scope="col">Born in</th><th scope="col">Median</th><th scope="col">People</th></tr></thead>
+  <tbody>
+  {% for r in rows %}<tr><th scope="row">{{ r.label }}</th><td>{% if r.text %}{{ r.text }}{% else %}Too few to say.{% endif %}</td><td>{{ r.count }} {{ 'person' if r.count == 1 else 'people' }}</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}
+{% macro name_table(rows, caption) %}
+{% if rows %}
+<table class="claims">
+  <caption class="note">{{ caption }}</caption>
+  <tbody>{% for r in rows %}<tr><th scope="row">{{ r.name }}</th><td>{{ r.count }}</td></tr>
+  {% endfor %}</tbody>
+</table>
+{% else %}<p class="empty">Too few to say.</p>{% endif %}
+{% endmacro %}
+<article class="statistics">
+  <h1>Family statistics</h1>
+  <p class="note">Worked out from the dates on this site. Only dates known to within a couple of years are counted, and living relatives are never counted.</p>
+
+  <h2>How long they lived</h2>
+  {% if lived %}
+  {% if lived_svg %}{{ lived_svg }}{% endif %}
+  {{ age_table(lived, 'Median age at death, by century of birth') }}
+  {% else %}<p class="empty">Too few to say.</p>{% endif %}
+
+  <h2>Age at first marriage</h2>
+  {% if women or men %}
+  {% if women %}
+  <h3>Women</h3>
+  {% if women_svg %}{{ women_svg }}{% endif %}
+  {{ age_table(women, 'Median age at first marriage, women') }}
+  {% endif %}
+  {% if men %}
+  <h3>Men</h3>
+  {% if men_svg %}{{ men_svg }}{% endif %}
+  {{ age_table(men, 'Median age at first marriage, men') }}
+  {% endif %}
+  {% else %}<p class="empty">Too few to say.</p>{% endif %}
+  {% if no_sex %}<p class="note">{{ no_sex }} {{ 'person with no recorded sex is' if no_sex == 1 else 'people with no recorded sex are' }} not counted here.</p>{% endif %}
+
+  <h2>Children per family</h2>
+  {% if enough_children %}
+  {% if children_svg %}{{ children_svg }}{% endif %}
+  <table class="claims">
+    <caption class="note">Families, by how many children they had</caption>
+    <tbody>{% for r in children %}<tr><th scope="row">{{ r.label }} {{ 'child' if r.label == '1' else 'children' }}</th><td>{{ r.count }} {{ 'family' if r.count == 1 else 'families' }}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% else %}<p class="empty">Too few to say.</p>{% endif %}
+  <p class="note">Counts only the children shown on this site.</p>
+
+  <h2>Common names</h2>
+  <h3>Women's first names</h3>
+  {{ name_table(women_names, 'The ten most common first names among women') }}
+  <h3>Men's first names</h3>
+  {{ name_table(men_names, 'The ten most common first names among men') }}
+  <h3>Surnames</h3>
+  {{ name_table(surnames, 'The ten most common surnames') }}
+
+  {% if generations %}
+  <h2>Generation by generation</h2>
+  <table class="claims">
+    <caption class="note">The direct line from the starting person, as far as it is known</caption>
+    <thead><tr><th scope="col">Generation</th><th scope="col">Known</th><th scope="col">Median birth year</th><th scope="col">Median age at death</th></tr></thead>
+    <tbody>{% for g in generations %}<tr><th scope="row">{{ g.label }}</th><td>known {{ g.known }}</td><td>{% if g.born %}{{ g.born }}{% else %}Too few to say.{% endif %}</td><td>{% if g.age %}{{ g.age }} years{% else %}Too few to say.{% endif %}</td></tr>
+    {% endfor %}</tbody>
+  </table>
+  {% endif %}
+</article>
+{% endblock %}
