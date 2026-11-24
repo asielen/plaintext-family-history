@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.30, 2026-11-23**
+**Version 2.31, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -1028,7 +1028,7 @@ Generated output that leaves the archive falls into two categories with differen
 **Printed reports (`fha views family-sheet` and the other printed reports), their own rules, per TOOLING §7:**
 - A printed report is made to hand to relatives, so it follows the public-output rules for evidence: only `accepted` claims; no `restricted` claim, person, name or source; no DNA source; no claim naming a living person. A source withheld only because it names a living person is cited by a shared placeholder, never by its title.
 - A person whose `living` flag is `true` or `unknown` is never named: a living parent or spouse appears only as "Living Person", with none of their own facts, and a living child is counted ("and 2 living children"). A living person's own descendants are neither named nor counted. A `restricted` person is left out and not counted.
-- A report about a living or unknown subject is refused; a `restricted` subject is refused without printing the name.
+- A report about a living or unknown subject is refused, except the Ahnentafel report, which shows a living subject as "a living relative" and continues with the deceased ancestors (an Ahnentafel of one's own line is the common use); a `restricted` subject is refused without printing the name.
 - Reports are written under `generated/views/` with the GENERATED marker and are swept by `fha views clean`. They carry a banner saying living relatives are counted, not named.
 
 **Site generation freshness contract:**
