@@ -132,6 +132,7 @@ from urllib.parse import unquote, urlsplit
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    LIVING_CUTOFF_YEARS,          # the age past which an import marks someone not living
     PHOTO_EXTENSIONS,
     render_person_body_scaffold,  # the full §16 profile body every new person record gets
     link_list_lines,
@@ -188,7 +189,6 @@ _GEDCOM_DOC_SUBDIR = 'gedcom'
 _AUDIT_DIR = '.cache/gedcom_import'
 _PLAN_DETAIL_CAP = 20      # stubs/duplicates shown inline before "... and N more"
 _PROGRESS_EVERY = 100      # apply prints one progress line per this many stubs
-_LIVING_CUTOFF_YEARS = 110
 
 _MONTHS = {'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12}
@@ -888,7 +888,7 @@ def living_flag_for_import(has_death: bool, birth_edtf: str | None,
     if year is not None:
         if today_year is None:
             today_year = datetime.date.today().year
-        if today_year - year > _LIVING_CUTOFF_YEARS:
+        if today_year - year > LIVING_CUTOFF_YEARS:
             return 'false'
     return 'unknown'
 
@@ -944,7 +944,7 @@ def _unread_date_may_be_recent(raw: str | None) -> bool:
         # apart, so it may be recent.
         return True
     this_year = datetime.date.today().year
-    return any(this_year - y <= _LIVING_CUTOFF_YEARS for y in years)
+    return any(this_year - y <= LIVING_CUTOFF_YEARS for y in years)
 
 
 def _latest_birth_reading(dated: list[tuple[str, int]]) -> str | None:
@@ -3877,7 +3877,7 @@ def _plan_lines(plan: ImportPlan, *, applied: bool, capped: bool = True) -> list
         f'{len(plan.claims):,} suggested claims, {len(plan.cited_sources):,} cited '
         f'databases, {len(plan.duplicates):,} possible duplicates',
         f'  Living flags: {living_false:,} marked living: false (a death record, or '
-        f'born more than {_LIVING_CUTOFF_YEARS} years ago); {living_unknown:,} left '
+        f'born more than {LIVING_CUTOFF_YEARS} years ago); {living_unknown:,} left '
         'living: unknown (treated as living by every export)',
         f'  Source record: {_rel_display(plan.record_path, plan.archive_root)}',
         f'  Filed copy:    {plan.doc_dest_alias} (the original file is not touched)',
