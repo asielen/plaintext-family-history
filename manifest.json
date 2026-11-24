@@ -660,14 +660,14 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "e91191ad7ba4888077db5e885224011ab9504892e7d5a9fe3f0db60ed1b195fb",
+      "sha256": "bbf1f3b21113f561b138e03f5ec456277ff62f705a33a8306565b8e23beef73e",
       "spec_version": "2.29",
       "src": "tools/README.md"
     },
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "d67406e81edb89429a2aacd61b22c638c56f61887d015d0a86b1a42fab5495fd",
+      "sha256": "2e3d90c60a5c9217ca2b189785ffc00b35f7f619353a1088d0534a64087763d7",
       "spec_version": "2.29",
       "src": "tools/_lib.py"
     },
@@ -786,7 +786,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "32c2bfaedac3b1d7d8d5eb83d97df608e86a604aa6e0ec82ee347e51855b8834",
+      "sha256": "6878486a7a01b8200c5950cf61763e351b6ac70da48d2f8efc161f06b91ae2a8",
       "spec_version": "2.29",
       "src": "tools/fha.py"
     },
@@ -929,6 +929,13 @@
       "sha256": "59ac7420d1fc42c0b05ab4cae3bbcae318177eeab5df446d542107b1308639b0",
       "spec_version": "2.29",
       "src": "tools/repositories.json"
+    },
+    {
+      "path": ".fha/tools/repositories.py",
+      "category": "operating",
+      "sha256": "cd7cc3c0c5f2426ba8673e6b16cc334ecc680bf5dd4fbae87436ed9cf18f3494",
+      "spec_version": "2.29",
+      "src": "tools/repositories.py"
     },
     {
       "path": ".fha/tools/requirements.txt",
@@ -1388,7 +1395,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "3e35665f78afa89fc6ef79d350e0e54d4588cd11cc1f51b1afb18005b83fcf00",
+      "sha256": "b685f3616a5f63a41013034e2b54630acab7ba16f1c2fefc536dd901983e1ba1",
       "spec_version": "2.29"
     },
     {
@@ -1413,7 +1420,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "5cd6542bb8ca44897d9dd0e1494dfd8496c28dc5f1738465e86db6c91518ec64",
+      "sha256": "b6615816cc0cae51821235989a5ebd0f3e658d1444e0ec053886022a39ab67e7",
       "spec_version": "2.29"
     },
     {
@@ -1480,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "9da4a96d55d7cec19083a518481969c9e8bef45265676bb9a93933a3938f641f",
+      "sha256": "b2c25067aa238ead6bb29b564951a174b110740a83e3c8cf77473eb1043c68f7",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
