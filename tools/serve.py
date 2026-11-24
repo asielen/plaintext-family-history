@@ -2554,6 +2554,43 @@ def _msg_payload(ok: bool, text: str) -> dict:
 
 # ── The HTTP handler ────────────────────────────────────────────────────────────
 
+def _parse_byte_range(header: str | None, size: int):
+    """Read one `Range: bytes=...` header against a file of `size` bytes.
+
+    Returns `(first, last)` (inclusive) for a single satisfiable range,
+    'unsatisfiable' when it starts past the end (answer 416), or None when
+    the whole file should be sent: no header, another unit, several ranges,
+    or text that is not a range at all (RFC 9110 says to ignore those)."""
+    if not header:
+        return None
+    unit, _, spec = header.partition('=')
+    if unit.strip().lower() != 'bytes':
+        return None
+    spec = spec.strip()
+    if not spec or ',' in spec:
+        return None
+    first, dash, last = spec.partition('-')
+    first, last = first.strip(), last.strip()
+    if not dash or not (first.isascii() and last.isascii()):
+        return None
+    if first == '':                       # suffix: the last n bytes
+        if not last.isdigit():
+            return None
+        n = int(last)
+        if n == 0 or size == 0:
+            return 'unsatisfiable'
+        return max(size - n, 0), size - 1
+    if not first.isdigit() or (last and not last.isdigit()):
+        return None
+    a = int(first)
+    b = int(last) if last else size - 1
+    if last and b < a:
+        return None
+    if a >= size:
+        return 'unsatisfiable'
+    return a, min(b, size - 1)
+
+
 class _Handler(BaseHTTPRequestHandler):
     server_version = 'fha-serve'
     protocol_version = 'HTTP/1.1'
@@ -2865,13 +2902,15 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _send_file(self, path: Path) -> None:
         """Stream `path` to the client in `_STREAM_CHUNK_SIZE` chunks instead
-        of reading it whole into memory first - a large scan/video used to be
-        fully buffered in RAM (and off the socket) before a single byte went
-        out. Content-Length still comes from a `stat()`, so the client gets
-        an accurate length up front exactly as before; HEAD still sends
-        headers only, no chunks. No Range/206 support this pass - a
-        seek-based partial-content responder is its own feature, not a
-        one-line addition to a chunked GET."""
+        of reading it whole into memory first.
+
+        For someone playing a long interview recording in the workbench, this
+        is what lets the slider jump to a moment: a browser can only seek an
+        `<audio>`/`<video>` element when the server answers `Range` requests.
+        One `bytes=a-b`, `a-` or `-n` range gets a 206 with Content-Range;
+        a start past the end gets 416. Several ranges, a malformed header or
+        an `If-Range` are answered with the whole file and a 200, which HTTP
+        allows and every player copes with. HEAD sends headers only."""
         ctype, _ = mimetypes.guess_type(str(path))
         try:
             size = path.stat().st_size
@@ -2880,19 +2919,47 @@ class _Handler(BaseHTTPRequestHandler):
             self._not_found()
             return
         try:
-            self.send_response(200)
+            start, length = 0, size
+            status = 200
+            rng = None
+            if 'If-Range' not in self.headers:
+                rng = _parse_byte_range(self.headers.get('Range'), size)
+            if rng == 'unsatisfiable':
+                self.send_response(416)
+                self.send_header('Content-Range', f'bytes */{size}')
+                self.send_header('Content-Length', '0')
+                self.send_header('Cache-Control', 'no-store')
+                self.send_header('X-Content-Type-Options', 'nosniff')
+                self.end_headers()
+                return
+            if rng is not None:
+                start, end = rng
+                length = end - start + 1
+                status = 206
+            self.send_response(status)
             self.send_header('Content-Type', ctype or 'application/octet-stream')
-            self.send_header('Content-Length', str(size))
+            self.send_header('Content-Length', str(length))
+            self.send_header('Accept-Ranges', 'bytes')
+            if status == 206:
+                self.send_header('Content-Range', f'bytes {start}-{start + length - 1}/{size}')
             self.send_header('Cache-Control', 'no-store')
             self.send_header('X-Content-Type-Options', 'nosniff')
             self.end_headers()
             if self.command != 'HEAD':
                 try:
-                    shutil.copyfileobj(f, self.wfile, _STREAM_CHUNK_SIZE)
-                except (ConnectionAbortedError, BrokenPipeError):
-                    # The client went away mid-download (closed tab,
-                    # cancelled fetch) - not a server error, nothing to log
-                    # or retry.
+                    if start:
+                        f.seek(start)
+                    remaining = length
+                    while remaining > 0:
+                        chunk = f.read(min(_STREAM_CHUNK_SIZE, remaining))
+                        if not chunk:
+                            break
+                        self.wfile.write(chunk)
+                        remaining -= len(chunk)
+                except (ConnectionAbortedError, BrokenPipeError, ConnectionResetError):
+                    # The client went away mid-download (closed tab, or a
+                    # player dropping the connection to seek) - not a server
+                    # error, nothing to log or retry.
                     pass
         finally:
             f.close()

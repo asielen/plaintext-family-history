@@ -1156,7 +1156,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "2aebf7f1149ac330c03892216b401a2c7f206290f793e373178bcac2434a712c",
+      "sha256": "3f9b1d3c7bb056794cd03f73784c8c39448eef3e8ec42a74807c8c04ccb4341e",
       "spec_version": "2.33",
       "src": "tools/serve.py"
     },
