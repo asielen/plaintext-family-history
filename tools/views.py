@@ -5771,7 +5771,6 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
     title = ''
     parts = ['<section class="report-sheet">']
     mode = ''   # '', 'table' or 'ol'
-    in_notes = False   # under a "Notes" heading, numbered lines are the notes list
 
     def close() -> None:
         nonlocal mode
@@ -5796,7 +5795,6 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
                 title = m.group(2)
                 continue
             level = len(m.group(1))
-            in_notes = m.group(2) == 'Notes'
             parts.append(f'<h{level}>{html_escape(m.group(2))}</h{level}>')
             continue
         if line.startswith('|'):
@@ -5812,13 +5810,14 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
             parts.append('<tr>' + ''.join(
                 f'<td>{_report_inline_html(c)}</td>' for c in cells) + '</tr>')
             continue
-        m = re.match(r'^(\d+)\. (.*)$', line)
-        if m and not in_notes:
+        m = re.match(r'^\*\*(\d+)\.\*\* (.*)$', line)
+        if m:
             # A numbered person (the Ahnentafel report), not a note.
             close()
             parts.append(f'<p class="ahn-person"><strong>{m.group(1)}.</strong> '
                          f'{_report_inline_html(m.group(2))}</p>')
             continue
+        m = re.match(r'^(\d+)\. (.*)$', line)
         if m:
             if mode != 'ol':
                 close()
@@ -5827,9 +5826,10 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
             parts.append(f'<li value="{m.group(1)}">{html_escape(m.group(2))}</li>')
             continue
         close()
-        m = _FACT_LABEL_RE.match(line.strip() if line.startswith('   ') else line)
+        bullet = line.startswith('- ')
+        m = _FACT_LABEL_RE.match(line[2:] if bullet else line)
         if m:
-            parts.append(f'<p class="fact{" ahn-fact" if line.startswith("   ") else ""}"><strong>{html_escape(m.group(1))}:</strong> '
+            parts.append(f'<p class="fact{" ahn-fact" if bullet else ""}"><strong>{html_escape(m.group(1))}:</strong> '
                          f'{_report_inline_html(m.group(2))}</p>')
         else:
             parts.append(f'<p>{_report_inline_html(line)}</p>')
@@ -6031,6 +6031,7 @@ def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[st
     fn = _Footnotes(rp)
     tally = _SheetTally(rp)
     body: list[str] = []
+    married: set[frozenset] = set()   # couples whose marriage is printed
     depth_seen = -1
     for pos in sorted(at):
         pid = at[pos]
@@ -6040,20 +6041,23 @@ def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[st
             body += [f'## {_ahn_generation_label(depth)}', '']
             depth_seen = depth
         name = rp.name(pid) if state == _PERSON_SHOWN else _AHN_LIVING_LABEL
-        line = f'{pos}. {name}'
+        # Bold, not a markdown list: a preview would renumber a list with
+        # gaps (no. 4, 6, 7 shown as 1, 2, 3), and the numbers are the point.
+        line = f'**{pos}.** {name}'
         if pos in also:
             line += f' (also no. {also[pos]})'
         line += _cite_all(fn, edge_sources.get(pos, ()))
         body.append(line)
-        if pos not in also and state == _PERSON_SHOWN:
-            for word, ctype in _VITAL_ROWS:
+        if state == _PERSON_SHOWN:
+            for word, ctype in (() if pos in also else _VITAL_ROWS):
                 claim = _report_pick_vital(rp, pid, ctype)
                 fact = _fact_line(rp, fn, word, claim) if claim else None
                 if fact:
-                    body.append(f'   {fact}')
+                    body.append(f'- {fact}')
             # A couple's marriage prints once, beside the husband (the even
             # number); the subject, who has no partner on the list, gets the
-            # marriages of his own spouses.
+            # marriages of his own spouses. A man met again at a second number
+            # beside a second wife gets that marriage there.
             if pos == 1:
                 partners = sorted(rp.ties(pid, 'spouse'))
             elif pos % 2 == 0 and at.get(pos + 1) not in (None, pid):
@@ -6061,10 +6065,13 @@ def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[st
             else:
                 partners = []
             for sp in partners:
+                if frozenset((pid, sp)) in married:
+                    continue
                 marriage = _report_marriage(rp, pid, sp)
                 text = _fact_text(rp, fn, marriage) if marriage else ''
                 if text and tally.see(sp) == _PERSON_SHOWN:
-                    body.append(f'   Married: {rp.name(sp)}, {text}')
+                    body.append(f'- Married: {rp.name(sp)}, {text}')
+                    married.add(frozenset((pid, sp)))
         body.append('')
     shown = bool(tally.named)
     if rp.state(root) == _PERSON_SHOWN:
@@ -6130,6 +6137,10 @@ def run_ahnentafel(
             return _views_result(EXIT_ERRORS)
         lines, shown = _ahn_lines(rp, pid, generations)
         if not shown:
+            # A file that would not read may be what cut off the only
+            # deceased branch: name it and the fix before refusing.
+            for warning in rp.unreadable_warnings():
+                print(warning, file=sys.stderr)
             print('Everyone this report would list is living or private, so there is '
                   'nothing to print.', file=sys.stderr)
             return _views_result(EXIT_ERRORS)
@@ -6416,7 +6427,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
             "Write a printed Ahnentafel report to generated/views/: the person is\n"
             "number 1, then 2 his father, 3 his mother, 4 his father's father, and\n"
             "so on, with dates, places and a note for each fact. A living relative\n"
-            "is shown as \"a living relative (not named)\"; private records are left\n"
+            "is shown as \"A living relative (not named)\"; private records are left\n"
             "out. The numbering starts at 1 for the person asked about, whatever\n"
             "root_generation says.\n"
             'Requires a fresh .cache/index.sqlite (run `fha index` first).'

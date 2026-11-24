@@ -366,7 +366,7 @@ Print a numbered list of a person's ancestors, each fact with its source.
 Write a printed Ahnentafel report to generated/views/: the person is
 number 1, then 2 his father, 3 his mother, 4 his father's father, and
 so on, with dates, places and a note for each fact. A living relative
-is shown as "a living relative (not named)"; private records are left
+is shown as "A living relative (not named)"; private records are left
 out. The numbering starts at 1 for the person asked about, whatever
 root_generation says.
 Requires a fresh .cache/index.sqlite (run `fha index` first).

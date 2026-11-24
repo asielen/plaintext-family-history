@@ -678,19 +678,19 @@ class AhnentafelTests(_SheetBase):
     def test_numbers_follow_the_father_mother_slots(self):
         text = self.text()
         self.assertIn('# Ancestors of Thomas Edward Hartley', text)
-        self.assertRegex(text, r'(?m)^1\. Thomas Edward Hartley$')
-        self.assertRegex(text, r'(?m)^2\. John Hartley \[\d+\]$')
-        self.assertRegex(text, r'(?m)^3\. Ann Price \[\d+\]$')
-        self.assertRegex(text, r'(?m)^4\. Henry Hartley \[\d+\]$')
-        self.assertRegex(text, r'(?m)^5\. Ruth Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*1\.\*\* Thomas Edward Hartley$')
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* John Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*3\.\*\* Ann Price \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*4\.\*\* Henry Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*5\.\*\* Ruth Hartley \[\d+\]$')
         self.assertIn('## Generation 1', text)
         self.assertIn('## Generation 2: parents', text)
         self.assertIn('## Generation 3: grandparents', text)
 
     def test_facts_carry_notes_and_the_marriage_prints_once(self):
         text = self.text()
-        self.assertIn('   Born: 14 June 1840, Fairview, Breton County, Ohio [', text)
-        self.assertIn('   Died: 3 March 1941, Elm Creek, Kansas [', text)
+        self.assertIn('- Born: 14 June 1840, Fairview, Breton County, Ohio [', text)
+        self.assertIn('- Died: 3 March 1941, Elm Creek, Kansas [', text)
         self.assertEqual(text.count('Married: Ann Price, 10 April 1838, Fairview ['), 1)
         self.assertNotIn('Married: John Hartley', text)
         self.assertIn('Married: Margaret Cole, 2 May 1866, Fairview [', text)
@@ -702,17 +702,17 @@ class AhnentafelTests(_SheetBase):
 
     def test_a_living_parent_is_a_label_and_her_parents_still_print(self):
         text = self.text(M)
-        self.assertRegex(text, r'(?m)^2\. A living relative \(not named\) \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* A living relative \(not named\) \[\d+\]$')
         self.assertNotIn('Walter', text)
-        self.assertRegex(text, r'(?m)^3\. Sarah Cole \[\d+\]$')
-        self.assertRegex(text, r'(?m)^4\. Amos Cole \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*3\.\*\* Sarah Cole \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*4\.\*\* Amos Cole \[\d+\]$')
         self.assertIn('1 living relative is counted but not named', text)
 
     def test_a_living_subject_prints_as_the_label_and_the_line_continues(self):
         text = self.text(MF)
-        self.assertRegex(text, r'(?m)^1\. A living relative \(not named\)$')
+        self.assertRegex(text, r'(?m)^\*\*1\.\*\* A living relative \(not named\)$')
         self.assertIn('# Ancestors of a living relative', text)
-        self.assertRegex(text, r'(?m)^2\. Amos Cole \[\d+\]$')
+        self.assertRegex(text, r'(?m)^\*\*2\.\*\* Amos Cole \[\d+\]$')
         self.assertNotIn('Walter', text)
 
     def test_nobody_shown_is_refused(self):
@@ -759,3 +759,48 @@ class AhnentafelTests(_SheetBase):
         index_mod.build_index(self.root, load_fha_yaml(self.root))
         text = self.text()
         self.assertIn('(also no. 3)', text)
+
+    def test_numbers_survive_a_markdown_preview(self):
+        # A preview renumbers a markdown list with gaps (4, 6, 7 shows as
+        # 1, 2, 3), so a person line must not be a list item.
+        text = self.text()
+        people_part = text.split('## Notes')[0]
+        self.assertNotRegex(people_part, r'(?m)^\d+\. ')
+        self.assertNotRegex(people_part, r'(?m)^ {1,3}\S')
+
+    def test_an_unreadable_file_is_named_before_nothing_to_print(self):
+        # Amos's file has a typo, which cuts off the only deceased line above
+        # the living Walter: he must be told which file, not just "private".
+        path = self.root / 'people' / 'stubs' / f'x__{WF}.md'
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'tier: stub\n', 'tier: stub\nnotes: [unclosed\n'), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        result, _out, err = self.run_ahn(MF)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn(f'x__{WF}.md', err)
+        self.assertIn('fha index', err)
+        self.assertIn('nothing to print', err)
+
+    def test_a_second_marriage_met_at_a_second_number_still_prints(self):
+        # George's son by Alice married George's daughter by Betty: George is
+        # no. 4 beside Alice and no. 6 beside Betty, and both weddings print.
+        gg, ga, gb, fr, ma, sam = ('p-gggggggg01', 'p-gggggggg02', 'p-gggggggg03',
+                                   'p-gggggggg04', 'p-gggggggg05', 'p-gggggggg06')
+        for pid, name, sex in ((gg, 'George Grand', 'M'), (ga, 'Alice First', 'F'),
+                               (gb, 'Betty Second', 'F'), (fr, 'Fred Grand', 'M'),
+                               (ma, 'Mary Grand', 'F'), (sam, 'Sam Grand', 'M')):
+            (self.root / 'people' / 'stubs' / f'x__{pid}.md').write_text(
+                _person(pid, name, sex, 'false'), encoding='utf-8')
+        claims = (_rel('c-grFred0001', fr, [gg, ga]) + _rel('c-grMary0001', ma, [gg, gb])
+                  + _rel('c-grSam00001', sam, [fr, ma])
+                  + _claim('c-grMarA0001', 'marriage', [gg, ga], '1880',
+                           roles=f'{{spouse: [{gg}, {ga}]}}', place='Fairview')
+                  + _claim('c-grMarB0001', 'marriage', [gg, gb], '1890',
+                           roles=f'{{spouse: [{gg}, {gb}]}}', place='Fairview'))
+        (self.root / 'sources' / 'vital-record' / 'x_grand.md').write_text(
+            _source('s-grand00001', 'Grand family Bible', 'Bible.', claims), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text(sam)
+        self.assertIn('(also no. 4)', text)
+        self.assertEqual(text.count('Married: Alice First, 1880'), 1)
+        self.assertEqual(text.count('Married: Betty Second, 1890'), 1)
