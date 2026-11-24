@@ -779,7 +779,7 @@
     {
       "path": ".fha/tools/dates.py",
       "category": "operating",
-      "sha256": "5cdfac60ac7de5821c7d54e6fc94f9aaa471bba5e58b083e8dde99d978181ef1",
+      "sha256": "6512d2900c089052ab866815de041650aa4c3052e86bdce6a014a3b017e1b153",
       "spec_version": "2.29",
       "src": "tools/dates.py"
     },
@@ -1494,7 +1494,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "18240706dca327a79a61f3e21a9469f03b4b1fc3042b5aea0dea2bf2683457b5",
+      "sha256": "bc239fff45a058b620607c161b9fbd0ab55128a3bd746b7c6e17c0912b6edc7b",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },

@@ -166,10 +166,63 @@ class FeastTests(unittest.TestCase):
     def test_orthodox_christmas_crosses_the_year(self):
         self.assertEqual(self._date('Christmas', 1900, 'orthodox'), '1901-01-07')
 
-    def test_western_feast_before_1752_is_cautioned(self):
-        result = dates.run_feast('Michaelmas', 1700)
-        self.assertTrue(any('1752' in c for c in result.data['cautions']))
+    def test_western_feast_before_1582_is_in_the_old_calendar(self):
+        # Before 1582 every Western church kept the old calendar and the old
+        # Easter rule. Published: Easter 1066 fell on 16 April (old style),
+        # the year of the reform Easter 1582 on 15 April (old style).
+        for year, julian in ((1066, '1066-04-16'), (1500, '1500-04-19'),
+                             (1582, '1582-04-15')):
+            with self.subTest(year=year):
+                result = dates.run_feast('Easter', year)
+                self.assertEqual(result.data['julian'], julian)
+                self.assertEqual(result.data['date'], _julian_to_gregorian(
+                    *(int(p) for p in julian.split('-'))))
+                self.assertIn('old calendar', result.data['notes'])
+        result = dates.run_feast('Michaelmas', 1550)
+        self.assertEqual(result.data['julian'], '1550-09-29')
+        self.assertEqual(result.data['date'], '1550-10-09')
+
+    def test_western_feast_1583_to_1752_gives_both_readings(self):
+        # England kept the old calendar and its Easter until September 1752:
+        # Easter 1731 was 18 April old style there (29 April today), and
+        # 25 March in lands already on today's calendar. The place decides.
+        result = dates.run_feast('Easter', 1731)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIsNone(result.data['date'])
+        got = {r['calendar']: (r['julian'], r['gregorian']) for r in result.data['readings']}
+        self.assertEqual(got, {'new': ('1731-03-14', '1731-03-25'),
+                               'old': ('1731-04-18', '1731-04-29')})
+        for r in result.data['readings']:
+            self.assertEqual(r['date'], r['gregorian'])
+            self.assertTrue(r['notes'])
+        # Christmas 1582 is after the reform began (15 October 1582): both.
+        got = {r['calendar']: r['gregorian']
+               for r in dates.run_feast('Christmas', 1582).data['readings']}
+        self.assertEqual(got, {'new': '1582-12-25', 'old': '1583-01-04'})
+        # Easter 1752 was still old style in England; Christmas 1752 was not.
+        self.assertEqual(len(dates.run_feast('Easter', 1752).data['readings']), 2)
+        result = dates.run_feast('Christmas', 1752)
+        self.assertEqual(result.data['date'], '1752-12-25')
+        self.assertNotIn('readings', result.data)
         self.assertEqual(dates.run_feast('Michaelmas', 1850).data['cautions'], [])
+
+    def test_two_reading_feast_prints_both(self):
+        code, out, _ = _run('feast', 'Easter', '1731')
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('29 April 1731', out)
+        self.assertIn('25 March 1731', out)
+        self.assertIn('England', out)
+
+    def test_listed_feast_titles_are_accepted(self):
+        # The refusal lists each feast by its title; typing a listed title works.
+        for church in ('western', 'orthodox'):
+            for title in dates.feast_names(church):
+                with self.subTest(church=church, title=title):
+                    self.assertTrue(dates.run_feast(title, 1880, church).ok)
+        for typed in ("Peter's Fast", "St Peter's Fast"):
+            with self.subTest(typed=typed):
+                self.assertTrue(dates.run_feast(typed, 1880, 'orthodox').ok)
+        self.assertEqual(self._date('Saints Peter and Paul', 1850), '1850-06-29')
 
     def test_whitsunday_notes_the_scottish_term_day(self):
         result = dates.run_feast('Whitsunday', 1850)
@@ -206,6 +259,18 @@ class HebrewTests(unittest.TestCase):
         got = {r['hebrew']: r['gregorian'] for r in result.data['readings']}
         self.assertEqual(got, {'14 Adar I 5784': '2024-02-23',
                                '14 Adar II 5784': '2024-03-24'})
+
+    def test_plain_thirtieth_of_adar_in_a_leap_year_is_adar_one(self):
+        # Adar II always has 29 days, so a 30th of Adar in a leap year can
+        # only be Adar I: one reading, not a refusal.
+        result = dates.run_convert('30 Adar 5784', 'hebrew')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(result.data['date'], '2024-03-10')
+        self.assertEqual(result.data['hebrew'], '30 Adar I 5784')
+
+    def test_more_month_spellings(self):
+        self.assertEqual(self._greg('30 Marheshvan 5630'), '1869-11-04')
+        self.assertEqual(self._greg('14 Адар I 5784'), '2024-02-23')
 
     def test_plain_adar_in_a_common_year_is_one_day(self):
         self.assertEqual(self._greg('14 Adar 5785'), '2025-03-14')
@@ -252,6 +317,23 @@ class ConvertTests(unittest.TestCase):
         for typed in ('11 Feb 1731/2', '11 February 1731/32', 'February 11, 1731/32'):
             with self.subTest(typed=typed):
                 self.assertEqual(dates.run_convert(typed, 'julian').data['date'], '1732-02-22')
+
+    def test_double_year_after_march_is_refused(self):
+        # A double year covers 1 January to 24 March only; "3 Sep 1731/32"
+        # must not quietly become September 1732.
+        for typed in ('3 Sep 1731/32', '25 Mar 1731/32', '11 Jun 1731/2'):
+            with self.subTest(typed=typed):
+                result = dates.run_convert(typed, 'julian')
+                self.assertEqual(result.exit_code, EXIT_ERRORS)
+                self.assertIn('24 March', result.data['error'])
+        self.assertEqual(dates.run_convert('24 Mar 1731/32', 'julian').data['julian'],
+                         '1732-03-24')
+
+    def test_double_year_written_in_full(self):
+        self.assertEqual(dates.run_convert('1 Jan 1699/1700', 'julian').data['julian'],
+                         '1700-01-01')
+        self.assertEqual(dates.run_convert('1 Jan 1799/1800', 'julian').data['julian'],
+                         '1800-01-01')
 
     def test_bad_double_year_is_refused(self):
         result = dates.run_convert('11 Feb 1731/35', 'julian')

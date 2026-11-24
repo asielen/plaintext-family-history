@@ -233,7 +233,7 @@ HEB_MONTHS = {1: 'Nisan', 2: 'Iyar', 3: 'Sivan', 4: 'Tammuz', 5: 'Av', 6: 'Elul'
               12: 'Adar', 13: 'Adar II'}
 HEB_ALIASES = {
     'nissan': 1, 'iyyar': 2, 'tamuz': 4, 'ab': 5, 'tishri': 7, 'heshvan': 8,
-    'marcheshvan': 8, 'cheshvan': 8, 'kislew': 9, 'teves': 10, 'tebet': 10,
+    'marcheshvan': 8, 'marheshvan': 8, 'cheshvan': 8, 'kislew': 9, 'teves': 10, 'tebet': 10,
     'shvat': 11, "sh'vat": 11, 'shebat': 11,
     'adar i': 12, 'adar 1': 12, 'adar rishon': 12,
     'adar alef': 12, 'adar aleph': 12,
@@ -241,7 +241,7 @@ HEB_ALIASES = {
     'veadar': 13,
     'нисан': 1, 'ияр': 2, 'сиван': 3, 'таммуз': 4, 'тамуз': 4, 'ав': 5, 'элул': 6,
     'тишрей': 7, 'хешван': 8, 'мархешван': 8, 'кислев': 9, 'тевет': 10, 'шват': 11,
-    'адар': 12, 'адар ii': 13, 'адар бет': 13,
+    'адар': 12, 'адар i': 12, 'адар алеф': 12, 'адар ii': 13, 'адар бет': 13,
 }
 
 
@@ -365,7 +365,7 @@ def _read_year(text: str) -> tuple[int, str]:
     refused rather than read as some other year."""
     # Three or four figures: "32" alone is a day or a short year, never
     # the year 32.
-    m = re.fullmatch(r'(\d{3,4})(?:/(\d{1,2}))?', text)
+    m = re.fullmatch(r'(\d{3,4})(?:/(\d{1,4}))?', text)
     if not m:
         raise DateInputError
     year = int(m.group(1))
@@ -430,7 +430,7 @@ def parse_civil_date(text: str) -> tuple[int, int | None, int | None, str]:
         (r'(\d{1,2}) ([a-z]+\.?) (\S+)', ('d', 'm', 'y')),   # 11 feb 1731/32
         (r'([a-z]+\.?) (\d{1,2}) (\S+)', ('m', 'd', 'y')),   # february 11 1732
         (r'([a-z]+\.?) (\S+)', ('m', 'y')),                  # feb 1732
-        (r'(\d{3,4}/\d{1,2})', ('y',)),                      # 1731/32
+        (r'(\d{3,4}/\d{1,4})', ('y',)),                      # 1731/32
     )
     for pattern, order in patterns:
         m = re.fullmatch(pattern, low)
@@ -512,6 +512,7 @@ WESTERN_FIXED = {
                    'nativity of st john', 'swietego jana')),
     'peter_paul': ('Sts Peter and Paul', (6, 29),
                    ('sts peter and paul', 'st peter and st paul', 'peter and paul',
+                    'saints peter and paul',
                     'st peter', 'piotra i pawla')),
     'lammas': ('Lammas', (8, 1), ('lammas',)),
     'assumption': ('The Assumption', (8, 15), ('assumption', 'wniebowziecie')),
@@ -625,7 +626,8 @@ ORTHODOX_MOVABLE = {
 # after Easter (an int) and ends the day before Sts Peter and Paul.
 ORTHODOX_FASTS = {
     'apostles_fast': ("Apostles' (Peter's) Fast", 57, (6, 28),
-                      ('петров пост', 'апостольский пост', "apostles' fast", 'peters fast')),
+                      ('петров пост', 'апостольский пост', "apostles' fast", 'peters fast',
+                       "peter's fast", "st peter's fast")),
     'dormition_fast': ('Dormition Fast', (8, 1), (8, 14), ('успенский пост', 'dormition fast')),
     'nativity_fast': ("Nativity (Philip's) Fast", (11, 15), (12, 24),
                       ('филиппов пост', 'рождественский пост', 'nativity fast', 'advent')),
@@ -652,6 +654,7 @@ def feast_key(name: str) -> str:
     n = re.sub(r'\s+', ' ', n).strip()
     while (stripped := _LEADING_WORD.sub('', n)) != n:     # "on the feast of St Martin"
         n = stripped
+    n = re.sub(r'^saints\b', 'sts', n)
     n = re.sub(r'^saint\b', 'st', n)
     n = re.sub(r' day$', '', n)
     return n.strip()
@@ -668,7 +671,8 @@ def find_feast(name: str, church: str) -> tuple[str, str, tuple] | None:
         return None
     for kind, table in zip(('fixed', 'movable', 'fast'), _CHURCH_TABLES[church]):
         for key, row in table.items():
-            if want == key.replace('_', ' ') or any(want == feast_key(w) for w in row[-1]):
+            if (want == key.replace('_', ' ') or want == feast_key(row[0])
+                    or any(want == feast_key(w) for w in row[-1])):
                 return kind, key, row
     return None
 
@@ -747,6 +751,15 @@ def _convert_civil(text: str, cal: str, base: dict) -> Result:
     old = cal == 'julian'
     cal_words = 'the old calendar (Julian, "Old Style")' if old else "today's calendar (Gregorian)"
     data['calendar_words'] = cal_words
+    if double_year and mo is not None and (mo > 3 or (mo == 3 and d is not None and d > 24)):
+        # The two years differ only from 1 January to 24 March. Reading
+        # "3 Sep 1731/32" as the later year would put it a year late.
+        when = f'{d} {_month_name(mo)}' if d is not None else _month_name(mo)
+        raise DateRefused(
+            f'A double year ({shown.split()[-1]}) is written only for 1 January to 24 March, '
+            f'the weeks when the year had begun by one way of counting and not the other. '
+            f'{when} has one year: type the year the record\'s page or entry gives it.',
+            _CIVIL_EXAMPLE)
     if old:
         data['cautions'] += _old_style_caution(y, mo, d, double_year)
 
@@ -844,7 +857,19 @@ def _convert_hebrew(text: str, base: dict) -> Result:
     data = dict(base, julian=None, gregorian=None, hebrew=None, weekday=None,
                 difference_days=None, precision='day', cautions=[_SUNSET])
     if m == 12 and heb_leap(y) and plain_adar:
-        first, second = _hebrew_reading(y, 12, d), _hebrew_reading(y, 13, d)
+        first = _hebrew_reading(y, 12, d)
+        try:
+            second = _hebrew_reading(y, 13, d)
+        except DateRefused:
+            # Adar II has 29 days, so a 30th of Adar can only be Adar I.
+            data.update(first, date=first['gregorian'],
+                        notes=(f'The record uses the Hebrew calendar: {d} Adar {y}, which can '
+                               f'only be {first["hebrew"]} (Adar II has no 30th day). '
+                               "date: is the same day in today's calendar."))
+            data['cautions'].insert(0, (
+                f'{y} is a Hebrew leap year with two Adars, but only Adar I has a 30th day, '
+                f'so this is {first["hebrew"]}.'))
+            return Result(data=data)
         data.update(readings=[first, second], date=None,
                     notes=None)
         data['cautions'].insert(0, (
@@ -863,11 +888,19 @@ def _convert_hebrew(text: str, base: dict) -> Result:
     return Result(data=data)
 
 
-_WESTERN_PRE_1752 = ('Before 1752 England and its colonies (and before 1700 most Protestant '
-                     'German lands) still kept the old calendar, so the feast fell on a '
-                     'different day there. This answer is for a place already using '
-                     'today\'s calendar; for an English record of that time, look the '
-                     'feast\'s old-calendar day up and convert it with --from julian.')
+# The first day of today's calendar (Catholic lands, 15 October 1582) and of
+# Britain's (14 September 1752). Between them a Western feast had two days:
+# one where today's calendar was kept, one where the old calendar and its
+# Easter rule still were (England and its colonies to 1752, most Protestant
+# German lands to 1700). Before 1582 every Western church kept the old one.
+_BRITISH_SWITCH = datetime.date(1752, 9, 14)
+_WESTERN_TWO_DAYS = ('Between 1582 and 1752 the Western churches kept this feast on two '
+                     'different days: Catholic lands had moved to today\'s calendar, while '
+                     'England and its colonies (and most Protestant German lands until '
+                     '1700) still kept the old calendar and its own Easter rule. The '
+                     'record\'s place decides which day it means; both are shown.')
+_WESTERN_OLD_ONLY = ('Before October 1582 every Western church kept the old calendar and '
+                     'its Easter rule, so the feast is worked out in that calendar.')
 _SCOTTISH_WHITSUNDAY = ('In Scottish legal papers (leases, rents, removals) "Whitsunday" '
                         'can mean the term day, 15 May, not the church feast.')
 
@@ -877,7 +910,10 @@ def run_feast(name: str, year: int, church: str = 'western') -> Result:
     `fha date feast`.
 
     A Western feast is computed in today's calendar (its fixed day, or its
-    distance from Western Easter). An Orthodox one is computed in the old
+    distance from Western Easter) once that calendar had begun; before
+    October 1582 in the old calendar with the old Easter rule; and between
+    then and September 1752 both ways, as `readings`, because Catholic
+    lands and England kept it on different days. An Orthodox one is computed in the old
     calendar, as the church keeps it, and then converted. A fast spans two
     days, given as `from` and `to`, and its `date:` is the EDTF interval
     between them. An unknown name is refused with the church's list; a name
@@ -907,37 +943,83 @@ def run_feast(name: str, year: int, church: str = 'western') -> Result:
         return _refused(base, err)
 
 
-def _feast_day(spec, year: int, church: str) -> tuple[int, int, int, int]:
-    """(ordinal, y, m, d) of one feast day; y-m-d in the church's own calendar."""
+def _feast_day(spec, year: int, old: bool) -> tuple[int, int, int, int]:
+    """(ordinal, y, m, d) of one feast day, worked out in the old calendar
+    with the old Easter rule (`old`) or in today's with the Gregorian one;
+    y-m-d is in the calendar it was worked out in."""
     if isinstance(spec, int):
-        if church == 'western':
+        if not old:
             day = western_easter(year) + datetime.timedelta(days=spec)
             return day.toordinal(), day.year, day.month, day.day
         ordinal = julian_to_ordinal(*orthodox_easter(year)) + spec
         return (ordinal, *ordinal_to_julian(ordinal))
     m, d = spec
-    if church == 'western':
+    if not old:
         day = datetime.date(year, m, d)
         return day.toordinal(), year, m, d
     return julian_to_ordinal(year, m, d), year, m, d
 
 
+def _western_reckonings(spec, year: int) -> list[bool]:
+    """Which calendars a Western feast in `year` was kept in: True for the
+    old one, False for today's. Today's counts once it had begun (15 October
+    1582); the old one until Britain left it (14 September 1752)."""
+    out = []
+    if _feast_day(spec, year, False)[0] >= _GREGORIAN_START.toordinal():
+        out.append(False)
+    if _feast_day(spec, year, True)[0] < _BRITISH_SWITCH.toordinal():
+        out.append(True)
+    return out
+
+
+def _western_two_readings(data: dict, spec, year: int, said: str) -> Result:
+    """A Western feast between 1582 and 1752: one reading per calendar, and
+    no single `date:`, because the record's place decides which it is."""
+    readings = []
+    for old in (False, True):
+        ordinal, y, m, d = _feast_day(spec, year, old)
+        g = _date_of(ordinal)
+        jy, jm, jd = ordinal_to_julian(ordinal)
+        if old:
+            where = ('in England and its colonies (to 1752) and other places still on the '
+                     'old calendar')
+            notes = (f'{said} {year} in the record ({d} {_month_name(m)}, old calendar, as '
+                     "England kept it); date: is the same day in today's calendar.")
+        else:
+            where = "in Catholic lands and other places already on today's calendar"
+            notes = f'{said} {year} in the record, in today\'s calendar; date: is that day.'
+        readings.append({'calendar': 'old' if old else 'new', 'where': where,
+                         'julian': _iso_tuple(jy, jm, jd), 'gregorian': g.isoformat(),
+                         'weekday': g.strftime('%A'), 'date': g.isoformat(), 'notes': notes})
+    data.update(readings=readings, julian=None, gregorian=None, weekday=None,
+                date=None, notes=None)
+    data['cautions'].append(_WESTERN_TWO_DAYS)
+    return Result(data=data)
+
+
 def _feast_result(base: dict, kind: str, key: str, row: tuple, year: int, church: str) -> Result:
     title = row[0]
-    old = church == 'orthodox'
     data = dict(base, feast=title, key=key, cautions=[])
+    # The notes line names the feast as the record did ("Pokrov"), so it
+    # reads against the record; the title line above gives the full name.
+    said = re.sub(r'\s+', ' ', str(base['input']).strip()) or title
+    old = church == 'orthodox'
+    western_old_only = False
+    if church == 'western':
+        # Western tables hold no fasts: one day, row[1].
+        kept = _western_reckonings(row[1], year)
+        if len(kept) == 2:
+            return _western_two_readings(data, row[1], year, said)
+        old = western_old_only = kept == [True]
     days = [row[1]] if kind != 'fast' else [row[1], row[2]]
     readings = []
     for spec in days:
-        ordinal, y, m, d = _feast_day(spec, year, church)
+        ordinal, y, m, d = _feast_day(spec, year, old)
         g = _date_of(ordinal)
         jy, jm, jd = ordinal_to_julian(ordinal)
         readings.append({'julian': _iso_tuple(jy, jm, jd), 'gregorian': g.isoformat(),
                          'weekday': g.strftime('%A'), 'own': (y, m, d)})
     cal_note = 'Julian calendar' if old else "today's calendar"
-    # The notes line names the feast as the record did ("Pokrov"), so it
-    # reads against the record; the title line above gives the full name.
-    said = re.sub(r'\s+', ' ', str(base['input']).strip()) or title
     if kind == 'fast':
         first, last = readings
         data['from'] = {k: first[k] for k in ('julian', 'gregorian', 'weekday')}
@@ -953,14 +1035,18 @@ def _feast_result(base: dict, kind: str, key: str, row: tuple, year: int, church
         data.update(julian=r['julian'], gregorian=r['gregorian'], weekday=r['weekday'],
                     date=r['gregorian'])
         y, m, d = r['own']
-        if old:
+        if western_old_only:
+            data['notes'] = (f'{said} {year} in the record ({d} {_month_name(m)}, old '
+                             "calendar); date: is the same day in today's calendar.")
+        elif old:
             data['notes'] = (f'Feast of {said} {year} in the record ({d} {_month_name(m)}, '
                              "Julian calendar); date: is the same day in today's calendar.")
         else:
             data['notes'] = f'{said} {year} in the record; date: is that day.'
     data['own_days'] = [list(r['own']) for r in readings]
-    if not old and year < 1752:
-        data['cautions'].append(_WESTERN_PRE_1752)
+    data['calendar'] = 'old' if old else 'new'
+    if western_old_only:
+        data['cautions'].append(_WESTERN_OLD_ONLY)
     if not old and key == 'pentecost':
         data['cautions'].append(_SCOTTISH_WHITSUNDAY)
     return Result(data=data)
@@ -1043,8 +1129,24 @@ def _render_convert(data: dict) -> None:
 
 def _render_feast(data: dict) -> None:
     church = data['church'].capitalize()
-    old = data['church'] == 'orthodox'
+    old = data.get('calendar') == 'old'
     print(f'{data["feast"]}, {data["year"]}, {church} church:')
+    if data.get('readings'):
+        for r in data['readings']:
+            g = datetime.date.fromisoformat(r['gregorian'])
+            if r['calendar'] == 'old':
+                jy, jm, jd = (int(p) for p in r['julian'].split('-'))
+                print(f'  {r["where"]}: {_plain(jy, jm, jd)} in the old calendar'
+                      f' = {_long(g)} in today\'s calendar')
+            else:
+                print(f'  {r["where"]}: {_long(g)}')
+        for c in data['cautions']:
+            print(c)
+        print()
+        print('For a claim, once the record\'s place tells you which day it means:')
+        for r in data['readings']:
+            print(f'  date: {r["date"]}, and in notes: "{r["notes"]}"')
+        return
     if 'from' in data:
         for word, r in (('from', data['from']), ('to', data['to'])):
             g = datetime.date.fromisoformat(r['gregorian'])
