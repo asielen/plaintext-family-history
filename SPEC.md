@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24**
+**Version 2.40, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -613,7 +613,7 @@ The deliberate style difference (person files underscored, source files hyphenat
 | `front`, `back` | the two faces of a photo, card or page |
 | `page-N` | the Nth page of a multi-page document |
 | `clipping` | a cut newspaper item |
-| `recording`, `transcript`, `translation` | an audio/video recording, a text transcript of it or of a document, an English rendering of a non-English original (`transcription` is an older spelling of `transcript` and means the same) |
+| `recording` (also `audio`), `transcript`, `translation` | an audio/video recording, a text transcript of it or of a document, an English rendering of a non-English original (`transcription` is an older spelling of `transcript` and means the same) |
 | `extracted-text` | the text layer a tool dumped out of a PDF, page-marked (`fha source extract`) |
 | `webpage` | the saved copy of a web page itself, a copy of what the site showed, never the original record |
 | `record` | the record's own image or scan, fetched from a site |
@@ -708,7 +708,8 @@ merged_from:                  # present once another source was merged into this
 created: 2026-06-10
 # ---- optional extensions (Appendix A) ----
 # rights, physical_location (A.6) ·
-# tested_person, provider, test_type on DNA sources (A.8)
+# tested_person, provider, test_type on DNA sources (A.8) ·
+# speakers, quotes (A.10)
 ---
 
 > Purpose block (§16a): a short visible blockquote, not an HTML comment,
@@ -975,6 +976,7 @@ Two privacy flags; no tier system. Flags appear only where they apply.
 
 - `living: true | false | unknown` (Person): drives redaction in any external export, packet, or publication. **`unknown` is treated as living** for all external-facing output; stubs default to `unknown` (uncertainty is safe by default).
 - `restricted`: a marker placed on whatever should stay out of public output: a **source**, a single **claim**, a whole **person**, or a **name** (an entry in any of a person's name fields, `name_variants`, `name_at_birth`, `married_name` or `also_known_as`, written as `{value:, restricted: true}`, how a private prior name is recorded). Plain `restricted: true` is excluded from public output and from packets unless `--include-restricted` is passed. It may carry a free-text **type** instead (`restricted: dna`, `restricted: by-request`, …) when types must be told apart; two are **no-override**: `dna` (always restricted; requires its own `--include-dna`) and `by-request` (a person who asked to be left out, honored by every export path with no opt-in). The marker keeps material in the archive and out of what leaves it; nothing is deleted, and a restricted name still resolves internally (§18).
+- **Recordings.** A voice cannot be redacted the way a name can, and a recording often names people who are still alive. A source's `speakers:` (Appendix A.10) lists who is heard on its recordings. Public output plays or copies a recording only when the source says `rights: recording_ok: true`, every listed speaker is `living: false` and not restricted, and the source itself may be shared. A recording with any living or unknown speaker, or with no `speakers:` list, stays in the archive: public output names the file and plays nothing. The owner's own working copies play every recording.
 
 ## 20. Embedded metadata
 
@@ -1005,6 +1007,7 @@ Generated output that leaves the archive falls into two categories with differen
 
 **Public output, living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and the photos naming them are withheld.
+- A recording is withheld whenever a living or unknown person is heard on it, or no one is listed as heard (§19).
 - A claim naming a living person is withheld when it is that person's own event, since its date and place are their birthday or wedding: the `child` on a birth or baptism, the `deceased` on a death or burial, a `spouse` on a marriage or divorce (§8.3), and on such a claim anyone named with no role. It is also withheld when it is a `relationship` claim, or when everyone it is about is living: the people under `subject`, `head` or `household_member`, or everyone it names when it names none of those.
 - Any other claim naming a living person is kept, since it may be central to a deceased person's story: a baptism with a living godparent, a census of a household with a living child. Its kind, date and place are shown with the deceased people it is about. The living people are not named, linked, listed or labelled on it, and its own wording, which usually names everyone on the record, is not shown. It adds no one to a chart, the family tree, the calendar, or any list of the family.
 - The source of a kept claim keeps its page and its citation. Its page may show the record's own words and images, which can print a living person's name, but never lists, links or labels that person. A source naming a living person and carrying no kept claim stays out, and its citation reads as withheld.
@@ -1137,12 +1140,14 @@ The organization stays a value (§7); `value_org` only groups claims that name t
 rights:                          # optional publication metadata
   holder: family collection      #   who owns/holds copyright
   publication_ok: false          #   false keeps the source out of the site and every export
+  recording_ok: true             #   the owner agrees the source's recordings may play in shared output (§19)
 physical_location:               # optional: where the PHYSICAL original lives (changes over time)
   holder: Sam Rivera
   as_of: 2025-05
 ```
 
 - **`rights`:** `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
+- **`recording_ok`:** `true` lets the source's recordings play in public output, under §19's speaker rule. Absent or anything else, they stay in the archive. A tool never sets it on its own.
 - **`physical_location`:** who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
 
 ### A.7 Person: `gender` and `external_ids`
@@ -1179,3 +1184,15 @@ A dated `history:` carries a place's past names and jurisdictions, so a claim's 
   within: l-baba9801fa               # physically inside Fairview; one hop
   coords: [39.5644, -95.1209]
 ```
+
+### A.10 Recordings: who is heard, and quotes
+
+A source holding a recording may say who speaks on it, and keep short quotes from them:
+
+```yaml
+speakers: [p-de957bcda1, p-cd795c61e0]   # bare IDs of the people heard on the recordings
+quotes:                                  # optional
+  - {speaker: p-de957bcda1, text: "We never locked the door, not once.", anchor: "00:14:32"}
+```
+
+`speakers:` holds bare IDs, as `roles:` does (§8.7): everyone heard, interviewer included, and nobody who is only talked about (they belong on `people:`). It is written only from a speaker the human confirmed. A quote is the speaker's own words exactly as the transcript gives them, at most about forty words, with the `anchor` where they are said (§8.4). A quote is shared under the ordinary rules for its source and its speaker; unlike the recording, it does not need `recording_ok`.

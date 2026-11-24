@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24 · companion to SPEC.md v2.31 (versions track the SPEC)**
+**Version 2.40, 2026-11-24 · companion to SPEC.md v2.40 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -1515,6 +1515,9 @@ The standalone site is the safe-to-share version (SPEC §21): `living`/`unknown`
   - Each wording appears once per build and names the home page, person pages, trees and source pages. Strips and hero/profile/embed lookups use only a fresh catalog.
 - In every catalog state: a file the index lists under a withheld source is never published as any picture, matched as the file on disk (junction, `./`, `../` count); an uncheckable entry holds back pictures of the same name with one warning (picture, missing path, fix). A tag on a merged-away person follows `merged_into`; redact if anyone on the chain is redacted.
 - A catalog `MISSING:` row (§9) is dropped from strips and never preferred over a live file. A bare filename scan honors `photos_ignore:`; an explicit path is honored.
+
+### Recordings (the SPEC §19 rule, applied)
+A recording goes on the shared site only when the source passes SPEC §19: `rights: recording_ok: true`, a non-empty `speakers:` list, every speaker `living: false` and not restricted, and the source itself shareable. Anything else is listed by name with "kept in the archive" and no player. Originals never leave: the site writes a stripped copy into `media/` with `ffmpeg` (copy the sound without re-encoding, drop every tag, since a phone writes the place and device into a recording as a camera does into a photo). `ffmpeg` is optional, like Pillow: without it no recording goes on the shared site, and the build says so once. The workbench and the linked preview play the real files. `fha serve` answers byte-range requests so a recording can start at a given minute. A claim whose `anchor` gives a time in a recording can link to it. `import-recordings` writes `speakers:` only from the speakers the human confirmed, and never sets `recording_ok`. This section is the design for the later site and serve changes; none of it is built yet.
 
 ### Web pictures
 The site makes its own derivatives (at most 1200px, EXIF stripped) into `media/`; originals never leave. Pillow is optional: without it pictures are left out of the standalone site, never copied as originals. Regenerating is idempotent; an old site stays a valid frozen view.
