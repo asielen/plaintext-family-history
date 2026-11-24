@@ -2335,8 +2335,18 @@ class LooseEndsSectionTests(unittest.TestCase):
         self._claim('birth', 'born 1871', [f], date='1871', roles=f'    child: {f}\n')
         self._claim('birth', 'born 1881', [f], date='1881', roles=f'    child: {f}\n')
         body = self._body(self._build(r))
-        self.assertIn('(born between 1871 and 1881)', body)
+        self.assertIn('(records disagree: 1871; 1881)', body)
         self.assertNotIn('1876', body)
+
+    def test_an_approximate_birth_date_keeps_its_hedge(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        self._claim('birth', 'born about 1850', [f], date='1850~',
+                    roles=f'    child: {f}\n')
+        body = self._body(self._build(r))
+        self.assertIn('(born about 1850)', body)
+        self.assertNotIn('1849', body)
 
     def test_a_witness_on_a_waiting_claim_is_not_counted(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')
