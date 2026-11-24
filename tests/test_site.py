@@ -4445,6 +4445,25 @@ class PlacePageTests(_Base):
             self.assertNotIn('then called', rows['Buried 2001'], page)
             self.assertIn('then called Fairview, Kansas Territory', rows['Buried 1859'], page)
 
+    def test_a_name_still_in_use_today_is_never_shown_as_an_old_one(self):
+        # The "to the present" history entry is today's name even when it is
+        # spelt a little differently from `hierarchy:` ("Co." for "County"),
+        # or the place has no `hierarchy:` yet.
+        self._seed_source('s-1111111111', 'Census')
+        places = (('l-1111111111', 'Fairview, Breton County, Kansas'), ('l-3333333333', None))
+        for n, (lid, hierarchy) in enumerate(places):
+            self._seed_place(lid, f'Fairview {n}', hierarchy=hierarchy,
+                             history=(('1858/1861', 'Fairview, Breton Co., Kansas Territory'),
+                                      ('1861/..', 'Fairview, Breton Co., Kansas')))
+            self._seed_dated_claim(f'c-{n}{n}{n}{n}{n}{n}{n}{n}{n}{n}', 's-1111111111', lid,
+                                   'Lived 2001', '2001')
+        self._run(linked=False)
+        for lid, hierarchy in places:
+            row = next(r for r in re.findall(r'<tr[^>]*>(.*?)</tr>',
+                                             self._read(f'places/{lid}.html'), re.S)
+                       if 'Lived 2001' in r)
+            self.assertNotIn('then called', row, hierarchy)
+
     def test_through_the_years_names_the_town_as_it_was_called_then(self):
         self._chronology_fixture()
         self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-1111111111', 'Lived in 1859', '1859')

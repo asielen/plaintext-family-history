@@ -8879,8 +8879,12 @@ class _SiteBuilder:
             return ''
         # place_hierarchy_at follows `within:` itself, so a cemetery with no
         # history of its own takes its town's.
-        then, _period = place_hierarchy_at(self.conn, c['place_id'], c['date_min'], c['date_max'])
+        then, period = place_hierarchy_at(self.conn, c['place_id'], c['date_min'], c['date_max'])
         if not then:
+            return ''
+        # A period open to the present ("1861/..") is today's name however it
+        # is spelt against `hierarchy:`, so it is never an old one.
+        if period and edtf_bounds(period)[1] >= '9999':
             return ''
         # Compare with today's name of the place whose history answered (the
         # town, for a cemetery with none of its own), or a town that lists
