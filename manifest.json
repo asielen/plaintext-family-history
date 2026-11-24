@@ -673,7 +673,7 @@
     {
       "path": ".fha/tools/README.md",
       "category": "operating",
-      "sha256": "75f3d1f0370bec12da4d38acaee9bc634538a5286db449f1358463f9d1e8d6b3",
+      "sha256": "dc82436d3c1dfb1f8dbb9cc1ba8af10160c705c50cb71ed34005aa590b5c1b54",
       "spec_version": "2.31",
       "src": "tools/README.md"
     },
@@ -797,6 +797,13 @@
       "src": "tools/cooccur.py"
     },
     {
+      "path": ".fha/tools/dates.py",
+      "category": "operating",
+      "sha256": "29aa6d000cbed7ac9e5faf05a1fd0985b511db5358d833ac67b4e090728213bc",
+      "spec_version": "2.31",
+      "src": "tools/dates.py"
+    },
+    {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
       "sha256": "bd44dbccdc9c0eb06a0011775a9f06ccd76d468a24fb24f4990c3e5718f92d05",
@@ -806,7 +813,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "86f501ac4770f0714d80826a7be6a1a15178161256dfc073400398cedf946df8",
+      "sha256": "a17fc98aafcc0c592c5053b4f0e054d89b6019b56192623c8f53f9613fa61238",
       "spec_version": "2.31",
       "src": "tools/fha.py"
     },
@@ -1163,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "6cd8f099ada6f7c1a6d48666c913cb21bab562992f1592a2eb01d70c9ae8245f",
+      "sha256": "ca82b00e612b83b127b9f255d7c0086832c672cf342d7a83e11975ddc683e294",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1217,6 +1224,13 @@
       "src": "tools/templates/gallery.html"
     },
     {
+      "path": ".fha/tools/templates/graves.html",
+      "category": "operating",
+      "sha256": "0aada4a225cb5696c55b41d77fe7faeb1f848f77f3ba9f845a70e217baec08b7",
+      "spec_version": "2.31",
+      "src": "tools/templates/graves.html"
+    },
+    {
       "path": ".fha/tools/templates/inbox.html",
       "category": "operating",
       "sha256": "b3b7797a9214e9f9f4bc34dc99a0cc36cb2f35dba496115abd38e92a929a1a17",
@@ -1226,7 +1240,7 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "d1af8497d8a35b4a139023f0f292b22f8bb5a341746693264dbbb51cc91912a4",
+      "sha256": "80f1e9cf7435182583e2561f99a055276523d10003a460a9405275d64f5c0e8d",
       "spec_version": "2.31",
       "src": "tools/templates/index.html"
     },
@@ -1254,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "be781ad9e61e5bd5a9bbae26cf09e79f18a44fe686e8a14ca083cf60c23bbf8f",
+      "sha256": "2fbfffb0c9086eec57f55a6ca7d9c3ff2b79c035fde3c09ab0cc9c8f6afde212",
       "spec_version": "2.31",
       "src": "tools/templates/person.html"
     },
@@ -1422,7 +1436,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2b8c03fc424061d518214d2c61d67b25f8f5b2dd3ae887e6df2c1325570f3103",
+      "sha256": "2abf12d18924b575c2d65db3b5fdaa1b8fd51e8b4fafd9a9e3f58322a6a6d405",
       "spec_version": "2.31"
     },
     {
@@ -1441,13 +1455,13 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "72bd7efaf9bcbbd2d5eb833ddf7dadc09f222fe94545ebcb032e6ef8e9d00bcb",
+      "sha256": "8c91f6ab07de30b5e94cc753170bdb49693aa08e2ce91b5561f9697f3476819d",
       "spec_version": "2.31"
     },
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "d02fedd9600d020f693abe0a2078af80ff6664c84cd7ad596258f815121d5bd0",
+      "sha256": "581534d716ac354b803c708987a40d97985b43ed4842f237f174bd08358b3a0e",
       "spec_version": "2.31"
     },
     {
@@ -1465,7 +1479,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "6cfab78b74bbe7a46c0eff2f581ddde82cc19eb595c804d6b82fd38a15b18e8c",
+      "sha256": "1e571a4ae75d77b7e4bedb3f5f109354828ee8dba657d3e36ace540171cd847f",
       "spec_version": "2.31"
     },
     {
@@ -1514,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "61e1c8cdf7eac16520954f720b3bcd5c9a68ba68096f9a5183a955c0ea8c8f75",
+      "sha256": "444d0f719d412b2d9af8f8442e4347c2d2693fe6c8655b3c13fafc5271ca85cb",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },

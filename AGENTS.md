@@ -292,6 +292,10 @@ fha compare <p-id> [--fact birth|death|…]   every record about one fact for on
                             are copies of one another
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
                             day, or in the week ahead (--week)
+fha date convert DATE --from julian|gregorian|hebrew
+                            a date in the old calendar or the Hebrew one, as today's day
+                            (never convert in your head); fha date feast NAME YEAR
+                            [--church orthodox] for a feast day
 fha repositories [--place l-id] [--year Y] [--record TYPE]   archives and record sites that hold that kind of record for the place and year, with who governed the place then; free/paid and online/in person/by letter on every line
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
