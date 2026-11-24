@@ -26,6 +26,7 @@ Contents:
 16. Search links on the workbench person page
 17. Sounds-alike search
 18. Site search: a script, not a data file
+19. Calendar conversion is a tool
 
 ---
 
@@ -426,3 +427,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **A JSON file fetched at search time.** It fails from `file://`, which is how the site is shared.
 - **The data inline in every page.** Every page would carry every name, for a box most visits never use.
 - **A second copy of the spelling rule in the script.** Two copies drift; the file carries the table instead, and a test checks that both halves fold a list of names alike.
+
+---
+
+## 19. Calendar conversion is a tool
+
+**The rule.** A date the record gives in another calendar (the old Julian calendar, an Orthodox register, a feast day, a Hebrew date) is converted by `fha date`, never by the AI in its head. The command prints the same day in today's calendar, its weekday, and the claim's `date:` and `notes:` lines; the claim's `value` keeps the record's own words. Feast names are matched exactly, and plain "Adar" in a Hebrew leap year prints both readings.
+
+**Why.** The old calendar ran 10 to 13 days behind today's depending on the century, Easter follows a different rule in each church, and a Hebrew year can have 12 or 13 months. A model doing this arithmetic gets the shift or the Easter wrong with no sign that it did, and the wrong day then sits on the timeline looking right. Arithmetic is what a small tested function does best. The Easter and Hebrew calendar code and the Orthodox feast table come from genealogy-mcp (MIT, Igor Melnikov), with its notice above them in `tools/dates.py`; the tests pin dates published elsewhere (the 1582, 1752 and 1918 switch days, Easter tables, hebcal.com).
+
+**Rejected.**
+
+- **Fuzzy feast matching.** The nearest name to a typo is a confident wrong day; an unknown name is refused with the list instead.
+- **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
+- **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.

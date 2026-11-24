@@ -762,6 +762,24 @@ Shared by `find`, `doctor`, `views`, `photoindex`.
 - A missing manifest means stale (once), never fresh. No content hashing.
 - `fha serve` keeps its snapshot manifest in memory (TOOLING_INTERFACE.md).
 
+## 4b. `fha date`: dates in other calendars
+
+```
+fha date convert DATE --from julian|gregorian|hebrew [--json]
+fha date feast NAME YEAR [--church western|orthodox] [--json]
+```
+
+A record may give its date in the old (Julian) calendar, as a church feast, or in the Hebrew calendar. `fha date` works out the day in today's (Gregorian) calendar so no one drafting a claim does the arithmetic in their head. It prints the day, its weekday, and the claim's lines: `value` keeps the record's words, `date:` is the day in today's calendar, `notes:` says which calendar the record used. Pure computation: no archive is read or written, so it runs anywhere; `--root` is accepted and ignored. Not to be confused with `fha calendar` (§7b), the family's anniversaries.
+
+- **`convert`.** Julian or Gregorian input takes the plain forms `normalize_date` reads (`1732-02-11`, `11 Feb 1732`, `February 11, 1732`, `Feb 1732`, `1732`), plus a double year (`11 Feb 1731/32`, `1731/2`, `1699/1700`), read as the later year; the part after the slash must be the next year's last digits, or the date is refused. A double year is written only for 1 January to 24 March, so one on a later day (`3 Sep 1731/32`) is refused rather than read a year late. A hedged or ranged date ("about 1732") is refused: the hedge belongs in the claim, around the converted date. `--from julian` gives today's day and how many days the old calendar ran behind; `--from gregorian` gives the old-calendar day. Both also print the Hebrew date. Hebrew input is a full day: `15 Nisan 5650`, with `Adar I`/`Adar 1`, `Adar II`/`Adar 2`/`Adar Sheni`; Russian month names are read too.
+- **Precision.** A day converts to a day. A month alone prints the span of days it covers in the other calendar, for information, and its `date:` stays the month as written, since converting it would only move its edges. A year alone needs no conversion.
+- **Adar.** Plain "Adar" in a Hebrew leap year could be Adar I or Adar II: both readings are printed, labelled, with no `date:` (exit `0`). Day 30 can only be Adar I (Adar II has 29 days), so it gets that one reading. Adar I or Adar II in a common year is refused, naming the plain form.
+- **The 1752 caution.** An old-calendar date in January to March (to 24 March) before 1752 with a single year gets one line: in England and its colonies the year began on 25 March, so the date may belong to the next year; type both years if the record shows them. Nothing is guessed. A Gregorian date before 15 October 1582 gets a line saying no record of the time used that calendar.
+- **`feast`.** The day a feast or fast fell on in YEAR. `--church western` (the default; Catholic and Protestant) computes in today's calendar, from a fixed day or from Western Easter (the anonymous Gregorian algorithm), once that calendar had begun (15 October 1582). Before then every Western church kept the old calendar and the old Easter rule, so the feast is worked out in those. From 1582 until Britain changed (14 September 1752) a feast had two days, one in Catholic lands on today's calendar and one in England and its colonies on the old one: both are printed, labelled, each with its own `date:` and `notes:`, and no single `date:` (the record's place decides). When the two calendars' Easters fall on the same day the feast gets one reading; `--church orthodox` computes in the old calendar, as the church keeps it, from Orthodox Easter (Meeus's Julian algorithm), and converts. The churches differ: Orthodox Trinity is Pentecost, Western Trinity Sunday is a week later; Orthodox St Michael is 8 November (old calendar), Western Michaelmas 29 September. A fast prints both ends and its `date:` is the EDTF interval between them. Whitsunday gets a line noting the Scottish legal term day (15 May).
+- **Names.** Looked up exactly, after folding accents and case, "Saint"/"St." to "st", dropping "'s" and a closing "Day", and one leading word such as "on", "na", "w" or "на" ("on St. Stephen's Day" is `st stephen`). No fuzzy match: an unknown name exits `2` with the church's list; a name only the other church's list holds names the `--church` to use.
+- **`--json`.** One object on stdout: `input`, `from`, `julian`, `gregorian`, `hebrew`, `weekday`, `difference_days`, `precision`, `date`, `notes`, `cautions`; plain Adar adds `readings`; feasts carry `input`, `year`, `church`, `feast`, `calendar` (`old` or `new`, the one the day was worked out in), and `from`/`to` for a fast; a Western feast with two days carries `readings` (each with `calendar`, `where`, `julian`, `gregorian`, `weekday`, `date`, `notes`) in place of the top-level `calendar`, `julian`, `gregorian`, `weekday`, `date` and `notes`, which are absent or null. A refusal prints `{error, example}` with the input.
+- **Exit codes.** `0` converted (including plain Adar's two readings). `2` input refused (not a date, an unknown feast, a day that does not exist such as 30 February, a Hebrew month the year lacks, a year outside 1 to 9999, or outside 1 to 9998 for a feast), always with an example that works; argparse's own usage error is also `2`.
+
 ---
 
 ## 5. `fha stubs`: stub minter
@@ -1830,7 +1848,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 |---|---|---|---|---|
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
-| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `compare`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §7d, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_compare`, `test_anniversaries`, `test_find`, `test_doctor` |
+| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `compare`, `calendar` (`anniversaries.py`), `date` (`dates.py`), `find`/`search`, `doctor` | §3a, §4a, §4b, §7, §7a, §7b, §7d, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_compare`, `test_anniversaries`, `test_dates`, `test_find`, `test_doctor` |
 | 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary, merge), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
@@ -1857,6 +1875,7 @@ source          ← _lib, yaml, exiftool; pypdf optional
 relate          ← _lib; reads .cache/index.sqlite (accepted relationship edges)
 metrics         ← _lib; reads .cache/index.sqlite (claims, persons, places, sources)
 calendar        ← _lib; reads .cache/index.sqlite (anniversaries.py)
+date            ← _lib; reads nothing (dates.py, pure arithmetic)
 normalize-links ← _lib, yaml
 gedcom import   ← _lib, yaml, csv
 media           ← _lib; ffprobe or PyAV (`av`), either optional
@@ -2031,5 +2050,6 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha photoindex` (scan) | The report's first step; incremental, silent. |
 | `fha photoindex triage` | The report's triage section. |
 | `fha lint --format-check/--format-write` | Cleanup sessions; always diff-previewed. |
+| `fha date convert\|feast` | Claim drafting, whenever a record's date is in another calendar (§4b). |
 
 **Slash surfaces:** the harness exposes each `.claude/skills/{name}/` folder as its own slash command (`/today` is the `today` skill, no separate wrapper file needed). Everything else is conversational; skills auto-trigger on matching requests.
