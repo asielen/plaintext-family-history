@@ -1879,8 +1879,10 @@ def _gedcom_source_paths(archive_root: Path) -> list[Path]:
     return out
 
 
-def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
-    """{source id: {record number: (person id, name)}} from each import's list.
+def _audit_people(archive_root: Path) -> tuple[dict[str, dict[str, tuple[str, str]]],
+                                                dict[str, set[str]]]:
+    """({source id: {record number: (person id, name)}}, {source id: the
+    earlier imports it updated}) from each import's list.
 
     The list in `notes/gedcom-imports/` is read first: it is kept with the
     records, so it is there after `.cache` is lost or on a new computer. The
@@ -1889,8 +1891,13 @@ def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
     earlier download gave a name and nothing else, and everyone a later
     update matched without adding a statement about them. A list written
     before the `origin` and `uid` columns existed reads the same. A missing
-    or unreadable file is simply absent."""
+    or unreadable file is simply absent.
+
+    The `update_of` line says which imports an update came after. Two
+    downloads filed the same day share one `created:` date, so this is what
+    tells the newer one from the older."""
     out: dict[str, dict[str, tuple[str, str]]] = {}
+    earlier: dict[str, set[str]] = {}
     paths: list[Path] = []
     for folder in (archive_root / _IMPORT_LIST_DIR, archive_root / _AUDIT_DIR):
         if folder.is_dir():
@@ -1911,6 +1918,9 @@ def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
         sid = normalize_id(header.get('source_id', ''))
         if not sid:
             continue
+        earlier.setdefault(sid, set()).update(
+            normalize_id(part) for part in header.get('update_of', '').split(',')
+            if part.strip())
         people: dict[str, tuple[str, str]] = {}
         try:
             for row in csv.DictReader(body):
@@ -1923,7 +1933,7 @@ def _audit_people(archive_root: Path) -> dict[str, dict[str, tuple[str, str]]]:
         known = out.setdefault(sid, {})
         for xref, who in people.items():
             known.setdefault(xref, who)
-    return out
+    return out, earlier
 
 
 def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list[Path],
@@ -1940,7 +1950,7 @@ def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list
     planned again."""
     by_pid = {normalize_id(p['pid']): p for p in existing if p['pid']}
     alias_map = person_alias_map({pid: (p['path'], p['meta']) for pid, p in by_pid.items()})
-    audits = _audit_people(archive_root)
+    audits, updated = _audit_people(archive_root)
     priors: list[_PriorImport] = []
     unreadable: list[Path] = []
     for path in record_paths:
@@ -1965,7 +1975,12 @@ def _read_prior_imports(archive_root: Path, fha_config: dict, record_paths: list
         priors.append(_read_prior_import(
             archive_root, fha_config, path, rec, sid, alias_map, by_pid,
             audits.get(sid, {})))
-    priors.sort(key=lambda p: (p.imported, p.sid), reverse=True)
+    # Newest first. `created:` is only a day: on the same day an update comes
+    # after every import it updated (the more it updated, the later it is),
+    # never in the order of its random id, or which download's record
+    # numbers win would be a coin toss and a match he confirmed forgotten.
+    priors.sort(key=lambda p: (p.imported, len(updated.get(p.sid, ())), p.sid),
+                reverse=True)
     return priors, unreadable
 
 
@@ -4207,8 +4222,9 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool, applied: bool = False,
     for alias in plan.unread_copies:
         lines.append(f'  The filed copy of the earlier download ({alias}) could not be '
                      'read, so this plan compares the newer file with your records only. '
-                     'A statement you deleted from your records may be listed as new; '
-                     'check the new statements against what you removed.')
+                     'A statement you deleted from your records may be listed as new. '
+                     'Nothing can be added until that copy is back in its place '
+                     '(restore it from your backup).')
     wrote = 'Nothing was written.' if asked else 'Nothing would be written.'
     if nothing and not plan.held:
         lines.append('  Nothing new: this download says the same as what your archive '
@@ -4216,6 +4232,11 @@ def _update_plan_lines(plan: ImportPlan, *, capped: bool, applied: bool = False,
     elif nothing:
         lines.append('  Nothing new for the people matched for certain, and nothing is '
                      f'added for the others (listed below). {wrote}')
+    if nothing and plan.confirmed:
+        # The yes is kept in the list an import writes, and with nothing to
+        # add no import is written: say so rather than let him think it stuck.
+        lines.append(f'  Your yes to the {plan.confirmed:,} likely matches is not kept, '
+                     'because nothing else was added: the next download will ask again.')
     else:
         # A plan has no source id yet, so it names the two folders.
         slash = '' if applied else '/'
@@ -4696,6 +4717,17 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             'Run fha lint to see what is wrong with the record and fix it, then run '
             'this again. (To import the file as a separate tree anyway, add '
             '--as-new-tree.)', file=sys.stderr)
+        return Result(ok=False, exit_code=EXIT_ERRORS)
+
+    if apply and plan.unread_copies:
+        # Without the earlier download to compare with, a statement he
+        # deleted from his records looks new and would be written back.
+        print(
+            'ERROR: the filed copy of an earlier download of this tree could not be '
+            'read (' + ', '.join(plan.unread_copies) + '), so this import cannot tell '
+            'which statements you deleted from the ones that are new. Nothing was '
+            'written. Put the copy back where it was (restore it from your backup), '
+            'then run this again.', file=sys.stderr)
         return Result(ok=False, exit_code=EXIT_ERRORS)
 
     def _plan_out_text(as_applied: bool) -> str:

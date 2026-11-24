@@ -3913,6 +3913,83 @@ class ConfirmLikelyMatchesTestCase(_ReimportCase):
         self.assertEqual(len(list((self.archive / 'people' / 'stubs').glob('*.md'))), 11)
 
 
+class ReimportReviewFixesTestCase(_ReimportCase):
+    """What a later download must not forget or bring back: a match he
+    confirmed earlier the same day, a yes that could not be kept, and a
+    statement he deleted while the earlier download's copy is missing."""
+
+    @staticmethod
+    def _sisters(*people: tuple[str, ...]) -> str:
+        lines = ['0 HEAD', '1 SOUR OtherApp', '1 CHAR UTF-8']
+        for xref, name, born, *more in people:
+            lines += [f'0 {xref} INDI', f'1 NAME {name}', '1 SEX F',
+                      '1 BIRT', f'2 DATE {born}', *more]
+        return '\n'.join(lines + ['0 TRLR', ''])
+
+    ANNA = ('Anna /Berg/', '1900', '1 OCCU Seamstress')
+    CLARA = ('Clara /Berg/', '1905', '1 OCCU Teacher')
+
+    def _with_sids(self, *sids: str):
+        """Mint these source ids, in order, so which one sorts first is fixed."""
+        import _lib
+        queue = list(sids)
+        real = _lib._mint_candidate
+
+        def candidate(prefix: str) -> str:
+            return queue.pop(0) if prefix.upper() == 'S' and queue else real(prefix)
+        return mock.patch.object(_lib, '_mint_candidate', side_effect=candidate)
+
+    def test_a_match_he_confirmed_is_remembered_on_a_same_day_download(self) -> None:
+        # The first download's id sorts after the second's: the order must
+        # come from which updated which, not from the ids.
+        with self._with_sids('s-zzzzzzzzz2', 's-0000000002'):
+            self._run(self._ged('berg.ged', self._sisters(
+                ('@I1@',) + self.ANNA, ('@I2@',) + self.CLARA)), apply=True)
+            result, _out, _err = self._run(
+                self._ged('berg-v2.ged', self._sisters(
+                    ('@I1@',) + self.CLARA,
+                    ('@I2@',) + self.ANNA + ('1 RESI', '2 PLAC Topeka, Kansas'))),
+                apply=True, confirm_matches=True, confirm=lambda prompt: True)
+        self.assertEqual(result.data['confirmed'], 2)
+        self.assertEqual(result.data['source_id'], 's-0000000002')
+        plan = self._plan(self._ged('berg-v3.ged', self._sisters(
+            ('@I1@',) + self.CLARA + ('1 RESI', '2 PLAC Wichita, Kansas'),
+            ('@I2@',) + self.ANNA + ('1 RESI', '2 PLAC Topeka, Kansas'))))
+        self.assertEqual(plan.held, {})
+        self.assertEqual(plan.prior[0].sid, 's-0000000002')    # the newest first
+        self.assertEqual(plan.matches['@I1@'].pid, self._pid('Clara Berg'))
+        self.assertEqual([c.value for c in plan.claims],
+                         ['Clara Berg: residence, Wichita, Kansas (GEDCOM @I1@)'])
+
+    def test_a_yes_that_cannot_be_kept_says_so(self) -> None:
+        self._run(self._ged('berg.ged', self._sisters(
+            ('@I1@',) + self.ANNA, ('@I2@',) + self.CLARA)), apply=True)
+        before = _tree_digest(self.archive)
+        result, out, _err = self._run(
+            self._ged('berg-v2.ged', self._sisters(
+                ('@I1@',) + self.CLARA, ('@I2@',) + self.ANNA)),
+            apply=True, confirm_matches=True, confirm=lambda prompt: True)
+        self.assertEqual(result.data['confirmed'], 2)
+        self.assertFalse(result.data['applied'])
+        self.assertEqual(_tree_digest(self.archive), before)
+        self.assertIn('the next download will ask again', out)
+
+    def test_a_deleted_statement_is_not_brought_back_without_the_earlier_copy(self) -> None:
+        text = self.record1.read_text(encoding='utf-8')
+        start = text.index("- value: 'Thomas Hartley: occupation Bookkeeper")
+        end = text.index('- value:', start + 1)
+        self.record1.write_text(text[:start] + text[end:], encoding='utf-8')
+        self.filed1.rename(self.filed1.with_suffix('.moved'))
+        before = _tree_digest(self.archive)
+        result, out, err = self._run(SMALL_V2, apply=True)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('restore it from your backup', err)
+        self.assertEqual(_tree_digest(self.archive), before)
+        # The plan alone still runs, and says why it cannot be applied.
+        result, out, _err = self._run(SMALL_V2)
+        self.assertIn('Nothing can be added until that copy is back', out)
+
+
 class OwnerDecisionsTestCase(_ArchiveCase):
     """The owner's answers to the plan's open questions."""
 
