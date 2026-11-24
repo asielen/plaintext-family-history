@@ -362,6 +362,8 @@ Other limits:
 
 **The rule.** `fha lint` warns when one person's own accepted dates cannot all be true: a death before the birth, a lifespan over 120 years, a residence or census record after the death. Every accepted claim of one fact for one person is merged into one range, from its earliest start to its latest end, and a warning fires only when the conflict holds for every date that range allows. An open side (the start of "before 1890") is unknown and never fires one. The rules live in one `_lib` engine that lint and other tools call, and each message names every claim involved and the file it sits in.
 
+Across a family it also warns when a marriage falls before a spouse's birth or after their death, a child is born after the mother died, a parent's age at a birth cannot be right, two births by one mother are a few months apart, or someone is recorded as their own ancestor. Ages and deaths are read over birth ties only: an adoptive or step parent can be younger than the child, or dead before the child joined the family. A parent whose `sex:` is not recorded gets the father's rule, the more generous one (a child born up to a year after the death, a parent up to 80), so a missing field never makes a correct family look wrong.
+
 **Why.** A warning against a correct record teaches him to ignore lint, and then he misses the real ones. The real conflicts come from imports that attach the wrong record and from merges of two people with one name, and those are certain: a death in 1850 and a birth in 1871 cannot both be one woman's. Two disagreeing readings of one birth are a different question, answered by `fha xref`'s contradiction pass, so merging them into one range keeps the two tools from reporting the same thing twice.
 
 **Rejected.**
