@@ -203,6 +203,7 @@ Build always-current summary pages from your records.
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
   fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
+  fha views descendants <p-id>     A printable numbered list of a person's descendants
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -379,6 +380,26 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 |---|---|
 | `p-id` | The person whose ancestors are listed (a living person is allowed). |
 | `--generations` `N` | How many generations to print, the person being the first (default 6, most 12). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views descendants`
+
+Print a numbered list of a person's descendants, each fact with its source.
+
+```text
+Write a printed descendant report to generated/views/: the person is
+1, their children 1.1, 1.2 (oldest first), their grandchildren 1.1.1,
+and so on, with years, marriages and a note for each fact. Living
+descendants are counted under their parent, never named, and their own
+children are left out; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; everyone descended from them is listed. |
+| `--generations` `N` | How many generations to print, the person being the first (default 5, most 12). |
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -1034,12 +1055,16 @@ the same file is refused, and a failed import cleans up after itself.
 
 Downloaded your tree again later? Run this on the newer file. The plan shows
 only what changed since the earlier download: the new people, the new
-statements, and each one the newer file says differently. People it cannot
-match for certain are listed with the reason. (This plan cannot be applied
-yet; it is for checking.)
+statements, and each one the newer file says differently. With --apply only
+those are added. Nothing you have reviewed or edited is changed, and each
+statement that disagrees with what you had gets an open question. People it
+cannot match for certain are listed with the reason, and nothing is added
+for them.
 
-  --plan-out FILE    Also write the full, uncut plan text to FILE.
-  --as-new-tree      Treat a newer download as a separate tree instead.
+  --plan-out FILE      Also write the full, uncut plan text to FILE.
+  --confirm-matches    Show the people the plan names one likely match for,
+                       and ask whether they are the same people.
+  --as-new-tree        Treat a newer download as a separate tree instead.
 ```
 
 | Argument | What it does |
@@ -1048,6 +1073,7 @@ yet; it is for checking.)
 | `--apply` | Write the records (default: print the dry-run plan only). |
 | `--plan-out` `FILE` | Also write the full (uncapped) plan text to FILE; refused inside the archive except its out/ folder. |
 | `--as-new-tree` | Import every person as new even if this looks like a newer download of a tree already imported. Every person arrives a second time, which is usually not what you want. |
+| `--confirm-matches` | For a newer download: show the people the plan could not match for certain but names one likely person for, and ask once whether they are the same people. On yes they are matched for this run; on no, nothing is added for them. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ## `fha wikitree`

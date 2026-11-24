@@ -1843,6 +1843,51 @@
     return ids.length === 1 ? ids[0] : null;
   }
 
+  // Some index entries have no image on FamilySearch: the image is at a partner
+  // archive, and the record page shows a "View on {partner}" badge instead. The
+  // badge's address is in the record's own data. FamilySearch's page code (read
+  // 2026-11-24) takes the record's image description (a DigitalArtifact source
+  // description: the one the opened person's first source names, else the
+  // first) and its `about` (else its persistent identifier); when that address
+  // is not on familysearch.org the image is a partner's, and "Go to {partner}"
+  // opens exactly that address. Same rule here: the address, or null.
+  const FS_ARTIFACT = 'http://gedcomx.org/DigitalArtifact';
+  const FS_PERSISTENT = 'http://gedcomx.org/Persistent';
+  function fsPartnerImageUrl(g, fsId) {
+    const sds = (g && Array.isArray(g.sourceDescriptions)) ? g.sourceDescriptions : [];
+    const artifacts = sds.filter((s) => s && s.resourceType === FS_ARTIFACT);
+    if (!artifacts.length) return null;
+    const person = fsOpenedPerson(g, fsId);
+    const src = person && Array.isArray(person.sources) ? person.sources[0] : null;
+    const ref = String((src && src.descriptionId) || '').replace(/^#/, '');
+    const sd = (ref && artifacts.find((s) => s.id === ref)) || artifacts[0];
+    const ids = (sd.identifiers && sd.identifiers[FS_PERSISTENT]) || [];
+    const href = String(sd.about || (Array.isArray(ids) ? ids[0] : ids) || '').trim();
+    let u;
+    try {
+      u = new URL(href);
+    } catch (e) {
+      return null;
+    }
+    if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+    if (FS_HOST_RE.test(u.hostname)) return null;
+    return u.href;
+  }
+
+  // The partner archives whose image pages Capture follows from a record's
+  // badge, one reader each. A reader takes the badge's address and returns the
+  // page to fetch ({ site, archive, pageUrl, cite, … }) or null. Only archives
+  // seen on a live record are listed; another state archive is a second entry.
+  const FS_PARTNER_PAGES = [wvPartnerPage];
+  function fsPartnerImage(url) {
+    if (!url) return null;
+    for (const read of FS_PARTNER_PAGES) {
+      const page = read(url);
+      if (page) return page;
+    }
+    return null;
+  }
+
   // The record from FamilySearch's data for it (`g`, GEDCOM X) and its identity
   // (`ids`, from fsParseRecordPage). Everything comes from the data, not the
   // page: a single-page site's title tags can still describe an earlier record.
@@ -1857,6 +1902,7 @@
     const imageId = (image && ((/3:1:([A-Z0-9-]+)/i.exec(about(image)) || [])[1] || '').toUpperCase()) ||
       ids.viewerImageId || null;
     const cite = persona.citations && persona.citations[0] && persona.citations[0].value;
+    const partnerImageUrl = imageId ? null : fsPartnerImageUrl(g, ids.fsId);
     const collectionId = coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null;
     const out = {
       record: {
@@ -1871,6 +1917,13 @@
       citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
       title: fsFirstTitle(persona),
     };
+    // The image at a partner archive (no image on FamilySearch): the badge's
+    // address, and the page Capture follows when it can read that archive.
+    if (partnerImageUrl) {
+      out.record.partnerImageUrl = partnerImageUrl;
+      const partner = fsPartnerImage(partnerImageUrl);
+      if (partner) out.record.partnerImage = partner;
+    }
     // A Find a Grave Index entry: the memorial it indexes (only then).
     const memorialId = fsIndexedMemorial(g, collectionId);
     if (memorialId) out.record.memorialId = memorialId;
@@ -2286,8 +2339,11 @@
       if (!info.ok) return { ok: false, error: info.error, slowDown: !!info.slowDown };
       const r = info.record;
       const check = await fsImageCheck(r.imageId, fsDeps());
+      // An image at a partner archive (the "View on wvculture.org" badge):
+      // the status line says Capture brings it, and from where.
       return Object.assign({}, check, {
         record: true, fsId: r.fsId, memorialId: r.memorialId || null,
+        partner: r.partnerImage ? r.partnerImage.archive : null,
         title: [r.name, r.collection].filter(Boolean).join(' - ') || null,
       });
     }
@@ -2943,6 +2999,31 @@
   function wvCitation(info, accessed) {
     return 'West Virginia Archives and History, Vital Research Records (' + info.pageUrl +
       ' : accessed ' + accessed + '), film ' + info.filmNumber + ', image ' + info.imageNumber + '.';
+  }
+
+  // A FamilySearch West Virginia index entry has no image of its own; its
+  // "View on wvculture.org" badge leads to the certificate or register page on
+  // the state archive's site, and Capture follows it so the record itself is
+  // saved beside the index. `url` is the address the badge opens (FamilySearch's
+  // own data names it: lib/familysearch-record.js fsPartnerImageUrl). The page
+  // to fetch (always https), its film and image number, and the citation part
+  // naming where the original is; null when the address is not a view page.
+  function wvPartnerPage(url) {
+    const parsed = wvParsePage(url);
+    if (!parsed) return null;
+    const u = new URL(url);
+    // Fetched by the panel, so only the archive's own page: no other port, no
+    // name or password in the address.
+    if (u.port || u.username || u.password) return null;
+    u.protocol = 'https:';
+    return {
+      site: 'wvculture',
+      archive: 'West Virginia Archives and History',
+      filmNumber: parsed.filmNumber,
+      imageNumber: parsed.imageNumber,
+      pageUrl: u.href,
+      cite: 'image at West Virginia Archives and History, film ' + parsed.filmNumber + ', image ' + parsed.imageNumber,
+    };
   }
   // FHA-SYNC-END wvculture
 
