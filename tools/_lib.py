@@ -483,6 +483,12 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kinship_path              - shortest chain over every edge, "your brother's friend"
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
+#  Connected facts (fha views draft-queue; TOOLING §14b): how a life ties to the family around it
+#    connected_facts           - orphaned or lost a parent before 16, widowed, shared a
+#                                 birthday or baptism day with a sibling, buried with a spouse,
+#                                 how many children died first; one line each, every source cited
+#    CONNECTED_FACT_KINDS      : the kinds, in the order the view lists them
+#
 #  Possible duplicate people (fha report §4b): one person entered twice, scored
 #    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_DAY_SLACK_DAYS,
 #    DUPLICATE_NAME_RATIO: thresholds
@@ -8687,6 +8693,51 @@ def normalize_date(s: str | None) -> str | None:
     if candidate and is_valid_edtf(candidate):
         return candidate
     return None
+
+
+def _chart_year(edtf) -> str:
+    """The year a chart prints for a date, keeping what the date means: a
+    death recorded "before 1920" must not read as a death in 1920. Charts show
+    years only; the person's page carries the full date. Owner decision
+    (2026-11-22) on the short forms:
+
+    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
+      '1840?' are both '1840');
+    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
+    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
+    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
+    - an interval `1918/1920`: '1918–1920', or the one year when both ends
+      fall in it.
+
+    Anything else falls back to the first four-digit run, or '' when there is
+    none. Used by the fan and the family chart alike."""
+    if not edtf:
+        return ''
+    s = str(edtf).strip()
+    if '/' in s:
+        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
+        if ends[0] and ends[1]:
+            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
+        return ends[0] or ends[1]
+    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
+    if m:
+        return f'bef. {m.group(1)}'
+    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
+    if m:
+        return f'aft. {m.group(1)}'
+    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
+    if m:
+        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
+    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
+    if m:
+        return f'abt. {m.group(1) or m.group(2)}'
+    return _chart_bare_year(s)
+
+
+def _chart_bare_year(s: str) -> str:
+    """The first four-digit run of a date's text, or ''."""
+    m = re.search(r'\d{4}', s)
+    return m.group(0) if m else ''
 
 
 def edtf_bounds(s: str | None) -> tuple[str, str]:
@@ -26133,6 +26184,295 @@ def resync_person_profile_rows(
     if resynced_mtimes:
         update_path_manifest(index_manifest_path(archive_root), resynced_mtimes)
     return 'index_error' if had_read_error else 'indexed'
+
+
+# ── Connected facts (fha views draft-queue; TOOLING §14b) ─────────────────────
+#
+# What the family's own records say about how a life was tied to the lives
+# around it: she lost both parents before sixteen, he shared a birthday with
+# his brother, three of her children died before her. A person writing a
+# biography wants these and would otherwise have to spot each one by eye across
+# a dozen sources.
+#
+# Computed, never stored, and only from accepted, non-negated claims. Each fact
+# is one line for the biographer, never prose, and names every source it rests
+# on. Reads only the index. The view is private, so a living relative may be
+# named in a line, with one exception: a child who is living or unknown is
+# counted but never named, dated or cited (the rule write-biography repeats).
+
+_CF_OPEN_MIN = '0001-01-01'
+_CF_OPEN_MAX = '9999-12-31'
+_CF_ORPHAN_AGE = 16
+CONNECTED_FACT_KINDS = ('orphaned', 'lost_parent', 'widowed', 'same_birthday',
+                        'same_day_baptism', 'buried_with_spouse',
+                        'children_at_death')
+
+
+def _cf_usable(row: Any) -> bool:
+    """A claim whose date has a closed start and end (not `[..1871]`, not undated).
+
+    A day-level `~` or `?` ("1875-03-02~") is not widened by the date bounds
+    but is a guess, so it is not usable either: no confident age or "same day"."""
+    if row is None or not (row['date_min'] and row['date_max']):
+        return False
+    if row['date_min'] == _CF_OPEN_MIN or row['date_max'] == _CF_OPEN_MAX:
+        return False
+    edtf = row['date_edtf'] or ''
+    return not (row['date_min'] == row['date_max'] and any(q in edtf for q in '~?%'))
+
+
+def _cf_day_known(row: Any) -> bool:
+    """A claim dated to one exact day (`1875-03-02`, not `~`, `?` or a range)."""
+    return _cf_usable(row) and row['date_min'] == row['date_max'] and len(row['date_min']) == 10
+
+
+def _cf_plus_years(iso: str, years: int) -> str:
+    """The same calendar day `years` later; 29 February becomes 1 March."""
+    y, m, d = int(iso[:4]) + years, int(iso[5:7]), int(iso[8:10])
+    if m == 2 and d == 29 and not (y % 4 == 0 and (y % 100 != 0 or y % 400 == 0)):
+        m, d = 3, 1
+    return f'{y:04d}-{m:02d}-{d:02d}'
+
+
+def _cf_whole_years(earlier: str, later: str) -> int:
+    before_birthday = (int(later[5:7]), int(later[8:10])) < (int(earlier[5:7]), int(earlier[8:10]))
+    return int(later[:4]) - int(earlier[:4]) - (1 if before_birthday else 0)
+
+
+def _cf_age(birth: Any, event: Any) -> str | None:
+    """'6', or '5 or 6' when the records leave it between two ages; None when
+    the dates are too loose to say. An age wider than one year reads as a fact
+    and is only a guess, so it is left out."""
+    if not (_cf_usable(birth) and _cf_usable(event)):
+        return None
+    lo = max(_cf_whole_years(birth['date_max'], event['date_min']), 0)
+    hi = _cf_whole_years(birth['date_min'], event['date_max'])
+    if hi < 0 or hi - lo > 1:
+        return None
+    return str(lo) if lo == hi else f'{lo} or {hi}'
+
+
+def _cf_best(conn: Any, pid: str, ctype: str, cache: dict) -> Any:
+    """The person's own best accepted claim of one type (vital_pick_key
+    order), or None. 'Own' means a record OF them, not of a relative the claim
+    also names (claim_is_own_vital)."""
+    rows = conn.execute(
+        'SELECT DISTINCT c.id, c.source_id, c.type, c.date_edtf, c.date_min, c.date_max, '
+        'c.place_id, c.confidence FROM claims c '
+        'JOIN claim_persons cp ON cp.claim_id = c.id '
+        "WHERE cp.person_id = ? AND c.type = ? AND c.status = 'accepted' "
+        'AND COALESCE(c.negated, 0) = 0', (pid, ctype)).fetchall()
+    own = [r for r in rows if claim_is_own_vital(conn, pid, r['id'], ctype, cache)]
+    return min(own, key=vital_pick_key) if own else None
+
+
+def _cf_family(conn: Any, pid: str) -> dict[str, list[str]]:
+    """Sorted person ids of the parents, spouses, children and siblings, from
+    accepted edges. A step, adoptive or foster edge is not a parent or child
+    here: "lost her father" means the father."""
+    def edges(rel: str, genetic_only: bool) -> list[str]:
+        out = set()
+        for r in conn.execute(
+                'SELECT r.other_id, c.subtype FROM relationships r '
+                'LEFT JOIN claims c ON c.id = r.claim_id '
+                'WHERE r.person_id = ? AND r.rel = ?', (pid, rel)):
+            if not genetic_only or is_genetic_parent_subtype(r['subtype']):
+                out.add(r['other_id'])
+        out.discard(pid)
+        return sorted(out)
+    parents = edges('parent', True)
+    siblings: set[str] = set()
+    for p in parents:
+        for r in conn.execute(
+                'SELECT r.person_id, c.subtype FROM relationships r '
+                'LEFT JOIN claims c ON c.id = r.claim_id '
+                "WHERE r.other_id = ? AND r.rel = 'parent'", (p,)):
+            if is_genetic_parent_subtype(r['subtype']):
+                siblings.add(r['person_id'])
+    siblings.discard(pid)
+    return {'parents': parents, 'spouses': edges('spouse', False),
+            'children': edges('child', True), 'siblings': sorted(siblings)}
+
+
+def connected_facts(conn: Any, pid: str) -> list[dict]:
+    """Facts that tie a person's life to their close family, one line each.
+
+    From accepted, non-negated claims only. Returns
+    `[{'kind', 'line_md', 'sources': [s-id, ...] (sorted, unique),
+       'claims': [c-id, ...]}]`, in `CONNECTED_FACT_KINDS` order and then by
+    date. `line_md` carries `[[p-…|Name]]` and `[[s-…]]` tokens, so it reads in
+    a generated view and goes through the view's link writer.
+    """
+    pid = normalize_id(pid)
+    cache: dict = {}
+    me = conn.execute('SELECT name, sex FROM persons WHERE id = ?', (pid,)).fetchone()
+    if me is None:
+        return []
+    given = (me['name'] or '').split()
+    sex = (me['sex'] or '').upper()
+    # Pronoun from the recorded sex, never guessed from a name; else the name.
+    poss = ('her' if sex == 'F' else 'his' if sex == 'M'
+            else f"{given[0]}'s" if given else 'their')
+    obj = 'her' if sex == 'F' else 'him' if sex == 'M' else (given[0] if given else 'them')
+    names: dict[str, str] = {}
+
+    def link(p: str) -> str:
+        if p not in names:
+            row = conn.execute('SELECT name FROM persons WHERE id = ?', (p,)).fetchone()
+            entry = link_entry(p, row['name'] if row else None)
+            names[p] = entry if entry.startswith('[[') else f'[[{entry}]]'
+        return names[p]
+
+    def word(p: str, male: str, female: str, neutral: str) -> str:
+        row = conn.execute('SELECT sex FROM persons WHERE id = ?', (p,)).fetchone()
+        s = ((row['sex'] if row else '') or '').upper()
+        return male if s == 'M' else female if s == 'F' else neutral
+
+    def tok(row: Any) -> str:
+        return f'[[{fmt_id_display(row["source_id"])}]]'
+
+    def date(row: Any) -> str:
+        return row['date_edtf'] or ''
+
+    fam = _cf_family(conn, pid)
+    birth = _cf_best(conn, pid, 'birth', cache)
+    death = _cf_best(conn, pid, 'death', cache)
+    facts: list[tuple[int, str, str, dict]] = []
+
+    def add(kind: str, when: Any, line: str, rows: list[Any]) -> None:
+        facts.append((CONNECTED_FACT_KINDS.index(kind), (when['date_min'] or '') if when else '',
+                      line, {'kind': kind, 'line_md': line,
+                             'sources': sorted({normalize_id(r['source_id']) for r in rows}),
+                             'claims': sorted({normalize_id(r['id']) for r in rows})}))
+
+    # Orphaned by sixteen, or lost one parent before sixteen.
+    if _cf_usable(birth):
+        limit = _cf_plus_years(birth['date_min'], _CF_ORPHAN_AGE)
+        deaths = {p: _cf_best(conn, p, 'death', cache) for p in fam['parents']}
+        early = [p for p in fam['parents']
+                 if _cf_usable(deaths[p]) and deaths[p]['date_max'] < limit]
+        if len(early) >= 2 and len(early) == len(fam['parents']):
+            early.sort(key=lambda p: (deaths[p]['date_min'], p))
+            latest = max((deaths[p] for p in early), key=lambda r: r['date_max'])
+            parts = [f'{poss} {word(p, "father", "mother", "parent")} {link(p)} '
+                     f'{"died " if i == 0 else ""}{date(deaths[p])} {tok(deaths[p])}'
+                     for i, p in enumerate(early)]
+            add('orphaned', latest,
+                f'Orphaned by {_cf_age(birth, latest) or _CF_ORPHAN_AGE}: {" and ".join(parts)} '
+                f'(born {date(birth)} {tok(birth)}).',
+                [birth] + [deaths[p] for p in early])
+        else:
+            for p in early:
+                d = deaths[p]
+                add('lost_parent', d,
+                    f'Lost {poss} {word(p, "father", "mother", "parent")} {link(p)} at '
+                    f'{_cf_age(birth, d) or "under " + str(_CF_ORPHAN_AGE)}: died {date(d)} {tok(d)} '
+                    f'(born {date(birth)} {tok(birth)}).', [birth, d])
+
+    # Widowed: a spouse died while the person was still living, and the pair
+    # had not divorced.
+    last_seen = conn.execute(
+        'SELECT MAX(c.date_max) FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id '
+        "WHERE cp.person_id = ? AND c.status = 'accepted' AND COALESCE(c.negated, 0) = 0 "
+        "AND c.type NOT IN ('death', 'burial') AND c.date_max IS NOT NULL "
+        'AND c.date_max != ?', (pid, _CF_OPEN_MAX)).fetchone()[0]
+    for sp in fam['spouses']:
+        sd = _cf_best(conn, sp, 'death', cache)
+        if not _cf_usable(sd):
+            continue
+        if death is not None:
+            if not (_cf_usable(death) and sd['date_max'] < death['date_min']):
+                continue
+        elif not last_seen or sd['date_min'] > last_seen:
+            continue    # no death on file: nothing shows they outlived the spouse
+        if conn.execute(
+                'SELECT 1 FROM claims c JOIN claim_persons a ON a.claim_id = c.id '
+                'JOIN claim_persons b ON b.claim_id = c.id '
+                "WHERE c.type = 'divorce' AND c.status = 'accepted' AND a.person_id = ? "
+                'AND b.person_id = ? LIMIT 1', (pid, sp)).fetchone():
+            continue
+        age = _cf_age(birth, sd)
+        add('widowed', sd,
+            f'Widowed{" at " + age if age else ""}: {link(sp)} died {date(sd)} {tok(sd)}.', [sd])
+
+    # A sibling born, or baptised, on the same day.
+    baptism = _cf_best(conn, pid, 'baptism', cache)
+    for kind, mine, ctype in (('same_birthday', birth, 'birth'),
+                              ('same_day_baptism', baptism, 'baptism')):
+        if not _cf_day_known(mine):
+            continue
+        for sib in fam['siblings']:
+            theirs = _cf_best(conn, sib, ctype, cache)
+            if not _cf_day_known(theirs):
+                continue
+            gap = abs(_iso_day_number(mine['date_min']) - _iso_day_number(theirs['date_min']))
+            sib_parents = _cf_family(conn, sib)['parents']
+            half = bool(set(sib_parents) ^ set(fam['parents']))
+            label = word(sib, 'brother', 'sister', 'sibling')
+            if half:
+                label = f'half-{label}'
+            if ctype == 'birth' and gap <= 1:
+                twins = '' if half else ' (twins?)'
+                lead = 'Born the same day as' if gap == 0 else 'Born within a day of'
+                days = date(mine) if gap == 0 else f'{date(mine)} and {date(theirs)}'
+                line = f'{lead} {poss} {label} {link(sib)}{twins}: {days} {tok(mine)} {tok(theirs)}.'
+            elif ctype == 'baptism' and gap == 0:
+                line = (f'Baptised the same day as {poss} {label} {link(sib)}, '
+                        f'{date(mine)} {tok(mine)} {tok(theirs)}.')
+            else:
+                continue
+            add(kind, mine, line, [mine, theirs])
+
+    # Buried in the same registered place as a spouse ("the same place", never "beside").
+    burial = _cf_best(conn, pid, 'burial', cache)
+    if burial is not None and burial['place_id']:
+        for sp in fam['spouses']:
+            theirs = _cf_best(conn, sp, 'burial', cache)
+            if theirs is None or theirs['place_id'] != burial['place_id']:
+                continue
+            prow = conn.execute('SELECT name FROM places WHERE id = ?', (burial['place_id'],)).fetchone()
+            place = link_entry(burial['place_id'], prow['name'] if prow else None)
+            place = place if place.startswith('[[') else f'[[{place}]]'
+            add('buried_with_spouse', burial,
+                f'Buried in the same place as {poss} {word(sp, "husband", "wife", "spouse")} '
+                f'{link(sp)}: {place} {tok(burial)} {tok(theirs)}.', [burial, theirs])
+
+    # How many children died before the person did.
+    if _cf_usable(death) and fam['children']:
+        named: dict[str, list[tuple[str, Any]]] = {'before': [], 'after': [], 'unplaced': []}
+        hidden = {'before': 0, 'after': 0, 'unplaced': 0}
+        for ch in fam['children']:
+            row = conn.execute('SELECT living FROM persons WHERE id = ?', (ch,)).fetchone()
+            cd = _cf_best(conn, ch, 'death', cache)
+            bucket = ('before' if _cf_usable(cd) and cd['date_max'] < death['date_min']
+                      else 'after' if _cf_usable(cd) and cd['date_min'] > death['date_max']
+                      else 'unplaced')
+            if (row['living'] if row else 'unknown') != 'false':
+                hidden[bucket] += 1      # counted from the date alone, never named or cited
+            else:
+                named[bucket].append((ch, cd))
+
+        def group(bucket: str, dated: bool) -> str:
+            items = sorted(named[bucket], key=lambda t: ((t[1]['date_min'] if t[1] else ''), t[0]))
+            bits = [f'{link(c)} {date(r)} {tok(r)}' if dated and r is not None else link(c)
+                    for c, r in items]
+            if hidden[bucket]:
+                bits.append(f'{hidden[bucket]} living or unknown, not named here')
+            return f' ({", ".join(bits)})' if bits else ''
+
+        count = {b: len(named[b]) + hidden[b] for b in named}
+        text = (f'At {poss} death in {date(death)} {tok(death)}, {count["before"]} of {poss} '
+                f'{len(fam["children"])} recorded children had died before {obj}{group("before", True)}')
+        if count['after']:
+            text += f'; {count["after"]} outlived {obj}{group("after", True)}'
+        if count['unplaced']:
+            text += (f'; {count["unplaced"]} {"has" if count["unplaced"] == 1 else "have"} no death '
+                     f'recorded, or none dated closely enough to compare{group("unplaced", False)}')
+        used = [death] + [r for b in ('before', 'after') for _, r in named[b] if r is not None]
+        add('children_at_death', death, text + '.', used)
+
+    facts.sort(key=lambda t: t[:3])
+    return [f[3] for f in facts]
 
 
 # ── Output helpers ────────────────────────────────────────────────────────────
