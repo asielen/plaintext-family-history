@@ -10800,6 +10800,32 @@ class FanChartGeometryTests(unittest.TestCase):
         item = _fan_items(site._render_fan_svg(labels, 5))['Calvin George Hartley']
         self.assertEqual([t for _, t in item['lines']], ['Calvin George', 'Hartley'])
 
+    def test_a_long_name_wraps_to_two_lines_on_a_radial_ring_instead_of_being_cut(self):
+        # Slot 16 sits on the fourth ring, where names run outward. On one
+        # line this name would be shrunk to the floor and then cut short.
+        name = 'Calvin George Hartley'
+        labels = {1: {'name': 'Subject', 'url': None},
+                  16: {'name': name, 'surname': 'Hartley', 'url': None,
+                       'dates': {'birth': '1840', 'death': '1901'}}}
+        item = _fan_items(site._render_fan_svg(labels, 5))[name + ', 1840-1901']
+        self.assertEqual([t for _, t in item['lines']], ['Calvin George', 'Hartley'])
+        self.assertEqual([t for _, t in item['years']], ['1840-1901'])
+        self.assertGreater(item['fs'], _FS_FLOOR)
+
+    def test_a_short_name_stays_on_one_line_on_a_radial_ring(self):
+        labels = {1: {'name': 'Subject', 'url': None},
+                  16: {'name': 'Bo Ford', 'surname': 'Ford', 'url': None}}
+        item = _fan_items(site._render_fan_svg(labels, 5))['Bo Ford']
+        self.assertEqual([t for _, t in item['lines']], ['Bo Ford'])
+
+    def test_a_radial_cell_too_narrow_for_two_name_lines_keeps_one(self):
+        # Width for two lines only: the name stays whole and the years go,
+        # rather than the name wrapping and losing the room it needs.
+        fit = site._fan_fit_radial('Calvin George Hartley', 'Hartley', '1840-1901', 6,
+                                   300.0, _FAN_T_RADIAL,
+                                   (2 * _FAN_LH * _FS_FLOOR + 2) / 300.0)
+        self.assertLessEqual(len(fit['lines']) + (1 if fit['years'] else 0), 2)
+
     def test_a_short_name_stays_on_one_line(self):
         labels = {1: {'name': 'Subject', 'url': None},
                   2: {'name': 'Bo Ford', 'surname': 'Ford', 'url': None}}
@@ -10824,13 +10850,13 @@ class FanChartGeometryTests(unittest.TestCase):
         has_years = bool(items['Anc63 Hartley, 1840-1941']['years'])
         self.assertEqual(has_years, w >= 2 * _FAN_LH * _FS_FLOOR)
         # And a radial cell too narrow for two lines keeps the name only.
-        fit = site._fan_fit_radial('Anc63 Hartley', '1840-1941', 6, 300.0, _FAN_T_RADIAL,
+        fit = site._fan_fit_radial('Anc63 Hartley', 'Hartley', '1840-1941', 6, 300.0, _FAN_T_RADIAL,
                                    (2 * _FAN_LH * _FS_FLOOR - 1 + 2) / 300.0)
         self.assertEqual(fit['years'], '')
         self.assertTrue(fit['lines'])
 
     def test_a_radial_cell_too_narrow_for_one_line_draws_no_text(self):
-        self.assertIsNone(site._fan_fit_radial('Anc63 Hartley', '', 6, 300.0, _FAN_T_RADIAL,
+        self.assertIsNone(site._fan_fit_radial('Anc63 Hartley', 'Hartley', '', 6, 300.0, _FAN_T_RADIAL,
                                                (_FAN_LH * _FS_FLOOR - 1 + 2) / 300.0))
 
     def test_years_use_a_hyphen(self):

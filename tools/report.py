@@ -1547,21 +1547,20 @@ def _tree_components(conn, people: set[str]) -> list[set[str]]:
 
 
 def _loose_birth_phrase(ctx: dict, pid: str) -> str:
-    """` (born 1815)` or, when accepted birth claims give a span or disagree,
-    ` (born between 1871 and 1881)`; '' when no accepted claim dates it.
+    """` (born 1815)`, ` (born about 1810)` or, when accepted birth claims
+    differ, ` (records give 1871; 1881)`; '' when none carries a date.
 
-    Never a midpoint: two records that disagree must not become a third year
-    nobody recorded."""
-    years_lo, years_hi = [], []
-    for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',)):
-        if c['y_lo'] is not None:
-            years_lo.append(c['y_lo'])
-        if c['y_hi'] is not None:
-            years_hi.append(c['y_hi'])
-    if not years_lo or not years_hi:
+    Each date is shown as the record wrote it (humanized, so 'about' and
+    'unconfirmed' survive): never a midpoint, and never the widened year
+    bounds the index keeps for sorting."""
+    dates = sorted({humanize_edtf(c['date'])
+                    for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',))
+                    if c['date']})
+    if not dates:
         return ''
-    lo, hi = min(years_lo), max(years_hi)
-    return f' (born {lo})' if lo == hi else f' (born between {lo} and {hi})'
+    if len(dates) == 1:
+        return f' (born {dates[0]})'
+    return f' (records give {"; ".join(dates)})'
 
 
 def _genetic_parent_sexes(conn, pid: str) -> list[str]:
@@ -1602,9 +1601,10 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
     the index uses when it derives the tree)."""
     waiting: set[str] = set()
     claims = conn.execute(
-        "SELECT id, type, subtype FROM claims WHERE status = 'suggested' "
-        "AND COALESCE(negated, 0) = 0 "
-        "AND type IN ('relationship', 'birth', 'marriage')").fetchall()
+        "SELECT id, type, subtype FROM claims c WHERE c.status = 'suggested' "
+        "AND COALESCE(c.negated, 0) = 0 "
+        f"AND NOT {_PARKED_SQL} "
+        "AND c.type IN ('relationship', 'birth', 'marriage')").fetchall()
     for cid, ctype, subtype in claims:
         pairs = claim_role_pairs(conn.execute(
             'SELECT person_id, role FROM claim_persons WHERE claim_id=? '

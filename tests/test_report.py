@@ -2153,15 +2153,18 @@ class LooseEndsSectionTests(unittest.TestCase):
         return pid
 
     def _claim(self, ctype: str, value: str, pids: list[str], *, subtype: str = '',
-               status: str = 'accepted', roles: str = '', date: str = '') -> None:
+               status: str = 'accepted', roles: str = '', date: str = '',
+               parked: bool = False) -> None:
         cid = f'C-5{len(self._claims):09x}'
+        reviewed = ('  reviewed: 2026-01-01\n' if status != 'suggested' or parked
+                    else '')
         sub = f'  subtype: {subtype}\n' if subtype else ''
         rl = f'  roles:\n{roles}' if roles else ''
         dt = f'  date: "{date}"\n' if date else ''
         self._claims.append(
             f'- value: "{value}"\n  id: {cid}\n  type: {ctype}\n{sub}'
             f'  persons: [{", ".join(pids)}]\n{rl}{dt}'
-            f'  status: {status}\n  reviewed: 2026-01-01\n  confidence: high\n'
+            f'  status: {status}\n{reviewed}  confidence: high\n'
             f'  information: primary\n  evidence: direct\n  notes: x.\n')
 
     def _parent(self, child: str, parent: str, status: str = 'accepted') -> None:
@@ -2335,8 +2338,46 @@ class LooseEndsSectionTests(unittest.TestCase):
         self._claim('birth', 'born 1871', [f], date='1871', roles=f'    child: {f}\n')
         self._claim('birth', 'born 1881', [f], date='1881', roles=f'    child: {f}\n')
         body = self._body(self._build(r))
-        self.assertIn('(born between 1871 and 1881)', body)
+        self.assertIn('(records give 1871; 1881)', body)
         self.assertNotIn('1876', body.split('**Birth years')[0])
+
+    def test_an_approximate_birth_date_keeps_its_hedge(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        self._claim('birth', 'born about 1850', [f], date='1850~',
+                    roles=f'    child: {f}\n')
+        body = self._body(self._build(r))
+        self.assertIn('(born about 1850)', body)
+        self.assertNotIn('1849', body)
+
+    def test_a_year_and_a_full_date_are_not_called_a_disagreement(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        self._claim('birth', 'born 1850', [f], date='1850', roles=f'    child: {f}\n')
+        self._claim('birth', 'born March 1850', [f], date='1850-03-06',
+                    roles=f'    child: {f}\n')
+        body = self._body(self._build(r))
+        self.assertNotIn('disagree', body)
+        self.assertIn('(records give 1850; 6 March 1850)', body)
+
+    def test_a_parked_claim_is_not_counted_as_waiting(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        a = self._person('Ann Waiting', 'F')
+        b = self._person('Bob Waiting', 'M')
+        self._claim('marriage', 'Ann married Bob', [a, b], status='suggested',
+                    roles=f'    spouse: [{a}, {b}]\n')
+        body = self._body(self._build(r))
+        self.assertIn('2 of these 2 are named on family ties', body)
+        self._claims.clear()
+        self._parent(r, f)
+        self._claim('marriage', 'Ann married Bob', [a, b], status='suggested',
+                    parked=True, roles=f'    spouse: [{a}, {b}]\n')
+        body = self._body(self._build(r))
+        self.assertNotIn('review queue', body)
 
     def test_a_witness_on_a_waiting_claim_is_not_counted(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')

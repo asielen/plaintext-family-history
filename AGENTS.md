@@ -278,6 +278,7 @@ fha find --related <ID>      neighborhood of any ID: people/places/sources/claim
 fha find --json <ID|text>    machine-readable result list ([{id,type,label,detail}]);
                             --kind/--limit narrow it
 fha find --sounds-like "NAME"   people whose names sound like NAME in any spelling
+fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), advisory, changes nothing
                             (Daitch-Mokotoff; Jan also finds John); a hint, never a merge
 fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
@@ -286,6 +287,7 @@ fha metrics [<p-id>]         how well documented each person is: birth record, c
                             counts unreviewed claims too)
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
                             day, or in the week ahead (--week)
+fha repositories [--place l-id] [--year Y] [--record TYPE]   archives and record sites that hold that kind of record for the place and year, with who governed the place then; free/paid and online/in person/by letter on every line
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
                             person stubs + suggested claims; plan first, --apply to write

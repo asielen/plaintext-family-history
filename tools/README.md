@@ -48,6 +48,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `places.py` | fha places: place registry hygiene, recurrence detection, linking claims to registered places and registering a backlog in one reviewed batch, geocoding from GeoNames (one reviewed batch) and human-directed edits |
 | `process.py` | fha process: Stage A of the intake pipeline |
 | `reconcile.py` | fha reconcile: heal record inventory paths after files move (TOOLING §9) |
+| `repositories.py` | fha repositories: which archives and record sites hold a place's records in a year (TOOLING §7c). Flags: `--place`, `--country`, `--year`, `--record`, `--topic`, `--access`, `--limit`, `--json`, `--root` all ✓ implemented; read-only, so no `--dry-run`. Exit codes 0 listed, 1 nothing matched, 2 bad arguments, 3 list or index missing |
 | `relate.py` | fha relate: how are two people related? |
 | `reorganize.py` | fha reorganize: bulk-tidy the documents/ root |
 | `report.py` | fha report: the session report (research feed) |
