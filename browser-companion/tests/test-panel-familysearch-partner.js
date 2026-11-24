@@ -135,6 +135,8 @@ test('a West Virginia index entry saves the image behind its badge beside Family
   assert.deepStrictEqual(
     [data.record.partnerImage.filmNumber, data.record.partnerImage.imageNumber, data.record.partnerImage.imageUrl],
     ['1984148', '2530', IMG]);
+  // The record data says this bundle holds the image, as it does.
+  assert.strictEqual(data.record.imageSaved, true);
 });
 
 test('the badge is followed with two plain requests to the state archive, and her login stays at FamilySearch', async () => {
@@ -177,6 +179,7 @@ for (const [what, answer, said] of [
     assert.ok(cap.notes.includes('The image is at ' + VIEW + ' (image at West Virginia Archives and History, film 1984148, image 2530).'));
     // The citation is FamilySearch's alone: this source does not hold the image.
     assert.ok(!/image at West Virginia/.test(cap.citation));
+    assert.strictEqual((await recordData(p.written[0])).record.imageSaved, false);
     assert.match(p.result(), /could not be fetched/);
     assert.match(p.result(), /drop it into the panel and press Capture again/);
   });

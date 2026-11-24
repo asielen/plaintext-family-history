@@ -2155,8 +2155,10 @@
     const partnerSaved = !!partner && assets.some((a) => a.role === 'record' && a.mode === partner.site);
     // Whether THIS bundle holds the image - not a link to it, not a screen
     // capture standing in for it. Seen It counts the image as saved only on
-    // this; `imageId` is only the image the record links to.
-    const imageSaved = !!imageKey && !provisional && assets.some((a) => a.role === 'record');
+    // this; `imageId` is only the image the record links to. A record whose
+    // image is at a partner archive holds it too when that picture (or one
+    // dropped in) is saved.
+    const imageSaved = (!!imageKey || !!rec.partnerImage) && !provisional && assets.some((a) => a.role === 'record');
     rec.imageSaved = imageSaved;
     // Asked even when the image is already saved: that image's capture may
     // have been made before its Full-Text panel was open (or before this
