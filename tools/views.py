@@ -165,6 +165,7 @@ from _lib import (
     link_parts,
     claim_source_lookup,
     cited_source_ids,
+    connected_facts,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
     fmt_id_display,       # the one ID form tools write and show: all lowercase,
     bracket_given_name,      # default child token, title-aware - shared with lint W103,
@@ -1691,6 +1692,12 @@ def _body_excluding_sources_region(body: str) -> str:
     return '\n'.join(lines[:content_start] + lines[content_end:])
 
 
+_CONNECTED_FACTS_NOTE = (
+    'Facts that tie this person to their family, worked out from accepted claims. '
+    'Each lists every source it rests on; write them up in your own words and '
+    'cite those sources.')
+
+
 def _generate_draft_queue(
     conn: sqlite3.Connection, person_id: str, archive_root: Path, fmt: str = 'md'
 ) -> Path | None:
@@ -1768,6 +1775,21 @@ def _generate_draft_queue(
     accepted_sids: set[str] = {normalize_id(r['source_id']) for r in accepted_rows}
     uncited_sids = accepted_sids - cited_sids
 
+    # Connected facts: how this life ties to the family around it. Kept while
+    # any source behind a fact is still unwritten, and shown even when every
+    # claim is cited, so a fully cited profile still hands the biographer them.
+    facts = [f for f in connected_facts(conn, person_id)
+             if any(normalize_id(sid) not in cited_sids for sid in f['sources'])]
+    facts_md = ''
+    facts_html = ''
+    if facts:
+        facts_md = ('\n## Connected facts\n\n' + _CONNECTED_FACTS_NOTE + '\n\n'
+                    + ''.join(f'- {f["line_md"]}\n' for f in facts))
+        facts_html = ('<h2>Connected facts</h2>\n<p>' + html_escape(_CONNECTED_FACTS_NOTE)
+                      + '</p>\n<ul>'
+                      + ''.join(f'<li>{_md_inline_to_html(f["line_md"])}</li>' for f in facts)
+                      + '</ul>\n')
+
     out_path = _out_path_for(profile_p, 'draft-queue', person_id)
 
     lines: list[str] = [
@@ -1782,9 +1804,9 @@ def _generate_draft_queue(
                 _render_view_html(
                     archive_root, 'draft-queue', f'Draft Queue: {person_name}',
                     _purpose_block_html('draft-queue')
-                    + '<p>All accepted claims are cited in the profile.</p>\n'),
+                    + '<p>All accepted claims are cited in the profile.</p>\n' + facts_html),
             )
-        lines.append('\nAll accepted claims are cited in the profile.\n')
+        lines.append('\nAll accepted claims are cited in the profile.\n' + facts_md)
         return _write_view_file(out_path, ''.join(lines), _view_links(archive_root))
 
     # Fetch source metadata for uncited sources
@@ -1831,7 +1853,7 @@ def _generate_draft_queue(
             _html_out_path(archive_root, out_path),
             _render_view_html(
                 archive_root, 'draft-queue', f'Draft Queue: {person_name}',
-                '\n'.join(parts) + '\n'),
+                '\n'.join(parts) + '\n' + facts_html),
         )
 
     lines.append(
@@ -1847,6 +1869,7 @@ def _generate_draft_queue(
             date_str = f'({date_edtf})' if date_edtf else '(undated)'
             lines.append(f'  - {claim_row["type"]}: {claim_row["value"]} {date_str}\n')
 
+    lines.append(facts_md)
     return _write_view_file(out_path, ''.join(lines), _view_links(archive_root))
 
 
