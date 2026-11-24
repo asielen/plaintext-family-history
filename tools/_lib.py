@@ -20560,7 +20560,11 @@ def _date_edge(value: Any, end: bool) -> str | None:
     if not m:
         return None
     y, mo, d = m.group(1), m.group(2), m.group(3)
-    return f"{y}-{mo or ('12' if end else '01')}-{d or ('31' if end else '01')}"
+    mo = mo or ('12' if end else '01')
+    if d is None:
+        last = calendar.monthrange(int(y), int(mo))[1] if '01' <= mo <= '12' and int(y) > 0 else 31
+        d = f'{last:02d}' if end else '01'
+    return f'{y}-{mo}-{d}'
 
 
 def place_hierarchy_at(
