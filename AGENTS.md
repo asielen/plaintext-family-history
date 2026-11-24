@@ -284,6 +284,9 @@ fha metrics [<p-id>]         how well documented each person is: birth record, c
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
                             counts unreviewed claims too)
+fha compare <p-id> [--fact birth|death|…]   every record about one fact for one person, side by side: what it
+                            says, when it was written, who told it, firsthand or not, and which records
+                            are copies of one another
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
                             day, or in the week ahead (--week)
 fha packet <p-id>            person export packet

@@ -24,7 +24,7 @@ import argparse
 
 COMMANDS = (
     'id', 'index', 'lint', 'check', 'stubs', 'views', 'doctor', 'find', 'search',
-    'relate', 'metrics', 'calendar', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
+    'relate', 'metrics', 'compare', 'calendar', 'photoindex', 'xref', 'cooccur', 'report', 'packet', 'places',
     'gedcom', 'wikitree', 'process', 'capture', 'convert-mining', 'claim', 'confirm',
     'person', 'source', 'site', 'serve', 'install', 'update-tools',
     'working-copy',
@@ -548,6 +548,7 @@ def build_full_parser() -> argparse.ArgumentParser:
     from find import register as find_register
     from relate import register as relate_register
     from metrics import register as metrics_register
+    from compare import register as compare_register
     from anniversaries import register as calendar_register
     from photoindex import register as photoindex_register
     from xref import register as xref_register
@@ -589,6 +590,7 @@ def build_full_parser() -> argparse.ArgumentParser:
     find_register(subs)
     relate_register(subs)
     metrics_register(subs)
+    compare_register(subs)
     calendar_register(subs)
     photoindex_register(subs)
     xref_register(subs)

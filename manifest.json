@@ -756,6 +756,13 @@
       "src": "tools/claim.py"
     },
     {
+      "path": ".fha/tools/compare.py",
+      "category": "operating",
+      "sha256": "ab1a108f6eba879f0ee1b04c38f872c0aa3540d2c39c27ecb9bb3950293c356f",
+      "spec_version": "2.28",
+      "src": "tools/compare.py"
+    },
+    {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
       "sha256": "68feaa0a089974a81a7807978d381adf649a34f9f5548025c74eddd6ddc45800",
@@ -786,7 +793,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "32c2bfaedac3b1d7d8d5eb83d97df608e86a604aa6e0ec82ee347e51855b8834",
+      "sha256": "b2311d869b1a7df57f2c2776b60bfa1db0bb3812600fc57a504b0d44b911bf30",
       "spec_version": "2.28",
       "src": "tools/fha.py"
     },
@@ -1388,7 +1395,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "570164754a9f0a53d5341338633970f388e88115dbd71c2443c77ead4dcbc789",
+      "sha256": "1a1f7751ea6a0ed80bac3951834902cede58f87e3f1732175a1d74e70f121b17",
       "spec_version": "2.28"
     },
     {
@@ -1413,7 +1420,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "98567748212c70f1dc248daa8cc45502d31ca394d2a360cae812c34a98af149f",
+      "sha256": "b8e22e376d6ff3632d3516f097229cb67cbedb76dd31fba5c8fe0708b3b25d6d",
       "spec_version": "2.28"
     },
     {
@@ -1480,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "64221cb3ead21ff3be8b1fa419262192d9f26a23127ba89711ea46e595e22db0",
+      "sha256": "778de892eda1216383d69b1c8863093a36957784db53f202b7640426e37fcd25",
       "spec_version": "2.28",
       "src": "TOOLING.md"
     },

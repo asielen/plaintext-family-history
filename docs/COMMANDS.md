@@ -29,6 +29,7 @@ current folder.
 - [`fha search`](#fha-search)
 - [`fha relate`](#fha-relate)
 - [`fha metrics`](#fha-metrics)
+- [`fha compare`](#fha-compare)
 - [`fha calendar`](#fha-calendar)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
@@ -514,6 +515,34 @@ nothing is written.
 | `[p-id]` | One person to show in detail, by ID or by full name (default: the direct line) |
 | `--all` | List every person, stubs included (not with a p-id) |
 | `--include-suggested` | Count suggested claims as well as accepted ones |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
+
+## `fha compare`
+
+Every record about one fact of one person, side by side.
+
+```text
+Every record about one fact, side by side.
+
+  fha compare p-xxxxxxxxxx               Which facts of this person have records that disagree
+  fha compare "Mary Smith" --fact birth  Every birth or baptism record in one table: what it says,
+                                         when it was written, who told it, firsthand or not, and
+                                         which records are copies of one another
+  fha compare p-xxxxxxxxxx --fact death  death, marriage, parents, name, residence, or any claim type
+  fha compare p-xxxxxxxxxx --accepted-only   Leave out records not yet reviewed
+  fha compare p-xxxxxxxxxx --include-rejected   Also show rejected and superseded records
+  fha compare p-xxxxxxxxxx --json        The same answer as machine-readable JSON
+
+Read-only: nothing is written.
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person, by ID or by full name |
+| `--fact` `FACT` | birth, death, marriage, parents, name, residence or any claim type (default: list the facts whose records disagree) |
+| `--accepted-only` | Only accepted claims (default also shows suggested and disputed) |
+| `--include-rejected` | Also show rejected and superseded claims |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 

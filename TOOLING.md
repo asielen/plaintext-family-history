@@ -1137,6 +1137,29 @@ Engine: `_lib.family_calendar_events`, the shared engine the site's month panel 
 
 ---
 
+## 7d. `fha compare`: the evidence for one fact, side by side
+
+```
+fha compare <p-id | "Full Name"> [--fact birth|death|marriage|parents|name|residence|<claim type>]
+            [--accepted-only] [--include-rejected] [--json] [--root PATH]
+```
+
+When two records give a person two different birth years, the researcher needs one table with every record about that fact, so that the human and any skill look at the same thing. Read-only: a pure read over the index plus the frontmatter of the sources it shows; nothing is written or stored (SPEC §17b).
+
+**With no `--fact`**, one line per fact whose records disagree: "Birth: 3 records, years 1838 to 1840 (they disagree)". Only birth, death and marriage are checked, since a person moves house and changes jobs, so two residence records that differ are normal. Two records disagree when their date ranges (`date_min..date_max`) do not overlap, or their places differ (different `place_id`, or, both unlinked, a different first part of `place_text`). When nothing disagrees it says so and lists the facts that have records.
+
+**Which claims count for a fact** uses `_lib.vital_subjects`, so a son's birth never lands on his mother: `birth` gathers birth and baptism claims whose own person is the child (or the sole person named); `death` death and burial (`deceased:`); `marriage` marriage (`spouse:`); `parents` relationship claims naming him `child:` plus birth claims that name `parent:` roles; `name` and any other claim type, the claims that name him `subject:` or, with no `subject:` on the claim, everyone it names. A merged person is read through `merged_into` and the output says so. Stubs work.
+
+**Which statuses.** `accepted`, `suggested` (a parked claim is marked) and `disputed` by default; `--accepted-only` narrows to accepted; `--include-rejected` adds `rejected` and `superseded`.
+
+**One row per claim**, in date order: what it says (`value`, `date_edtf`, `place_text`, `place_id`); the source and its date (`source_id`, `source_title`, `source_type`, `source_class`, `source_date`, `repository`, `path`); how long after the event it was recorded (`recorded_after_years`: `{min, max}` from the source's date bounds minus the claim's, `null` when either is undated; text "at the time" within a year, "about N years after", "undated"); who told it (`informants`, from `informant` roles; "not named" when none); the kind of information (`information`: "firsthand" for primary, "secondhand" for secondary, "not known" otherwise); whether it says the fact outright (`evidence`: direct, indirect, negative); `status`, `reviewed`, `confidence`; `same_origin_as`; `links` (`corroborates`/`contradicts` targets, with their row number when that claim is in the table); `anchor`.
+
+**Same origin** means the rows are one piece of evidence, not several: two claims on one source; two sources that are one record saved from two sites (the rule of lint W162: one collection group in `record_collections.json`, the same subject in the saved site data, a person in common, agreeing dates); and, labelled "someone's tree", claims from sources written by `fha gedcom import` (`subtype: gedcom`) or a `source_type: website` source with "tree" in its title.
+
+**Exit codes.** `0` shown; `1` no claims for that fact (the message names the facts that do have records); `2` bad arguments or an ambiguous name (candidates with their IDs listed); `3` no index or an unreadable one.
+
+---
+
 ## 8. `fha packet`: person data dump
 
 `fha packet p-de957bcda1 [-o out/] [--include-research] [--include-restricted] [--include-dna] [--no-photos] [--dry-run] [--overwrite]`
@@ -1752,7 +1775,7 @@ Build the layers in order. Each one needs only the layers above it, and a layer 
 |---|---|---|---|---|
 | 1 | Foundation | `_lib`, `fha.py` dispatcher, `id`, `index`, `stubs` | §1, §2, §4, §5 | `test_lib_*`, `test_id`, `test_id_case_insensitive`, `test_mint_scan`, `test_fha_cli`, `test_alias_layer`, `test_vital_pick`, `test_inclusive_naming`, `test_regnal_names`, `test_root_generation`, `test_index`, `test_index_freshness`, `test_freshness_manifest`, `test_stubs` |
 | 2 | Lint and the review gate | `lint` (every E/W code, incl. the event-role checks E021/W147-W149 and the old-form codes W150-W154), `claim` (moves, batches, `--clear`, `claim new`, the event-role refusal, `--confirm-deceased`) | §3, §3b | `test_lint`, `test_lint_relationships`, `test_lint_w137`, `test_claim`, `test_provisional_vitals` |
-| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_anniversaries`, `test_find`, `test_doctor` |
+| 3 | Views and lookup | `views` (timeline, sources-index, draft-queue, summary, brackets incl. `--realign`/`--fix-promote`, tree, clean, refresh), `relate`, `metrics`, `compare`, `calendar` (`anniversaries.py`), `find`/`search`, `doctor` | §3a, §4a, §7, §7a, §7b, §7d, §14b | `test_views`, `test_views_*`, `test_brackets_spouse_w120`, `test_bracket_names`, `test_folder_names_windows_safe`, `test_bloodline_ahnentafel`, `test_relate`, `test_metrics`, `test_compare`, `test_anniversaries`, `test_find`, `test_doctor` |
 | 4 | Record write-backs | `person` (new, set-*, rename, relate, estimate, edit, note, promote), `source` (note, extract, clear-keyword, set-primary, merge), `normalize-links` | §3c, §3d | `test_person`, `test_person_names`, `test_graduation`, `test_source`, `test_source_*`, `test_normalize_links` |
 | 5 | Photo catalog | `photoindex` (scan, find, triage, report, reconcile, tag-person, set-summary, gallery), `reconcile` | §9, §15b | `test_photoindex`, `test_reconcile`, `test_embedded_keywords` |
 | 6 | Detection and write-back | `xref`, `cooccur`, `confirm` (incl. `confirm merge`), `find --related` | §14a, §14a2, §14a3, §4a | `test_xref`, `test_cooccur`, `test_confirm`, `test_confirm_merge`, `test_merged_privacy`, `test_merged_survivor` |
@@ -1897,6 +1920,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha search <words>` (T C) | The plainest search verb, for a human who never read the docs; identical to `fha find --text`. The positional phrase is joined with spaces, so `fha search rose hartley` works unquoted. |
 | `fha relate <p-a> <p-b>` (T C) | "How are these two related?" The blood relationship (cousin/removal, half), the tie by marriage when there is no blood tie (brother-in-law, stepmother, uncle by marriage) and the shortest social path between any two people, derived from accepted relationship claims. |
 | `fha metrics [<p-id>]` (T C) | "Who still lacks a birth record, a census, a marriage record?" Five completeness checks per person, the direct line by generation, and archive totals (§7a). `--include-suggested` counts suggested claims too. |
+| `fha compare <p-id> [--fact …]` (T C) | "Which birth year is right?" Every record about one fact of one person in one table: what it says, when it was written, who told it, firsthand or not, and which records are copies of one another (§7d). Read-only. |
 | `fha calendar [WHEN]` (T C) | "What happened in the family this month?" Births, marriages, deaths and arrivals on a day, in a month, or in the week ahead (§7b). |
 
 ### Occasional (setup, migration, publication moments)
