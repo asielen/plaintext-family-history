@@ -104,7 +104,7 @@
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "42ef5d0a582baa3cd31a74488da6140fcfe458dc1456a5385ee5017736e82461",
+      "sha256": "c5308bef20206fead669dfe72e05220d3a984ecd73e43a052336ad9be47f6228",
       "spec_version": "2.29",
       "src": ".claude/skills/research-next/SKILL.md"
     },
@@ -272,7 +272,7 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "42ef5d0a582baa3cd31a74488da6140fcfe458dc1456a5385ee5017736e82461",
+      "sha256": "c5308bef20206fead669dfe72e05220d3a984ecd73e43a052336ad9be47f6228",
       "spec_version": "2.29"
     },
     {
