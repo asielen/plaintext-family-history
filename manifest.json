@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.29",
-  "generated": "2026-11-23",
+  "generated": "2026-11-24",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -181,7 +181,7 @@
     {
       "path": ".agents/skills/write-records-request/SKILL.md",
       "category": "operating",
-      "sha256": "4e1afb844572b7c0a7318db09ee331e131e28f970a4b1d95a4c56cdfcb9e0ab7",
+      "sha256": "ba4ccdf2fc08900b7fe37eae50ad742a7a746ee223bb261a93cc3ae9bd510c2f",
       "spec_version": "2.29",
       "src": ".claude/skills/write-records-request/SKILL.md"
     },
@@ -338,7 +338,7 @@
     {
       "path": ".claude/skills/write-records-request/SKILL.md",
       "category": "operating",
-      "sha256": "4e1afb844572b7c0a7318db09ee331e131e28f970a4b1d95a4c56cdfcb9e0ab7",
+      "sha256": "ba4ccdf2fc08900b7fe37eae50ad742a7a746ee223bb261a93cc3ae9bd510c2f",
       "spec_version": "2.29"
     },
     {
