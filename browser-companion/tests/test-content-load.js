@@ -1028,3 +1028,13 @@ test('a "slow down" from WikiTree on a cited file stops the rest and is passed o
   assert.match(info.hosted[0].error, /HTTP 429/);
   assert.ok(info.hosted.slice(1).every((h) => /slow down/.test(h.error)), JSON.stringify(info.hosted));
 });
+
+test('a "slow down" on the profile itself: the page is read instead, nothing more is asked, and the panel is told', async () => {
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: async () => ({ ok: false, status: 429, text: async () => '' }) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.via, 'page');
+  assert.strictEqual(info.slowDown, true);
+  assert.strictEqual(page.calls.length, 1);
+});

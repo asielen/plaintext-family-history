@@ -2980,6 +2980,8 @@
   // Pages that are WikiTree's own, never a person: [[Space:…]] is a free-space
   // page (it may hold a transcription), [[Image:…]] / [[File:…]] an uploaded
   // file; the rest are help, categories and the like.
+  // A sub-heading under Sources that holds thanks or research notes, not sources.
+  const WT_NOT_SOURCES_RE = /^(acknowledge?ments?|thanks|thank you|credits?|research notes?|see also|disclaimers?)\s*:?$/i;
   const WT_NAMESPACES = /^(space|image|file|category|help|project|template|special|docs|wikitree|user|media)$/i;
   // The original of an uploaded file: /photo.php/{h}/{hh}/{name}, never a /thumb/.
   const WT_ORIGINAL_PATH_RE = /^\/photo\.php\/[0-9a-f]\/[0-9a-f]{2}\/[^/]+\.[A-Za-z0-9]{2,5}$/;
@@ -3444,15 +3446,19 @@
     const head = lines.findIndex((l) => /^\s*(={2,6})\s*'*\s*sources?\s*'*\s*\1\s*$/i.test(l) ||
       /^\s*={2,6}\s*sources?\s*={2,6}\s*$/i.test(l));
     if (head >= 0) {
+      const level = (/^\s*(=+)/.exec(lines[head]) || ['', '=='])[1].length;
       let cur = null;
+      let skip = false;
       for (let i = head + 1; i < lines.length; i++) {
         const line = lines[i];
-        const h = /^\s*(={2,6})[^=].*?={2,6}\s*$/.exec(line);
-        // Any heading ends the list: a sub-heading such as Acknowledgements
-        // holds thanks and import notes, not sources (the page path stops there too).
-        if (h) break;
+        const h = /^\s*(={2,6})\s*([^=].*?)\s*={2,6}\s*$/.exec(line);
+        // A heading at the Sources level ends the list. A sub-heading such as
+        // Primary sources continues it; Acknowledgements (thanks, the import
+        // note) is skipped up to the next heading. The page path does the same.
+        if (h && h[1].length <= level) break;
+        if (h) skip = WT_NOT_SOURCES_RE.test(h[2].replace(/'{2,}/g, '').trim());
         const s = line.replace(/<\/?references\b[^>]*>/gi, '').trim();
-        if (!s || h) {
+        if (!s || h || skip) {
           cur = null;
           continue;
         }
@@ -3508,9 +3514,19 @@
     const head = wtElements(root, (e) => /^H[23]$/.test(wtTag(e)) && /^sources?$/i.test(wtText(e)))[0];
     if (head && head.parentNode) {
       const kids = Array.from(head.parentNode.childNodes || []);
+      const level = Number(wtTag(head).slice(1));
+      let skip = false;
       for (let i = kids.indexOf(head) + 1; i < kids.length; i++) {
         const n = kids[i];
-        if (/^H[1-3]$/.test(wtTag(n))) break;
+        const hm = /^H([1-6])$/.exec(wtTag(n));
+        // Same rule as wtSources: a heading at the Sources level ends the list,
+        // a sub-heading of thanks or research notes is skipped.
+        if (hm && Number(hm[1]) <= level) break;
+        if (hm) {
+          skip = WT_NOT_SOURCES_RE.test(wtText(n));
+          continue;
+        }
+        if (skip) continue;
         if (wtTag(n) === 'P') fromNode(n, 'list');
         else if (wtTag(n) === 'UL' || wtTag(n) === 'OL') {
           if (/(^|\s)references(\s|$)/.test(wtAttr(n, 'class') || '')) continue;
@@ -3753,6 +3769,9 @@
   async function wikitreeInfo(today) {
     const parsed = wtParsePage(location.href);
     if (!parsed) return { ok: false, error: 'this is not a WikiTree profile or free-space page' };
+    // A "slow down" (429/503) from WikiTree stops the requests that follow, and
+    // the panel is told, so it downloads nothing more from WikiTree this time.
+    let slowDown = false;
     let api = null;
     let apiError = null;
     try {
@@ -3760,6 +3779,7 @@
       if (!api.ok) apiError = api.error;
     } catch (e) {
       apiError = 'WikiTree’s public data service did not answer (' + ((e && e.message) || e) + ')';
+      if (e && (e.status === 429 || e.status === 503)) slowDown = true;
     }
     // The page is read when the service refused, or shared no biography.
     const page = api && api.ok && api.bio != null ? null : wtRecordFromPage(document, parsed);
@@ -3785,9 +3805,6 @@
     } else {
       return { ok: false, error: (page && page.error) || apiError };
     }
-    // A "slow down" (429/503) from WikiTree stops the reads that follow, and the
-    // panel is told, so it downloads nothing more from WikiTree this time.
-    let slowDown = false;
     let photos = [];
     let photosTotal = null;
     let photosError = null;
@@ -3795,7 +3812,7 @@
       const head = wtElements(document, (e) => wtAttr(e, 'id') === 'wt-photos')[0];
       const shown = head ? Number(wtAttr(head, 'data-photo-total')) : NaN;
       if (Number.isFinite(shown)) photosTotal = shown;
-      if (shown !== 0) {
+      if (shown !== 0 && !slowDown) {
         try {
           photos = wtPhotosFromApi(await wtGetJson(wtApiUrl(record.wikitreeId, 'photos')));
         } catch (e) {

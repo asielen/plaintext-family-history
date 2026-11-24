@@ -1123,6 +1123,18 @@ class CaptureTestCase(unittest.TestCase):
         self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/1890-12'))
         self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/_Hartley-12'))
 
+    def test_wikitree_sources_under_sub_headings_stay_but_thanks_do_not(self) -> None:
+        # Review of #512: Primary/Secondary sub-headings hold sources; Acknowledgements does not.
+        from capture_recipes import wikitree
+        root = wikitree._tree('<html><body><div class="body-text"><h2 id="Sources">Sources</h2>'
+                                   '<h3>Primary sources</h3><ul><li>Fairview marriage register, 1866.</li></ul>'
+                                   '<h3>Acknowledgements</h3><ul><li>Thanks to Edith Hartley.</li></ul>'
+                                   '<h3>Secondary sources</h3><ul><li>Webb, A History of Fairview.</li></ul>'
+                                   '<h2>Research Notes</h2><ul><li>Check the Reed letters.</li></ul>'
+                                   '</div></body></html>')
+        self.assertEqual([e['text'] for e in wikitree._sources(root)],
+                         ['Fairview marriage register, 1866.', 'Webb, A History of Fairview.'])
+
     def test_wikitree_sources_list_puts_linked_ones_first(self) -> None:
         from capture_recipes import wikitree
         html = ('<html><body><h1>Calvin Hartley</h1><div class="body-text"><h2 id="Biography">Biography</h2>'

@@ -34,6 +34,9 @@ PRIORITY = 36
 _ORIGIN = 'https://www.wikitree.com'
 _PROFILE_RE = re.compile(r'^(?:Profile:)?([^\W\d_][^:#?/]*-\d+)$')  # a letter first, in any alphabet (Åberg-55)
 _SPACE_RE = re.compile(r'^Space:(.+)$', re.I)
+# A sub-heading under Sources that holds thanks or research notes, not sources
+# (the add-on's WT_NOT_SOURCES_RE).
+_NOT_SOURCES_RE = re.compile(r'^(acknowledge?ments?|thanks|thank you|credits?|research notes?|see also|disclaimers?)\s*:?$', re.I)
 _LABEL_RE = re.compile(r'^(see also|sources?|references?|notes?)\s*:?$', re.I)
 
 
@@ -104,9 +107,18 @@ def _sources(root: _El) -> list[dict]:
     head = _first(root, lambda e: e.tag in ('h2', 'h3') and re.match(r'^sources?$', _text(e), re.I))
     if head is not None and head.parent is not None:
         kids = [c for c in head.parent.children if isinstance(c, _El)]
+        level = int(head.tag[1])
+        skip = False
         for n in kids[kids.index(head) + 1:]:
-            if n.tag in ('h1', 'h2', 'h3'):
-                break
+            # A heading at the Sources level ends the list; a sub-heading of
+            # thanks or research notes is skipped, other sub-headings continue it.
+            if re.fullmatch(r'h[1-6]', n.tag):
+                if int(n.tag[1]) <= level:
+                    break
+                skip = bool(_NOT_SOURCES_RE.match(_text(n).strip()))
+                continue
+            if skip:
+                continue
             if n.tag == 'p':
                 add(n)
             elif n.tag in ('ul', 'ol') and 'references' not in n.attrs.get('class', '').split():

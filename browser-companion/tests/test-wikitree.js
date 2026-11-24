@@ -331,3 +331,31 @@ test('a profile whose ID starts with an accented letter is still a profile', () 
   assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/-12'), null);
   assert.strictEqual(wt.wtParsePage('https://www.wikitree.com/wiki/1890-12'), null);
 });
+
+// Review of #512 (delta): sub-headings that hold sources (Primary, Secondary)
+// stay in the list, from the wiki text and from the page alike; only a
+// sub-heading of thanks or research notes is left out.
+test('sources under Primary and Secondary sub-headings stay on the list; Acknowledgements does not', () => {
+  const s = wt.wtSources([
+    '== Sources ==',
+    '<references />',
+    '=== Primary sources ===',
+    '* Fairview County marriage register, 1866.',
+    '* 1870 census: [[FamilySearch:ABCD-123]]',
+    '=== Acknowledgements ===',
+    '* Thanks to Edith Hartley for sharing the family Bible.',
+    '=== Secondary sources ===',
+    '* Webb, A History of Fairview (1902).',
+    '== Research Notes ==',
+    '* Check the Reed letters.',
+  ].join('\n'));
+  assert.deepStrictEqual(s.map((e) => e.text), ['Fairview County marriage register, 1866.',
+    '1870 census: [[FamilySearch:ABCD-123]]', 'Webb, A History of Fairview (1902).']);
+  const page = parse('<html><body><div class="body-text"><h2 id="Sources">Sources</h2>' +
+    '<h3>Primary sources</h3><ul><li>Fairview County marriage register, 1866.</li></ul>' +
+    '<h3>Acknowledgements</h3><ul><li>Thanks to Edith Hartley.</li></ul>' +
+    '<h3>Secondary sources</h3><ul><li>Webb, A History of Fairview (1902).</li></ul>' +
+    '<h2>Research Notes</h2><ul><li>Check the Reed letters.</li></ul></div></body></html>');
+  assert.deepStrictEqual(wt.wtSourcesFromPage(page).map((e) => e.text),
+    ['Fairview County marriage register, 1866.', 'Webb, A History of Fairview (1902).']);
+});
