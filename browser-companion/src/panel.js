@@ -1523,6 +1523,81 @@
     });
   }
 
+  // A deed or will on an unindexed film often runs onto the next image. When
+  // he captures a film image, the sources the archive already holds within
+  // FILM_NEIGHBOUR_SPAN images of it on the same film, as Seen It knows them
+  // (fsfilm:{DGS}:{n}): [{ source: 's-…', imageNumber }], nearest first, one
+  // per source. Only a filed source with its id counts (one still waiting in
+  // the inbox has no source to add to yet), and never this image itself.
+  // Empty when the film or image number is not known, or Seen It is absent,
+  // off, slow or knows none: then nothing is asked.
+  const FILM_NEIGHBOUR_SPAN = 2;
+  async function filmNeighbours(info) {
+    const dgs = String((info && info.dgs) || '');
+    const n = info && info.imageNumber;
+    if (!/^[0-9]+$/.test(dgs) || !Number.isInteger(n) || n < 1) return [];
+    const numbers = [];
+    for (let d = 1; d <= FILM_NEIGHBOUR_SPAN; d++) {
+      for (const m of [n - d, n + d]) {
+        if (m >= 1 && !(Number.isInteger(info.imageCount) && m > info.imageCount)) numbers.push(m);
+      }
+    }
+    const key = (m) => 'fsfilm:' + dgs + ':' + m;
+    const held = await seenItHeld(numbers.map(key));
+    const out = [];
+    for (const m of numbers) {
+      const h = held[key(m)];
+      const source = h && h.where === 'archive' && h.source ? h.source.toLowerCase() : null;
+      if (source && !out.some((o) => o.source === source)) out.push({ source, imageNumber: m });
+    }
+    return out;
+  }
+
+  // Ask him whether this film image belongs with a source he already holds
+  // (filmNeighbours), and wait for his answer: the source id he chose, or
+  // null for "No, it's a separate record". Two images are one source only
+  // when he says so (a wrong yes would merge two records into one), so
+  // nothing is chosen for him: the "No" button is the one in focus, and the
+  // capture waits until he presses one.
+  function askAttach(neighbours, imageNumber) {
+    return new Promise((resolve) => {
+      const box = $('attach-ask');
+      const choices = $('attach-ask-choices');
+      const one = neighbours.length === 1;
+      $('attach-ask-text').textContent = one
+        ? 'You already have image ' + neighbours[0].imageNumber + ' of this film as ' + neighbours[0].source +
+          '. Add this image (' + imageNumber + ') to it?'
+        : 'You already have ' + neighbours.map((nb) => 'image ' + nb.imageNumber + ' (' + nb.source + ')')
+          .join(' and ') + ' of this film. Add this image (' + imageNumber + ') to one of them?';
+      choices.textContent = '';
+      // The tab moving on while he decides leaves the question up; his
+      // answer then meets checkTabStillOn, which saves nothing and says the
+      // page changed. It is never taken as a "No".
+      const answer = (source) => {
+        box.hidden = true;
+        choices.textContent = '';
+        resolve(source);
+      };
+      const button = (label, cls, source) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener('click', () => answer(source));
+        choices.appendChild(b);
+        return b;
+      };
+      for (const nb of neighbours) {
+        button(one ? 'Yes, add it to ' + nb.source : 'Add it to ' + nb.source + ' (image ' + nb.imageNumber + ')',
+          'ghost', nb.source);
+      }
+      const no = button('No, it’s a separate record', 'primary', null);
+      box.hidden = false;
+      setStageResult('Waiting for your answer above. Nothing is saved until you choose.', '');
+      if (typeof no.focus === 'function') no.focus();
+    });
+  }
+
   // Where a shared census page is, in words: the record of the household
   // member it was saved with (in this sitting), or the archive source.
   function describeSameImage(same) {
@@ -2276,6 +2351,11 @@
     const info = got.info;
     const imageId = info.imageId;
     notQueued(opts, 'fsimg:' + imageId, 'FamilySearch image ' + imageId);
+    // The next image of a deed he already holds: ask him, before anything
+    // is fetched, whether it belongs with that source. A batch never stops
+    // to ask, so it files a new source as before.
+    const near = opts.forceDownload ? [] : await filmNeighbours(info);
+    const attachTo = near.length ? await askAttach(near, info.imageNumber) : null;
     await checkTabStillOn(recordUrl, ['3:1:' + imageId]);
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
@@ -2341,6 +2421,7 @@
       people: form.people,
       notes,
       recipeHint: 'familysearch',
+      attachTo,
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
     };
     const cap = captureJson.build(fields);
@@ -2350,6 +2431,10 @@
       got.warning ? 'FamilySearch: ' + got.warning + '. The citation names the image and its link only.' : null,
       forcedCopy ? 'A copy of the web page was kept too: with no image, it is what this image’s film and citation are filed with.' : null]
       .filter(Boolean).join('\n') || null);
+    if (attachTo) {
+      $('stage-result').textContent += '\nWhen you file it, this image goes into ' + attachTo +
+        ', the source you said it belongs with.';
+    }
     return {
       key: 'fsimg:' + imageId,
       // An image, not an indexed record: no fsId, so the record-only batch

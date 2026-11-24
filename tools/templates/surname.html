@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}{{ display }} - {{ site_title }}{% endblock %}
+{% block content %}
+{#- One family name (TOOLING §12, "Surname pages"). Every person listed is a
+    person the site already gives a page; the page never counts or hints at
+    people it leaves out. -#}
+<article class="surname">
+  <h1>{{ display }}</h1>
+  {% if also %}<p class="note">Also written {{ also | join(', ') }}.</p>{% endif %}
+  <p>{{ count }} {{ 'person' if count == 1 else 'people' }} on this site {{ 'carries' if count == 1 else 'carry' }} this name{% if first and last %}, from {{ first }} to {{ last }}{% endif %}.</p>
+  {% if places %}
+  <p>Most often found in: {% for pl in places %}{{ pl.html }} ({{ pl.count }} {{ 'person' if pl.count == 1 else 'people' }}){{ ', ' if not loop.last }}{% endfor %}</p>
+  {% endif %}
+  {% if prose %}<div class="surname-notes">{{ prose }}</div>{% endif %}
+
+  <h2>People</h2>
+  <ul class="index-list">
+    {% for p in people %}<li>{{ p.html }}{% if p.years %} ({{ p.years }}){% endif %}{% if p.place %}, born in {{ p.place }}{% endif %}</li>
+    {% endfor %}
+  </ul>
+
+  {% if records %}
+  <h2>Records that mention them</h2>
+  {% for group in records %}
+  <h3>{{ group.label }}</h3>
+  <ul class="index-list">
+    {% for item in group.entries %}<li>{{ item }}</li>{% endfor %}
+  </ul>
+  {% endfor %}
+  {% if more_records %}<p class="note">and {{ more_records }} more.</p>{% endif %}
+  {% endif %}
+  <p><a href="index.html">All family names</a></p>
+</article>
+{% endblock %}

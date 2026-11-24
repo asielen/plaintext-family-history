@@ -1,6 +1,6 @@
 # Skill-authoring standard
 
-**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so nineteen skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) (the reference skill) and follow the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15, and the operating rules in [`AGENTS.md`](../../AGENTS.md).
+**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so twenty skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) (the reference skill) and follow the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15, and the operating rules in [`AGENTS.md`](../../AGENTS.md).
 
 ---
 

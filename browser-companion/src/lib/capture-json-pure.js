@@ -181,6 +181,9 @@ function build(fields) {
   if (people.length) out.people = people;
   if (fields.notes && fields.notes.trim()) out.notes = fields.notes;
   if (fields.recipeHint) out.recipe_hint = fields.recipeHint;
+  // The source he said this capture's files belong to (a neighbouring film
+  // image of a deed he already holds): `fha process` adds them to it.
+  if (/^s-[0-9a-hjkmnp-tv-z]{10}$/i.test(String(fields.attachTo || ''))) out.attach_to = String(fields.attachTo).toLowerCase();
   return out;
 }
 
