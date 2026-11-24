@@ -22331,6 +22331,8 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                     wa, wb = window(pa, kind), window(pb, kind)
                     if rel == 'same':
                         points += same_pts
+                        if wa.get('baptism') and wb.get('baptism'):
+                            verb = 'baptised'
                         reasons.append(f'both {verb} {_duplicate_shared_text(wa, wb)}')
                     elif rel == 'compatible':
                         points += fit_pts
@@ -22352,8 +22354,11 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                     for sp in shared_spouses:
                         reasons.append(
                             f'same {kin_word(sp, "husband", "wife", "spouse")}, {name_of(sp)}')
+                # The town counts only beside other evidence: cousins named
+                # for one grandfather are often all born in the same town, so
+                # a bare name match plus an undated birthplace is not listed.
                 bpa, bpb = birth_place(pa), birth_place(pb)
-                if bpa and bpb and bpa[0] == bpb[0]:
+                if bpa and bpb and bpa[0] == bpb[0] and points > match[0]:
                     points += 10
                     reasons.append(f'both born in {bpa[1]}')
 

@@ -283,13 +283,34 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
 
     def test_undated_births_in_one_place_count_the_place(self) -> None:
         # An incomplete record often has the town but no year (Codex review).
+        # With a shared father as well, the town is one more reason.
+        caleb = self.a.person('Caleb Hartley', sex='M')
         a = self.a.person('Edith Hartley', sex='F')
         b = self.a.person('Edith Hartley', sex='F')
-        self._born(a, '', place_text='Fairview')
-        self._born(b, '', place_text='Fairview')
+        for pid in (a, b):
+            self._born(pid, '', place_text='Fairview')
+            self.a.parent(pid, caleb)
         result = self.a.scan()
         self.assertEqual(self._pairs(result), [frozenset((a, b))])
         self.assertIn('both born in Fairview', result['pairs'][0]['reasons'])
+
+    def test_undated_namesakes_from_one_town_are_not_listed(self) -> None:
+        # Cousins named for one grandfather, all born in Leeds, no years:
+        # an undated town alone must not lift a bare name match onto the
+        # list (delta audit, PR #474).
+        for n in range(3):
+            pid = self.a.person('John Hartley', sex='M')
+            self._born(pid, '', place_text='Leeds', status='suggested')
+        self.assertEqual(self.a.scan()['pairs'], [])
+
+    def test_two_baptisms_on_one_day_say_baptised(self) -> None:
+        a = self.a.person('Agnes Cole', sex='F')
+        b = self.a.person('Agnes Cole', sex='F')
+        self.a.claim('baptism', [a], date='1849-03-11')
+        self.a.claim('baptism', [b], date='1849-03-11')
+        result = self.a.scan()
+        self.assertEqual(self._pairs(result), [frozenset((a, b))])
+        self.assertIn('both baptised 11 March 1849', result['pairs'][0]['reasons'])
 
     def test_two_people_stay_two_after_one_is_merged_with_a_copy(self) -> None:
         # He said Rose (a) and Rose (b) are two people, then merged a copy
