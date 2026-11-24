@@ -4255,6 +4255,19 @@ def _lifespan_years(edtf) -> tuple[int, int] | None:
     return (lo, hi)
 
 
+def _lifespan_summary(spans: list) -> str:
+    """The chart in words for a screen reader, who cannot reach the bars: each
+    person's name, role, years and any "not recorded" note, in row order."""
+    parts = []
+    for r, _sl, _sh, s_open, _el, _eh, e_open in spans:
+        bits = [r.get('name') or '', r.get('role') or '', r.get('years') or '']
+        if s_open or e_open:
+            bits.append('dates not recorded' if (s_open and e_open) else
+                        'birth not recorded' if s_open else 'death not recorded')
+        parts.append(', '.join(b for b in bits if b))
+    return f'Lifespans of {len(spans)} people on one time line. ' + '; '.join(parts)
+
+
 def _render_lifespan_svg(rows: list[dict]) -> str:
     """Render the "Who overlapped" chart as a static, print-friendly SVG.
 
@@ -4316,7 +4329,7 @@ def _render_lifespan_svg(rows: list[dict]) -> str:
     esc = html.escape
     out = [f'<svg class="lifespan-chart" viewBox="0 0 {width:.1f} {height:.1f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img" '
-           f'aria-label="Lifespans of {len(spans)} people on one time line">',
+           f'aria-label="{esc(_lifespan_summary(spans))}">',
            '<defs><pattern id="fha-lifespan-hatch" width="4" height="4" '
            'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
            '<line class="lifespan-hatch" x1="0" y1="0" x2="0" y2="4"/></pattern></defs>']
@@ -4365,9 +4378,11 @@ def _render_lifespan_svg(rows: list[dict]) -> str:
                        f'y="{by + bh - 2:.1f}">{note}</text>')
         out.append('</g>')
         if role == 'subject':
-            for part, spot in (('born', None if s_open else (s_lo + s_hi) / 2),
-                               ('died', None if e_open or not r.get('death')
-                                else (e_lo + e_hi) / 2)):
+            # A guide line is a sharp year, so it is drawn only for a date
+            # known to the year; a range would read as a confident point.
+            for part, spot in (('born', s_lo if not s_open and s_hi == s_lo else None),
+                               ('died', e_lo if not e_open and r.get('death')
+                                and e_hi == e_lo else None)):
                 if spot is not None:
                     x = x_of(spot)
                     out.append(f'<line class="lifespan-mark" x1="{x:.1f}" y1="{top:.1f}" '

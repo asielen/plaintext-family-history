@@ -13059,7 +13059,19 @@ class LifespanChartRenderTests(unittest.TestCase):
         self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {20})
 
     def test_the_subject_birth_and_death_get_a_guide_line(self):
-        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg())), 2)
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 2)
+
+    def test_an_approximate_birth_gets_no_sharp_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1830, 1850), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 1)
+
+    def test_a_screen_reader_label_names_every_person(self):
+        label = re.search(r'aria-label="([^"]*)"', self._svg()).group(1)
+        self.assertIn('Calvin Hartley', label)
+        self.assertIn('subject', label)
 
     def test_a_person_with_no_birth_starts_at_the_first_dated_record_faded(self):
         rows = [_lifespan_row('Ada Hartley', 'mother', None, (1890, 1890), first=1860),
