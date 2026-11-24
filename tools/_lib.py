@@ -54,6 +54,7 @@ import datetime
 import difflib
 import fnmatch
 import hashlib
+import heapq
 import html
 import json
 import math
@@ -720,6 +721,81 @@ def is_genetic_parent_subtype(subtype: Any) -> bool:
     foster, guardian, surrogate-gestational, social). An unset or
     unrecognised subtype defaults to genetic (SPEC §12.2)."""
     return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
+
+
+# How strongly a tie is proven, so a chart can show which part of his tree
+# rests on a family story (TOOLING §7 `line_confidence`). Claim confidence
+# words (SPEC §8.5), weakest first; anything else is "not rated".
+CONFIDENCE_RANK: dict[str, int] = {'low': 1, 'medium': 2, 'high': 3}
+_CONFIDENCE_WORD = {rank: word for word, rank in CONFIDENCE_RANK.items()}
+_UNRATED = 4    # above 'high': an unrated tie never weakens a line
+
+
+def stronger_confidence(a: str | None, b: str | None) -> str | None:
+    """The better of two confidence words. A tie told in a family story and
+    shown on a certificate is as strong as the certificate. None, or a word
+    outside the scale, is not rated and loses to any word."""
+    ra, rb = CONFIDENCE_RANK.get(a or ''), CONFIDENCE_RANK.get(b or '')
+    if ra is None:
+        return b if rb is not None else None
+    if rb is None or ra >= rb:
+        return a
+    return b
+
+
+def weaker_confidence(a: str | None, b: str | None) -> str | None:
+    """The weaker of two ties along one line. An unrated tie (None) says
+    nothing about strength, so it never weakens: the rated one is the
+    answer, or None when neither is rated."""
+    ra = CONFIDENCE_RANK.get(a or '', _UNRATED)
+    rb = CONFIDENCE_RANK.get(b or '', _UNRATED)
+    return _CONFIDENCE_WORD.get(min(ra, rb))
+
+
+def line_confidence(seed: str, edges) -> dict[str, str | None]:
+    """For each person reachable from `seed`, the weakest rated parent or
+    child tie on their strongest route from the seed: 'low' | 'medium' |
+    'high', or None when no rated tie lies on that route (the seed itself, or
+    only unrated ties). This is what lets a chart fade everything above
+    Great-grandpa Thomas when his own parents rest on one family story.
+
+    `edges` is an iterable of (a, b, type, confidence) with type in
+    {'parent', 'child', 'spouse'} (any other type is ignored). Parent and
+    child ties are rated by their confidence (None = unrated); spouse ties are
+    never rated, so an in-law takes the line of the person they married.
+    Undirected: a child reached through a weak tie is as weak as an ancestor
+    reached through one. People the seed cannot reach are not in the result.
+
+    Widest-path search: a route is worth its weakest tie and the best route
+    counts. Best value first, so each person is settled once. The idea is
+    topola's propagateConfidence (https://github.com/PeWu/topola,
+    src/confidence.ts, Apache-2.0); this is a fresh implementation.
+    Deterministic: ties between equal values go by person id, and the result
+    is sorted by person id."""
+    adjacency: dict[str, list[tuple[str, int]]] = {}
+    for a, b, etype, conf in edges:
+        if etype == 'spouse':
+            weight = _UNRATED
+        elif etype in ('parent', 'child'):
+            weight = CONFIDENCE_RANK.get(conf or '', _UNRATED)
+        else:
+            continue
+        adjacency.setdefault(a, []).append((b, weight))
+        adjacency.setdefault(b, []).append((a, weight))
+    best: dict[str, int] = {seed: _UNRATED}
+    settled: set[str] = set()
+    heap: list[tuple[int, str]] = [(-_UNRATED, seed)]
+    while heap:
+        neg, node = heapq.heappop(heap)
+        if node in settled:
+            continue
+        settled.add(node)
+        for nxt, weight in adjacency.get(node, ()):
+            value = min(-neg, weight)
+            if nxt not in settled and value > best.get(nxt, 0):
+                best[nxt] = value
+                heapq.heappush(heap, (-value, nxt))
+    return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:

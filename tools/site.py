@@ -339,7 +339,10 @@ from _lib import (
     is_valid_edtf,
     is_valid_id,
     is_working_copy,
+    line_confidence,
     load_fha_yaml,
+    stronger_confidence,
+    weaker_confidence,
     index_merge_survivors,
     merge_chain,
     carried_living_message,
@@ -9172,9 +9175,10 @@ class _SiteBuilder:
         - living or unknown and not known to be an adult: 'omit'.
 
         An id the index does not hold is 'omit' too. `--linked` (the local
-        preview and workbench) always answers 'shown'. Person pages, the fan,
-        the explorers, timelines and search keep their own rules; this is a
-        home-tree rule only. The answer depends on the build date (`_today`):
+        preview and workbench) always answers 'shown'. The home tree, the
+        person page's family chart and fan, and the descendant explorer
+        (`_build_tree_data`) all ask it (chart plan 13-2); person pages,
+        timelines and search keep their own rules. The answer depends on the build date (`_today`):
         a child who turns 18 appears on the next rebuild."""
         if self.linked:
             return 'shown'
@@ -9368,7 +9372,8 @@ class _SiteBuilder:
         rows = self._tree_edges_cache.get(key)
         if rows is None:
             rows = self.conn.execute(
-                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
+                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype, c.confidence,
+                          c.source_id, c.status
                    FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = ?
                    ORDER BY r.other_id, r.claim_id''',
@@ -9386,11 +9391,38 @@ class _SiteBuilder:
         finding 1) - see `_DESCENDANT_TREE_MAX_HOPS`'s comment. Hitting it
         drops real genealogy data, so callers pass a bound generous enough
         that no real archive should ever reach it, and a hit is warned about
-        below rather than silently accepted."""
+        below rather than silently accepted.
+
+        Version 2 of the JSON (TOOLING §7) says how well each tie is proven,
+        so a chart can show which part of his tree rests on a family story:
+        each edge's `confidence` is the strongest over the claims behind it
+        that the build may show (a sealed certificate must not lift a shared
+        family story, or the shared site would hint that stronger, unshown
+        evidence exists), and each node's `line_confidence` is the weakest
+        tie on their best route to the seed. A tie two records prove is one
+        edge, not one per record, so the person no longer appears twice.
+
+        PRIVATE CARDS (shared build, chart plan 13-2, owner decisions D16 and
+        D20): every person past the seed is sorted by `_tree_card_kind`. A
+        living adult is a node reading "Private" under a placeholder id
+        (`private-1`, `private-2`, in the order reached), with no name,
+        dates, sex, photo or link, and the walk carries on through them, so a
+        dead grandchild still shows. Anyone left out (a possible child, or
+        anyone restricted or by-request) is dropped with everyone reached
+        only through them. A stub (a dead person with no page) is an
+        unlinked name, so the line is not cut at every uncurated ancestor."""
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
         seen = {seed}
-        edges: list[dict] = []
+        # (cur, other) -> the one edge for that tie, plus its claim rows.
+        ties: dict[tuple[str, str], dict] = {}
+        kinds: dict[str, str] = {}
+
+        def card_kind(pid: str) -> str:
+            # Asked once per person: a big family reaches one person by many ties.
+            if pid not in kinds:
+                kinds[pid] = self._tree_card_kind(pid)
+            return kinds[pid]
         truncated = False
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         while queue:
@@ -9401,38 +9433,57 @@ class _SiteBuilder:
             for r in self._tree_relationship_rows(cur, rel):
                 other = r['other_id']
                 if not self.linked:
-                    # Include a deceased person even when they have no page of their
-                    # own (a `stub`): they render as an unlinked name-only node, so
-                    # the lineage isn't severed at every un-curated ancestor. Only a
-                    # living/unknown/restricted person is dropped outright (never a
-                    # standalone tree node), plus a relationship with no public claim.
-                    ometa = self.person_meta.get(other)
-                    if ometa is None or self._person_is_redacted(ometa):
+                    if card_kind(other) == 'omit':
                         continue
                     if not self._has_public_claim(cur, other):
                         continue
-                # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
-                # (adoptive, step, foster, guardian, …) draws distinctly from the
-                # genetic line. Unset/legacy subtypes default to genetic.
-                subtype = (r['subtype'] or '').strip().lower() or None
-                genetic = is_genetic_parent_subtype(subtype)
-                edges.append({
-                    'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
-                    'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
-                    'subtype': subtype,
-                    'genetic': genetic,
-                    # Edge kind for the renderer (SPEC §12.2): 'genetic', or 'legal'
-                    # for a non-genetic parent/child bond (adoptive/step/foster/
-                    # guardian). Lateral 'other' ties (friend/associate/neighbor)
-                    # are not parent/child edges and never enter the tree. `genetic`
-                    # is kept for back-compat with the neutral-JSON contract.
-                    'kind': 'genetic' if genetic else 'legal',
-                    'dates': {'start': None, 'end': None},
-                })
+                publishable = self.linked or self._claim_row_is_publishable(
+                    r['claim_id'], r['source_id'], r['status'])
+                tie = ties.get((cur, other))
+                if tie is None:
+                    tie = ties[(cur, other)] = {'row': r, 'row_public': publishable,
+                                                'confidence': None}
+                elif publishable and not tie['row_public']:
+                    # The edge names a claim the build may show when it has one.
+                    tie['row'], tie['row_public'] = r, True
+                if publishable:
+                    tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
                 if other not in seen:
                     seen.add(other)
                     order.append(other)
                     queue.append((other, hop + 1))
+        # A private card's id never reaches the shared site: a placeholder
+        # stands in for it, numbered in the order the walk reached them.
+        shown_id: dict[str, str] = {}
+        placeholders = 0
+        for pid in order:
+            if pid != seed and not self.linked and card_kind(pid) == 'private':
+                placeholders += 1
+                shown_id[pid] = f'private-{placeholders}'
+            else:
+                shown_id[pid] = fmt_id_display(pid)
+        edges: list[dict] = []
+        for (cur, other), tie in ties.items():
+            r = tie['row']
+            # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
+            # (adoptive, step, foster, guardian, …) draws distinctly from the
+            # genetic line. Unset/legacy subtypes default to genetic.
+            subtype = (r['subtype'] or '').strip().lower() or None
+            genetic = is_genetic_parent_subtype(subtype)
+            edges.append({
+                'type': rel, 'from': shown_id[cur], 'to': shown_id[other],
+                'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
+                'subtype': subtype,
+                'genetic': genetic,
+                # Edge kind for the renderer (SPEC §12.2): 'genetic', or 'legal'
+                # for a non-genetic parent/child bond (adoptive/step/foster/
+                # guardian). Lateral 'other' ties (friend/associate/neighbor)
+                # are not parent/child edges and never enter the tree. `genetic`
+                # is kept for back-compat with the neutral-JSON contract.
+                'kind': 'genetic' if genetic else 'legal',
+                'confidence': tie['confidence'],
+                'dates': {'start': None, 'end': None},
+            })
         if truncated:
             # Should not happen in any real archive (see `_DESCENDANT_TREE_
             # MAX_HOPS`'s comment) - surfaced loudly rather than silently
@@ -9441,9 +9492,21 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        lines = line_confidence(shown_id[seed], [
+            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
+        nodes = []
+        for pid in order:
+            if shown_id[pid].startswith('private-'):
+                node = {'p_id': shown_id[pid], 'name': 'Private', 'private': True,
+                        'sex': None, 'vitals': {'birth': None, 'death': None}, 'url': None}
+            else:
+                node = self._tree_node(pid, page_dir)
+            node['line_confidence'] = lines.get(shown_id[pid])
+            nodes.append(node)
         return {
+            'version': 2,
             'seed': fmt_id_display(seed), 'mode': mode,
-            'nodes': [self._tree_node(pid, page_dir) for pid in order],
+            'nodes': nodes,
             'edges': edges,
         }
 
@@ -9599,8 +9662,16 @@ class _SiteBuilder:
         by-request) is skipped exactly like today's redacted parent: the slot
         draws as an unresearched 'Unknown' and nothing behind them is
         reached. A private card's `sex_derived` is False, so its slot never
-        tints a branch paternal or maternal. Off, the walk is unchanged."""
-        entry_for = self._tree_card_entry if private_cards else self._chart_entry
+        tints a branch paternal or maternal. Off, the walk is unchanged.
+
+        CONFIDENCE (chart plan 08-6, drawn by 08-7). Each ancestor's label
+        carries `tie_confidence`, the strongest confidence among the
+        publishable genetic claims that seat them (None when unrated), and
+        `line_confidence`, the weakest rated tie between them and the subject
+        (`_lib.weaker_confidence` along the slot's own chain). So when
+        Grandpa Thomas's parents rest on one family story, everyone above him
+        can be drawn faded. The subject has neither."""
+        entry_for =self._tree_card_entry if private_cards else self._chart_entry
         labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
@@ -9616,7 +9687,7 @@ class _SiteBuilder:
             parent_rows: dict[str, dict] = {}
             for r in self.conn.execute(
                 '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
-                          c.source_id, c.status
+                          c.source_id, c.status, c.confidence
                    FROM relationships r JOIN persons p ON r.other_id = p.id
                    LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = 'parent'
@@ -9635,7 +9706,8 @@ class _SiteBuilder:
                     continue
                 subtype = (r['subtype'] or '').strip().lower() or None
                 entry = parent_rows.setdefault(
-                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
+                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False,
+                            'confidence': None})
                 # P1 (Codex review, PR #152 round): a pair can carry BOTH a
                 # public non-genetic claim (adoptive) and a restricted genetic
                 # one - the pair-wide `_has_public_claim` check just above lets
@@ -9648,6 +9720,10 @@ class _SiteBuilder:
                         self.linked or self._claim_row_is_publishable(
                             r['claim_id'], r['source_id'], r['status'])):
                     entry['genetic'] = True
+                    # How well the tie is proven: the strongest claim that
+                    # seats this parent (chart plan 08-6).
+                    entry['confidence'] = stronger_confidence(
+                        entry['confidence'], r['confidence'])
             parents: list[tuple[str, str]] = [
                 (other, info['sex']) for other, info in parent_rows.items() if info['genetic']]
             # Workbench only: a parent recorded as a frontmatter hypothesis
@@ -9686,6 +9762,15 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = entry_for(ppid, page_dir)
+                # How well this ancestor is tied to the subject (chart plan
+                # 08-6): the slot tree is a tree, so the weakest tie along
+                # the slot's own chain is exact. A hypothesis parent has no
+                # claim, so the tie is unrated (it is drawn as a guess).
+                tie = (parent_rows[ppid]['confidence']
+                       if ppid in parent_rows and ppid not in hyp_parents else None)
+                labels[slot_num]['tie_confidence'] = tie
+                labels[slot_num]['line_confidence'] = weaker_confidence(
+                    tie, labels[num].get('line_confidence'))
                 # A private card shows no sex, so its slot is no evidence of
                 # which line is paternal (`_render_pedigree_svg`'s tint rule).
                 labels[slot_num]['sex_derived'] = (
