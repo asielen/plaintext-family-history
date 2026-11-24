@@ -19254,8 +19254,17 @@ def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
     root_position: int = 1,
+    *, edge_ok: Callable[[dict], bool] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
+
+    `edge_ok(row) -> bool`, when given, is asked once per parent edge (a dict
+    with person_id, rel, other_id, claim_id, source_id, status, subtype - the
+    same row `kin_graph` hands its filter) and a False edge is not walked, so
+    a shared page's family-tree number is never worked out through a tie the
+    page may not show. A parent kept by one allowed claim still counts when
+    another claim for the same tie is refused. None (the default) walks every
+    edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19311,20 +19320,42 @@ def build_ahnentafel_map(
 
     while queue:
         pid, n = queue.popleft()
-        parent_rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.other_id AS pid, p.sex
-            FROM relationships r
-            JOIN persons p ON r.other_id = p.id
-            LEFT JOIN claims c ON r.claim_id = c.id
-            WHERE r.person_id = ? AND r.rel = 'parent'
-              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
-            ORDER BY r.other_id
-            """,
-            (pid, *social),
-        ).fetchall()
-
-        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        if edge_ok is None:
+            parent_rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.other_id AS pid, p.sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id
+                """,
+                (pid, *social),
+            ).fetchall()
+            parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        else:
+            cur = conn.execute(
+                f"""
+                SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id,
+                       r.claim_id AS claim_id, c.source_id AS source_id,
+                       c.status AS status, c.subtype AS subtype, p.sex AS sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id, r.claim_id
+                """,
+                (pid, *social),
+            )
+            cols = [d[0] for d in cur.description]
+            kept: dict[str, str] = {}
+            for raw in cur.fetchall():
+                row = dict(zip(cols, tuple(raw.values()) if isinstance(raw, dict) else tuple(raw)))
+                if edge_ok(row):
+                    kept.setdefault(row['other_id'], row['sex'] or 'U')
+            parents = sorted(kept.items())
         if not parents:
             continue
 

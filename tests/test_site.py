@@ -12649,5 +12649,198 @@ class GravesTests(_Base):
         self.assertNotIn('buried Ada Hartley', graves)
 
 
+class PersonKinshipLineTests(_Base):
+    """Under each person's name: how they are related to the home person
+    ("Thomas Hartley's great-grandmother") and, for a direct-line ancestor,
+    their family-tree number. A shared page never rests either on a tie the
+    site may not show, and never names a person it hides (owner decision D16)."""
+
+    H, F, GF, GGM = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc', 'p-dddddddddd'
+
+    def _seed_line(self, *, gf_ggm_source=None, gf_ggm_status='accepted',
+                   hub_living='false', father_extra='', father_living='false'):
+        """H -> F -> GF -> GGM, each edge on its own claim and source.
+        GGM is H's father's father's mother: number 9."""
+        self._seed_person(self.H, 'Hubert Hartley', living=hub_living, surname='Hartley')
+        self._seed_person(self.F, 'Frank Hartley', living=father_living, surname='Hartley',
+                          frontmatter_extra=father_extra)
+        self._seed_person(self.GF, 'George Hartley', surname='Hartley')
+        self._seed_person(self.GGM, 'Gertrude Hartley', surname='Hartley', sex='F')
+        edges = [(self.H, self.F, 'c-1111111111', 's-1111111111'),
+                 (self.F, self.GF, 'c-2222222222', 's-2222222222'),
+                 (self.GF, self.GGM, 'c-3333333333', 's-3333333333')]
+        for child, parent, cid, sid in edges:
+            kwargs = {}
+            status = 'accepted'
+            if (child, parent) == (self.GF, self.GGM):
+                kwargs = gf_ggm_source or {}
+                status = gf_ggm_status
+            self._seed_source(sid, f'Source {sid}', **kwargs)
+            self._seed_claim(cid, sid, 'relationship', 'parent', status=status,
+                             persons=(child, parent),
+                             reviewed='2026-01-01' if status != 'accepted' else None)
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+            self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _fha(self, *, home=None, extra=''):
+        home_line = f'site:\n  home_person: {home}\n' if home else ''
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\n{extra}{home_line}', encoding='utf-8')
+
+    def _page(self, pid):
+        return self._read(f'persons/{pid}.html')
+
+    def _assert_nowhere(self, needle):
+        for p in self.out_dir.rglob('*'):
+            if p.is_file():
+                self.assertNotIn(needle, p.read_bytes(), p.name)
+
+    def _kin(self, pid):
+        m = re.search(r'<p class="kin-line">(.*?)</p>', self._page(pid), re.S)
+        return m.group(1) if m else None
+
+    def test_great_grandmother_line_and_number(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("great-grandmother", kin)
+        self.assertIn('<a href="p-aaaaaaaaaa.html">Hubert Hartley</a>', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_the_home_person_gets_no_line(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.H))
+
+    def test_root_generation_children_shifts_the_number(self):
+        self._seed_line()
+        self._fha(extra='root_generation: children\n')
+        self._run()
+        self.assertIn('ancestor no. 17', self._kin(self.GGM))
+
+    def test_home_person_sets_the_words_root_person_sets_the_number(self):
+        self._seed_line()
+        self._fha(home='P-bbbbbbbbbb')
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("Frank Hartley</a>'s grandmother", kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_workbench_says_your(self):
+        self._seed_line()
+        self._fha()
+        self._run(linked=True, workbench=True)
+        self.assertIn('Your great-grandmother', self._kin(self.GGM))
+
+    def test_living_hub_hands_off_and_is_never_named(self):
+        self._seed_line(hub_living='true')
+        self._fha()
+        self._run()
+        self.assertIn("Frank Hartley</a>'s grandmother", self._kin(self.GGM))
+        self.assertIn("Frank Hartley</a>'s father", self._kin(self.GF))
+        self._assert_nowhere(b'Hubert')
+
+    def test_a_living_person_on_the_walk_is_passed_through_never_named(self):
+        # D16: the tie runs through a living father; his name stays off the site.
+        self._seed_line(father_living='true')
+        self._fha(home='P-aaaaaaaaaa')
+        self._run()
+        self.assertIn("great-grandmother", self._kin(self.GGM))
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+        self._assert_nowhere(b'Frank')
+
+    def test_a_by_request_person_on_the_walk_cuts_the_tie(self):
+        self._seed_line(father_extra='restricted: by-request')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GF))
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+
+    def test_restricted_source_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_source={'restricted': 1})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        kin = self._kin(self.GGM)
+        self.assertIn('great-grandmother', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_dna_source_tie_is_not_used(self):
+        self._seed_line(gf_ggm_source={'source_type': 'dna'})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+
+    def test_unaccepted_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_status='suggested')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+    def test_unrelated_person_has_no_line(self):
+        self._seed_line()
+        self._seed_person('p-eeeeeeeeee', 'Ellis Elsewhere', surname='Elsewhere')
+        self._fha()
+        self._run()
+        self.assertNotIn('kin-line', self._page('p-eeeeeeeeee'))
+
+    def test_bad_root_generation_warns_once_and_drops_numbers_only(self):
+        self._seed_line()
+        self._fha(extra='root_generation: child\n')
+        res = self._run()
+        warned = [m for m in res['messages'] if 'family-tree numbers' in m]
+        self.assertEqual(len(warned), 1)
+        self.assertNotIn('ancestor no.', self._page(self.GGM))
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+
+class AhnentafelEdgeFilterTests(_Base):
+    """build_ahnentafel_map(edge_ok=...): a tie the caller refuses is not
+    walked, so a number is never worked out through it."""
+
+    def _chain(self):
+        from _lib import build_ahnentafel_map
+        self.build = build_ahnentafel_map
+        for pid, sex in (('p-aaaaaaaaaa', 'M'), ('p-bbbbbbbbbb', 'M'), ('p-cccccccccc', 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-bbbbbbbbbb', 'p-cccccccccc')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+
+    def test_allow_everything_matches_the_unfiltered_map(self):
+        self._chain()
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa', edge_ok=lambda r: True),
+                         self.build(self.conn, 'p-aaaaaaaaaa'))
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa'),
+                         {'p-aaaaaaaaaa': 1, 'p-bbbbbbbbbb': 2, 'p-cccccccccc': 5})
+
+    def test_a_refused_tie_drops_that_parent_and_everyone_above(self):
+        self._chain()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1})
+
+    def test_one_allowed_claim_keeps_the_parent(self):
+        self._chain()
+        self._seed_claim('c-9999999999', 's-1111111111', 'relationship', 'parent',
+                         persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-9999999999')
+        self.conn.commit()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] == 'c-9999999999')
+        self.assertEqual(got['p-bbbbbbbbbb'], 2)
+
+
 if __name__ == '__main__':
     unittest.main()

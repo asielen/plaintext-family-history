@@ -332,8 +332,14 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     extract_bare_ids,
+    build_ahnentafel_map,
     FhaConfigError,
     fmt_id_display,
+    kin_graph,
+    kin_relationship,
+    person_life_dates,
+    resolve_root_generation,
+    root_generation_seed_position,
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
@@ -4461,6 +4467,8 @@ class _SiteBuilder:
         # The completeness engine's read of the index, made once on the first
         # person page that shows a ring (`_completeness_context`).
         self._completeness_ctx: dict | None = None
+        # Built on first use by `_kinship_context` (relationship line + number).
+        self._kinship: dict | None = None
         if self.derivative_cache is not None:
             workers, self._picture_setting_warning = _picture_workers_setting(site_cfg)
             if picture_pool and workers > 1:
@@ -6620,6 +6628,7 @@ class _SiteBuilder:
             'alt_names': alt_names, 'tags': tags,
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
+            'kinship': self._person_kinship(pid),
             'pedigree': pedigree,
             'chart_title': chart_title,
             'fan': fan,
@@ -9419,6 +9428,110 @@ class _SiteBuilder:
         if kind == 'private':
             blank['private'] = True
         return blank
+
+    # - relationship line and family-tree number (under the person's name) -
+
+    def _kinship_edge_ok(self, row: dict) -> bool:
+        """Which parent, spouse and sibling ties the relationship line and
+        the family-tree number may be worked out through.
+
+        A cousin reading a shared page is told "great-grandmother" and a
+        number, and neither may rest on a tie the site will not show. Linked
+        and workbench builds are private previews: every tie counts. A shared
+        build uses a tie only when its own claim may be shown, and never
+        through a restricted or by-request person (their edges are dropped).
+        Living and unknown people are fine to pass through (owner decision
+        D16): the words never name them."""
+        if self.linked:
+            return True
+        if not self._claim_row_is_publishable(
+                row.get('claim_id'), row.get('source_id'), row.get('status')):
+            return False
+        for key in ('person_id', 'other_id'):
+            meta = self.person_meta.get(row.get(key))
+            if meta is not None and any(r['id'] in self.restricted_persons
+                                        for r in self._merge_chain(meta)):
+                return False
+        return True
+
+    def _kinship_anchor(self) -> str | None:
+        """Whose relative each page says the person is: the person the home
+        page is centred on (`site.home_person`, else `root_person`), and in
+        the workbench the owner, as "Your ...". A shared build never names a
+        living person, so a hub who would be hidden hands off to the closest
+        ancestor who may be shown, as the home pedigree's fallback does."""
+        site_cfg = self.fha_config.get('site') or {}
+        root = normalize_id(str(self.fha_config.get('root_person', '')))
+        home = (normalize_id(str(site_cfg.get('home_person') or ''))
+                if isinstance(site_cfg, dict) else '')
+        if self.workbench and root in self.person_meta:
+            return root
+        seed = home if home in self.person_meta else (root if root in self.person_meta else '')
+        if not seed:
+            return None
+        if self.linked:
+            return seed
+        return self._apex_ancestor(seed)
+
+    def _kinship_context(self) -> dict:
+        """Once per build: the anchor, the filtered kinship graph and the
+        family-tree numbers. Numbers are the folders' own (from `root_person`
+        and `root_generation`), whoever the sentence is relative to."""
+        if self._kinship is not None:
+            return self._kinship
+        ok = None if self.linked else self._kinship_edge_ok
+        numbers: dict[str, int] = {}
+        root = normalize_id(str(self.fha_config.get('root_person', '')))
+        if root in self.person_meta:
+            try:
+                seed_pos = root_generation_seed_position(resolve_root_generation(self.fha_config))
+                numbers = build_ahnentafel_map(self.conn, root, root_position=seed_pos, edge_ok=ok)
+            except FhaConfigError as exc:
+                self.messages.append(
+                    f'WARNING: {exc} Person pages show no family-tree numbers until it is fixed.')
+        anchor = self._kinship_anchor()
+        self._kinship = {
+            'anchor': anchor, 'root': root, 'numbers': numbers,
+            'graph': kin_graph(self.conn, ok) if anchor else None,
+            'life_cache': {},
+        }
+        return self._kinship
+
+    def _person_kinship(self, pid: str) -> dict | None:
+        """The line under a person's name: how they are related to the home
+        person ("Thomas Hartley's great-grandmother", "Your grandmother" in
+        the workbench) and, for a direct-line ancestor, their number in the
+        family numbering the folders use. None when there is nothing to say.
+
+        A step tie the dates cannot settle reads as its chain ("father's
+        wife"), never as "stepmother". The note ("other parent not recorded")
+        is printed only in the private builds."""
+        kc = self._kinship_context()
+        number = kc['numbers'].get(pid) if pid != kc['root'] else None
+        lead = None
+        note = None
+        anchor = kc['anchor']
+        if anchor and pid != anchor:
+            rel = kin_relationship(
+                kc['graph'], anchor, pid,
+                life=lambda p: person_life_dates(self.conn, p, kc['life_cache']))
+            if rel['kind'] != 'none':
+                words = rel['path'] if (rel['kind'] == 'step' and rel['note']) else rel['words']
+                if self.workbench:
+                    lead = f'Your {_escape(words)}'
+                else:
+                    meta = self.person_meta[anchor]
+                    name = self._shown_row(meta)['name'] or fmt_id_display(anchor)
+                    if anchor in self.person_pages:
+                        name_html = f'<a href="{_page_filename(anchor)}">{_escape(name)}</a>'
+                    else:
+                        name_html = _escape(name)
+                    lead = f"{name_html}'s {_escape(words)}"
+                note = rel['note'] if self.linked else None
+        if lead is None and number is None:
+            return None
+        return {'lead_html': self._markup(lead) if lead else None,
+                'note': note, 'ahnentafel': number}
 
     def _apex_ancestor(self, root_pid: str) -> str | None:
         """Walk `parent` edges up from `root_pid` and return the CLOSEST

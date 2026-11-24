@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24 · companion to SPEC.md v2.31 (versions track the SPEC)**
+**Version 2.35, 2026-11-24 · companion to SPEC.md v2.35 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -1459,7 +1459,7 @@ Builds the archive as a website in `generated/site/` (or `--out`): relative link
 
 ### Pages
 - **Home**: ancestor pedigree (below) seeded on `site.home_person` else `root_person`, depth `site.home_pedigree_generations` (default 5, max 8); surname A-Z index; recent discoveries; **Sources** grouped by decade of `date_min`, alphabetical within, undated last.
-- **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names on two lines when long, with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
+- **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names on two lines when long, with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them. Under the name, a line saying how the person is related to the home page's hub ("Thomas Hartley's great-grandmother", from `_lib.kin_relationship`; "Your great-grandmother" in the workbench; a step tie the dates cannot settle reads as its chain, "father's wife", and an open half tie as the plain word), and for a direct-line ancestor their Ahnentafel number ("ancestor no. 9", from `_lib.build_ahnentafel_map` seeded on `root_person` at the `root_generation` position, the numbering the folders use). Shared build: only ties whose own claim may be shown are walked, never through a restricted or by-request person; living and unknown people may be walked through (SPEC §21) and are never named, and a hub who would be hidden hands off to the closest ancestor who may be shown. Linked and workbench builds use every tie.
 - **Person (stub)**: one-line entries on their couple's section.
 - **Source**: scan thumbnail (the Files list's privacy-checked image, `role: front` preferred) linking to the full scan; citation, metadata, claims table with status badges, files list.
 - **Place**: embedded OpenStreetMap iframe with marker when coords exist (offline an empty frame; the map link always works); `notes:`; `history:`; claims; `within:` children.
