@@ -446,5 +446,53 @@ class CliTests(unittest.TestCase):
         self.assertIn('29 September 1850', proc.stdout)
 
 
+class CalendarRuleIsWrittenDownTests(unittest.TestCase):
+    """A researcher drafting a claim from an Old Style register gets one answer
+    everywhere: `date:` is today's calendar, `value` keeps the record's words.
+    SPEC §11 and every page that tells an agent how to write dates say so."""
+
+    def _read(self, rel):
+        return (ROOT / rel).read_text(encoding='utf-8')
+
+    def test_spec_says_date_is_always_gregorian(self):
+        spec = self._read('SPEC.md')
+        self.assertIn("`date:` is always a date in today's (Gregorian) calendar", spec)
+        self.assertNotIn('Julian/Gregorian judgment goes in `notes`', spec)
+
+    def test_drafting_pages_point_to_the_converter(self):
+        for rel in ('AGENTS.md', '.claude/skills/process-source/SKILL.md',
+                    '.claude/skills/mine-transcript/SKILL.md'):
+            text = self._read(rel)
+            self.assertIn("`date:` is always today's (Gregorian) calendar", text, rel)
+            self.assertIn('fha date convert', text, rel)
+            # A caution or two readings is never picked silently.
+            self.assertIn('SPEC §11 says which to take', text, rel)
+            self.assertIn('two readings', text, rel)
+
+    def test_spec_covers_the_cases_a_converted_day_gets_wrong(self):
+        # An English register's "11 Feb 1731" (one year) is February 1732 by
+        # today's count; "Nisan 5650" alone is not the year 5650; a feast
+        # kept on two days needs the record's place to pick one.
+        spec = self._read('SPEC.md')
+        self.assertIn('began the year on 25 March', spec)
+        self.assertIn('A Hebrew month or year alone covers parts of two', spec)
+        self.assertIn('the human is asked', spec)
+        # "Candlemas 1731" in an English register is February 1732, and
+        # `fha date feast` prints no caution for it.
+        self.assertIn('give `fha date feast` the later year', spec)
+        self.assertIn('England, Ireland and the British colonies', spec)
+        for rel in ('.claude/skills/process-source/SKILL.md',
+                    '.claude/skills/mine-transcript/SKILL.md'):
+            self.assertIn('`fha date feast` gives no such caution', self._read(rel), rel)
+
+    def test_spec_hebrew_year_example_is_what_the_tool_gives(self):
+        # SPEC tells the agent to convert a Hebrew year's first and last day
+        # with the tool; its worked example must be the tool's own answer.
+        first = dates.run_convert('1 Tishrei 5650', 'hebrew').data['date']
+        last = dates.run_convert('29 Elul 5650', 'hebrew').data['date']
+        self.assertIn(f'{first}/{last}', self._read('SPEC.md'))
+        self.assertIn('first and last day', self._read('TOOLING.md'))
+
+
 if __name__ == '__main__':
     unittest.main()
