@@ -11820,9 +11820,9 @@ class FanRepeatTests(_Base):
         fan = self._fan()
         zed = re.findall(r'<title>(Zed Hartley[^<]*)</title>', fan)
         self.assertEqual(len(zed), 2)
-        self.assertIn('Also no. 12 on this chart', zed[0])
+        self.assertIn('Also appears elsewhere on this chart (badge A)', zed[0])
         self.assertNotIn('their ancestors', zed[0])
-        self.assertIn('Also no. 8 on this chart (their ancestors are shown at no. 8)', zed[1])
+        self.assertIn('Also appears elsewhere on this chart (badge A); their ancestors are drawn at the first place', zed[1])
         repeat = [(c, st) for c, st in self._cells(fan) if 'fan-seg-repeat' in c]
         self.assertEqual(len(repeat), 2)
         self.assertEqual(repeat[0][1], repeat[1][1], 'the same colour in both places')
@@ -11847,13 +11847,13 @@ class FanRepeatTests(_Base):
         fan = self._fan()
         self.assertEqual(fan.count('>Private</textPath>'), 1)
         self.assertNotIn('fan-seg-repeat', fan)
-        self.assertNotIn('Also no.', fan)
+        self.assertNotIn('Also appears', fan)
         self.assertNotIn('Ned Reed', fan)
 
     def test_the_preview_shows_the_repeat_through_everyone(self):
         self._seed_cousins(mum_father_living=True)
         self._run(linked=True)
-        self.assertIn('Also no. 12 on this chart', self._fan())
+        self.assertIn('Also appears elsewhere on this chart', self._fan())
 
     def test_the_switch_lights_a_side_with_no_script(self):
         self._seed_cousins()
@@ -13161,8 +13161,8 @@ class ChartCaseTests(_Base):
         fan = self._fan_svg(case)
         # Slots 2 to 7 plus 14 and 15, and the subject.
         self.assertEqual(fan.count('class="fan-seg'), 9)
-        self.assertEqual(fan.count('<title>Calvin Hartley</title>'), 2)
-        self.assertEqual(fan.count('<title>Edith Cole</title>'), 2)
+        self.assertEqual(len(re.findall(r'<title>Calvin Hartley[^<]*</title>', fan)), 2)
+        self.assertEqual(len(re.findall(r'<title>Edith Cole[^<]*</title>', fan)), 2)
 
     def test_a_person_who_is_their_own_ancestor_still_gets_a_finished_site(self):
         # C12: A's parent is B, B's parent is C, C's parent is A. The walks

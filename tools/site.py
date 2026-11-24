@@ -3436,12 +3436,6 @@ def _fan_repeats(labels: dict, n: int) -> dict:
     return out
 
 
-def _fan_join_numbers(nums: list[int]) -> str:
-    """12 / 12 and 13 / 12, 13 and 14: slot numbers for a cell's tooltip."""
-    words = [str(m) for m in nums]
-    return words[0] if len(words) == 1 else ', '.join(words[:-1]) + ' and ' + words[-1]
-
-
 def _fan_line_class(num: int, info: dict) -> str:
     """`fan-line-paternal` for the father's-father line (slots 2, 4, 8, ...) or
     `fan-line-maternal` for the mother's-mother line (3, 7, 15, ...), only when
@@ -3634,9 +3628,10 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
         full = name + (f', {years}' if years else '')
         rep = repeats.get(num)
         if rep:
-            full += f'. Also no. {_fan_join_numbers(rep["others"])} on this chart'
+            mark = f'badge {rep["letter"]}' if rep['letter'] else 'the same colour and dashed edge'
+            full += f'. Also appears elsewhere on this chart ({mark})'
             if rep['later']:
-                full += f' (their ancestors are shown at no. {rep["first"]})'
+                full += '; their ancestors are drawn at the first place'
         title = f'<title>{html.escape(full)}</title>'
         url = info.get('url')
         body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
