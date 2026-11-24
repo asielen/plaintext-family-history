@@ -376,6 +376,7 @@ Other limits:
 - **"Two siblings share a given name."** Reusing a dead child's name was normal.
 - **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
 - **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
+- **Naming the likely sex from a first name as a warning, or setting it.** `sex:` is birth-assigned where a record states it (SPEC §9), and a name is a statistic, not a record. The lead (see TOOLING §3, Leads to check) only counts his own archive and sends him to find the record; it never writes.
 
 ## 16. Search links on the workbench person page
 
