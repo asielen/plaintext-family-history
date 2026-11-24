@@ -379,7 +379,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "ceeed71bf13f2b06109e8c13a257bcd2f4d471286ad258d71a678783334716d9",
+      "sha256": "ba872fba3669ee4f16841b208a92c53b0f6e8924e9325ad73b6c8d9d7dac7b7e",
       "spec_version": "2.32",
       "src": "browser-companion/manifest.json"
     },
@@ -400,7 +400,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "3893df0fc7cfb95a96c6c86d691450b8b1ef0dda793178bd3932bfed1f61a452",
+      "sha256": "1dd3ea280278a24731ecc283d3b30305809d7df579a546a9f5ccd72a6637f30d",
       "spec_version": "2.32",
       "src": "browser-companion/src/content.js"
     },
@@ -470,7 +470,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "c82ce5269865cb0d36bc6e4c2086388a2a0602c4c99841a45f7400b48899f32f",
+      "sha256": "94af1973ec4a63e30fd91388f4fd9e8341fc93ec05aeedbc0f6fe0eb86767b3a",
       "spec_version": "2.32",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -533,14 +533,14 @@
     {
       "path": ".fha/browser-companion/src/lib/wvculture-record.js",
       "category": "operating",
-      "sha256": "d59a9cc6d127b93fe2797f3ded78abe4738764616c452429e03d7380cf26824c",
+      "sha256": "f8ea5f9c8617dd72e30fda3dedf419c3e8d9f9d739dc4af74f6eff8b51908476",
       "spec_version": "2.32",
       "src": "browser-companion/src/lib/wvculture-record.js"
     },
     {
       "path": ".fha/browser-companion/src/lib/wvculture.js",
       "category": "operating",
-      "sha256": "d457d93bd6e37c84b39d1fcce4cc41502ebbd285d133daa586b0f3d913b439f4",
+      "sha256": "a0445be28d162bcb43ae0087886faf4d37f8ad680b4db457e224536f0c62e4f6",
       "spec_version": "2.32",
       "src": "browser-companion/src/lib/wvculture.js"
     },
@@ -561,7 +561,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "5532bf7ea7e2b85fcf78516d445470a3222a2ee8a3f9c7bca5fdd93169112126",
+      "sha256": "e55078847455c4cb1eb112b3b0ca2e90340a2fe5d87a276df4d65dabead7cc1e",
       "spec_version": "2.32",
       "src": "browser-companion/src/panel.js"
     },
@@ -652,7 +652,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "938feb75ec3e221525cfafb879367fc65f01b9ae866319626097115a2d84f470",
+      "sha256": "b2108afd311113c6ee7ed602195c7f70c206d7511c4e65aa1ad2c01e66cdccc2",
       "spec_version": "2.32",
       "src": "design/styles.css"
     },
@@ -666,7 +666,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "aba5b965ced5a1625687eeaaa3b8a356eb676d2f3eff50db2ce5191974ccd9bb",
+      "sha256": "ca2116dbc9222185ee20307728aaa91b594efb83eb23ed9fd92a913aea4e9b20",
       "spec_version": "2.32",
       "src": "docs/DESIGN.md"
     },
@@ -834,7 +834,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "906df5343957a52bce3059a514a0347a149ce07919352cb97ff4fe3950973f45",
+      "sha256": "44edbfe11566d0b3388d6694b368379e468ce13bd9223fda5edd785fbfa307e4",
       "spec_version": "2.32",
       "src": "tools/gedcom_import.py"
     },
@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "89e5e0bde2e1c80c5458871ef12b981c618914be423c7649f4cdd7583fb5967c",
+      "sha256": "3aad536cf0b337feeddc801f2d644c71648cc82b3614fa4d3368fba6a77ab52e",
       "spec_version": "2.32",
       "src": "tools/site.py"
     },
@@ -1191,14 +1191,14 @@
     {
       "path": ".fha/tools/templates/_pedigree_home.html",
       "category": "operating",
-      "sha256": "2382842c810fbbdbf4542ceaa04995e6f30f0a4dc69b5433842883b145473db2",
+      "sha256": "b6138af981858f5fff281228d9e8d94ef7e8bd0889122ebe0b2636776e2abf23",
       "spec_version": "2.32",
       "src": "tools/templates/_pedigree_home.html"
     },
     {
       "path": ".fha/tools/templates/_tree.html",
       "category": "operating",
-      "sha256": "25c3dd9a7c8584b24cac48b3aab12370b1921e4ed5bd3d106a8a27a425833e72",
+      "sha256": "ec33ef49ccb1ab58ab2e35fefb3aa20ccfd94aab9e6b9f1b78860ee241a53994",
       "spec_version": "2.32",
       "src": "tools/templates/_tree.html"
     },
@@ -1268,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "edc8ed278fda5d8a28dbcde1ec9cac6b366e509db9c2369568255602f27a71e4",
+      "sha256": "2fbfffb0c9086eec57f55a6ca7d9c3ff2b79c035fde3c09ab0cc9c8f6afde212",
       "spec_version": "2.32",
       "src": "tools/templates/person.html"
     },
@@ -1324,7 +1324,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "7063914750378ddedf373b9a879042dfb2e96543b68840cf1243325035683815",
+      "sha256": "8eafca6fa58b4ea8e4305c649eb979cdb7b50334520857c92f3657a6bb7a57d0",
       "spec_version": "2.32",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -1345,7 +1345,7 @@
     {
       "path": ".fha/tools/templates/vendor/tree-adapter.js",
       "category": "operating",
-      "sha256": "968a1014875fff566aa7a9ab88284df72b9a9f0736637c0d33f1d11c6a227e7f",
+      "sha256": "80c6dd3c2dafdb4e48d7160b154266e1a5e1a355b3e1ea81d75e427cde84f5b1",
       "spec_version": "2.32",
       "src": "tools/templates/vendor/tree-adapter.js"
     },
@@ -1436,7 +1436,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "edc8f73aa13541bbe2220fc39aa1822f4ab4bc7659ff76cd585b82c9d78c7988",
+      "sha256": "5c20e0597a9c65b4a6b1b28976f39a4d42c5dd20999b03cd6de8c396adc3d2e9",
       "spec_version": "2.32"
     },
     {
@@ -1461,7 +1461,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "57fe00ba7a791c92ee18b80e65833e9a5d07ed8b02a43e5f93aced1ac9a20e22",
+      "sha256": "c99d1c6ceb2b126c4ef348f5fc1cc5d1586641139a10dc9e6dbc4072da630520",
       "spec_version": "2.32"
     },
     {
@@ -1479,13 +1479,13 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "0b90aa99f12bdb85895adfb07b3337a705822cfd434b1c3b3c462ea092c52d47",
+      "sha256": "8a91e44b58026fd6c1e180cc342476ee6bc27cd1e037f924eeb76428a59b4341",
       "spec_version": "2.32"
     },
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "3928d4c1ce45a771a79b5b2052c3df3fc12dcfe4c10ad21afbd3fd6973ade3d0",
+      "sha256": "8d1ee301fe4f357ff8904412793b07e17d37b0d2e878c559e837c1c61a6c1977",
       "spec_version": "2.32"
     },
     {
@@ -1497,7 +1497,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e8500d19fc58b18e01666d1185665ef9eb99678af9696ccbf782f87e2510146b",
+      "sha256": "889b9d8227d711b5798483db981a812067670977a52a657b13c175c49c9ddb81",
       "spec_version": "2.32"
     },
     {
@@ -1521,21 +1521,21 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "9c1cb4841017578615ab23e3dc6ea20baf9fde6841fe302eb7fc72ae01738966",
+      "sha256": "6e404c4b33eca35785529864e4371842a05d100d2ab55a3f1df305cce590abd0",
       "spec_version": "2.32",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "3640ce901c94bd5fd73fea9e9ba4413e5b1b77b8c4c7029ec59234d569665489",
+      "sha256": "6dfcca889be7a4901883e4974d98221dec05e13177c2e51a5a5063be0d548633",
       "spec_version": "2.32",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "139808a49ef184a51a66d0f2f9cc920a15ec6dd55dd261aecc58fc85ebf52eea",
+      "sha256": "28e451b4b9773ab30d69a53967e1247afe315cd56a888b590b1d4838d319520d",
       "spec_version": "2.32"
     },
     {

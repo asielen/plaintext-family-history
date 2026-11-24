@@ -10,6 +10,8 @@
 // tested reference - change it here first, then mirror the copy. Inside the
 // block, `recordHints` and `ancDateToEdtf` are lib/ancestry-record.js's (the
 // one hint rule for every site); content.js holds both blocks in one scope.
+// Likewise `wvPartnerPage` is lib/wvculture-record.js's (the West Virginia
+// Archives page a record's "View on wvculture.org" badge leads to).
 //
 // What FamilySearch exposes (verified on live pages, 2026-10):
 //   - a record entry ("persona") is ark:/61903/1:1:{id}; its image is
@@ -43,6 +45,8 @@
 //   fsStatusMessage      what an HTTP answer means, and what to do next
 //   fsFormalToEdtf       GEDCOM X "+1957-01-07" / "A+1887" -> EDTF
 //   fsOpenedPerson       the person this record entry is (by its ark), not just a principal
+//   fsPartnerImageUrl    the address of the record's image at a partner archive ("View on …")
+//   fsPartnerImage       that address as a page Capture can follow (FS_PARTNER_PAGES), or null
 //   fsRecordFrom         the record, citation and title from FamilySearch's data
 //   fsHints              recordHints over the record's own GEDCOM X facts
 //   fsTitle              "{name} - {collection}", unless the human typed a title
@@ -56,6 +60,7 @@
 'use strict';
 
 const { recordHints, ancDateToEdtf } = require('./ancestry-record.js');
+const { wvPartnerPage } = require('./wvculture-record.js');
 
 // FHA-SYNC-BEGIN familysearch
 const FS_HOST_RE = /(^|\.)familysearch\.org$/i;
@@ -211,6 +216,51 @@ function fsIndexedMemorial(g, collectionId) {
   return ids.length === 1 ? ids[0] : null;
 }
 
+// Some index entries have no image on FamilySearch: the image is at a partner
+// archive, and the record page shows a "View on {partner}" badge instead. The
+// badge's address is in the record's own data. FamilySearch's page code (read
+// 2026-11-24) takes the record's image description (a DigitalArtifact source
+// description: the one the opened person's first source names, else the
+// first) and its `about` (else its persistent identifier); when that address
+// is not on familysearch.org the image is a partner's, and "Go to {partner}"
+// opens exactly that address. Same rule here: the address, or null.
+const FS_ARTIFACT = 'http://gedcomx.org/DigitalArtifact';
+const FS_PERSISTENT = 'http://gedcomx.org/Persistent';
+function fsPartnerImageUrl(g, fsId) {
+  const sds = (g && Array.isArray(g.sourceDescriptions)) ? g.sourceDescriptions : [];
+  const artifacts = sds.filter((s) => s && s.resourceType === FS_ARTIFACT);
+  if (!artifacts.length) return null;
+  const person = fsOpenedPerson(g, fsId);
+  const src = person && Array.isArray(person.sources) ? person.sources[0] : null;
+  const ref = String((src && src.descriptionId) || '').replace(/^#/, '');
+  const sd = (ref && artifacts.find((s) => s.id === ref)) || artifacts[0];
+  const ids = (sd.identifiers && sd.identifiers[FS_PERSISTENT]) || [];
+  const href = String(sd.about || (Array.isArray(ids) ? ids[0] : ids) || '').trim();
+  let u;
+  try {
+    u = new URL(href);
+  } catch (e) {
+    return null;
+  }
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') return null;
+  if (FS_HOST_RE.test(u.hostname)) return null;
+  return u.href;
+}
+
+// The partner archives whose image pages Capture follows from a record's
+// badge, one reader each. A reader takes the badge's address and returns the
+// page to fetch ({ site, archive, pageUrl, cite, … }) or null. Only archives
+// seen on a live record are listed; another state archive is a second entry.
+const FS_PARTNER_PAGES = [wvPartnerPage];
+function fsPartnerImage(url) {
+  if (!url) return null;
+  for (const read of FS_PARTNER_PAGES) {
+    const page = read(url);
+    if (page) return page;
+  }
+  return null;
+}
+
 // The record from FamilySearch's data for it (`g`, GEDCOM X) and its identity
 // (`ids`, from fsParseRecordPage). Everything comes from the data, not the
 // page: a single-page site's title tags can still describe an earlier record.
@@ -225,6 +275,7 @@ function fsRecordFrom(g, ids) {
   const imageId = (image && ((/3:1:([A-Z0-9-]+)/i.exec(about(image)) || [])[1] || '').toUpperCase()) ||
     ids.viewerImageId || null;
   const cite = persona.citations && persona.citations[0] && persona.citations[0].value;
+  const partnerImageUrl = imageId ? null : fsPartnerImageUrl(g, ids.fsId);
   const collectionId = coll ? (/collections\/(\d+)$/.exec(about(coll)) || [])[1] || null : null;
   const out = {
     record: {
@@ -239,6 +290,13 @@ function fsRecordFrom(g, ids) {
     citation: cite ? String(cite).replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim() || null : null,
     title: fsFirstTitle(persona),
   };
+  // The image at a partner archive (no image on FamilySearch): the badge's
+  // address, and the page Capture follows when it can read that archive.
+  if (partnerImageUrl) {
+    out.record.partnerImageUrl = partnerImageUrl;
+    const partner = fsPartnerImage(partnerImageUrl);
+    if (partner) out.record.partnerImage = partner;
+  }
   // A Find a Grave Index entry: the memorial it indexes (only then).
   const memorialId = fsIndexedMemorial(g, collectionId);
   if (memorialId) out.record.memorialId = memorialId;
@@ -562,6 +620,8 @@ module.exports = {
   fsAuthHeaders,
   fsStatusMessage,
   fsFormalToEdtf,
+  fsPartnerImageUrl,
+  fsPartnerImage,
   fsRecordFrom,
   fsHints,
   fsTitle,

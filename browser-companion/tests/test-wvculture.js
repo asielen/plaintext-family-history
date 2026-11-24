@@ -61,3 +61,25 @@ test('the citation names the archive, the page as opened, the film and the image
     'West Virginia Archives and History, Vital Research Records (' + PAGE + ' : accessed 2026-11-22), ' +
       'film 1984148, image 2530.');
 });
+
+test('a FamilySearch badge address becomes the page to follow, always over https, with the citation part', () => {
+  const want = {
+    site: 'wvculture',
+    archive: 'West Virginia Archives and History',
+    filmNumber: '1984148',
+    imageNumber: '2530',
+    pageUrl: PAGE,
+    cite: 'image at West Virginia Archives and History, film 1984148, image 2530',
+  };
+  assert.deepStrictEqual(wv.wvPartnerPage(PAGE), want);
+  assert.deepStrictEqual(wv.wvPartnerPage(PAGE.replace('https:', 'http:')), want);
+});
+
+test('a badge address that is not a view page is not followed', () => {
+  assert.strictEqual(wv.wvPartnerPage('https://www.wvculture.org/history/'), null);
+  assert.strictEqual(wv.wvPartnerPage('https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148'), null);
+  assert.strictEqual(wv.wvPartnerPage(PAGE.replace('.org/', '.org:8443/')), null);
+  assert.strictEqual(wv.wvPartnerPage(PAGE.replace('https://', 'https://a:b@')), null);
+  assert.strictEqual(wv.wvPartnerPage(''), null);
+  assert.strictEqual(wv.wvPartnerPage(null), null);
+});
