@@ -2161,6 +2161,113 @@ class StreamedFileTests(_ServeCase):
         self.assertEqual(h.get('Content-Length'), '4096')
 
 
+class RangeRequestTests(_ServeCase):
+    """A recording in the workbench jumps to a moment when the player's
+    slider is dragged: that needs `Range` answered with 206. One range is
+    served; several ranges or a malformed header get the whole file; a start
+    past the end gets 416."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        docs = self.root / 'documents'
+        docs.mkdir(parents=True, exist_ok=True)
+        self.data = bytes(range(256)) * 1000 + b'tail-bytes'   # 256,010 bytes
+        (docs / 'rec.m4a').write_bytes(self.data)
+        self.url = '/root/documents/rec.m4a'
+
+    def get(self, rng, method='GET', url=None):
+        return self.req(method, url or self.url, headers={'Range': rng})
+
+    def test_plain_get_advertises_ranges_and_audio_type(self):
+        s, d, h = self.req('GET', self.url)
+        self.assertEqual(s, 200)
+        self.assertEqual(d, self.data)
+        self.assertEqual(h.get('Accept-Ranges'), 'bytes')
+        self.assertEqual(h.get('Content-Type'), 'audio/mp4')
+
+    def test_first_ten_bytes(self):
+        s, d, h = self.get('bytes=0-9')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data[:10])
+        self.assertEqual(h['Content-Range'], f'bytes 0-9/{len(self.data)}')
+        self.assertEqual(h['Content-Length'], '10')
+
+    def test_open_ended_range_runs_to_the_end(self):
+        s, d, h = self.get('bytes=100000-')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data[100000:])
+        n = len(self.data)
+        self.assertEqual(h['Content-Range'], f'bytes 100000-{n - 1}/{n}')
+
+    def test_suffix_range_is_the_last_bytes(self):
+        s, d, h = self.get('bytes=-5')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data[-5:])
+        n = len(self.data)
+        self.assertEqual(h['Content-Range'], f'bytes {n - 5}-{n - 1}/{n}')
+
+    def test_suffix_longer_than_file_is_the_whole_file_as_206(self):
+        s, d, _h = self.get('bytes=-99999999')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data)
+
+    def test_end_past_the_file_is_clamped(self):
+        s, d, h = self.get('bytes=256000-999999')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data[256000:])
+        n = len(self.data)
+        self.assertEqual(h['Content-Range'], f'bytes 256000-{n - 1}/{n}')
+
+    def test_range_across_several_stream_chunks(self):
+        a, b = 1000, 1000 + 3 * serve._STREAM_CHUNK_SIZE + 17
+        s, d, _h = self.get(f'bytes={a}-{b}')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, self.data[a:b + 1])
+
+    def test_start_past_the_end_is_416_with_the_size(self):
+        n = len(self.data)
+        for rng in (f'bytes={n}-', 'bytes=999999999-', 'bytes=-0'):
+            s, d, h = self.get(rng)
+            self.assertEqual(s, 416, rng)
+            self.assertEqual(h['Content-Range'], f'bytes */{n}', rng)
+
+    def test_several_ranges_get_the_whole_file(self):
+        s, d, h = self.get('bytes=0-1,5-6')
+        self.assertEqual(s, 200)
+        self.assertEqual(d, self.data)
+        self.assertNotIn('Content-Range', h)
+
+    def test_malformed_or_other_unit_ranges_get_the_whole_file(self):
+        for rng in ('bytes=abc', 'bytes=5-2', 'items=0-9', 'bytes=', 'bytes=1-2-3'):
+            s, d, _h = self.get(rng)
+            self.assertEqual(s, 200, rng)
+            self.assertEqual(d, self.data, rng)
+
+    def test_head_with_range_has_headers_and_no_body(self):
+        s, d, h = self.get('bytes=0-9', method='HEAD')
+        self.assertEqual(s, 206)
+        self.assertEqual(d, b'')
+        self.assertEqual(h['Content-Length'], '10')
+        self.assertEqual(h['Content-Range'], f'bytes 0-9/{len(self.data)}')
+
+    def test_empty_file_range_is_416(self):
+        (self.root / 'documents' / 'empty.m4a').write_bytes(b'')
+        s, _d, h = self.get('bytes=0-9', url='/root/documents/empty.m4a')
+        self.assertEqual(s, 416)
+        self.assertEqual(h['Content-Range'], 'bytes */0')
+
+    def test_paths_outside_the_root_still_404_with_a_range(self):
+        for p in ('/root/documents/..%2f..%2ffha.yaml', '/root/photos/../../fha.yaml',
+                  '/root/nope/x.m4a'):
+            s, _d, _h = self.get('bytes=0-9', url=p)
+            self.assertEqual(s, 404, p)
+
+    def test_snapshot_pages_answer_ranges_too(self):
+        s, d, h = self.get('bytes=0-14', url='/')
+        self.assertEqual(s, 206)
+        self.assertEqual(len(d), 15)
+
+
 class KeepAliveHygieneTests(_ServeCase):
     """Cleanup task 4: two undrained-body paths used to desync HTTP/1.1
     keep-alive - `/api/reindex` never read its body at all, and `_read_body`
