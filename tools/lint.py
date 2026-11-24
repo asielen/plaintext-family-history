@@ -69,6 +69,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    source_dates_agree,               # W162 date rule, shared with fha compare
     SOURCE_FRONTMATTER_KEY_ORDER,
     one_person_problems,              # W163-W165: dates that cannot all be true
     family_problems,                  # W166-W170: the same, across a family
@@ -5235,20 +5236,6 @@ def _fix_aliases(
 _SITE_NAMES = {'ancestry': 'Ancestry', 'fs': 'FamilySearch'}
 
 
-def _dates_agree(a: str, b: str, year) -> bool:
-    """Two sources' dates name one event: the same year (the collection's
-    own year, for a census, when a source gives none), and the same day when
-    both give a full date. A source with no date and no collection year to
-    stand in is never matched: nothing says it is the same event."""
-    ya, yb = (str(d)[:4] if str(d)[:4].isdigit() else None for d in (a, b))
-    ya = ya or (str(year) if year else None)
-    yb = yb or (str(year) if year else None)
-    if not ya or ya != yb:
-        return False
-    full = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-    return not (full.match(str(a)) and full.match(str(b)) and str(a) != str(b))
-
-
 def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) -> None:
     """W162: two sources that are one record saved from two sites.
 
@@ -5298,7 +5285,7 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
                 if a[1] == b[1] or not same_record_subject(a[6], b[6]) or not (a[3] & b[3]):
                     continue
                 _gid, title, year = a[5]
-                if not _dates_agree(a[4], b[4], year):
+                if not source_dates_agree(a[4], b[4], year):
                     continue
                 first, second = sorted((a, b), key=lambda m: m[0])
                 path = registry.source_paths.get(second[0], registry.archive_root / str(second[0]))
