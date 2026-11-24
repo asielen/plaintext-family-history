@@ -400,7 +400,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "128a98bb34a00ac372854cd576d7c9d4f542f56002afaa3f9ebf672e70c907ad",
+      "sha256": "8f77d843967e9b315c234e00d8cee0513bd8ef253c57bf78ef2194bdc6fcfecd",
       "spec_version": "2.31",
       "src": "browser-companion/src/content.js"
     },
@@ -533,7 +533,7 @@
     {
       "path": ".fha/browser-companion/src/lib/wikitree-record.js",
       "category": "operating",
-      "sha256": "a5d5c51638c30a4367260acd6aa806850fc6b5bef060638eb428615cbb7a6b62",
+      "sha256": "8b431a945aa6a54564234e8288638fbbd252ff5b1be7d0470c646b5a73dbd5b8",
       "spec_version": "2.31",
       "src": "browser-companion/src/lib/wikitree-record.js"
     },
@@ -568,7 +568,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "bf6c494dd12ab95bbc36f00dc70841c3d07d851a53640631e1948b42e383e769",
+      "sha256": "f01ecee952d8353b25399644a7f99e21d3503549d7ad93bb5cdd98165227b4f5",
       "spec_version": "2.31",
       "src": "browser-companion/src/panel.js"
     },
@@ -764,7 +764,7 @@
     {
       "path": ".fha/tools/capture_recipes/wikitree.py",
       "category": "operating",
-      "sha256": "8aa61827d51b5520236d62f5e6882139d4525ecce166783ebd90eee6bce98944",
+      "sha256": "547eb5ac87beaf54d6eda051774cde851387e0c7713c504f8f725a7ce556fd06",
       "spec_version": "2.31",
       "src": "tools/capture_recipes/wikitree.py"
     },
