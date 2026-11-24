@@ -610,6 +610,186 @@ class StepDatesTests(unittest.TestCase):
         self.assertEqual((bm['relationship'], bm['certain']), ('stepmother', True))
 
 
+class RoutesTests(unittest.TestCase):
+    """Cousins related two ways hear both. Two brothers who married two
+    sisters have children who are double first cousins; a couple who were
+    themselves cousins have grandchildren related through two lines, which
+    is what explains a DNA match that looks too close."""
+
+    # Two brothers M1, M2 (of P1 + P2) married two sisters W1, W2 (of Q1 + Q2).
+    P1, P2, M1, M2 = 'P-r000000001', 'P-r000000002', 'P-r000000003', 'P-r000000004'
+    Q1, Q2, W1, W2 = 'P-r000000005', 'P-r000000006', 'P-r000000007', 'P-r000000008'
+    C1, C2 = 'P-r000000009', 'P-r00000000a'
+    # Cousin marriage: G1 + G2 -> K1, K2; H1 + H2 -> J1, J2; J1 -> L1; J2 -> L2;
+    # K1 + L1 -> C3; K2 + L2 -> C4. C3 and C4 are first cousins through
+    # G1 + G2 and second cousins through H1 + H2.
+    G1, G2, K1, K2 = 'P-r00000000b', 'P-r00000000c', 'P-r00000000d', 'P-r00000000e'
+    H1, H2, J1, J2 = 'P-r00000000f', 'P-r00000000g', 'P-r00000000h', 'P-r00000000j'
+    L1, L2, C3, C4 = 'P-r00000000k', 'P-r00000000m', 'P-r00000000n', 'P-r00000000p'
+
+    @classmethod
+    def setUpClass(cls):
+        c = cls
+        sexes = {c.P1: 'M', c.P2: 'F', c.M1: 'M', c.M2: 'M', c.Q1: 'M', c.Q2: 'F',
+                 c.W1: 'F', c.W2: 'F', c.C1: 'F', c.C2: 'F',
+                 c.G1: 'M', c.G2: 'F', c.K1: 'M', c.K2: 'M', c.H1: 'M', c.H2: 'F',
+                 c.J1: 'M', c.J2: 'M', c.L1: 'F', c.L2: 'F', c.C3: 'F', c.C4: 'M'}
+        names = {c.P1: 'Thomas Hartley', c.P2: 'Margaret Cole', c.M1: 'Calvin Hartley',
+                 c.M2: 'Edward Hartley', c.Q1: 'John Cole', c.Q2: 'Mary Doe',
+                 c.W1: 'Clara Cole', c.W2: 'Edith Cole', c.C1: 'Ethel Hartley',
+                 c.C2: 'Frances Hartley',
+                 c.G1: 'Grand Pa', c.G2: 'Grand Ma', c.K1: 'Kit Kay', c.K2: 'Ken Kay',
+                 c.H1: 'Hal Hay', c.H2: 'Hester Hay', c.J1: 'Jay Hay', c.J2: 'Jon Hay',
+                 c.L1: 'Lil Hay', c.L2: 'Lou Hay', c.C3: 'Ann Aye', c.C4: 'Bea Bee'}
+        claims = (
+            _child_of('C-r000000001', c.M1, [c.P1, c.P2])
+            + _child_of('C-r000000002', c.M2, [c.P1, c.P2])
+            + _child_of('C-r000000003', c.W1, [c.Q1, c.Q2])
+            + _child_of('C-r000000004', c.W2, [c.Q1, c.Q2])
+            + _child_of('C-r000000005', c.C1, [c.M1, c.W1])
+            + _child_of('C-r000000006', c.C2, [c.M2, c.W2])
+            + _child_of('C-r000000007', c.K1, [c.G1, c.G2])
+            + _child_of('C-r000000008', c.K2, [c.G1, c.G2])
+            + _child_of('C-r000000009', c.J1, [c.H1, c.H2])
+            + _child_of('C-r00000000a', c.J2, [c.H1, c.H2])
+            + _child_of('C-r00000000b', c.L1, [c.J1])
+            + _child_of('C-r00000000c', c.L2, [c.J2])
+            + _child_of('C-r00000000d', c.C3, [c.K1, c.L1])
+            + _child_of('C-r00000000e', c.C4, [c.K2, c.L2])
+        )
+        cls.root = _write_archive(claims, sexes, names)
+
+    def _blood(self, a, b):
+        return _blood(self.root, a, b)
+
+    def _text(self, a, b):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(relate.run_relate(self.root, load_fha_yaml(self.root), a, b))
+        return out.getvalue()
+
+    def test_double_first_cousins(self):
+        b = self._blood(self.C1, self.C2)
+        self.assertEqual(b['relationship'], 'double first cousin')
+        self.assertIs(b['double'], True)
+        self.assertEqual(len(b['routes']), 2)
+        self.assertEqual([r['relationship'] for r in b['routes']],
+                         ['first cousin', 'first cousin'])
+
+    def test_double_text_names_both_couples(self):
+        out = self._text(self.C1, self.C2)
+        self.assertIn("Ethel Hartley is Frances Hartley's double first cousin", out)
+        self.assertIn('common ancestors: ', out)
+        self.assertIn('; and ', out)
+        for name in ('Thomas Hartley', 'Margaret Cole', 'John Cole', 'Mary Doe'):
+            self.assertIn(name, out)
+        self.assertNotIn('and also', out)
+
+    def test_cousins_by_two_lines_list_both_routes(self):
+        b = self._blood(self.C3, self.C4)
+        self.assertEqual(b['relationship'], 'first cousin')
+        self.assertIs(b['double'], False)
+        self.assertEqual([r['relationship'] for r in b['routes']],
+                         ['first cousin', 'second cousin'])
+        self.assertEqual(b['routes'][1]['common_ancestors'],
+                         sorted([self.H1.lower(), self.H2.lower()]))
+
+    def test_text_lists_second_route(self):
+        out = self._text(self.C3, self.C4)
+        self.assertIn("Ann Aye is Bea Bee's first cousin  (common ancestors: ", out)
+        self.assertIn("and also Bea Bee's second cousin, through another line", out)
+        self.assertIn('Hal Hay', out)
+        self.assertIn('Hester Hay', out)
+
+    def test_route_order_is_the_same_both_ways(self):
+        there = self._blood(self.C3, self.C4)['routes']
+        back = self._blood(self.C4, self.C3)['routes']
+        self.assertEqual([r['common_ancestors'] for r in there],
+                         [r['common_ancestors'] for r in back])
+
+    def test_single_route_has_one_route(self):
+        root = _build()
+        b = _blood(root, A, B)
+        self.assertEqual(len(b['routes']), 1)
+        self.assertIs(b['double'], False)
+        self.assertEqual(b['routes'][0]['common_ancestors'], b['common_ancestors'])
+
+    def test_many_routes_print_three_and_point_to_json(self):
+        # A deeply intermarried family can join two people five ways; he sees
+        # the nearest three and is told how many more there are.
+        import contextlib
+        import io
+        route = {'relationship': 'third cousin', 'common_ancestors': [], 'gens_a': 4,
+                 'gens_b': 4, 'half': False, 'half_relationship': None}
+        blood = dict(route, note=None, double=False, routes=[dict(route) for _ in range(5)])
+        result = relate.Result(ok=True, exit_code=EXIT_CLEAN, data={
+            'a': 'P-r000000001', 'b': 'P-r000000002', 'a_name': 'Ann Aye',
+            'b_name': 'Bea Bee', 'names': {}, 'blood': blood, 'by_marriage': None,
+            'any': None})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(result)
+        text = out.getvalue()
+        self.assertEqual(text.count('and also'), 2)
+        self.assertIn('and 2 more routes; run with --json to see them all', text)
+
+    def test_double_with_a_further_line_names_two_couples_then_the_third(self):
+        # Double first cousins whose grandmothers were cousins: the Blood
+        # line names the two grandparent couples, and the further line gets
+        # its own "and also" line instead of a third couple on the first.
+        import contextlib
+        import io
+        def route(anc, g, word):
+            return {'relationship': word, 'common_ancestors': anc, 'gens_a': g,
+                    'gens_b': g, 'half': False, 'half_relationship': None}
+        routes = [route(['P-r000000003', 'P-r000000004'], 2, 'first cousin'),
+                  route(['P-r000000005', 'P-r000000006'], 2, 'first cousin'),
+                  route(['P-r000000007', 'P-r000000008'], 4, 'third cousin')]
+        blood = dict(routes[0], relationship='double first cousin', note=None,
+                     double=True, routes=routes)
+        names = {f'P-r00000000{i}': n for i, n in
+                 zip('345678', ('Thomas Hartley', 'Margaret Cole', 'John Cole',
+                                'Mary Doe', 'Old Pa', 'Old Ma'))}
+        result = relate.Result(ok=True, exit_code=EXIT_CLEAN, data={
+            'a': 'P-r000000001', 'b': 'P-r000000002', 'a_name': 'Ethel Hartley',
+            'b_name': 'Frances Hartley', 'names': names, 'blood': blood,
+            'by_marriage': None, 'any': None})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(result)
+        lines = out.getvalue().splitlines()
+        blood_line = next(line for line in lines if line.startswith('Blood:'))
+        self.assertIn('double first cousin', blood_line)
+        self.assertIn('Mary Doe', blood_line)
+        self.assertNotIn('Old Pa', blood_line)
+        also = [line for line in lines if 'and also' in line]
+        self.assertEqual(len(also), 1)
+        self.assertIn("and also Frances Hartley's third cousin, through another line", also[0])
+        self.assertIn('Old Ma', also[0])
+
+    def test_open_half_on_another_line_is_said(self):
+        # A second route through one grandparent, with the other parent
+        # unrecorded, must not be stated as a plain full cousin.
+        import contextlib
+        import io
+        first = {'relationship': 'first cousin', 'common_ancestors': [], 'gens_a': 2,
+                 'gens_b': 2, 'half': False, 'half_relationship': None}
+        second = {'relationship': 'second cousin', 'common_ancestors': [], 'gens_a': 3,
+                  'gens_b': 3, 'half': None, 'half_relationship': 'half second cousin'}
+        blood = dict(first, note=None, double=False, routes=[first, second])
+        result = relate.Result(ok=True, exit_code=EXIT_CLEAN, data={
+            'a': 'P-r000000001', 'b': 'P-r000000002', 'a_name': 'Ann Aye',
+            'b_name': 'Bea Bee', 'names': {}, 'blood': blood, 'by_marriage': None,
+            'any': None})
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(result)
+        self.assertIn("and also Bea Bee's second cousin or half second cousin, "
+                      'through another line', out.getvalue())
+
+
 class SocialPathTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):

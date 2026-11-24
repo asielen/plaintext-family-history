@@ -302,6 +302,196 @@ class BloodRoutesTests(unittest.TestCase):
                          "Ethel Hartley may be Frances Hartley's half-sister.")
 
 
+def _cousin_marriage_graph(order=1) -> KinshipGraph:
+    """G1 + G2 -> K1, K2; H1 + H2 -> J1, J2; J1 -> L1; J2 -> L2; K1 + L1 -> c3;
+    K2 + L2 -> c4. `order=-1` lists the edges backwards, so a test can show
+    the route order comes from the family, not from the input."""
+    people = {p: {'name': p, 'sex': 'F'} for p in
+              ('g1', 'g2', 'k1', 'k2', 'h1', 'h2', 'j1', 'j2', 'l1', 'l2', 'c3', 'c4')}
+    parents = [('k1', 'g1', None), ('k1', 'g2', None), ('k2', 'g1', None),
+               ('k2', 'g2', None), ('j1', 'h1', None), ('j1', 'h2', None),
+               ('j2', 'h1', None), ('j2', 'h2', None), ('l1', 'j1', None),
+               ('l2', 'j2', None), ('c3', 'k1', None), ('c3', 'l1', None),
+               ('c4', 'k2', None), ('c4', 'l2', None)]
+    return KinshipGraph.from_edges(people, parent_edges=parents[::order])
+
+
+class SeveralRoutesTests(unittest.TestCase):
+    """Two people related more than one way get every route, nearest first,
+    and "double" only for two full routes at the same cousin degree."""
+
+    def test_routes_sorted_nearest_first(self):
+        for order in (1, -1):
+            with self.subTest(order=order):
+                routes = _lib.blood_routes(_cousin_marriage_graph(order), 'c3', 'c4')
+                self.assertEqual([(r['relationship'], r['common_ancestors']) for r in routes],
+                                 [('first cousin', ['g1', 'g2']),
+                                  ('second cousin', ['h1', 'h2'])])
+
+    def test_line_above_a_nearer_ancestor_still_counts(self):
+        # Harold (h) married his first cousin Winifred (w): their fathers hf
+        # and wf are brothers, sons of gg1 + gg2. Harold's brother u is their
+        # child c's uncle, and through Winifred also her first cousin once
+        # removed. gg1 + gg2 sit above hf (a nearer common ancestor), but
+        # their line through wf is a separate route he must hear.
+        people = {p: {'name': p, 'sex': 'M'} for p in
+                  ('gg1', 'gg2', 'hf', 'hm', 'wf', 'wm', 'h', 'u', 'w', 'c',
+                   's', 'sh', 'x', 'ggg')}
+        parents = [('hf', 'gg1', None), ('hf', 'gg2', None), ('wf', 'gg1', None),
+                   ('wf', 'gg2', None), ('h', 'hf', None), ('h', 'hm', None),
+                   ('u', 'hf', None), ('u', 'hm', None), ('w', 'wf', None),
+                   ('w', 'wm', None), ('c', 'h', None), ('c', 'w', None),
+                   ('s', 'hf', None), ('s', 'hm', None), ('x', 's', None),
+                   ('x', 'sh', None), ('gg1', 'ggg', None)]
+        for order in (1, -1):
+            with self.subTest(order=order):
+                g = KinshipGraph.from_edges(people, parent_edges=parents[::order])
+                routes = _lib.blood_routes(g, 'u', 'c')
+                self.assertEqual([(r['relationship'], r['common_ancestors']) for r in routes],
+                                 [('uncle', ['hf', 'hm']),
+                                  ('first cousin once removed', ['gg1', 'gg2'])])
+                routes = _lib.blood_routes(g, 'c', 'x')
+                self.assertEqual([(r['relationship'], r['common_ancestors']) for r in routes],
+                                 [('first cousin', ['hf', 'hm']),
+                                  ('second cousin', ['gg1', 'gg2'])])
+                # gg1's own father (ggg) reaches both only through gg1: no route.
+                self.assertEqual(len(_lib.blood_routes(g, 'h', 'u')), 1)
+                self.assertEqual(len(_lib.blood_routes(g, 'h', 'w')), 1)
+
+    def test_further_line_is_named_by_its_own_length(self):
+        # Harold (h) married W, his first cousin once removed. h's brother u
+        # is their child c's uncle, and through W also her first cousin
+        # twice removed: that line runs g1 -> s -> x -> W -> c, one
+        # generation longer than the way down through Harold.
+        people = {p: {'name': p, 'sex': 'M'} for p in
+                  ('g1', 'g2', 'f', 'fm', 's', 'sm', 'x', 'xm', 'h', 'u', 'w', 'c')}
+        parents = [('f', 'g1', None), ('f', 'g2', None), ('s', 'g1', None),
+                   ('s', 'g2', None), ('h', 'f', None), ('h', 'fm', None),
+                   ('u', 'f', None), ('u', 'fm', None), ('x', 's', None),
+                   ('x', 'sm', None), ('w', 'x', None), ('w', 'xm', None),
+                   ('c', 'h', None), ('c', 'w', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        routes = _lib.blood_routes(g, 'u', 'c')
+        self.assertEqual([(r['relationship'], r['common_ancestors'], r['gens_a'], r['gens_b'])
+                          for r in routes],
+                         [('uncle', ['f', 'fm'], 1, 2),
+                          ('first cousin twice removed', ['g1', 'g2'], 2, 4)])
+
+    def test_further_line_through_one_ancestor_can_be_half(self):
+        # The double-cousin family, but the grandmothers p2 and q2 share only
+        # one grandparent z, and their parents y1, y2 have different recorded
+        # other parents: the further line is certainly half.
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2',
+                   'z', 'za', 'zb', 'y1', 'y2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None),
+                   ('y1', 'z', None), ('y1', 'za', None), ('y2', 'z', None),
+                   ('y2', 'zb', None), ('p2', 'y1', None), ('q2', 'y2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        third = blood_answer(g, 'c1', 'c2')['routes'][2]
+        self.assertEqual((third['common_ancestors'], third['relationship'], third['half']),
+                         (['z'], 'half third cousin', True))
+
+    def test_double_cousins_with_a_further_line_stay_double(self):
+        # Double first cousins whose two grandmothers were first cousins: the
+        # grandmothers' shared grandparents are a third, further line. They
+        # are still "double first cousin", and the third line is listed.
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2',
+                   'z1', 'z2', 'y1', 'y2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None),
+                   # p2 and q2 are first cousins: children of y1 and y2,
+                   # who are children of z1 + z2.
+                   ('y1', 'z1', None), ('y1', 'z2', None), ('y2', 'z1', None),
+                   ('y2', 'z2', None), ('p2', 'y1', None), ('q2', 'y2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        answer = blood_answer(g, 'c1', 'c2')
+        self.assertEqual([r['common_ancestors'] for r in answer['routes']],
+                         [['p1', 'p2'], ['q1', 'q2'], ['z1', 'z2']])
+        self.assertEqual((answer['relationship'], answer['double']),
+                         ('double first cousin', True))
+
+    def test_a_sure_line_leads_a_may_be_half_line_at_one_degree(self):
+        # Two brothers married two sisters; the brothers' mother is not
+        # recorded. The sisters' parents make A and B surely first cousins,
+        # so the headline is that sure line with no "may be half" note,
+        # whatever the IDs, and the brothers' father's line follows as the
+        # one that may be half.
+        for gf in ('g-1', 'g-9'):
+            people = {p: {'name': p, 'sex': s} for p, s in
+                      ((gf, 'M'), ('g-2', 'M'), ('g-3', 'F'), ('h1', 'M'), ('h2', 'M'),
+                       ('w1', 'F'), ('w2', 'F'), ('a', 'M'), ('b', 'F'))}
+            parents = [('h1', gf, None), ('h2', gf, None), ('w1', 'g-2', None),
+                       ('w1', 'g-3', None), ('w2', 'g-2', None), ('w2', 'g-3', None),
+                       ('a', 'h1', None), ('a', 'w1', None), ('b', 'h2', None),
+                       ('b', 'w2', None)]
+            g = KinshipGraph.from_edges(people, parent_edges=parents)
+            answer = blood_answer(g, 'a', 'b')
+            with self.subTest(gf=gf):
+                self.assertEqual([r['common_ancestors'] for r in answer['routes']],
+                                 [['g-2', 'g-3'], [gf]])
+                self.assertEqual((answer['relationship'], answer['half'], answer['note']),
+                                 ('first cousin', False, None))
+                self.assertIsNone(answer['routes'][1]['half'])
+
+    def test_couple_grouping_needs_shared_child(self):
+        # g1 and g2 are each a grandparent of both cousins, at the same
+        # distance, but through different children: two separate lines, not
+        # one couple. With the other parents unrecorded neither line is
+        # certainly full, so this is not "double".
+        people = {p: {'name': p, 'sex': 'M'} for p in
+                  ('g1', 'g2', 'x1', 'x2', 'y1', 'y2', 'a', 'b')}
+        parents = [('x1', 'g1', None), ('x2', 'g1', None), ('y1', 'g2', None),
+                   ('y2', 'g2', None), ('a', 'x1', None), ('a', 'y1', None),
+                   ('b', 'x2', None), ('b', 'y2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        answer = blood_answer(g, 'a', 'b')
+        self.assertEqual([r['common_ancestors'] for r in answer['routes']], [['g1'], ['g2']])
+        self.assertIs(answer['double'], False)
+        self.assertEqual(answer['relationship'], 'first cousin')
+
+    def test_double_needs_two_full_routes_at_one_degree(self):
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        answer = blood_answer(g, 'c1', 'c2')
+        self.assertEqual((answer['relationship'], answer['double']),
+                         ('double first cousin', True))
+        # The nearest route still names its own couple; the routes list keeps
+        # each line's own word.
+        self.assertEqual(answer['common_ancestors'], ['p1', 'p2'])
+        self.assertEqual([r['relationship'] for r in answer['routes']],
+                         ['first cousin', 'first cousin'])
+        # Two routes at different degrees are listed, never merged.
+        cm = blood_answer(_cousin_marriage_graph(), 'c3', 'c4')
+        self.assertEqual((cm['relationship'], cm['double']), ('first cousin', False))
+        # Double siblings do not exist: two lines meeting in one couple is one route.
+        sib = blood_answer(g, 'm1', 'm2')
+        self.assertEqual((sib['relationship'], sib['double'], len(sib['routes'])),
+                         ('sister', False, 1))
+
+    def test_site_label_says_double(self):
+        # The family website's line reads the same engine.
+        people = {p: {'name': p, 'sex': 'F'} for p in
+                  ('p1', 'p2', 'q1', 'q2', 'm1', 'm2', 'w1', 'w2', 'c1', 'c2')}
+        parents = [('m1', 'p1', None), ('m1', 'p2', None), ('m2', 'p1', None),
+                   ('m2', 'p2', None), ('w1', 'q1', None), ('w1', 'q2', None),
+                   ('w2', 'q1', None), ('w2', 'q2', None), ('c1', 'm1', None),
+                   ('c1', 'w1', None), ('c2', 'm2', None), ('c2', 'w2', None)]
+        g = KinshipGraph.from_edges(people, parent_edges=parents)
+        self.assertEqual(kin_relationship(g, 'c1', 'c2')['words'], 'double first cousin')
+
+
 class HalfSiblingRecordsTests(unittest.TestCase):
     """A source saying two people are half-siblings is read from the index,
     and the site's edge filter can leave it out like any other tie."""
