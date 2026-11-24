@@ -6784,7 +6784,10 @@ class _SiteBuilder:
             'pedigree': pedigree,
             'chart_title': chart_title,
             'fan': fan,
-            'fan_modes': bool(fan and 'fan-line-' in fan),
+            # The switch only earns its place once a side runs past the
+            # parent, otherwise it would fade nothing but one other parent.
+            'fan_modes': bool(fan and (fan.count('fan-line-paternal') > 1
+                                       or fan.count('fan-line-maternal') > 1)),
             'descendants_tree': descendants_tree,
             'summary': summary,
             'burial_visit': self._burial_visit(pid, page_dir),
