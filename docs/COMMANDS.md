@@ -31,6 +31,7 @@ current folder.
 - [`fha metrics`](#fha-metrics)
 - [`fha calendar`](#fha-calendar)
 - [`fha date`](#fha-date)
+- [`fha repositories`](#fha-repositories)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
 - [`fha cooccur`](#fha-cooccur)
@@ -429,6 +430,7 @@ Locate anything in the archive, or search its full text.
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
   fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
+  fha find --spelling-groups          Surnames in your records that sound alike (changes nothing)
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`.
@@ -439,6 +441,7 @@ as `fha find --text`.
 | `--root` `PATH` | Archive root |
 | `--text` `PHRASE` | Full-text search across records, notes, transcripts |
 | `--related` `[ID]` | Neighborhood of an ID: the people, places and sources next to it. Combine with --date for a time slice, or pass --related --date EDTF alone for the standalone time-slice neighborhood. |
+| `--spelling-groups` | List surnames in your records that sound alike (Hartley, Hartly, Hartlie) with how many people write each. Names are never changed. Works with --json and --limit. |
 | `--sounds-like` `NAME` | People whose names sound like NAME in any spelling (Kowalski, Kowalska, Kovalsky), grouped by spelling, with the Daitch-Mokotoff and census Soundex codes. Works with --json and --limit. |
 | `--date` `EDTF` | Time-slice filter. With --related <ID>, narrows that neighborhood to the given EDTF range; with --related and no ID, reports everything active in that range. |
 | `--json` | Machine-readable result list instead of a human report. Valid with a bare ID/text query, --text or --sounds-like; combine with --kind/--limit to narrow it. Not yet valid with --related. |
@@ -593,6 +596,35 @@ The day a church feast or fast fell on in one year. Names are matched exactly (a
 | `--church` `{western,orthodox}` | western (Catholic and Protestant, the default) or orthodox (kept in the old calendar) |
 | `--json` | Machine-readable JSON output (one object) |
 | `--root` `PATH` | Accepted and ignored: this command needs no archive |
+
+## `fha repositories`
+
+Where are the records? Archives and record sites for a place, year and kind of record.
+
+```text
+Where are the records? Archives and record sites for a place, a year and a kind
+of record, from the list that ships with the tools.
+
+  fha repositories --place l-xxxxxxxxxx --year 1911 --record death
+  fha repositories --place Fairview --year 1860 --record birth
+  fha repositories --country "United States" --year 1880 --record census
+
+A place with dated history is looked up under the government that held it in
+that year and under the country it is in today; each line says which. Every
+line says what it costs and how to reach it. Read-only.
+```
+
+| Argument | What it does |
+|---|---|
+| `--place` `L-ID|TOWN` | A registered place, by l-id or name |
+| `--country` `NAME|CC` | A country by name or two-letter code, for a place not registered yet |
+| `--year` `YYYY` | The year the record was made |
+| `--record` `KIND` | Kind of record: birth, baptism, marriage, death, burial, grave, census, military, immigration, probate, land, newspaper, church |
+| `--topic` `{jewish,african-american}` | A topic list: jewish or african-american |
+| `--access` `{free,paid,any}` | free keeps free and free-with-account; paid keeps paid and part-paid |
+| `--limit` `N` | How many to list (default 10) |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha photoindex`
 
