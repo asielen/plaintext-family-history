@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24 · companion to SPEC.md v2.31 (versions track the SPEC)**
+**Version 2.36, 2026-11-24 · companion to SPEC.md v2.36 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -1161,6 +1161,7 @@ Computed fresh on every run and never written into a record (SPEC §17b); the on
 
 ```
 fha calendar [WHEN] [--week] [--include-suggested] [--json] [--root PATH]
+fha calendar --birthdays [--days N] [--json] [--root PATH]
 ```
 
 Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims) that fall in a month or on a day: the archive's "on this day". `WHEN` is forgiving: nothing (this month), `today`, a month (`6`, `june`, `Jun`), or a day (`june 14`, `14 june`, `06-14`, `6/14`, `june 14th`). `--week` covers a day (today by default) and the six after it; a month with `--week` exits `2`, saying a week needs a day to start from. An unreadable `WHEN` exits `2` with examples; no index exits `3`. Each line says how many years ago the event was; one from this year reads "this year", and a date later than today reads as a record to check.
@@ -1172,6 +1173,16 @@ Births, baptisms, marriages, deaths, burials and arrivals (`immigration` claims)
 **Which claims.** Accepted by default; `--include-suggested` adds `suggested`, and each event carries `accepted` (true when an accepted claim stands behind it) so the text marks a suggested-only line `[suggested, not yet reviewed]` rather than showing it as a family fact; a line resting on an accepted claim shows only a place an accepted claim gives. Negated claims are never events. `--week` follows this year's calendar.
 
 **Privacy.** The command is the owner's own view and shows everything. Each event says whether each person counts as living (living or unknown, merges followed, as every export reads it) and whether any source behind it is `restricted` (`source_restricted`). That is not the whole SPEC §19 rule: the index records `restricted:` only on sources, so a claim or a person marked `restricted` is listed here unflagged. Any surface that shares this output must apply its own SPEC §19 export rules to the people, claims and sources an event lists.
+
+**`--birthdays`: living relatives' coming birthdays (private).** "Margaret turns 80 on 14 June, in 12 days", so the owner can send a card. Default 30 days ahead, `--days N` from 1 to 366 (outside that, or `--days` without `--birthdays`, exits `2`). It looks ahead from today on its own: combining it with `WHEN`, `--week` or `--include-suggested` exits `2` with `--birthdays looks ahead from today on its own; leave out the other options. Try: fha calendar --birthdays --days 60`. Five rules, in `_lib.living_birthdays`:
+
+1. People are living or unknown (merges followed); a merged record is skipped.
+2. The date is the person's own best accepted, non-negated birth claim (the same pick as the headline Born date), and only a date recorded to the day counts. Living relatives with a year or month only are counted in the footer, not listed.
+3. Someone born more than 110 years before this year (`LIVING_CUTOFF_YEARS`) is left off the list and named in a "Left off" line with the command that records a death.
+4. A 29 February birthday is celebrated on 28 February in a common year and listed with "(born 29 February)".
+5. A birthday is listed when it falls in the window, counting the new year when the window crosses it; the age is the one he turns.
+
+**Private by rule (SPEC §21).** The list prints to the owner's terminal (or `--json`) and nothing else: `fha site`, the workbench, `fha report`, `fha packet`, the GEDCOM and WikiTree exports, the search file, the tree JSON and the printed reports never read it, and none of them carries a living person's birthday. `tests/test_living_birthday_privacy.py` checks each of those outputs.
 
 Engine: `_lib.family_calendar_events`, the shared engine the site's month panel (§12) also reads; `fha report`'s `on-this-day` section (§15a) and the workbench home page (TOOLING_INTERFACE §1b) read the same week through `_lib.family_calendar_week`, so that two views of the same day cannot disagree. Read-only.
 

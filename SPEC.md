@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.31, 2026-11-24**
+**Version 2.36, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -1009,6 +1009,7 @@ Generated output that leaves the archive falls into two categories with differen
 - Any other claim naming a living person is kept, since it may be central to a deceased person's story: a baptism with a living godparent, a census of a household with a living child. Its kind, date and place are shown with the deceased people it is about. The living people are not named, linked, listed or labelled on it, and its own wording, which usually names everyone on the record, is not shown. It adds no one to a chart, the family tree, the calendar, or any list of the family.
 - The source of a kept claim keeps its page and its citation. Its page may show the record's own words and images, which can print a living person's name, but never lists, links or labels that person. A source naming a living person and carrying no kept claim stays out, and its citation reads as withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
+- A living person's birth date or birthday is never in public output, not even as a day and month with no year: not on a page or calendar, in the search file, in the family-tree data, or in any export. The owner's private list of living relatives' coming birthdays (`fha calendar --birthdays`, TOOLING §7b) prints only to his own terminal, and no public output reads it.
 - In a shared site's family trees, a living or unknown adult is drawn as a card reading "Private" with nothing else on it, so the tree keeps its shape; a living person not known to be an adult is left out. The relationship line and family-tree number may be worked out through ties to people the page does not show; those people are never named.
 
 **Public output, restricted material (mandatory):**

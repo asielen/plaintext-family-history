@@ -611,6 +611,9 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --birthdays     Living relatives' birthdays in the next 30 days
+                               (private: for you only, never in a shared copy)
+  fha calendar --birthdays --days 60
 
 Only dates recorded to the month or day appear. Read-only: nothing is written.
 ```
@@ -620,6 +623,8 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
+| `--birthdays` | Living relatives' coming birthdays (private; for you only) |
+| `--days` `N` | With --birthdays: how many days ahead (1 to 366, default 30) |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
