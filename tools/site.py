@@ -8882,7 +8882,18 @@ class _SiteBuilder:
         then, _period = place_hierarchy_at(self.conn, c['place_id'], c['date_min'], c['date_max'])
         if not then:
             return ''
-        meta = self.place_meta.get(c['place_id'])
+        # Compare with today's name of the place whose history answered (the
+        # town, for a cemetery with none of its own), or a town that lists
+        # its present name in `history:` would show that as an old name.
+        owner, seen = c['place_id'], set()
+        while owner and owner not in seen:
+            seen.add(owner)
+            if self.conn.execute('SELECT 1 FROM place_history WHERE place_id = ? LIMIT 1',
+                                 (owner,)).fetchone():
+                break
+            up = self.conn.execute('SELECT within FROM places WHERE id = ?', (owner,)).fetchone()
+            owner = up[0] if up and up[0] else None
+        meta = self.place_meta.get(owner) if owner else None
         modern = (meta['hierarchy'] if meta is not None else '') or ''
         return then if then != modern else ''
 

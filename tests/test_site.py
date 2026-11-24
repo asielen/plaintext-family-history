@@ -4425,6 +4425,26 @@ class PlacePageTests(_Base):
         self.assertIn('Buried in the cemetery', html)
         self.assertIn('at <a href="l-2222222222.html">', html)
 
+    def test_cemetery_burial_is_not_given_the_towns_present_name_as_an_old_one(self):
+        # A genealogist who lists today's name in `history:` too must not see
+        # "(then called Fairview, Kansas)" on a 2001 burial at the town's
+        # cemetery: that is the town's name now, not what it was called then.
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census', people=('p-aaaaaaaaaa',))
+        self._seed_place('l-1111111111', 'Fairview', hierarchy='Fairview, Kansas',
+                         history=(('1858/1861', 'Fairview, Kansas Territory'),
+                                  ('1861/..', 'Fairview, Kansas')))
+        self._seed_place('l-2222222222', 'Fairview Cemetery',
+                         hierarchy='Fairview Cemetery, Fairview, Kansas', within='l-1111111111')
+        self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-2222222222', 'Buried 2001', '2001')
+        self._seed_dated_claim('c-2222222222', 's-1111111111', 'l-2222222222', 'Buried 1859', '1859')
+        self._run(linked=False)
+        for page in ('places/l-1111111111.html', 'places/l-2222222222.html'):
+            rows = {v: r for r in re.findall(r'<tr[^>]*>(.*?)</tr>', self._read(page), re.S)
+                    for v in ('Buried 2001', 'Buried 1859') if v in r}
+            self.assertNotIn('then called', rows['Buried 2001'], page)
+            self.assertIn('then called Fairview, Kansas Territory', rows['Buried 1859'], page)
+
     def test_through_the_years_names_the_town_as_it_was_called_then(self):
         self._chronology_fixture()
         self._seed_dated_claim('c-1111111111', 's-1111111111', 'l-1111111111', 'Lived in 1859', '1859')
