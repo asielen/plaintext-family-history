@@ -370,6 +370,7 @@ Other limits:
 - **"Two siblings share a given name."** Reusing a dead child's name was normal.
 - **A list of dismissed warnings.** A rule a correct record can trip is the bug to fix, not a warning to hide.
 - **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
+- **Naming the likely sex from a first name as a warning, or setting it.** `sex:` is birth-assigned where a record states it (SPEC §9), and a name is a statistic, not a record. The lead (see TOOLING §3, Leads to check) only counts his own archive and sends him to find the record; it never writes.
 
 **Probably not living (W173).** Lint also names someone still marked `living: unknown` whose records put their birth more than 110 years ago: their own records, their children's births (a parent is at least 12), or a parent's death. The cutoff is 110, not the 130 that `fha metrics` uses, because the two answer different questions. 130 decides on its own that a missing death is a gap, so it has to be certain. 110 only asks: the message names `fha person set-living … false` and he runs it, so his yes is the gate. 110 is also the age `fha gedcom import` already uses for the same flag, so one archive gives one answer. At 130, most undated great-grandparents would stay hidden as "Living Person" on the site. Rejected: flipping the flag automatically, because SPEC §19 keeps `unknown` as the safe default so a mistake over-hides and never shows a living person; and a `living_confirmed:` field, turned down under §5.
 
