@@ -601,9 +601,10 @@ After a move the index is updated in place (rows moved, tier applied), so batche
 
 ## 3d. `fha source`: source-field write-backs
 
-Write-backs to a source's own text and files. Six verbs; all locate the record by scanning `sources/`.
+Write-backs to a source's own text and files. Seven verbs; all locate the record by scanning `sources/`.
 
 ```
+fha source new --type proof-argument --title TEXT [--people P-IDS] [--date EDTF] [--dry-run] [--root PATH]
 fha source note <s-id> --text TEXT [--dry-run] [--root PATH]
 fha source extract <s-id> [--pages RANGES] [--copy LABEL] [--dry-run] [--root PATH]
 fha source edit-note <s-id> --old-text TEXT --text TEXT [--dry-run] [--root PATH]
@@ -611,6 +612,8 @@ fha source clear-keyword <s-id> --keyword TEXT [--replace-with TEXT] [--file NAM
 fha source set-primary <s-id> --file NAME [--dry-run] [--root PATH]
 fha source merge <keeper> <retiree> [--dry-run] [--root PATH]
 ```
+
+**`new`.** `--type proof-argument` writes `sources/proofs/{slug}_{s-id}.md` (§14): `source_class: authored`, `repository: this archive`, a citation dated from `--date` (default today), `people:` from `--people` (known p-ids only), no `files:`, the purpose block, an empty `## Claims` fence, then empty `## The question`, `## The evidence`, `## The reasoning`, `## Conclusion` and `## Notes`. Any other `--type` is refused: other sources start from a file (`fha process`). A fresh s-id each run; `--dry-run` prints the path and text.
 
 **`note`.** Appends a paragraph to `## Notes` (SPEC §14), adding the heading at the end if missing. Append-only, no AI marker. Refuses if the `## Claims` block was sound before and not after (Claims-less sources are fine), or on several `## Notes` headings. Superseded sources are not refused.
 
@@ -717,7 +720,7 @@ One query over:
 - One explanation prints after the results, before the coverage note: what the label means, that the image is the evidence, and `fha find <s-id>`.
 - `--json` and `/api/find` add `"unchecked": true`; the workbench shows a caution chip. One rule for all surfaces.
 
-No verb flips a transcript from draft to accepted (`fha confirm draft` edits profiles only), so AI transcripts stay unreviewed (idea, see BACKLOG.md).
+No verb flips a transcript from draft to accepted (`fha confirm draft` edits profiles and a source record's body, not a transcript companion), so AI transcripts stay unreviewed (idea, see BACKLOG.md).
 
 ### `--json <ID|text> [--kind K,K…] [--limit N]`
 
@@ -1788,7 +1791,7 @@ The detectors only read; `fha confirm` writes what the human picks, from any cal
 | `confirm undismiss <p-a> <p-b> [--not-same-person]` / `confirm undismiss --list` | Take a pair back out of the file so it can be suggested again; `--list` prints every remembered pair with its undo command. |
 | `confirm place <c-id> [<c-id> ...] (--name NAME [--hierarchy H] \| --into <l-id>)` | Mint a place in `places/places.yaml` (or merge into an existing one) and relink the claims' `place:`. |
 | `confirm discovery "<text>" [--refs s-...,p-...]` | Append a dated entry with refs to `notes/discoveries.md`, the wins log report §0 leads with. |
-| `confirm draft <p-id>` | Flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a tombstone it resolves through `merged_into`. |
+| `confirm draft <p-id\|s-id>` | In a person profile, or in a source record's body (a proof argument; never its frontmatter or `## Claims`), flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a merged person's tombstone it writes nothing and names the surviving record to accept on. |
 | `confirm merge <p-merged> --into <p-survivor> --reason "<why>"` | Enact a human-confirmed SPEC §9 merge; see below. |
 
 **`confirm merge`** is planned in memory and applied with an undo journal; any failure or Ctrl+C rolls everything back (a step joins the journal once it has landed), and a file that could not be put back is named with the hand fix.
@@ -1972,6 +1975,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `fha person edit <p-id> --section …` / `fha person note <p-id> --section …` (T C) | Bounded prose write-backs to a curated profile's Biography/Stories/Research Notes (§3c): `edit` replaces or (`--append`) appends via `--text`/`--file`; `note` is always append-only. `--dry-run`. |
 | `fha person edit-note <p-id> --section … --old-text … --text …` (T C) | Rewrite ONE existing Stories/Research Notes entry, named by its exact current text (§3c): the workbench's per-entry edit button; every other entry untouched. `--dry-run`. |
 | `fha person promote <p-id> [--into FOLDER]` (T C) | Graduate a direct-line stub to a curated record (§3c, the §5 carve-out): tier flip + move out of `stubs/` into the derived couple folder + backfill any missing §16 body section (never a research file, which exists only once something is written in it), via the shared engine behind `fha views brackets --fix-promote`. Direct-line-only; explicitly human-invoked, never automatic. `--dry-run`. |
+| `fha source new --type proof-argument --title TEXT` (T C) | Start a written proof argument as a source record under `sources/proofs/` (§3d), the one source made without a file: the question, evidence, reasoning and conclusion headings come empty. Any other `--type` is refused with a pointer to `fha process`. `--people`, `--date`, `--dry-run`. |
 | `fha source note <s-id> --text …` (T C) | Append a hand-written paragraph to a source's `## Notes` (§3d): the safe one-line way to jot something down without touching frontmatter or `## Claims`. `--dry-run`. |
 
 **`fha source extract <s-id> [--pages A-B] [--copy LABEL]` (T C)**: dump the source PDF's embedded text layer into a derived `[Page N]`-labeled companion (`role: extracted-text, derived: true`, §3d): seconds instead of vision-reading hundreds of pages.
