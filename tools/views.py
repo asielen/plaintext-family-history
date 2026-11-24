@@ -5771,6 +5771,7 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
     title = ''
     parts = ['<section class="report-sheet">']
     mode = ''   # '', 'table' or 'ol'
+    in_notes = False   # under a "Notes" heading, numbered lines are the notes list
 
     def close() -> None:
         nonlocal mode
@@ -5795,6 +5796,7 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
                 title = m.group(2)
                 continue
             level = len(m.group(1))
+            in_notes = m.group(2) == 'Notes'
             parts.append(f'<h{level}>{html_escape(m.group(2))}</h{level}>')
             continue
         if line.startswith('|'):
@@ -5811,6 +5813,12 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
                 f'<td>{_report_inline_html(c)}</td>' for c in cells) + '</tr>')
             continue
         m = re.match(r'^(\d+)\. (.*)$', line)
+        if m and not in_notes:
+            # A numbered person (the Ahnentafel report), not a note.
+            close()
+            parts.append(f'<p class="ahn-person"><strong>{m.group(1)}.</strong> '
+                         f'{_report_inline_html(m.group(2))}</p>')
+            continue
         if m:
             if mode != 'ol':
                 close()
@@ -5819,9 +5827,9 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
             parts.append(f'<li value="{m.group(1)}">{html_escape(m.group(2))}</li>')
             continue
         close()
-        m = _FACT_LABEL_RE.match(line)
+        m = _FACT_LABEL_RE.match(line.strip() if line.startswith('   ') else line)
         if m:
-            parts.append(f'<p class="fact"><strong>{html_escape(m.group(1))}:</strong> '
+            parts.append(f'<p class="fact{" ahn-fact" if line.startswith("   ") else ""}"><strong>{html_escape(m.group(1))}:</strong> '
                          f'{_report_inline_html(m.group(2))}</p>')
         else:
             parts.append(f'<p>{_report_inline_html(line)}</p>')
@@ -5957,6 +5965,209 @@ def run_family_sheet(
         conn.close()
 
 
+_AHN_DEFAULT_GENERATIONS = 6
+_AHN_MAX_GENERATIONS = 12
+_AHN_LIVING_LABEL = 'A living relative (not named)'
+_AHN_GENERATION_WORDS = {1: 'parents', 2: 'grandparents', 3: 'great-grandparents'}
+
+
+def _ahn_generation_label(depth: int) -> str:
+    """`Generation 3: grandparents`; the subject's own generation has no word."""
+    if depth == 0:
+        return 'Generation 1'
+    if depth in _AHN_GENERATION_WORDS:
+        word = _AHN_GENERATION_WORDS[depth]
+    else:
+        n = depth - 2   # 4 -> 2nd great-grandparents
+        suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+        word = f'{n}{suffix} great-grandparents'
+    return f'Generation {depth + 1}: {word}'
+
+
+def _ahn_walk(rp: _ReportPrivacy, root: str, generations: int):
+    """Number the subject's ancestors the way `build_ahnentafel_map` does
+    (father 2n, mother 2n+1, same-sex or unknown pairs by id), but over the
+    ties a printed report may walk (`rp.ties`: through a living or unknown
+    relative, never through a restricted one or on withheld evidence), so a
+    branch resting on a withheld record is not numbered at all and its
+    ancestors drop out with it. Returns `(position -> person, position ->
+    first position, position -> sources of the tie to its child)`; a person
+    met a second time (cousins marrying) is not climbed again."""
+    at: dict[int, str] = {1: root}
+    placed: dict[str, int] = {root: 1}
+    also: dict[int, int] = {}
+    edge_sources: dict[int, set] = {}
+    queue = deque([(root, 1)])
+    while queue:
+        pid, n = queue.popleft()
+        if ahnentafel_generation(n) + 1 >= generations:
+            continue
+        ties = rp.ties(pid, 'parent')
+        parents = [(p, rp.sex(p) or 'U') for p, info in sorted(ties.items())
+                   if any(is_genetic_parent_subtype(s) for s in info['subtypes'])]
+        if not parents:
+            continue
+        if len(parents) == 1:
+            slots = [(parents[0][0], 2 * n if parents[0][1] != 'F' else 2 * n + 1)]
+        else:
+            father = min(parents, key=lambda e: ({'M': 0, 'U': 1, 'F': 2}.get(e[1], 1), e[0]))[0]
+            rest = [e for e in parents if e[0] != father]
+            mother = min(rest, key=lambda e: ({'F': 0, 'U': 1, 'M': 2}.get(e[1], 1), e[0]))[0]
+            slots = [(father, 2 * n), (mother, 2 * n + 1)]
+        for p, pos in slots:
+            at[pos] = p
+            edge_sources[pos] = set(ties[p]['sources'])
+            if p in placed:
+                also[pos] = placed[p]
+            else:
+                placed[p] = pos
+                queue.append((p, pos))
+    return at, also, edge_sources
+
+
+def _ahn_lines(rp: _ReportPrivacy, root: str, generations: int) -> tuple[list[str], bool]:
+    """The report as markdown, and whether anyone in it is shown by name."""
+    at, also, edge_sources = _ahn_walk(rp, root, generations)
+    fn = _Footnotes(rp)
+    tally = _SheetTally(rp)
+    body: list[str] = []
+    depth_seen = -1
+    for pos in sorted(at):
+        pid = at[pos]
+        state = tally.see(pid)
+        depth = ahnentafel_generation(pos)
+        if depth != depth_seen:
+            body += [f'## {_ahn_generation_label(depth)}', '']
+            depth_seen = depth
+        name = rp.name(pid) if state == _PERSON_SHOWN else _AHN_LIVING_LABEL
+        line = f'{pos}. {name}'
+        if pos in also:
+            line += f' (also no. {also[pos]})'
+        line += _cite_all(fn, edge_sources.get(pos, ()))
+        body.append(line)
+        if pos not in also and state == _PERSON_SHOWN:
+            for word, ctype in _VITAL_ROWS:
+                claim = _report_pick_vital(rp, pid, ctype)
+                fact = _fact_line(rp, fn, word, claim) if claim else None
+                if fact:
+                    body.append(f'   {fact}')
+            # A couple's marriage prints once, beside the husband (the even
+            # number); the subject, who has no partner on the list, gets the
+            # marriages of his own spouses.
+            if pos == 1:
+                partners = sorted(rp.ties(pid, 'spouse'))
+            elif pos % 2 == 0 and at.get(pos + 1) not in (None, pid):
+                partners = [at[pos + 1]]
+            else:
+                partners = []
+            for sp in partners:
+                marriage = _report_marriage(rp, pid, sp)
+                text = _fact_text(rp, fn, marriage) if marriage else ''
+                if text and tally.see(sp) == _PERSON_SHOWN:
+                    body.append(f'   Married: {rp.name(sp)}, {text}')
+        body.append('')
+    shown = bool(tally.named)
+    if rp.state(root) == _PERSON_SHOWN:
+        title = f'Ancestors of {rp.name(root)}'
+    else:
+        title = 'Ancestors of a living relative'
+    k = len(tally.living)
+    summary = (f'This report names {len(tally.named)} '
+               f'{"person" if len(tally.named) == 1 else "people"}.')
+    if k:
+        summary += (f' {k} living relatives are counted but not named.' if k != 1
+                    else ' 1 living relative is counted but not named.')
+    notes = fn.lines()
+    if notes:
+        body += ['## Notes', ''] + notes + ['']
+    return [f'# {title}', '', summary, ''] + body, shown
+
+
+def run_ahnentafel(
+    archive_root: Path,
+    person_id: str | None,
+    generations: int = _AHN_DEFAULT_GENERATIONS,
+    fmt: str = 'md',
+) -> Result:
+    """Write the printed Ahnentafel report: a numbered list of one person's
+    ancestors (1 him, 2 his father, 3 his mother, 4 his father's father...),
+    each fact with a note. A living subject is allowed and printed as "a
+    living relative"; the deceased ancestors still print. Exit codes: 0
+    written; 1 person not in the index (or written with a file left out
+    because it would not read); 2 refused (restricted subject, nobody to
+    name, or a bad generation count); 3 no usable index."""
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
+    if generations < 1:
+        print('--generations must be 1 or more.', file=sys.stderr)
+        return _views_result(EXIT_ERRORS)
+    if generations > _AHN_MAX_GENERATIONS:
+        print(f'Showing {_AHN_MAX_GENERATIONS} generations, the most a printed report goes to.')
+        generations = _AHN_MAX_GENERATIONS
+    conn = _open_index_or_explain(archive_root)
+    if conn is None:
+        return _views_result(EXIT_FAILURE)
+    try:
+        rp = _ReportPrivacy(conn, archive_root)
+        pid = rp.canon(person_id or '')
+        if pid is None:
+            print(f'No person {fmt_id_display(person_id or "")} in the index. '
+                  f'Run fha find "their name" to look them up by name, or fha index '
+                  f'if you just added them.', file=sys.stderr)
+            return _views_result(EXIT_WARNINGS)
+        if rp.state(pid) == _PERSON_RESTRICTED:
+            unread = sorted(rp.unreadable_paths(pid))
+            if unread:
+                print(f'Could not read {", ".join(unread)} to check whether '
+                      f'{fmt_id_display(pid)} asked to be kept private, so no report about '
+                      f'them can be printed. Nothing was written. Repair the file '
+                      f'(`fha lint` points at what is wrong), run `fha index`, then try again.',
+                      file=sys.stderr)
+            else:
+                print(f'{fmt_id_display(pid)} is marked private (restricted), so it is left out '
+                      f'of printed reports. Nothing was written.', file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+        lines, shown = _ahn_lines(rp, pid, generations)
+        if not shown:
+            print('Everyone this report would list is living or private, so there is '
+                  'nothing to print.', file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+        out = _render_report(archive_root, 'ahnentafel', pid, lines, fmt)
+        warnings = rp.unreadable_warnings()
+        for warning in warnings:
+            print(warning, file=sys.stderr)
+        rel = _rel_display(out, archive_root)
+        if fmt == 'html':
+            print(f'Wrote {rel}. Open it in a browser and print it, or choose Save as PDF '
+                  f'in the print box.')
+        else:
+            print(f'Wrote {rel}.')
+        return _views_result(EXIT_WARNINGS if warnings else EXIT_CLEAN, changed=[str(out)])
+    except GeneratedFileRefused as e:
+        return _views_result(_refused_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
+    finally:
+        conn.close()
+
+
+def _cmd_ahnentafel(args: argparse.Namespace) -> int:
+    """argparse → run_ahnentafel bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    gens = getattr(args, 'generations', None)
+    return run_ahnentafel(
+        archive_root,
+        getattr(args, 'person_id', None),
+        _AHN_DEFAULT_GENERATIONS if gens is None else gens,
+        getattr(args, 'format', 'md') or 'md',
+    ).exit_code
+
+
 def _cmd_family_sheet(args: argparse.Namespace) -> int:
     """argparse → run_family_sheet bridge; returns the process exit code."""
     archive_root = resolve_root_arg(args)
@@ -5985,6 +6196,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -6196,6 +6408,24 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     fs.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     fs.set_defaults(func=_cmd_family_sheet)
 
+    # ── ahnentafel ────────────────────────────────────────────────────────────
+    ah = vsubs.add_parser(
+        'ahnentafel',
+        help="Print a numbered list of a person's ancestors, each fact with its source.",
+        description=(
+            "Write a printed Ahnentafel report to generated/views/: the person is\n"
+            "number 1, then 2 his father, 3 his mother, 4 his father's father, and\n"
+            "so on, with dates, places and a note for each fact. A living relative\n"
+            "is shown as \"a living relative (not named)\"; private records are left\n"
+            "out. The numbering starts at 1 for the person asked about, whatever\n"
+            "root_generation says.\n"
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
+    )
+    _add_ahnentafel_args(ah)
+    ah.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    ah.set_defaults(func=_cmd_ahnentafel)
+
     # ── clean ─────────────────────────────────────────────────────────────────
     cl = vsubs.add_parser(
         'clean',
@@ -6317,6 +6547,11 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     fs.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     fs.set_defaults(func=_cmd_family_sheet)
 
+    ah = subs.add_parser('ahnentafel', help="Print a numbered list of a person's ancestors, each fact with its source.")
+    _add_ahnentafel_args(ah)
+    ah.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    ah.set_defaults(func=_cmd_ahnentafel)
+
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
@@ -6330,6 +6565,14 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
 def _add_family_sheet_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', metavar='p-id', help='A deceased person; the sheet is for them and a spouse.')
     p.add_argument('--spouse', metavar='p-id', help='Only the sheet for this spouse (default: one sheet per spouse).')
+    p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                   help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
+
+
+def _add_ahnentafel_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument('person_id', metavar='p-id', help='The person whose ancestors are listed (a living person is allowed).')
+    p.add_argument('--generations', type=int, metavar='N', default=None,
+                   help=f'How many generations to print, the person being the first (default {_AHN_DEFAULT_GENERATIONS}, most {_AHN_MAX_GENERATIONS}).')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
                    help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
 

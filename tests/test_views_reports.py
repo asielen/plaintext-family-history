@@ -629,3 +629,133 @@ class FamilySheetReviewFixTests(_SheetBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+TFF = 'p-rrrrrrrrrr'   # Henry Hartley, John's father
+TFM = 'p-ssssssssss'   # Ruth Hartley, John's mother
+WF = 'p-tttttttttt'    # Amos Cole, father of the living Walter
+HID = 'p-uuuuuuuuuu'   # a great-grandfather behind a restricted record
+S_PAR_TF, S_PAR_W, S_MARR_TF, S_PAR_HID = 's-hhhhhhhhhh', 's-iiiiiiiiii', 's-jjjjjjjjjj', 's-kkkkkkkkk1'
+
+
+class AhnentafelTests(_SheetBase):
+    """`fha views ahnentafel`: his ancestors numbered the way genealogy books
+    print them (1 him, 2 his father, 3 his mother, 4 his father's father...),
+    each fact with a note, living relatives never named."""
+
+    def people(self):
+        return super().people() + [
+            (TFF, 'Henry Hartley', 'M', 'false', ''),
+            (TFM, 'Ruth Hartley', 'F', 'false', ''),
+            (WF, 'Amos Cole', 'M', 'false', ''),
+            (HID, 'Silas Hartley', 'M', 'false', ''),
+        ]
+
+    def sources(self):
+        return super().sources() + [
+            (S_PAR_TF, 'John parentage proof', 'Hartley Bible, John page.',
+             _rel('c-parTF00000', TF, [TFF, TFM]), '', None),
+            (S_PAR_W, 'Walter parentage proof', 'Cole Bible.',
+             _rel('c-parW000000', MF, [WF]), '', None),
+            (S_MARR_TF, 'Hartley marriage 1838', 'Breton County Marriage Book A, p. 1.',
+             _claim('c-marrTF0000', 'marriage', [TF, TM], '1838-04-10',
+                    roles=f'{{spouse: [{TF}, {TM}]}}', place='Fairview'), '', None),
+            (S_PAR_HID, 'DNA parentage', 'A DNA company report.',
+             _rel('c-parHID0000', TFF, [HID]), 'restricted: true\n', None),
+        ]
+
+    def run_ahn(self, pid=T, generations=6, fmt='md'):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            result = views.run_ahnentafel(self.root, pid, generations, fmt)
+        return result, out.getvalue(), err.getvalue()
+
+    def text(self, pid=T, generations=6, fmt='md') -> str:
+        result, out, err = self.run_ahn(pid, generations, fmt)
+        self.assertEqual(result.exit_code, EXIT_CLEAN, out + err)
+        return Path(result.changed[0]).read_text(encoding='utf-8')
+
+    def test_numbers_follow_the_father_mother_slots(self):
+        text = self.text()
+        self.assertIn('# Ancestors of Thomas Edward Hartley', text)
+        self.assertRegex(text, r'(?m)^1\. Thomas Edward Hartley$')
+        self.assertRegex(text, r'(?m)^2\. John Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^3\. Ann Price \[\d+\]$')
+        self.assertRegex(text, r'(?m)^4\. Henry Hartley \[\d+\]$')
+        self.assertRegex(text, r'(?m)^5\. Ruth Hartley \[\d+\]$')
+        self.assertIn('## Generation 1', text)
+        self.assertIn('## Generation 2: parents', text)
+        self.assertIn('## Generation 3: grandparents', text)
+
+    def test_facts_carry_notes_and_the_marriage_prints_once(self):
+        text = self.text()
+        self.assertIn('   Born: 14 June 1840, Fairview, Breton County, Ohio [', text)
+        self.assertIn('   Died: 3 March 1941, Elm Creek, Kansas [', text)
+        self.assertEqual(text.count('Married: Ann Price, 10 April 1838, Fairview ['), 1)
+        self.assertNotIn('Married: John Hartley', text)
+        self.assertIn('Married: Margaret Cole, 2 May 1866, Fairview [', text)
+
+    def test_a_restricted_record_cuts_the_branch_above_it(self):
+        text = self.text()
+        self.assertNotIn('Silas Hartley', text)
+        self.assertNotIn('DNA', text)
+
+    def test_a_living_parent_is_a_label_and_her_parents_still_print(self):
+        text = self.text(M)
+        self.assertRegex(text, r'(?m)^2\. A living relative \(not named\) \[\d+\]$')
+        self.assertNotIn('Walter', text)
+        self.assertRegex(text, r'(?m)^3\. Sarah Cole \[\d+\]$')
+        self.assertRegex(text, r'(?m)^4\. Amos Cole \[\d+\]$')
+        self.assertIn('1 living relative is counted but not named', text)
+
+    def test_a_living_subject_prints_as_the_label_and_the_line_continues(self):
+        text = self.text(MF)
+        self.assertRegex(text, r'(?m)^1\. A living relative \(not named\)$')
+        self.assertIn('# Ancestors of a living relative', text)
+        self.assertRegex(text, r'(?m)^2\. Amos Cole \[\d+\]$')
+        self.assertNotIn('Walter', text)
+
+    def test_nobody_shown_is_refused(self):
+        result, _out, err = self.run_ahn(LIVSPOUSE)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertIn('Everyone this report would list is living or private, '
+                      'so there is nothing to print.', err)
+        self.assertEqual(result.changed, [])
+
+    def test_restricted_subject_is_refused_without_a_name(self):
+        result, _out, err = self.run_ahn(CR)
+        self.assertEqual(result.exit_code, EXIT_ERRORS)
+        self.assertNotIn('Hidden', err)
+
+    def test_generations_stops_at_the_requested_depth(self):
+        text = self.text(T, 2)
+        self.assertIn('Ann Price', text)
+        self.assertNotIn('Henry Hartley', text)
+        self.assertNotIn('Generation 3', text)
+
+    def test_too_many_generations_is_clamped_with_a_note(self):
+        result, out, _err = self.run_ahn(T, 13)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('Showing 12 generations, the most a printed report goes to.', out)
+
+    def test_notes_are_listed_and_html_renders_people_not_a_notes_list(self):
+        text = self.text(fmt='html')
+        self.assertIn('Ancestors of Thomas Edward Hartley', text)
+        self.assertEqual(text.count('<ol class="report-notes">'), 1)
+        self.assertIn('<sup class="note">', text)
+        self.assertIn('Henry Hartley', text)
+        self.assertNotIn('<li value="4">Henry', text)
+
+    def test_rewrite_is_byte_identical(self):
+        first = self.text()
+        second = self.text()
+        self.assertEqual(first, second)
+
+    def test_a_person_met_twice_is_not_expanded_again(self):
+        # Ann Price is also made the mother of John: she sits at two numbers.
+        (self.root / 'sources' / 'vital-record' / 'x_loop.md').write_text(
+            _source('s-loop000001', 'Loop proof', 'Bible.',
+                    _rel('c-parTFloop0', TF, [TFF, TM])), encoding='utf-8')
+        index_mod.build_index(self.root, load_fha_yaml(self.root))
+        text = self.text()
+        self.assertIn('(also no. 3)', text)

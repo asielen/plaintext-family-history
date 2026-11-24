@@ -199,6 +199,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -354,6 +355,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 |---|---|
 | `p-id` | A deceased person; the sheet is for them and a spouse. |
 | `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views ahnentafel`
+
+Print a numbered list of a person's ancestors, each fact with its source.
+
+```text
+Write a printed Ahnentafel report to generated/views/: the person is
+number 1, then 2 his father, 3 his mother, 4 his father's father, and
+so on, with dates, places and a note for each fact. A living relative
+is shown as "a living relative (not named)"; private records are left
+out. The numbering starts at 1 for the person asked about, whatever
+root_generation says.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person whose ancestors are listed (a living person is allowed). |
+| `--generations` `N` | How many generations to print, the person being the first (default 6, most 12). |
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
