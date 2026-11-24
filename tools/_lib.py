@@ -20552,12 +20552,15 @@ def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
     return None
 
 
-def _year_of(value: Any) -> int | None:
-    """The year in an int or an ISO-ish date text ('1860', '1860-05-01'), else None."""
-    try:
-        return int(str(value).strip()[:4])
-    except (TypeError, ValueError):
+def _date_edge(value: Any, end: bool) -> str | None:
+    """An int year or ISO-ish text ('1860', '1860-05', '1860-05-01') as a full
+    'YYYY-MM-DD' for comparing; `end` fills a missing month or day with the
+    last one ('1860' -> '1860-12-31'). None when it is not a date."""
+    m = re.match(r'^\s*(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?', str(value)) if value is not None else None
+    if not m:
         return None
+    y, mo, d = m.group(1), m.group(2), m.group(3)
+    return f"{y}-{mo or ('12' if end else '01')}-{d or ('31' if end else '01')}"
 
 
 def place_hierarchy_at(
@@ -20570,17 +20573,19 @@ def place_hierarchy_at(
     death is looking at two governments, so each is looked up under its own.
     SPEC A.9: a claim's date picks the period, so a period is returned only
     when it wholly covers the date range given (a `1855/1865` claim is not
-    inside `1858/1861`). The range is `date_min` to `date_max` (years or ISO
-    dates; `date_max` defaults to `date_min`). A period open at one end
-    (`[..1861]`) covers any range that ends inside it. Of several covering
-    periods the narrowest wins, the first in file order on a tie. A place
-    with no history of its own follows `within:` to the place that contains
-    it. (None, None) when no dated entry covers the range, or when the range
-    is undated: the caller then uses the place's present `hierarchy:`.
+    inside `1858/1861`, and a claim from January 1918 is not inside a period
+    that began in November 1918). The range is `date_min` to `date_max` (years
+    or ISO dates; a bare year means the whole year; `date_max` defaults to
+    `date_min`). A period open at one end (`[..1861]`) covers any range that
+    ends inside it. Of several covering periods the narrowest wins, the first
+    in file order on a tie. A place with no history of its own follows
+    `within:` to the place that contains it. (None, None) when no dated entry
+    covers the range, or when the range is undated: the caller then uses the
+    place's present `hierarchy:`.
     """
-    lo = _year_of(date_min)
-    hi = _year_of(date_max if date_max is not None else date_min)
-    if lo is None or hi is None or lo <= 1 or hi >= 9999 or lo > hi:
+    lo = _date_edge(date_min, False)
+    hi = _date_edge(date_max if date_max is not None else date_min, True)
+    if lo is None or hi is None or lo <= '0001-12-31' or hi >= '9999-01-01' or lo > hi:
         return (None, None)
     seen: set[str] = set()
     pid: str | None = place_id
@@ -20591,11 +20596,13 @@ def place_hierarchy_at(
             'WHERE place_id = ? ORDER BY rowid', (pid,)).fetchall()
         best: tuple[int, str, str | None] | None = None
         for r in rows:
-            elo, ehi = _year_of(r[1]), _year_of(r[2])
+            elo, ehi = _date_edge(r[1], False), _date_edge(r[2], True)
             if elo is None or ehi is None or not r[3]:
                 continue
-            if elo <= lo and ehi >= hi and (best is None or ehi - elo < best[0]):
-                best = (ehi - elo, str(r[3]), r[0])
+            if elo <= lo and ehi >= hi:
+                span = (int(ehi[:4]) - int(elo[:4])) * 372 + (int(ehi[5:7]) - int(elo[5:7])) * 31                     + int(ehi[8:10]) - int(elo[8:10])
+                if best is None or span < best[0]:
+                    best = (span, str(r[3]), r[0])
         if best is not None:
             return (best[1], best[2])
         if rows:

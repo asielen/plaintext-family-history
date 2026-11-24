@@ -47,6 +47,8 @@ TWOROW = 'l-2a4d6f8b55'        # a wide period and a narrow one
 GEORGIA = 'l-3b5e7a9c66'       # last part "Georgia": ambiguous
 LOST = 'l-4c6f8b0d77'          # last part is a name nobody knows
 NOHIER = 'l-5d7a9c1e88'        # no hierarchy anywhere
+MIDYEAR = 'l-6e8b0d2f99'       # a government change on 11 November 1918
+LODZ = 'l-7f9c1e3a00'          # accented name and accented alternate name
 
 PLACES = [
     {'id': FAIRVIEW, 'name': 'Fairview', 'alt_names': ['Fairview City'],
@@ -62,6 +64,10 @@ PLACES = [
     {'id': GEORGIA, 'name': 'Reed Mill', 'hierarchy': 'Reed Mill, Georgia'},
     {'id': LOST, 'name': 'Cole Ridge', 'hierarchy': 'Cole Ridge, Breton Territory'},
     {'id': NOHIER, 'name': 'Hartley Bend'},
+    {'id': MIDYEAR, 'name': 'Reed Crossing', 'hierarchy': 'Reed Crossing, Poland',
+     'history': [{'period': '1918-11-11/1939-09-01', 'hierarchy': 'Reed Crossing, Second Republic, Poland'}]},
+    {'id': LODZ, 'name': 'Łódź', 'alt_names': ['Église Vieille'],
+     'hierarchy': 'Łódź, Poland'},
 ]
 
 CATALOG = {'about': 'test', 'sources': [], 'repositories': [
@@ -116,6 +122,18 @@ class _Archive:
         shutil.rmtree(self.root, ignore_errors=True)
 
 
+class AccentedPlaceNames(unittest.TestCase):
+    def test_a_place_is_found_by_its_accented_name_in_any_case(self):
+        a = _Archive()
+        try:
+            for text in ('Łódź', 'łódź', 'église vieille', 'ÉGLISE'):
+                r = a.run(place=text)
+                self.assertTrue(r.ok, text)
+                self.assertEqual(r.data['place']['id'], LODZ, text)
+        finally:
+            a.cleanup()
+
+
 class PlaceHierarchyAt(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -142,6 +160,13 @@ class PlaceHierarchyAt(unittest.TestCase):
         self.assertEqual(place_hierarchy_at(self.conn, FAIRVIEW, '1855', '1865'), (None, None))
         self.assertEqual(place_hierarchy_at(self.conn, FAIRVIEW, '1859-03-01', '1860-12-31'),
                          ('Fairview, Breton Co., Kansas Territory, USA', '1858/1861'))
+
+    def test_a_government_change_inside_the_year_is_not_covered_by_a_bare_year(self):
+        # Born January 1918, before the 11 November change: not the later government.
+        self.assertEqual(place_hierarchy_at(self.conn, MIDYEAR, '1918-01-01', '1918-01-02'), (None, None))
+        self.assertEqual(place_hierarchy_in_year(self.conn, MIDYEAR, 1918), (None, None))
+        self.assertEqual(place_hierarchy_at(self.conn, MIDYEAR, '1918-12-01', '1919-02-01')[1],
+                         '1918-11-11/1939-09-01')
 
     def test_undated_range_gives_nothing(self):
         self.assertEqual(place_hierarchy_at(self.conn, FAIRVIEW, '0001-01-01', '9999-12-31'),

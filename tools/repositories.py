@@ -264,20 +264,20 @@ def _resolve_place(conn, text: str) -> tuple[list[tuple[str, str]], bool]:
     if is_valid_id(ref) and id_type_of(ref) == 'L':
         row = conn.execute('SELECT id, name, hierarchy FROM places WHERE id = ?', (ref,)).fetchone()
         return ([(row[0], row[2] or row[1] or row[0])] if row else []), True
-    needle = text.strip().lower()
+    # SQLite's lower() and LIKE fold only ASCII, so a registered "Łódź" would never
+    # match its own correctly spelled name. Compare folded text in Python.
+    needle = unicodedata.normalize('NFC', text.strip()).casefold()
+    names = [(r[0], r[1], r[2] or r[1] or r[0], r[3]) for r in conn.execute(
+        'SELECT p.id, p.name, p.hierarchy, NULL FROM places p UNION ALL '
+        'SELECT p.id, n.alt_name, p.hierarchy, NULL FROM place_names n JOIN places p ON p.id = n.place_id')]
     out: dict[str, str] = {}
-    for sql, arg in (
-        ('SELECT id, name, hierarchy FROM places WHERE lower(name) = ?', needle),
-        ('SELECT p.id, p.name, p.hierarchy FROM place_names n JOIN places p ON p.id = n.place_id '
-         'WHERE lower(n.alt_name) = ?', needle),
-    ):
-        for row in conn.execute(sql, (arg,)):
-            out.setdefault(row[0], row[2] or row[1] or row[0])
-    if not out:
-        like = '%' + needle.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_') + '%'
-        for row in conn.execute(
-                "SELECT id, name, hierarchy FROM places WHERE lower(name) LIKE ? ESCAPE '\\'", (like,)):
-            out.setdefault(row[0], row[2] or row[1] or row[0])
+    for exact in (True, False):
+        for pid, name, label, _ in names:
+            folded = unicodedata.normalize('NFC', name or '').casefold()
+            if folded == needle if exact else (needle in folded):
+                out.setdefault(pid, label)
+        if out:
+            break
     return list(out.items()), False
 
 
