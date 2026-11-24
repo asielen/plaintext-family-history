@@ -13682,6 +13682,224 @@ class HeritageChartTests(_Base):
                 {'label': 'Grandparents', 'slots': 4, 'counts': {'Wales': 2, 'Ireland': 1,
                                                                  'Not traced': 1}}]
         self.assertEqual(site._heritage_country_order(rows), ['Wales', 'England', 'Ireland'])
+def _lifespan_row(name, role, birth=None, death=None, *, first=None, last=None,
+                  living=False, years=''):
+    return {'name': name, 'role': role, 'birth': birth, 'death': death,
+            'first': first, 'last': last, 'living': living, 'years': years}
+
+
+class LifespanChartRenderTests(unittest.TestCase):
+    """The "Who overlapped" chart: a bar per person from birth to death on one
+    shared year axis, so a relative can see who lived at the same time. An
+    uncertain end is drawn faded and hatched, never as a confident bar."""
+
+    ROWS = [
+        _lifespan_row('Thomas Hartley', 'father', (1810, 1810), (1880, 1880), years='1810-1880'),
+        _lifespan_row('Calvin Hartley', 'subject', (1839, 1841), (1920, 1920),
+                      years='abt. 1840-1920'),
+        _lifespan_row('Walter Hartley', 'son', (1868, 1868), None, last=1900,
+                      years='b. 1868'),
+    ]
+
+    def _svg(self, rows=None):
+        return site._render_lifespan_svg(self.ROWS if rows is None else rows)
+
+    @staticmethod
+    def _row(svg, role):
+        return re.search(r'<g class="lifespan-row" data-role="%s">.*?</g>' % role,
+                         svg, re.S).group(0)
+
+    def _px_per_year(self, svg):
+        ticks = [(float(x), int(y)) for x, y in
+                 re.findall(r'<text class="lifespan-tick" x="([\d.]+)"[^>]*>(\d+)</text>', svg)]
+        (x0, y0), (x1, y1) = ticks[0], ticks[1]
+        return (x1 - x0) / (y1 - y0)
+
+    def test_rows_draw_in_the_order_given_top_to_bottom(self):
+        svg = self._svg()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', svg)
+        self.assertEqual(names, ['Thomas Hartley', 'Calvin Hartley', 'Walter Hartley'])
+
+    def test_an_approximate_birth_draws_a_faded_cap_over_its_whole_range(self):
+        svg = self._svg()
+        calvin = self._row(svg, 'subject')
+        caps = re.findall(r'<rect class="lifespan-cap"[^>]*>', calvin)
+        self.assertEqual(len(caps), 1)          # birth end only: the death is exact
+        width = float(re.search(r' width="([\d.]+)"', caps[0]).group(1))
+        # Two years of uncertainty is two years of the axis, no more.
+        self.assertAlmostEqual(width, 2 * self._px_per_year(svg), places=1)
+
+    def test_an_unrecorded_death_is_a_faded_tail_labelled_not_recorded(self):
+        walter = self._row(self._svg(), 'son')
+        self.assertIn('lifespan-cap', walter)
+        self.assertIn('death not recorded', walter)
+        self.assertRegex(walter, r'<title>[^<]*death not recorded')
+
+    def test_the_axis_covers_every_bar_and_ticks_every_ten_years(self):
+        svg = self._svg()
+        ticks = [int(t) for t in re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', svg)]
+        self.assertEqual(ticks[0], 1810)
+        self.assertGreaterEqual(ticks[-1], 1920)
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {10})
+        width = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+        for x, w in re.findall(
+                r'<rect class="lifespan-(?:bar|cap)" x="([\d.]+)"[^>]*? width="([\d.]+)"', svg):
+            self.assertLessEqual(float(x) + float(w), width)
+
+    def test_a_long_span_ticks_every_twenty_years(self):
+        rows = [_lifespan_row('Old One', 'father', (1650, 1650), (1700, 1700)),
+                _lifespan_row('Young One', 'son', (1990, 1990), (2010, 2010))]
+        ticks = [int(t) for t in
+                 re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', self._svg(rows))]
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {20})
+
+    def test_the_subject_birth_and_death_get_a_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 2)
+
+    def test_an_approximate_birth_gets_no_sharp_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1830, 1850), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 1)
+
+    def test_a_screen_reader_label_names_every_person(self):
+        label = re.search(r'aria-label="([^"]*)"', self._svg()).group(1)
+        self.assertIn('Calvin Hartley', label)
+        self.assertIn('subject', label)
+
+    def test_a_person_with_no_birth_starts_at_the_first_dated_record_faded(self):
+        rows = [_lifespan_row('Ada Hartley', 'mother', None, (1890, 1890), first=1860),
+                _lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920))]
+        ada = self._row(self._svg(rows), 'mother')
+        self.assertIn('lifespan-cap', ada)
+        self.assertIn('birth not recorded', ada)
+
+    def test_the_chart_is_deterministic_and_has_no_dashes(self):
+        a, b = self._svg(), self._svg()
+        self.assertEqual(a, b)
+        self.assertNotIn('–', a)
+        self.assertNotIn('—', a)
+
+    def test_vague_dates_read_as_a_range_of_years_never_a_point(self):
+        years = site._lifespan_years
+        self.assertEqual(years('1840'), (1840, 1840))
+        self.assertEqual(years('1840-05-03'), (1840, 1840))
+        self.assertEqual(years('1840~'), (1839, 1841))
+        self.assertEqual(years('1840/1845'), (1840, 1845))
+        self.assertEqual(years('185X'), (1850, 1859))
+        lo, hi = years('[..1900]')
+        self.assertEqual(hi, 1900)
+        self.assertLess(lo, 1900)           # open start: a faded stretch before
+        lo, hi = years('[1900..]')
+        self.assertEqual(lo, 1900)
+        self.assertGreater(hi, 1900)        # open end: a faded stretch after
+        self.assertIsNone(years('not a date'))
+        self.assertIsNone(years(None))
+
+    def test_the_chart_is_not_colour_only(self):
+        svg = self._svg()
+        self.assertIn('<pattern id="fha-lifespan-hatch"', svg)
+        self.assertIn('role="img"', svg)
+
+
+class LifespanChartPageTests(_Base):
+    """On a person's page: who lived at the same time as the person. A shared
+    site draws no bar, name or count for anyone it does not show."""
+
+    def setUp(self):
+        super().setUp()
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+
+    def _claim(self, pid, ctype, date):
+        self._n += 1
+        self._seed_claim(f'c-l{self._n:09d}', 's-1111111111', ctype, ctype,
+                         date_edtf=date, persons=(pid,))
+
+    def _life(self, pid, birth, death=None):
+        if birth:
+            self._claim(pid, 'birth', birth)
+        if death:
+            self._claim(pid, 'death', death)
+
+    def _seed_family(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._seed_person('p-thom000000', 'Thomas Hartley', surname='Hartley')
+        self._seed_person('p-adah000000', 'Ada Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-ethe000000', 'Ethel Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-fran000000', 'Frances Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-walt000000', 'Walter Hartley', surname='Hartley')
+        self._seed_person('p-nobo000000', 'Nora Hartley', surname='Hartley', sex='F')
+        self._life('p-calv000000', '1840~', '1920')
+        self._life('p-thom000000', '1810', '1880')
+        self._life('p-adah000000', '1815', '1890')
+        self._life('p-ethe000000', '1845', '1930')
+        self._life('p-fran000000', '1872', '1950')
+        self._life('p-walt000000', '1868')
+        self._claim('p-walt000000', 'residence', '1900')
+        for parent in ('p-thom000000', 'p-adah000000'):
+            self._seed_rel('p-calv000000', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-calv000000')
+        self._seed_rel('p-calv000000', 'spouse', 'p-ethe000000')
+        self._seed_rel('p-ethe000000', 'spouse', 'p-calv000000')
+        for child in ('p-fran000000', 'p-walt000000', 'p-nobo000000'):
+            self._seed_rel('p-calv000000', 'child', child)
+            self._seed_rel(child, 'parent', 'p-calv000000')
+
+    def _chart(self, **kw):
+        self._run(**kw)
+        page = self._read('persons/p-calv000000.html')
+        m = re.search(r'<details class="chart lifespan">.*?</details>', page, re.S)
+        return m.group(0) if m else ''
+
+    def test_rows_run_parents_then_person_then_spouse_then_children(self):
+        self._seed_family()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', self._chart())
+        self.assertEqual(names, ['Thomas Hartley', 'Ada Hartley', 'Calvin Hartley',
+                                 'Ethel Hartley', 'Walter Hartley', 'Frances Hartley'])
+
+    def test_a_person_with_no_dates_is_counted_in_a_note_not_drawn(self):
+        self._seed_family()
+        chart = self._chart()
+        self.assertNotIn('Nora Hartley', chart.split('</svg>')[0])
+        self.assertIn('1 person without dates is not shown.', chart)
+
+    def test_a_shared_site_draws_nothing_for_a_living_or_unknown_relative(self):
+        self._seed_family()
+        self._seed_person('p-pip0000000', 'Pip Hartley', surname='Hartley', living='true')
+        self._life('p-pip0000000', '1990-03-04')
+        self._seed_person('p-unkn000000', 'Una Hartley', surname='Hartley', living='unknown')
+        self._life('p-unkn000000', '1985')
+        for kid in ('p-pip0000000', 'p-unkn000000'):
+            self._seed_rel('p-calv000000', 'child', kid)
+            self._seed_rel(kid, 'parent', 'p-calv000000')
+        chart = self._chart()
+        for text in ('Pip', 'Una', '1990', '1985', 'Living'):
+            self.assertNotIn(text, chart)
+        # The note counts only people the page shows, so it hints at nobody.
+        self.assertIn('1 person without dates is not shown.', chart)
+        # The preview on his own machine draws everyone.
+        self.assertIn('Pip Hartley', self._chart(linked=True))
+
+    def test_a_restricted_spouse_is_left_off_the_chart(self):
+        self._seed_family()
+        with unittest.mock.patch.object(
+                site._SiteBuilder, '_person_is_redacted',
+                lambda s, row: row['id'] == 'p-ethe000000'):
+            chart = self._chart()
+        self.assertNotIn('Ethel', chart)
+
+    def test_a_person_with_nobody_dated_beside_them_gets_no_chart(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._life('p-calv000000', '1840', '1920')
+        self.assertEqual(self._chart(), '')
+
+    def test_the_page_builds_the_same_chart_twice(self):
+        self._seed_family()
+        first = self._chart()
+        self.assertEqual(first, self._chart())
+        self.assertIn('lifespan-chart', first)
 
 
 if __name__ == '__main__':
