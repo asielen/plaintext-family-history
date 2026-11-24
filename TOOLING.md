@@ -1733,7 +1733,7 @@ The detectors only read; `fha confirm` writes what the human picks, from any cal
 | `confirm undismiss <p-a> <p-b> [--not-same-person]` / `confirm undismiss --list` | Take a pair back out of the file so it can be suggested again; `--list` prints every remembered pair with its undo command. |
 | `confirm place <c-id> [<c-id> ...] (--name NAME [--hierarchy H] \| --into <l-id>)` | Mint a place in `places/places.yaml` (or merge into an existing one) and relink the claims' `place:`. |
 | `confirm discovery "<text>" [--refs s-...,p-...]` | Append a dated entry with refs to `notes/discoveries.md`, the wins log report §0 leads with. |
-| `confirm draft <p-id\|s-id>` | In a person profile, or in a source record's body (a proof argument; never its frontmatter or `## Claims`), flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a tombstone it resolves through `merged_into`. |
+| `confirm draft <p-id\|s-id>` | In a person profile, or in a source record's body (a proof argument; never its frontmatter or `## Claims`), flip `<!-- AI-DRAFT ... -->` markers to `<!-- AI-ACCEPTED ... (accepted DATE) -->`, keeping the original date/model. On a merged person's tombstone it writes nothing and names the surviving record to accept on. |
 | `confirm merge <p-merged> --into <p-survivor> --reason "<why>"` | Enact a human-confirmed SPEC §9 merge; see below. |
 
 **`confirm merge`** is planned in memory and applied with an undo journal; any failure or Ctrl+C rolls everything back (a step joins the journal once it has landed), and a file that could not be put back is named with the hand fix.

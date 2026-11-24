@@ -612,6 +612,9 @@ class SourceNewProofTests(unittest.TestCase):
             '## Claims', '## The question', '## The evidence',
             '## The reasoning', '## Conclusion', '## Notes')]
         self.assertEqual(order, sorted(order))
+        # He is not told `fha process` made it: no document came through the inbox.
+        self.assertNotIn('fha process', text)
+        self.assertIn('This proof argument - yours to write.', text)
         rec = read_record(path)
         self.assertEqual(rec['meta']['source_type'], 'proof-argument')
         self.assertEqual(rec['claims'], [])

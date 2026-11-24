@@ -247,7 +247,6 @@ from _lib import (
     mint_ids,
     scan_ids_in_tree,
     scan_person_record_ids,
-    SOURCE_PURPOSE_BLOCK,
     restore_undo_copy,
     run_undo_steps,
     slugify,
@@ -3193,6 +3192,17 @@ def _add_set_primary_arguments(sub: argparse._SubParsersAction) -> None:
 
 _PROOF_SECTIONS = ('The question', 'The evidence', 'The reasoning', 'Conclusion')
 
+# The first thing he reads in a new proof. The ordinary source block says
+# `fha process` made the file for one piece of evidence, which is not true
+# here. Packet and site strip any blockquote in this position, so this one
+# stays home the same way.
+_PROOF_PURPOSE_BLOCK = (
+    "> **This proof argument - yours to write.** Your reasoning, in your own "
+    "words, on one question the records do not answer by themselves. "
+    "`fha source new` started this file; everything below is yours to write "
+    "and correct."
+)
+
 _NEW_REFUSE_OTHER_TYPE = (
     'Other kinds of source start from a document or a photo. Put the file in '
     'the inbox and run `fha process <file>`.')
@@ -3221,7 +3231,7 @@ def _proof_record_text(sid: str, title: str, date: str, people: list[str],
         lines.append('people: []')
     lines += [
         f'created: {datetime.date.today().isoformat()}',
-        '---', '', SOURCE_PURPOSE_BLOCK, '', '## Claims', '```yaml', '```', '',
+        '---', '', _PROOF_PURPOSE_BLOCK, '', '## Claims', '```yaml', '```', '',
     ]
     for heading in _PROOF_SECTIONS:
         lines += [f'## {heading}', '']

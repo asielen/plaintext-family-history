@@ -1767,14 +1767,23 @@ def _accept_draft_in_source(
     except OSError as e:
         return _fail(result, 'failed', f'cannot read {record}: {e}')
 
-    lines = before.split('\n')
-    protected: list[tuple[int, int]] = []     # (first, last+1) line indexes
-    for span in (frontmatter_fence_span(lines), _find_claims_block(lines)):
-        if span is not None:
-            protected.append((span[0], span[1] + 1))
-    starts = [0]
-    for ln in lines:
-        starts.append(starts[-1] + len(ln) + 1)
+    def _protected_lines(text: str) -> list[tuple[int, int]]:
+        lines = text.split('\n')
+        spans: list[tuple[int, int]] = []     # (first, last+1) line indexes
+        for span in (frontmatter_fence_span(lines), _find_claims_block(lines)):
+            if span is not None:
+                spans.append((span[0], span[1] + 1))
+        return spans
+
+    def _line_starts(text: str) -> list[int]:
+        starts = [0]
+        for ln in text.split('\n'):
+            starts.append(starts[-1] + len(ln) + 1)
+        return starts
+
+    protected = _protected_lines(before)
+
+    starts = _line_starts(before)
 
     def _line_of(offset: int) -> int:
         return max(i for i, st in enumerate(starts) if st <= offset)
@@ -1797,7 +1806,13 @@ def _accept_draft_in_source(
     result.data['count'] = count
 
     # A marker left unfinished (no closing `-->`) is not flipped; name its line
-    # instead of accepting around it.
+    # instead of accepting around it. Every accepted marker is longer than the
+    # draft it replaced, so lines and the protected ranges are re-measured on
+    # the new text; measured on the old text, a broken marker above
+    # `## Claims` slid into the claims lines, was skipped, and he was told it
+    # all went through.
+    starts = _line_starts(after)
+    protected = _protected_lines(after)
     for m in re.finditer(r'AI-DRAFT', after):
         if not _in_protected(m.start()):
             return _fail(result, 'damaged-marker',

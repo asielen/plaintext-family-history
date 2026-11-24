@@ -1185,6 +1185,27 @@ class ConfirmArchiveTests(unittest.TestCase):
         self.assertIn('line', ' '.join(m.text for m in result.messages))
         self.assertEqual(path.read_bytes(), before)
 
+    def test_draft_accept_in_source_refuses_a_damaged_marker_above_the_claims(self) -> None:
+        # Prose he put above `## Claims`: one good marker, then a broken one.
+        # Accepting the good one lengthens the text; the broken one must still
+        # be found on its own line, not mistaken for a claims line and skipped.
+        path = self._proof_path()
+        original = path.read_text(encoding='utf-8').replace('\r\n', '\n')
+        for newline in ('\n', '\r\n'):
+            with self.subTest(newline=repr(newline)):
+                text = original.replace(
+                    '## Claims\n',
+                    'Summary. <!-- AI-DRAFT 2026-11-20 test-model -->\n'
+                    '<!-- AI-DRAFT oops\n\n## Claims\n', 1)
+                path.write_bytes(text.replace('\n', newline).encode('utf-8'))
+                broken_line = text.split('\n').index('<!-- AI-DRAFT oops') + 1
+                before = path.read_bytes()
+                result = confirm.run_accept_draft(self.root, person_id=self.PROOF)
+                self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+                self.assertIn(f'line {broken_line} ',
+                              ' '.join(m.text for m in result.messages))
+                self.assertEqual(path.read_bytes(), before)
+
     def test_draft_accept_in_source_unknown_id_and_no_marker(self) -> None:
         self.assertNotEqual(
             confirm.run_accept_draft(self.root, person_id='s-zzzzzzzzzz').exit_code, EXIT_CLEAN)
