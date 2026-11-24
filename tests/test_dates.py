@@ -478,6 +478,14 @@ class CalendarRuleIsWrittenDownTests(unittest.TestCase):
         self.assertIn('A Hebrew month or year alone covers parts of two', spec)
         self.assertIn('the human is asked', spec)
 
+    def test_spec_hebrew_year_example_is_what_the_tool_gives(self):
+        # SPEC tells the agent to convert a Hebrew year's first and last day
+        # with the tool; its worked example must be the tool's own answer.
+        first = dates.run_convert('1 Tishrei 5650', 'hebrew').data['date']
+        last = dates.run_convert('29 Elul 5650', 'hebrew').data['date']
+        self.assertIn(f'{first}/{last}', self._read('SPEC.md'))
+        self.assertIn('first and last day', self._read('TOOLING.md'))
+
 
 if __name__ == '__main__':
     unittest.main()
