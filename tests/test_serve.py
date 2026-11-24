@@ -760,6 +760,41 @@ class ApiRunTests(_ServeCase):
         self.assertIn('place_text: Manhattan, Kansas', text)
 
 
+class ConfirmSearchVerbTests(_ServeCase):
+    """The "Nothing found" button on the person page logs the search through
+    `confirm.search`, previewed first, with the CLI command echoed."""
+
+    ARGS = {'person_id': 'p-de957bcda1', 'repository': 'Ancestry',
+            'terms': 'Thomas Hartley, born about 1840, New York', 'result': 'nil'}
+
+    def test_no_dry_run_field_is_a_preview_and_writes_nothing(self):
+        before = _tree_hash(self.root)
+        body = json.dumps({'verb': 'confirm.search', 'args': self.ARGS})
+        s, d, _h = self.req('POST', '/api/run', body=body,
+                            headers={'Content-Type': 'application/json',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertEqual(_tree_hash(self.root), before)
+        self.assertIn('- date:', ' '.join(m['text'] for m in json.loads(d)['messages']))
+
+    def test_apply_appends_echoes_the_command_and_the_page_says_searched(self):
+        s, d, _h = self.post_run('confirm.search', self.ARGS, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertEqual(
+            payload['cli_echo'],
+            'fha confirm search p-de957bcda1 --repository "Ancestry" '
+            '--terms "Thomas Hartley, born about 1840, New York" --result nil')
+        log = (self.root / 'notes' / 'research-log.md').read_text(encoding='utf-8')
+        self.assertIn('  repository: Ancestry\n  terms: "Thomas Hartley, born about 1840, New York"\n'
+                      '  result: nil\n', log)
+        s, d, _h = self.req('GET', '/persons/p-de957bcda1.html')
+        txt = d.decode('utf-8')
+        today = __import__('datetime').date.today().isoformat()
+        self.assertIn(f'searched {today}: nothing found', txt)
+
+
 class DuplicateNameMintTests(_ServeCase):
     """The workbench's person.new mint asks about a name that already has
     a record (issue #282) instead of failing opaquely, and "Create a

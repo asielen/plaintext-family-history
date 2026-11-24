@@ -300,6 +300,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
@@ -327,6 +328,7 @@ from _lib import (
     is_placeholder_name,
     person_surname,
     research_search_links,
+    research_search_terms,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -3183,51 +3185,6 @@ def _real_path(path: str | Path) -> Path:
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
-def _chart_year(edtf) -> str:
-    """The year a chart prints for a date, keeping what the date means: a
-    death recorded "before 1920" must not read as a death in 1920. Charts show
-    years only; the person's page carries the full date. Owner decision
-    (2026-11-22) on the short forms:
-
-    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
-      '1840?' are both '1840');
-    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
-    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
-    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
-    - an interval `1918/1920`: '1918–1920', or the one year when both ends
-      fall in it.
-
-    Anything else falls back to the first four-digit run, or '' when there is
-    none. Used by the fan and the family chart alike."""
-    if not edtf:
-        return ''
-    s = str(edtf).strip()
-    if '/' in s:
-        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
-        if ends[0] and ends[1]:
-            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
-        return ends[0] or ends[1]
-    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
-    if m:
-        return f'bef. {m.group(1)}'
-    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
-    if m:
-        return f'aft. {m.group(1)}'
-    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
-    if m:
-        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
-    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
-    if m:
-        return f'abt. {m.group(1) or m.group(2)}'
-    return _chart_bare_year(s)
-
-
-def _chart_bare_year(s: str) -> str:
-    """The first four-digit run of a date's text, or ''."""
-    m = re.search(r'\d{4}', s)
-    return m.group(0) if m else ''
-
-
 def _pedigree_years(dates: dict | None) -> str:
     """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
     return _chart_lifespan(dates, '–')
@@ -4392,6 +4349,29 @@ def _with_role_note(message: str, role_note: str | None) -> str:
 def _page_filename(record_id: str) -> str:
     """Normalized id → page filename, e.g. 'P-de957bcda1' → 'p-de957bcda1.html'."""
     return f'{normalize_id(record_id)}.html'
+
+
+def _chart_name(who: str, kind: str) -> str:
+    """The name a saved chart file gets, e.g. `margaret-cole-ancestor-fan`.
+
+    A relative who saves a chart finds a file named for the person and the
+    chart. It is built only from the name the page already shows, as a plain
+    ASCII slug (never an id), so the file name tells nobody more than the
+    page does. `who` empty gives just `kind`."""
+    folded = unicodedata.normalize('NFKD', who or '').encode('ascii', 'ignore').decode('ascii')   # Józef -> Jozef
+    slug = re.sub(r'[^a-z0-9]+', '-', folded.lower()).strip('-')
+    return f'{slug}-{kind}' if slug else kind
+
+
+def _tag_chart(svg: str, name: str) -> str:
+    """Mark a chart's root <svg> as one a reader can save (fha-save-chart.js).
+
+    Only the attribute is added; the chart's drawing is not touched, so a
+    change to a chart's shape (the fan's angle, say) is saved as it is shown."""
+    if not name or not svg.startswith('<svg'):
+        return svg
+    end = svg.index('>')   # the opening tag only; the chart's own attributes keep their order
+    return svg[:end] + f' data-fha-chart="{html.escape(name, quote=True)}"' + svg[end:]
 
 
 def _json_for_script(obj) -> str:
@@ -6707,9 +6687,10 @@ class _SiteBuilder:
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
         has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
-        pedigree = (self._markup(_render_pedigree_svg(
+        pedigree = (self._markup(_tag_chart(_render_pedigree_svg(
                         ped_labels, wings['spouses'], wings['children'],
-                        missing_parent_of=ped_missing, workbench=self.workbench))
+                        missing_parent_of=ped_missing, workbench=self.workbench),
+                        _chart_name(name, 'family-chart')))
                    if has_pedigree else None)
         # Same condition _render_pedigree_svg uses for its SVG aria-label (a
         # sighted reader on the page and a screen-reader user on the SVG must
@@ -6718,7 +6699,8 @@ class _SiteBuilder:
         # ancestors-only chart gets the honest 'Ancestors' heading instead of
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
-        fan = (self._markup(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees))
+        fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees),
+                                       _chart_name(name, 'ancestor-fan')))
                if len(ahnen) > 1 else None)
         # The plain-words key goes under a chart only when that chart fades someone.
         chart_weak_key = (_WEAK_LINE_KEY if has_pedigree and _any_weak_slot(ped_labels, 2) else None)
@@ -6738,7 +6720,8 @@ class _SiteBuilder:
         # below is what actually bounds the client's initial paint.
         descendants_tree = self._make_tree_ctx(
             pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
-            f'Descendants of {name}', initial_depth=4)
+            f'Descendants of {name}', initial_depth=4,
+            chart_name=_chart_name(name, 'descendants'))
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -6746,10 +6729,12 @@ class _SiteBuilder:
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
+            'pedigree_chart': _chart_name(name, 'family-chart') if pedigree else None,
             'chart_title': chart_title,
             'chart_weak_key': chart_weak_key,
             'fan': fan,
             'fan_weak_key': fan_weak_key,
+            'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
             'descendants_tree': descendants_tree,
             'summary': summary,
             'burial_visit': self._burial_visit(pid, page_dir),
@@ -7162,11 +7147,46 @@ class _SiteBuilder:
         subject = self._person_research_subject(pid) if self.workbench else None
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
+        links = research_search_links(subject)
+        last = self._research_last_searches(pid)
+        for link in links:
+            # What "Nothing found" files: the person, the site's own label and
+            # what was typed in (workbench.js reads this off the link).
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
+                            'result': 'nil'}
+            link['searched'] = last.get(link['label'].casefold(), '')
         return {
-            'research_links': research_search_links(subject),
+            'research_links': links,
             'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
             'research_given': subject.get('given') or name,
         }
+
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
+
+    def _research_last_searches(self, pid: str) -> dict[str, str]:
+        """For this person, the latest logged search at each website, as the
+        words shown beside its link ("searched 2026-11-22: nothing found"),
+        keyed by the website's name in lower case. So he sees what he already
+        tried before he clicks."""
+        try:
+            rows = self.conn.execute(
+                "SELECT date, repository, result FROM search_log WHERE person_id = ? "
+                "ORDER BY date, rowid", (pid,)).fetchall()
+        except sqlite3.Error:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:                                # later rows overwrite earlier ones
+            kind = str(r['result'] or '').split(' ', 1)[0].lower()
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
+        return out
 
     def _person_research_subject(self, pid: str) -> dict | None:
         """What a search on another website may say about this person, or None
@@ -10458,7 +10478,7 @@ class _SiteBuilder:
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
-                       home_id: str | None = None) -> dict | None:
+                       home_id: str | None = None, chart_name: str = '') -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
         None when the tree has no edges (a lone node is not worth rendering), so
@@ -10478,7 +10498,8 @@ class _SiteBuilder:
                 'initial_depth': initial_depth,
                 'has_weak': any(n.get('line_confidence') == 'low' for n in tree['nodes']),
                 'weak_key': _WEAK_LINE_KEY,
-                'home_id': fmt_id_display(home_id) if home_id else None}
+                'home_id': fmt_id_display(home_id) if home_id else None,
+                'chart_name': chart_name}
 
     def _copy_vendor(self) -> None:
         """Copy the vendored tree renderer + adapter into the site so it stays
@@ -10695,9 +10716,15 @@ class _SiteBuilder:
             ahnen, wings['spouses'], wings['children'], missing_parent_of=missing_parent_of,
             workbench=self.workbench, siblings=wings.get('siblings'),
             ancestor_generations=depth, branch_color=bool(depth), axis_label=axis_label, home=True)
-        weak_key = _WEAK_LINE_KEY if _any_weak_slot(ahnen, depth) else None
-        return {'svg': self._markup(svg), 'caption': caption, 'note': note,
-                'weak_key': weak_key}
+        # The saved file is named for the family's surname, shown on the page;
+        # a private or unnamed hub gives just "family-tree".
+        hub_surname = ''
+        if hub_meta and not hub_private and hub_name != _LIVING_LABEL:
+            hub_surname = person_surname(hub_name, self._shown_row(hub_meta)['surname']) or ''
+        chart_name = _chart_name(hub_surname, 'family-tree')
+        return {'svg': self._markup(_tag_chart(svg, chart_name)), 'caption': caption,
+                'note': note, 'chart_name': chart_name,
+                'weak_key': _WEAK_LINE_KEY if _any_weak_slot(ahnen, depth) else None}
 
     # - index / home page -
 

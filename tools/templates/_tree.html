@@ -22,6 +22,7 @@
 <div class="fha-tree" id="fha-tree"></div>
 <p class="fha-tree-note">{{ tree.caption }} - click a name to open that person; use −/+ to collapse or expand.</p>
 {% if tree.has_weak %}<p class="fha-tree-note fha-weak-key">{{ tree.weak_key }}</p>{% endif %}
+{% if tree.chart_name %}<div class="chart-save" data-for="{{ tree.chart_name }}"></div>{% endif %}
 <script type="application/json" id="fha-tree-data">{{ tree.data_json }}</script>
 <script src="{{ root_prefix }}/vendor/fha-tree.js"></script>
 <script src="{{ root_prefix }}/vendor/tree-adapter.js"></script>
@@ -35,7 +36,8 @@
       var data = JSON.parse(holder.textContent);
       var root = window.FhaTreeAdapter.fromNeutral(data);
       var opts = { initialDepth: {{ tree.initial_depth if tree.initial_depth is not none else 'null' }},
-                   homeId: {{ (tree.home_id | tojson) if tree.home_id else 'null' }} };
+                   homeId: {{ (tree.home_id | tojson) if tree.home_id else 'null' }},
+                   chartName: {{ (tree.chart_name | tojson) if tree.chart_name else 'null' }} };
       window.FhaTree.render(mount, root, opts);
     } catch (e) { /* a bad tree must never blank the page */ }
   }
