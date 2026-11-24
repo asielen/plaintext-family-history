@@ -806,6 +806,43 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
     return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 
+def family_key(parent_ids) -> str:
+    """The name of one family in the tree data, so a chart keeps the children
+    of a man's first and second marriages under the right wife: 'fam:' and
+    the parents' ids, sorted, joined by '+' (`fam:p-aaa+p-bbb`, or `fam:p-aaa`
+    for a single parent). It names the parent pair, not a marriage record, so
+    a couple who never married, or whose wedding was never found, is still a
+    family, and a reader can work the key out by hand (TOOLING §7)."""
+    return 'fam:' + '+'.join(sorted(parent_ids))
+
+
+def family_keys(parents: dict, spouse_pairs) -> dict[str, str]:
+    """Which family each of one child's parent ties belongs to: {parent id:
+    family key}. `parents` maps each parent the chart may show to whether the
+    tie is genetic (SPEC §12.2); `spouse_pairs` holds frozenset({a, b}) for
+    each spouse tie the chart may show among them.
+
+    - The genetic parents form one family. Three or more genetic parents is
+      a conflict still being worked out, so each gets a family of their own
+      rather than a guessed pairing.
+    - A step, adoptive or other non-genetic parent forms a family with the
+      one parent of the child they married; with none, or more than one, they
+      stand alone.
+    - A parent the chart leaves out is not passed in, so it never appears in
+      a key and the child sits in the family of the parent who is shown. The
+      key then gives away nothing about a withheld partner."""
+    genetic = sorted(p for p, g in parents.items() if g)
+    keys: dict[str, str] = {}
+    if len(genetic) <= 2:
+        keys.update((p, family_key(genetic)) for p in genetic)
+    else:
+        keys.update((p, family_key([p])) for p in genetic)
+    for n in sorted(p for p, g in parents.items() if not g):
+        partners = [s for s in parents if s != n and frozenset((n, s)) in spouse_pairs]
+        keys[n] = family_key([n, partners[0]] if len(partners) == 1 else [n])
+    return keys
+
+
 def nonbirth_bracket_label(subtype: Any) -> str | None:
     """The bracket annotation for a non-birth child ('adopted', 'step', …), or
     None for a genetic/birth edge that needs no mark."""

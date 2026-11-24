@@ -194,6 +194,8 @@ from _lib import (
     resolve_root_generation,   # validate fha.yaml root_generation: 'self'|'children' (#72),
     root_generation_seed_position,  # 'self'|'children' -> the Ahnentafel seed position,
     spouse_extended_base,
+    family_key,           # one family in the tree data: 'fam:' + the sorted parent ids,
+    family_keys,          # which family each of one child's parent ties belongs to,
     stronger_confidence,  # the better of two claim confidence words,    # add-only `+ second spouse` folder-name rule - shared with lint W103,
     sync_generated_view_rows,   # keep notes_fts/person_files in step with view writes/deletes,
     unreadable_dir_recorder,  # os.walk error seam - a shut folder is not an empty one,
@@ -3735,7 +3737,10 @@ def _traverse_tree(
                         spouse edges are also collected and the spouse added
                         as a node, but spouses are NOT enqueued for further
                         expansion (one-hop only - pulls in in-laws without
-                        recursing into their own ancestry).
+                        recursing into their own ancestry).  Each child's
+                        other parents come in the same way, with their tie
+                        to that child, so a child of a couple who never
+                        married is still drawn under both parents.
         'fan'         - expand via all edge types (parent, child, spouse,
                         friend, associate, neighbor).  max_hops defaults to
                         2 at the call site.
@@ -3743,6 +3748,10 @@ def _traverse_tree(
     Cycle detection: the visited set is seeded with seed_pid before the loop
     starts.  Any P-id already in visited is never re-enqueued, so even a
     self-referential edge or cousin-marriage cycle terminates cleanly.
+
+    Every parent, child and spouse edge gets a `family` key
+    (`_family_keys_of`), so a chart can keep the children of a first and a
+    second marriage apart.
     """
     pids_in_order: list[str] = [seed_pid]
     pids_seen: set[str] = {seed_pid}
@@ -3761,6 +3770,17 @@ def _traverse_tree(
         traverse_rels = ['parent', 'child', 'spouse', 'friend', 'associate', 'neighbor']
         extra_rels = []
 
+    # A child's other parents and their tie to that child: one-hop leaves,
+    # kept apart until the walk ends, so an edge the walk itself reaches
+    # keeps the place the walk gives it.
+    coparent_edges: dict[tuple, dict] = {}
+    coparented: set[str] = set()
+
+    def add_node(other: str) -> None:
+        if other not in pids_seen:
+            pids_in_order.append(other)
+            pids_seen.add(other)
+
     while queue:
         pid, depth = queue.popleft()
 
@@ -3772,21 +3792,61 @@ def _traverse_tree(
                 if other not in visited:
                     visited.add(other)
                     queue.append((other, depth + 1))
-                if other not in pids_seen:
-                    pids_in_order.append(other)
-                    pids_seen.add(other)
+                add_node(other)
+                if mode == 'descendants' and other not in coparented:
+                    coparented.add(other)
+                    for up in _collect_edges(conn, other, ['parent']):
+                        if up['to'] == pid:
+                            continue
+                        for down in _collect_edges(conn, up['to'], ['child']):
+                            if down['to'] == other:
+                                _merge_edge(coparent_edges, down)
+                        add_node(up['to'])
 
         # Collect extra_rels as leaf nodes - never enqueued (in-law lineages
         # appear in the tree but their own ancestry is not followed).
         for edge in _collect_edges(conn, pid, extra_rels):
             _merge_edge(edges, edge)
-            other = edge['to']
-            if other not in pids_seen:
-                pids_in_order.append(other)
-                pids_seen.add(other)
+            add_node(edge['to'])
+
+    for ekey, edge in coparent_edges.items():
+        edges.setdefault(ekey, edge)
+    families: dict[str, dict[str, str]] = {}
+    for edge in edges.values():
+        if edge['type'] == 'spouse':
+            edge['family'] = family_key(
+                [fmt_id_display(edge['from']), fmt_id_display(edge['to'])])
+        elif edge['type'] in ('parent', 'child'):
+            child, parent = ((edge['from'], edge['to']) if edge['type'] == 'parent'
+                             else (edge['to'], edge['from']))
+            if child not in families:
+                families[child] = _family_keys_of(conn, child)
+            edge['family'] = (families[child].get(parent)
+                              or family_key([fmt_id_display(parent)]))
 
     nodes = _build_nodes_bulk(conn, pids_in_order)
     return nodes, edges
+
+
+def _family_keys_of(conn: sqlite3.Connection, child: str) -> dict[str, str]:
+    """{parent id: family key} for one child, from every accepted parent tie
+    in the index (`_lib.family_keys`). The key is a fact about the child's
+    family, the same whichever way the tree reached them. A parent recorded
+    both as birth parent and as adoptive parent counts as the birth parent,
+    as the edge does (`_merge_edge`)."""
+    ties: dict[tuple, dict] = {}
+    for edge in _collect_edges(conn, child, ['parent']):
+        _merge_edge(ties, edge)
+    parents = {edge['to']: edge['genetic'] for edge in ties.values()}
+    married: set[frozenset] = set()
+    for parent, genetic in parents.items():
+        if genetic:
+            continue
+        for edge in _collect_edges(conn, parent, ['spouse']):
+            if edge['to'] in parents and edge['to'] != parent:
+                married.add(frozenset((fmt_id_display(parent), fmt_id_display(edge['to']))))
+    keys = family_keys({fmt_id_display(p): g for p, g in parents.items()}, married)
+    return {p: keys[fmt_id_display(p)] for p in parents}
 
 
 _SOCIAL_EDGE_TYPES = frozenset({'friend', 'associate', 'neighbor'})
@@ -3800,7 +3860,8 @@ def _edge_to_json_dict(edge: dict) -> dict:
     written in the one all-lowercase ID form (SPEC §10). `kind` is the one
     the site's explorer draws by (SPEC §12.2): 'genetic', 'legal' for an
     adoptive, step, foster or guardian parent tie, 'other' for a friend,
-    associate or neighbour.
+    associate or neighbour. `family` (parent, child and spouse edges only)
+    names the couple the tie belongs to (`_lib.family_key`).
     """
     is_spouse = edge['type'] == 'spouse'
     genetic = edge.get('genetic', True)
@@ -3808,6 +3869,7 @@ def _edge_to_json_dict(edge: dict) -> dict:
         kind = 'other'
     else:
         kind = 'genetic' if genetic else 'legal'
+    family = {'family': edge['family']} if edge.get('family') else {}
     return {
         'type': edge['type'],
         'from': fmt_id_display(edge['from']),
@@ -3821,6 +3883,7 @@ def _edge_to_json_dict(edge: dict) -> dict:
             'start': edge['date_start'] if is_spouse else None,
             'end': edge['date_end'] if is_spouse else None,
         },
+        **family,
     }
 
 

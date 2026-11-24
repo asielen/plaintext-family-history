@@ -5504,6 +5504,178 @@ class TreeJsonConfidenceTests(_Base):
                                  'Minor Mina', 'Uncle Umberto'})
 
 
+class TreeFamilyKeyTests(_Base):
+    """The explorer's data says which couple each child belongs to, so the
+    explorer can keep the children of a man's first and second marriages
+    under the right wife (chart plan 08-8). The shared site names only
+    couples a visitor may see: a withheld partner is never in a key, a
+    sealed marriage never pairs anyone, and a living adult is a Private
+    placeholder there as everywhere else in the tree."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _case(self, name):
+        self.tearDown()
+        self.setUp()
+        return chart_cases.build_case(self.conn, self.archive_root, name)
+
+    def _tree(self, seed):
+        path = self.out_dir / 'data' / f'tree_{seed}_descendants.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    @staticmethod
+    def _keys(tree):
+        return {(e['type'], e['from'], e['to']): e.get('family') for e in tree['edges']}
+
+    def test_the_site_and_fha_views_name_the_same_families_in_every_case(self):
+        # One contract, two writers: the explorer and `fha views tree` must
+        # agree on every family, or a chart drawn from one disagrees with
+        # the other.
+        import views
+        for name in chart_cases.CASE_NAMES:
+            with self.subTest(case=name):
+                case = self._case(name)
+                self._run(linked=True)
+                path = self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json"
+                if not path.exists():
+                    continue   # no children: no explorer
+                tree = json.loads(path.read_text(encoding='utf-8'))
+                nodes, edges = views._traverse_tree(self.conn, case['seed'], 'descendants', None)
+                want = json.loads(views._tree_to_json(case['seed'], 'descendants', nodes, edges))
+                self.assertEqual(self._keys(tree), self._keys(want))
+                self.assertEqual({n['p_id'] for n in tree['nodes']},
+                                 {n['p_id'] for n in want['nodes']})
+
+    def test_each_child_hangs_under_its_mothers_family_c1(self):
+        case = self._case('C1')
+        p = case['people']
+        self._run(linked=False)
+        keys = self._keys(self._tree(case['seed']))
+        for kid, mother in (('kid1a', 'wife1'), ('kid2', 'wife2'), ('kid4', 'wife4')):
+            fam = 'fam:' + '+'.join(sorted((p['husband'], p[mother])))
+            self.assertEqual(keys[('child', p['husband'], p[kid])], fam)
+            self.assertEqual(keys[('child', p[mother], p[kid])], fam)
+        # The two childless marriages are families too.
+        for wife in ('wife3', 'wife5'):
+            self.assertEqual(keys[('spouse', p['husband'], p[wife])],
+                             'fam:' + '+'.join(sorted((p['husband'], p[wife]))))
+        spouse = next(e for e in self._tree(case['seed'])['edges']
+                      if e['type'] == 'spouse' and e['to'] == p['wife2'])
+        self.assertEqual(spouse['dates']['start'], '1920-01-01')
+
+    def test_a_private_couple_is_two_placeholders_with_no_wedding_date_c13(self):
+        case = self._case('C13')
+        p = case['people']
+        self._run(linked=False)
+        tree = self._tree(case['seed'])
+        keys = self._keys(tree)
+        self.assertEqual(keys[('child', 'private-1', p['grandchild'])], 'fam:private-1+private-2')
+        self.assertEqual(keys[('child', 'private-2', p['grandchild'])], 'fam:private-1+private-2')
+        couple = [e for e in tree['edges'] if e['type'] == 'spouse']
+        # Her husband is a one-hop leaf, so the tie is listed from her side.
+        self.assertEqual([(e['from'], e['to']) for e in couple], [('private-1', 'private-2')])
+        for edge in couple:
+            # Nothing about a living couple's marriage: no date, no record id,
+            # no word on how well the record proves it.
+            self.assertEqual(edge['dates'], {'start': None, 'end': None})
+            self.assertIsNone(edge['claim_id'])
+            self.assertIsNone(edge['confidence'])
+            self.assertEqual(edge['family'], 'fam:private-1+private-2')
+        text = (self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json").read_text(
+            encoding='utf-8')
+        self.assertNotIn('1985', text)
+        for pid in case['living']:
+            self.assertNotIn(pid, text)
+
+    def _tom_and_partners(self):
+        # Tom (dead) has a son by Ann and a daughter by Bea; both women are
+        # restricted. Cleo, dead, married Tom in a sealed record and is
+        # stepmother to the daughter on the shared record.
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._seed_source('s-2222222222', 'Sealed record', source_type='vital', restricted=1)
+        # The records naming the two withheld women are their own.
+        self._seed_source('s-3333333333', 'Birth record', source_type='vital')
+        self._seed_person('p-aaaaaaaaaa', 'Tom Webb', surname='Webb')
+        self._seed_person('p-bbbbbbbbbb', 'Ann Secret', surname='Secret', sex='F',
+                          frontmatter_extra='restricted: true')
+        self._seed_person('p-cccccccccc', 'Bea Hidden', surname='Hidden', sex='F',
+                          frontmatter_extra='restricted: true')
+        self._seed_person('p-dddddddddd', 'Sam Webb', surname='Webb')
+        self._seed_person('p-eeeeeeeeee', 'Sue Webb', surname='Webb', sex='F')
+        self._seed_person('p-ffffffffff', 'Cleo Ford', surname='Ford', sex='F')
+        n = 0
+        for child, parent, subtype in (('p-dddddddddd', 'p-aaaaaaaaaa', None),
+                                       ('p-dddddddddd', 'p-bbbbbbbbbb', None),
+                                       ('p-eeeeeeeeee', 'p-aaaaaaaaaa', None),
+                                       ('p-eeeeeeeeee', 'p-cccccccccc', None),
+                                       ('p-eeeeeeeeee', 'p-ffffffffff', 'step')):
+            n += 1
+            cid = f'c-p{n:09d}'
+            source = ('s-3333333333' if parent in ('p-bbbbbbbbbb', 'p-cccccccccc')
+                      else 's-1111111111')
+            self._seed_claim(cid, source, 'relationship', 'parent of',
+                             confidence='high', subtype=subtype, persons=(child, parent),
+                             roles={child: 'child', parent: 'parent'})
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+            self._seed_rel(parent, 'child', child, claim_id=cid)
+        self._seed_claim('c-m000000001', 's-2222222222', 'marriage', 'married',
+                         confidence='high', date_edtf='1950',
+                         persons=('p-aaaaaaaaaa', 'p-ffffffffff'))
+        for a, b in (('p-aaaaaaaaaa', 'p-ffffffffff'), ('p-ffffffffff', 'p-aaaaaaaaaa')):
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id, date_start) '
+                "VALUES (?,'spouse',?,'c-m000000001','1950-01-01')", (a, b))
+
+    def test_a_withheld_partner_is_never_in_a_key(self):
+        self._tom_and_partners()
+        self._run(linked=False)
+        tree = self._tree('p-aaaaaaaaaa')
+        keys = self._keys(tree)
+        # Both children sit in Tom's own family: nothing hints that each
+        # had a different mother the site does not show.
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-dddddddddd')], 'fam:p-aaaaaaaaaa')
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-eeeeeeeeee')], 'fam:p-aaaaaaaaaa')
+        # The sealed marriage neither shows nor pairs the stepmother with Tom.
+        self.assertEqual(keys[('child', 'p-ffffffffff', 'p-eeeeeeeeee')], 'fam:p-ffffffffff')
+        self.assertNotIn('spouse', {e['type'] for e in tree['edges']})
+        for path in self.out_dir.rglob('*'):
+            if path.suffix in ('.html', '.json'):
+                text = path.read_text(encoding='utf-8')
+                for word in ('p-bbbbbbbbbb', 'p-cccccccccc', 'c-m000000001'):
+                    self.assertNotIn(word, text, f'{word} leaked into {path.name}')
+
+    def test_the_preview_names_every_partner(self):
+        self._tom_and_partners()
+        self._run(linked=True)
+        keys = self._keys(self._tree('p-aaaaaaaaaa'))
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-dddddddddd')],
+                         'fam:p-aaaaaaaaaa+p-bbbbbbbbbb')
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-eeeeeeeeee')],
+                         'fam:p-aaaaaaaaaa+p-cccccccccc')
+        self.assertEqual(keys[('child', 'p-ffffffffff', 'p-eeeeeeeeee')],
+                         'fam:p-aaaaaaaaaa+p-ffffffffff')
+
+    def test_a_wife_but_no_children_still_gives_no_explorer(self):
+        # The descendant explorer is for people with descendants; a recorded
+        # marriage alone must not add an empty one to the page.
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._seed_person('p-aaaaaaaaaa', 'Tom Webb', surname='Webb')
+        self._seed_person('p-bbbbbbbbbb', 'Nell Webb', surname='Webb', sex='F')
+        self._seed_claim('c-m000000001', 's-1111111111', 'marriage', 'married',
+                         confidence='high', persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
+            self._seed_rel(a, 'spouse', b, claim_id='c-m000000001')
+        self._run(linked=True)
+        self.assertFalse((self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_descendants.json').exists())
+        self.assertNotIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class PedigreeGeometryGuardTests(unittest.TestCase):
     """#115: `row_index()`'s generalization from a hardcoded 2-generation
     formula to an arbitrary-depth closed form is the single highest-risk
