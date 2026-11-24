@@ -11,6 +11,7 @@ find.py - fha find: the universal locator.
                                        with --kind and --limit
   fha find --sounds-like NAME         People whose names sound like NAME in any
                                        spelling (Daitch-Mokotoff), grouped by spelling
+  fha find --spelling-groups          Surnames in your records that sound alike, with counts
 
 Detects ID type from its prefix letter and prints structured output.
 Uses the SQLite index when present.  If the index is stale, it prints a
@@ -134,6 +135,9 @@ from _lib import (
     humanize_edtf,
     is_placeholder_name,
     name_sound_codes,
+    person_surname,
+    surname_spelling_groups,
+    recorded_surname,
     name_sound_words,
     translit,
     vital_pick_key,
@@ -218,6 +222,8 @@ configure_utf8_stdout()
 #    run_find_sounds_like:        the engine: ranked, grouped people in a Result
 #    _sounds_like_code_line:      one query word's D-M and census Soundex codes
 #    _cmd_find_sounds_like:       the only layer that prints a --sounds-like result
+#    run_find_spelling_groups:    --spelling-groups: surnames that sound alike, from public names
+#    _cmd_find_spelling_groups:   the only layer that prints a --spelling-groups result
 #
 #  Public API
 #    find_by_id                - locate a single ID; called by fha id check alias in fha.py
@@ -229,6 +235,7 @@ configure_utf8_stdout()
 #    _reader_went_away         - a closed pipe (`| head`) is normal use, not an error
 #    _run_find / _find_command - argparse → run_find bridge (returns the int exit code)
 #    _sounds_like_command:      --sounds-like's flag checks, then engine and printer
+#    _spelling_groups_command:  --spelling-groups's flag checks, then engine and printer
 #    _run_search / _search_command - the same bridge for `fha search <words>`
 #    _standalone_main          - for `python tools/find.py` direct invocation
 #
@@ -3469,6 +3476,103 @@ def _cmd_find_sounds_like(result: Result, as_json: bool, limit: int) -> int:
     return result.exit_code
 
 
+# ── --spelling-groups: surnames that probably belong together ────────────────
+#
+# A researcher whose records spell one family Hartley, Hartly and Hartlie
+# sees three families. This lists the surnames that sound alike (the same
+# first Daitch-Mokotoff code), with how many people write each, so he can
+# decide which to search under. It only reads: names stay as each record
+# wrote them. Only public names are grouped: each person's names come
+# through `_record_public_names`, the same check `--sounds-like` makes, so a
+# private spelling never appears even though the index holds it.
+
+_SPELLING_GROUPS_NONE = 'No surnames in your records sound alike.'
+_SPELLING_GROUPS_FOOTER = (
+    'Names are left exactly as each record wrote them; nothing has been changed.\n'
+    'To see the people in a group: fha find --sounds-like "<surname>"')
+
+
+def run_find_spelling_groups(archive_root: Path, limit: int = _SOUNDS_LIKE_DEFAULT_LIMIT) -> Result:
+    """`fha find --spelling-groups`: surnames in the archive that sound alike.
+
+    Exit codes: 0 whether or not groups exist (a detector); 3 no usable
+    index. `data`: `{groups: [{code, spellings: [{spelling, count}],
+    people}], more}`, `limit` cutting the groups listed."""
+    conn = open_index_db(archive_root, _SOUNDS_LIKE_REQUIRED_TABLES)
+    if conn is None:
+        return Result(ok=False, exit_code=EXIT_FAILURE)
+    try:
+        try:
+            people = _sounds_like_candidates(conn)
+        except sqlite3.OperationalError:
+            return Result(ok=False, exit_code=EXIT_FAILURE).add(
+                'error',
+                '.cache/index.sqlite is unreadable or has an incompatible schema; '
+                'your search index is out of date. Run `fha index` to rebuild it.',
+                next_step='fha index',
+            )
+    finally:
+        conn.close()
+    surnames: dict[str, list[str]] = {}
+    unreadable: list[str] = []
+    for pid, person in people.items():
+        record = _record_public_names(archive_root, person)
+        if record is None:
+            unreadable.append(pid)
+            continue
+        _label, public = record
+        # Only the names that passed the privacy check. The label is the
+        # record's `name:` even when that name is marked private elsewhere.
+        # The main name keeps its hand-set `surname:` (SPEC §13), a `surname:
+        # ""` meaning no surname at all; other names split by the usual rule.
+        meta = _person_frontmatter_all(archive_root / person['path']) or {}
+        main_key = _name_key(str(meta.get('name') or ''))
+        recorded = recorded_surname(meta)
+        found = []
+        for written in public:
+            is_main = recorded is not None and _name_key(written) == main_key
+            surname = person_surname(written, recorded if is_main else None)
+            if surname:
+                found.append(surname)
+        surnames[pid] = found
+    groups = surname_spelling_groups(surnames)
+    data = {'groups': groups[:limit], 'more': max(len(groups) - limit, 0),
+            'unreadable': sorted(unreadable)}
+    return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
+
+
+def _cmd_find_spelling_groups(result: Result, as_json: bool, limit: int) -> int:
+    """The only layer that prints a --spelling-groups result. `--json`: the
+    groups array on stdout, notes on stderr."""
+    data = result.data
+    for m in result.messages:
+        print(f'ERROR: {m.text}', file=sys.stderr)
+    if 'groups' not in data:
+        return result.exit_code
+    if data.get('unreadable'):
+        print(f"NOTE: left out {len(data['unreadable'])} record(s) that could not be read, "
+              f"so their names could not be checked: {', '.join(data['unreadable'])}. "
+              'Run `fha lint` to see what is wrong with them.', file=sys.stderr)
+    if as_json:
+        print(json.dumps(data['groups']))
+        return result.exit_code
+    if not data['groups']:
+        print(_SPELLING_GROUPS_NONE)
+        return result.exit_code
+    print('Surnames in your records that sound alike:\n')
+    rows = [', '.join(f"{s['spelling']} ({s['count']})" for s in g['spellings'])
+            for g in data['groups']]
+    width = max(len(r) for r in rows)
+    for row, group in zip(rows, data['groups']):
+        count = group['people']
+        print(f"  {row:<{width}}   {count} {'person' if count == 1 else 'people'}")
+    if data['more']:
+        print(f"\n  {data['more']} more not shown. Add --limit {limit + data['more']} to see them all.")
+    print()
+    print(_SPELLING_GROUPS_FOOTER)
+    return result.exit_code
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 def _text_search(query: str, archive_root: Path, fha_config: dict) -> int:
@@ -3638,6 +3742,7 @@ Locate anything in the archive, or search its full text.
   fha find --related <ID>    Everything connected to an ID (add --date for a time slice)
   fha find --json <ID|text>  Machine-readable result list (add --kind/--limit to narrow it)
   fha find --sounds-like "Kowalski"   People whose names sound alike, in every spelling
+  fha find --spelling-groups          Surnames in your records that sound alike (changes nothing)
 
 This is your search box. For plain word search, `fha search <words>` is the same
 as `fha find --text`."""
@@ -3664,6 +3769,12 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         help='Neighborhood of an ID: the people, places and sources next to it. '
              'Combine with --date for a time slice, or pass --related --date EDTF alone '
              'for the standalone time-slice neighborhood.',
+    )
+    mode.add_argument(
+        '--spelling-groups', action='store_true', dest='spelling_groups',
+        help='List surnames in your records that sound alike (Hartley, Hartly, Hartlie) '
+             'with how many people write each. Names are never changed. Works with '
+             '--json and --limit.',
     )
     mode.add_argument(
         '--sounds-like', metavar='NAME', dest='sounds_like',
@@ -3796,6 +3907,8 @@ def _find_command(args: argparse.Namespace) -> int:
     related_requested = related is not _NO_RELATED
     related_id = related if (related_requested and related) else None
 
+    if getattr(args, 'spelling_groups', False):
+        return _spelling_groups_command(args, archive_root)
     sounds_like = getattr(args, 'sounds_like', None)
     if sounds_like is not None:
         return _sounds_like_command(args, archive_root, fha_config, sounds_like, query)
@@ -3903,6 +4016,27 @@ def _sounds_like_command(args: argparse.Namespace, archive_root: Path, fha_confi
     return _cmd_find_sounds_like(result, getattr(args, 'use_json', False), limit)
 
 
+def _spelling_groups_command(args: argparse.Namespace, archive_root: Path) -> int:
+    """`fha find --spelling-groups`: refuse the flags that mean nothing here
+    (exit 2, so a filter he asked for is never silently dropped), then run
+    the engine and print."""
+    for flag, what in (('date', '--date'), ('kind', '--kind'), ('query', 'a name or ID')):
+        if getattr(args, flag, None) is not None:
+            print(f'ERROR: {what} does not work with --spelling-groups, which lists every '
+                  'surname group in the archive. Run `fha find --spelling-groups` on its own, '
+                  'adding --json or --limit if you need them; to look up one name, run '
+                  '`fha find --sounds-like "Hartley"`.', file=sys.stderr)
+            return EXIT_ERRORS
+    limit = getattr(args, 'limit', None)
+    if limit is None:
+        limit = _SOUNDS_LIKE_DEFAULT_LIMIT
+    if limit < 1:
+        print('ERROR: --limit must be 1 or more, for example --limit 100.', file=sys.stderr)
+        return EXIT_ERRORS
+    result = run_find_spelling_groups(archive_root, limit=limit)
+    return _cmd_find_spelling_groups(result, getattr(args, 'use_json', False), limit)
+
+
 def _run_search(args: argparse.Namespace) -> int:
     """argparse → run_find bridge for `fha search <words>` (= `fha find --text`).
 
@@ -3947,6 +4081,7 @@ def _standalone_main(argv: list[str] | None = None) -> int:
     mode.add_argument('--text', metavar='PHRASE')
     mode.add_argument('--related', nargs='?', default=_NO_RELATED, const=None, metavar='ID')
     mode.add_argument('--sounds-like', metavar='NAME', dest='sounds_like')
+    mode.add_argument('--spelling-groups', action='store_true', dest='spelling_groups')
 
     parser.add_argument(
         '--date', metavar='EDTF',
