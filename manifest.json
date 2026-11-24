@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "4df892c79547eac08ba670470f9c337c4b0f8965c151a907e1858c1512b6b303",
+      "sha256": "eb6f0ca319143bdf0289ebce9251c336efdd14d14dd845188b50493a39ef3cb2",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
@@ -827,7 +827,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "61816e450d4753251494c57401284381c9b1c740057d45de7d5a5962ba1e6c0d",
+      "sha256": "906df5343957a52bce3059a514a0347a149ce07919352cb97ff4fe3950973f45",
       "spec_version": "2.31",
       "src": "tools/gedcom_import.py"
     },
@@ -848,7 +848,7 @@
     {
       "path": ".fha/tools/lint.py",
       "category": "operating",
-      "sha256": "8223f43704e59433eff7d0942507e0adc6e51d1153e0c11335122762014c5160",
+      "sha256": "73dc3359bb71157a9738bd8eddae0c3bf6f90083a693ccd13004566418a172fb",
       "spec_version": "2.31",
       "src": "tools/lint.py"
     },
@@ -1359,7 +1359,7 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "c18e1b867c808ca2c15dda9e2e0b8eed815bfac0b307c17ef882ffe209fedb7b",
+      "sha256": "b90675b07712344941725acae78e4edc2ffdd9fa5bf8575c567c7d5a4de1248c",
       "spec_version": "2.31",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -1458,7 +1458,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "48de57c627b038460f522e60ec9e5434dcc2b1ce246a9ba7a1ff471f393f197b",
+      "sha256": "6cfab78b74bbe7a46c0eff2f581ddde82cc19eb595c804d6b82fd38a15b18e8c",
       "spec_version": "2.31"
     },
     {
@@ -1507,7 +1507,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "babe697f7ece6597bf3e975ff04c9bac893240529d9b75ab221fe2b04d5acb94",
+      "sha256": "4c3b26cc2a53e8ede23c8f2e22492990791c899d4e8ba43f5ed61907756fac91",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
