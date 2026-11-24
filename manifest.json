@@ -104,7 +104,7 @@
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "934fddfff0a2712643894be0e50c6241c5e2c53658a595f4f8e553de5a8184b1",
+      "sha256": "69ea2a155b5fa19e7eeec6d6317843e54b42ed5731b43dfbc86b7012da9c03a4",
       "spec_version": "2.39",
       "src": ".claude/skills/research-next/SKILL.md"
     },
@@ -279,7 +279,7 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "934fddfff0a2712643894be0e50c6241c5e2c53658a595f4f8e553de5a8184b1",
+      "sha256": "69ea2a155b5fa19e7eeec6d6317843e54b42ed5731b43dfbc86b7012da9c03a4",
       "spec_version": "2.39"
     },
     {
@@ -693,7 +693,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "97af519d163f3e57d0bb43becde0a43a6d76c403b73435772b3b9d2ba826f5b5",
+      "sha256": "68f923c787ed80891626eff439cb7d0655a48589e367e79fdce28840dfa29ab0",
       "spec_version": "2.39",
       "src": "tools/_lib.py"
     },
@@ -714,7 +714,7 @@
     {
       "path": ".fha/tools/capture.py",
       "category": "operating",
-      "sha256": "6a16e512aecf4fc0da72b7ee39dbf39050dac15bd1cd2835e769904e2c74abe6",
+      "sha256": "5312b78d6864e54b635e872fd9346c4b7517f92a5a2e315505cad7f6110f1a01",
       "spec_version": "2.39",
       "src": "tools/capture.py"
     },
@@ -791,7 +791,7 @@
     {
       "path": ".fha/tools/confirm.py",
       "category": "operating",
-      "sha256": "178343a2f20f27216335d33b8bdc5ed54c4332ed5526999279185a7ebba223c0",
+      "sha256": "cb4e3aa430bfff1052e9d3c9abb9834696997e4450d0708537fe64ceedd86fe7",
       "spec_version": "2.39",
       "src": "tools/confirm.py"
     },
@@ -1169,7 +1169,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "2aebf7f1149ac330c03892216b401a2c7f206290f793e373178bcac2434a712c",
+      "sha256": "fef21aa6eba62855f018afe6a6a4e5d8192311ce4969514a951fb988948935c6",
       "spec_version": "2.39",
       "src": "tools/serve.py"
     },
@@ -1183,7 +1183,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "b834a090b9eceb5061b121f3058161d8f2c206333cb439fca163dce47e5e7c10",
+      "sha256": "b434df22bab8c50c4abc4f115e6fdfcf506406fdc522a6158cdc7fe97fd5d8ee",
       "spec_version": "2.39",
       "src": "tools/site.py"
     },
@@ -1281,7 +1281,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "2fbfffb0c9086eec57f55a6ca7d9c3ff2b79c035fde3c09ab0cc9c8f6afde212",
+      "sha256": "5f1f0fd024ad7ff406e66fcd9394fe1338d27b875ea3adb5d4f1f92611107a00",
       "spec_version": "2.39",
       "src": "tools/templates/person.html"
     },
@@ -1393,14 +1393,14 @@
     {
       "path": ".fha/tools/templates/workbench/workbench.css",
       "category": "operating",
-      "sha256": "8455e9dd85eedfb767429a6b3453b8d64fe83bfefc1e07c4a6ad3567fefc794e",
+      "sha256": "b1ffc321f23d69e50b54fdda38bb30d6e74869dae5a73c6d3c9e2058c078c40a",
       "spec_version": "2.39",
       "src": "tools/templates/workbench/workbench.css"
     },
     {
       "path": ".fha/tools/templates/workbench/workbench.js",
       "category": "operating",
-      "sha256": "04d64d53218209bad489ba59f5ad2fe4d8166213e265301da37abf6f715e51d1",
+      "sha256": "b90675b07712344941725acae78e4edc2ffdd9fa5bf8575c567c7d5a4de1248c",
       "spec_version": "2.39",
       "src": "tools/templates/workbench/workbench.js"
     },
@@ -1456,7 +1456,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "8f0d87ef636c00ac102586d7767b4ca2a39b4e83f2857dc703f09e8deac4d0d3",
+      "sha256": "b95c449307df7318789dbda8c2d421c112272962089702ea58c6bdcc93f91c31",
       "spec_version": "2.39"
     },
     {
@@ -1481,7 +1481,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "7993c8b99127c7fc5317183f411d8f328b9b3608a810d415f809c1bd4f95bbf0",
+      "sha256": "fb01105eef7d50027f2f152b70c0dae51292e345bf7e173654ef9f5eb24126f2",
       "spec_version": "2.39"
     },
     {
@@ -1548,7 +1548,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "0add59d73b4db16616de04dcff720132b5d14bfa84bf938c0a4412d1a53549e1",
+      "sha256": "c14ef736b350075d11fa58c898dda034202ced86a51e23b00dc4e62f81da7f1b",
       "spec_version": "2.39",
       "src": "TOOLING.md"
     },
