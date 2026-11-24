@@ -6295,13 +6295,48 @@ def _desc_marriage_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
     return lines
 
 
-def _desc_shown_children(rp: _ReportPrivacy, pid: str) -> tuple[list[tuple], int]:
+def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
+    """Everyone descended from a living (or not-known-dead) descendant of
+    `root`. SPEC §21: a living person's own descendants are neither named nor
+    counted, so these people stay off the page even when their other parent
+    is a cousin the report lists (cousins who married, one still living)."""
+    reached, living = {root}, set()
+    frontier = [root]
+    while frontier:
+        following = []
+        for pid in frontier:
+            for c in _desc_children(rp, pid):
+                state = rp.state(c)
+                if state == _PERSON_LIVING:
+                    living.add(c)
+                elif state == _PERSON_SHOWN and c not in reached:
+                    reached.add(c)
+                    following.append(c)
+        frontier = following
+    below: set[str] = set()
+    frontier = sorted(living)
+    while frontier:
+        following = []
+        for pid in frontier:
+            for c in _desc_children(rp, pid):
+                if c not in below:
+                    below.add(c)
+                    following.append(c)
+        frontier = following
+    return below
+
+
+def _desc_shown_children(rp: _ReportPrivacy, pid: str,
+                         hidden: set[str]) -> tuple[list[tuple], int]:
     """The children the report may name, in listing order (birth children
     oldest first, undated last, then by name and id; then the adopted and
     step children the same way), and how many living children are counted.
+    A child in `hidden` (a living person's descendant) is neither.
     Each entry is `(nonbirth, date, name, child, info)`."""
     listed, living_n = [], 0
     for c, info in _desc_children(rp, pid).items():
+        if c in hidden:
+            continue
         state = rp.state(c)
         if state == _PERSON_LIVING:
             living_n += 1
@@ -6314,7 +6349,8 @@ def _desc_shown_children(rp: _ReportPrivacy, pid: str) -> tuple[list[tuple], int
     return listed, living_n
 
 
-def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int) -> dict[str, int]:
+def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int,
+                             hidden: set[str]) -> dict[str, int]:
     """Each shown descendant's generation by their shortest line from `root`
     (root is 1). When cousins of different generations married, their
     children are listed in full where that shortest line puts them, so no one
@@ -6327,7 +6363,7 @@ def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int) ->
             depth = nearest[pid]
             if depth >= generations:
                 continue
-            for entry in _desc_shown_children(rp, pid)[0]:
+            for entry in _desc_shown_children(rp, pid, hidden)[0]:
                 c = entry[3]
                 if c not in nearest:
                     nearest[c] = depth + 1
@@ -6339,7 +6375,8 @@ def _desc_nearest_generation(rp: _ReportPrivacy, root: str, generations: int) ->
 def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str]:
     """The descendant report as small markdown: a title, a summary, a nested
     bullet list (two spaces per generation) and the notes."""
-    nearest = _desc_nearest_generation(rp, root, generations)
+    hidden = _desc_below_living(rp, root)
+    nearest = _desc_nearest_generation(rp, root, generations, hidden)
 
     def walk(listed_at: dict[str, str]) -> tuple[list[str], _Footnotes, _SheetTally, dict, int]:
         """One pass over the tree. A person on two lines of descent is listed
@@ -6374,7 +6411,7 @@ def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[s
             inner = '  ' * depth
             for line in _desc_marriage_lines(rp, fn, tally, pid):
                 out.append(f'{inner}- {line}')
-            listed, living_n = _desc_shown_children(rp, pid)
+            listed, living_n = _desc_shown_children(rp, pid, hidden)
             if depth >= generations:
                 # Nobody below is on the page, so nobody below is counted.
                 if listed or living_n:
@@ -6387,7 +6424,8 @@ def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[s
                 person(c, f'{number}.{k}', depth + 1, f' ({kind})' if kind else '', info['sources'])
             if living_n:
                 for c in _desc_children(rp, pid):
-                    tally.see(c)
+                    if c not in hidden:
+                        tally.see(c)
                 # Always "and N living ...": a line starting with a bare
                 # number would read as a person numbered N.
                 out.append(f"{inner}- {_living_count_phrase(living_n, 'child', 'children')}")

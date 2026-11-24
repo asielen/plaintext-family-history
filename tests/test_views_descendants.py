@@ -308,6 +308,26 @@ class DescendantReviewFixTests(_TwoLinesBase):
             orders.append(fn.order)
         self.assertEqual(orders[0], orders[1])
 
+    def test_a_living_cousins_child_is_not_named_under_the_other_parent(self):
+        # Lena (living) married her cousin Zed (1.1.2, deceased); their son
+        # Quinn died. Quinn is a living person's descendant, so the page must
+        # neither name nor count him, even under Zed (SPEC §21).
+        QN = 'p-qnqnqnqnqn'
+        base_people, base_sources = self.people, self.sources
+        self.people = lambda: base_people() + [(QN, 'Quinn Hartley', 'M', 'false', '')]
+        self.sources = lambda: base_sources() + [
+            ('s-dsdsdsdsd7', 'Quinn baptism', 'Baptism of Quinn.',
+             R._rel('qn', QN, [G2, CL])
+             + R._claim('c-birthQN000', 'birth', [QN], '1950', roles=f'{{child: {QN}}}'), '', None)]
+        self.tearDown()
+        self.setUp()
+        text = self.desc_text()
+        self.assertNotIn('Quinn', text)
+        self.assertNotIn('1950', text)
+        lines = text.splitlines()
+        at = next(i for i, ln in enumerate(lines) if '1.1.2 Zed Hartley' in ln)
+        self.assertFalse(lines[at + 1].startswith('      '), lines[at + 1])   # nothing under Zed
+
     def test_a_repeated_entry_cites_its_own_parent_tie(self):
         text = self.desc_text()
         see = [ln for ln in text.splitlines() if 'Xavier Hartley (see' in ln]
