@@ -2030,6 +2030,31 @@
 
   // `opts` (a batch download only): see captureNewspapers. Returns what was
   // staged: { key, record, bundle, where, slowDown, note }.
+  // FamilySearch's own machine reading of an image, when its Full-Text panel is
+  // open on the page: filed as transcript.md, marked an unreviewed machine
+  // reading so he can search it and the transcriber starts from it, never
+  // trusts it. Only reads the panel (the page is not clicked, FamilySearch is
+  // not asked); no panel or no text is no file, and never a failed capture.
+  // `-->` and `<!--` in the text are escaped so the text cannot close the
+  // marker above it or open another.
+  // `pageIds`: the ids the tab's URL carries (the record's own for an indexed
+  // record, whose URL has no image id), for the still-on-this-page check.
+  async function fsFullTextAsset(imageId, recordUrl, accessed, pageIds) {
+    let got = null;
+    try {
+      got = await autoFetch('FamilySearch Full-Text transcript (if the page shows it)',
+        { action: 'familysearchFullText', imageId }, { recordUrl, ids: pageIds });
+    } catch (e) {
+      if (e instanceof TabMoved) throw e;
+    }
+    if (!got || !got.ok || !got.text) return null;
+    const text = String(got.text).replace(/<!--/g, '&lt;!--').replace(/-->/g, '--&gt;');
+    const body = '<!-- AI-DRAFT FamilySearch machine transcription, unchecked, captured ' + accessed + ' -->\n\n' +
+      text + '\n';
+    return { filename: 'transcript.md', blob: new Blob([body], { type: 'text/markdown' }),
+      role: 'transcript', mode: 'familysearch-fulltext' };
+  }
+
   async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const info = await autoFetch('FamilySearch record details', {
       action: 'familysearchRecordInfo',
@@ -2085,6 +2110,13 @@
     // this; `imageId` is only the image the record links to.
     const imageSaved = !!imageKey && !provisional && assets.some((a) => a.role === 'record');
     rec.imageSaved = imageSaved;
+    // Asked even when the image is already saved: that image's capture may
+    // have been made before its Full-Text panel was open (or before this
+    // feature), and the panel is only read, never clicked.
+    if (imageKey) {
+      const tx = await fsFullTextAsset(imageKey, recordUrl, captureJson.accessedDate(), ['1:1:' + rec.fsId]);
+      if (tx) assets.push(tx);
+    }
 
     // No image in the bundle: the page copy comes too, ticked or not, so the
     // record's data is never filed as the source's main file.
@@ -2208,6 +2240,8 @@
           'Download button, drop the file into the panel and press Capture again: that capture holds both.';
       }
     }
+    const tx = await fsFullTextAsset(imageId, recordUrl, accessed, ['3:1:' + imageId]);
+    if (tx) assets.push(tx);
     const hasImage = assets.some((a) => a.role === 'record');
     if (!pageCopy && !hasImage) pageCopy = await recordPageCopy('late', true, recordUrl, ['3:1:' + imageId]);
     const forcedCopy = !!pageCopy && !wantPageCopy;
