@@ -11178,6 +11178,40 @@ class FanPosterGeometryTests(unittest.TestCase):
         self.assertNotIn('<tspan', hub)
         self.assertIn('Alexandrina', hub)
 
+    def test_no_curved_name_runs_past_the_horizontal(self):
+        # At 270 degrees a parent's cell runs from the upper half down past
+        # the horizontal. Its name keeps to one side, so its last letters do
+        # not tip past sideways; a lower-half name still runs left to right.
+        for depth in (3, 5):
+            svg = self._svg(depth, 270, name=lambda n: f'Anc{n} Montgomery-Fitzwilliam Hartley')
+            centre = _fan_rings_by_formula(depth, math.radians(270))[-1][2] + 14
+            checked = 0
+            for d in dict(_FAN_PATH_RE.findall(svg)).values():
+                m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) A[0-9.]+,[0-9.]+ 0 [01] ([01]) '
+                                 r'([-0-9.]+),([-0-9.]+)', d)
+                if m is None:
+                    continue                      # a straight (radial) line
+                ys = (float(m.group(2)), float(m.group(5)))
+                below = [y > centre + 0.15 for y in ys]
+                above = [y < centre - 0.15 for y in ys]
+                self.assertFalse(any(below) and any(above), d)
+                if any(below):
+                    self.assertEqual(m.group(3), '0', d)
+                checked += 1
+            self.assertGreater(checked, 4)
+
+    def test_the_270_hub_keeps_its_name_off_the_open_notch(self):
+        # The 270-degree hub is open at the bottom; two lines of 15px text
+        # centred on the hub's middle put the surname in that gap.
+        labels = _fan_full_labels(2)
+        labels[1].update(name='Margaret Hartley', surname='Hartley')
+        svg = site._render_fan_svg(labels, 2, span_deg=270)
+        hub = re.search(r'<text class="fan-label-subject" x="([0-9.]+)" y="([0-9.]+)"', svg)
+        centre = float(hub.group(1))                     # the canvas is square
+        self.assertEqual(re.findall(r'<tspan[^>]*>([^<]*)</tspan>', svg), ['Margaret', 'Hartley'])
+        last_line_foot = float(hub.group(2)) + 0.6 * 15 + 15 / 2
+        self.assertLessEqual(last_line_foot, centre + 3, svg)
+
     def test_the_half_fan_is_unchanged(self):
         # The default is what the fan drew before the poster angles existed.
         labels = _fan_full_labels(5, dates={'birth': '1840', 'death': '1941'})

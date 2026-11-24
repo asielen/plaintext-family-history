@@ -3499,18 +3499,31 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             years = _fan_years(info.get('dates'))
 
         if mode == 'arc':
-            lower = math.sin(mid) < -1e-9
-            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg, lower)
+            # On a 270-degree poster a cell can run from the upper half down
+            # past the horizontal (a parent's cell spans 135 degrees). Its
+            # name keeps to the larger side of the horizontal, so no letters
+            # tip past sideways; the cell itself is drawn whole.
+            t_hi, t_lo = a_hi, a_lo
+            for flat in (math.pi, 0.0):
+                if t_lo + 1e-9 < flat < t_hi - 1e-9:
+                    if t_hi - flat >= flat - t_lo:
+                        t_lo = flat
+                    else:
+                        t_hi = flat
+            t_seg = t_hi - t_lo
+            t_large = 1 if t_seg > math.pi else 0
+            lower = math.sin((t_hi + t_lo) / 2) < -1e-9
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, t_seg, lower)
             # Upper half: each line runs from a_hi to a_lo (left to right
             # over the top), which keeps the text upright.
             if lower:
                 # Lower half of a poster fan: the first line already sits at
                 # the smaller radius (the hub side, the top as read), and the
                 # text runs counter-clockwise (left to right along the bottom).
-                paths = [f"M{polar(r, a_lo)} A{r:.1f},{r:.1f} 0 {large} 0 {polar(r, a_hi)}"
+                paths = [f"M{polar(r, t_lo)} A{r:.1f},{r:.1f} 0 {t_large} 0 {polar(r, t_hi)}"
                          for r in fit['radii']]
             else:
-                paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
+                paths = [f"M{polar(r, t_hi)} A{r:.1f},{r:.1f} 0 {t_large} 1 {polar(r, t_lo)}"
                          for r in fit['radii']]
         else:
             fit = _fan_fit_radial(name, surname, years, g, r_in, r_out - r_in, seg)
@@ -3578,7 +3591,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
         given = parts[0] if parts else subj_full
         if len(given) > 12:
             given = given[:11] + '…'
-        label_y = cy - r0 * 0.42 if span_deg == 180 else cy
+        # The 270 hub is open at the bottom, so its name sits a little high.
+        label_y = cy - r0 * {180: 0.42, 270: 0.3}.get(span_deg, 0.0)
         shown = html.escape(given)
         if span_deg != 180:
             two = _fan_name_lines(subj_full, labels[1].get('surname'))
