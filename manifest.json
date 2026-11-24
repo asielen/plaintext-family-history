@@ -104,7 +104,7 @@
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "b22e120cfe2f09d89f7cbc3a66e42e1ef59f7a48ad00bc7c2f7fafd22cc77d90",
+      "sha256": "ddf76c5ca284dc8e84689b01a07eb4f02d634aba207ffcd14a610d063329470b",
       "spec_version": "2.29",
       "src": ".claude/skills/research-next/SKILL.md"
     },
@@ -265,7 +265,7 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "b22e120cfe2f09d89f7cbc3a66e42e1ef59f7a48ad00bc7c2f7fafd22cc77d90",
+      "sha256": "ddf76c5ca284dc8e84689b01a07eb4f02d634aba207ffcd14a610d063329470b",
       "spec_version": "2.29"
     },
     {
@@ -1395,7 +1395,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "78388c203f00194dcec1747ce44ade24dbf9fe46d1bda2125abfb7c2c3b8f975",
+      "sha256": "d66471a7c3ba9562937fdbd7f56a2b57d06187baffd1be0cef9d73b881e890e6",
       "spec_version": "2.29"
     },
     {
@@ -1487,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "31895139cb590b60b527e8e3fed6acea692d90f0bcc7868821a5e082093fc12b",
+      "sha256": "9a179d69c9f5dd52d8572d5b8de210dde54e6e90932e37da48633d16e86e5a20",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
