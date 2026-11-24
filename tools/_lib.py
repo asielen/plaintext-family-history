@@ -20609,6 +20609,106 @@ def _place_country(places: dict[str, dict], place_id: str | None) -> str | None:
     return None
 
 
+def _date_edge(value: Any, end: bool) -> str | None:
+    """An int year or ISO-ish text ('1860', '1860-05', '1860-05-01') as a full
+    'YYYY-MM-DD' for comparing; `end` fills a missing month or day with the
+    last one ('1860' -> '1860-12-31'). None when it is not a date."""
+    m = re.match(r'^\s*(\d{4})(?:-(\d{2}))?(?:-(\d{2}))?', str(value)) if value is not None else None
+    if not m:
+        return None
+    y, mo, d = m.group(1), m.group(2), m.group(3)
+    mo = mo or ('12' if end else '01')
+    if d is None:
+        last = calendar.monthrange(int(y), int(mo))[1] if '01' <= mo <= '12' and int(y) > 0 else 31
+        d = f'{last:02d}' if end else '01'
+    return f'{y}-{mo}-{d}'
+
+
+def place_hierarchy_at(
+    conn: sqlite3.Connection, place_id: str, date_min: Any, date_max: Any = None,
+) -> tuple[str | None, str | None]:
+    """Which government held a place when a record was made: (the hierarchy
+    written for that time, the period it came from), for a registered place.
+
+    A genealogist who finds a Kansas Territory birth and a State of Kansas
+    death is looking at two governments, so each is looked up under its own.
+    SPEC A.9: a claim's date picks the period, so a period is returned only
+    when it wholly covers the date range given (a `1855/1865` claim is not
+    inside `1858/1861`, and a claim from January 1918 is not inside a period
+    that began in November 1918). The range is `date_min` to `date_max` (years
+    or ISO dates; a bare year means the whole year; `date_max` defaults to
+    `date_min`). A period open at one end (`[..1861]`) covers any range that
+    ends inside it. Of several covering periods the narrowest wins, the first
+    in file order on a tie. A place with no history of its own follows
+    `within:` to the place that contains it. (None, None) when no dated entry
+    covers the range, or when the range is undated: the caller then uses the
+    place's present `hierarchy:`.
+    """
+    lo = _date_edge(date_min, False)
+    hi = _date_edge(date_max if date_max is not None else date_min, True)
+    if lo is None or hi is None or lo <= '0001-12-31' or hi >= '9999-01-01' or lo > hi:
+        return (None, None)
+    seen: set[str] = set()
+    pid: str | None = place_id
+    while pid and pid not in seen:
+        seen.add(pid)
+        rows = conn.execute(
+            'SELECT period_edtf, date_min, date_max, hierarchy FROM place_history '
+            'WHERE place_id = ? ORDER BY rowid', (pid,)).fetchall()
+        best: tuple[int, str, str | None] | None = None
+        for r in rows:
+            elo, ehi = _date_edge(r[1], False), _date_edge(r[2], True)
+            if elo is None or ehi is None or not r[3]:
+                continue
+            if elo <= lo and ehi >= hi:
+                span = (int(ehi[:4]) - int(elo[:4])) * 372 + (int(ehi[5:7]) - int(elo[5:7])) * 31                     + int(ehi[8:10]) - int(elo[8:10])
+                if best is None or span < best[0]:
+                    best = (span, str(r[3]), r[0])
+        if best is not None:
+            return (best[1], best[2])
+        if rows:
+            # This place has its own dated history and none of it covers the
+            # range: its container's history says nothing about it.
+            return (None, None)
+        up = conn.execute('SELECT within FROM places WHERE id = ?', (pid,)).fetchone()
+        pid = up[0] if up and up[0] else None
+    return (None, None)
+
+
+def place_hierarchy_in_year(
+    conn: sqlite3.Connection, place_id: str, year: int | None,
+) -> tuple[str | None, str | None]:
+    """`place_hierarchy_at` for one year; (None, None) with no year."""
+    if year is None:
+        return (None, None)
+    return place_hierarchy_at(conn, place_id, year, year)
+
+
+REPOSITORIES_PATH = Path(__file__).resolve().parent / 'repositories.json'
+_repositories_cache: list | None = None
+
+
+def load_repositories(path: Path | None = None) -> list[dict] | None:
+    """The archives and record sites that ship with the tools
+    (`repositories.json`, TOOLING §7c), as a list of rows. None when the file
+    is missing or unreadable, so the caller can say so; a row that is not a
+    mapping is skipped. Read once per run; a path given by a test is not cached."""
+    global _repositories_cache
+    if path is None and _repositories_cache is not None:
+        return _repositories_cache
+    try:
+        data = json.loads((path or REPOSITORIES_PATH).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        return None
+    rows = data.get('repositories') if isinstance(data, dict) else None
+    if not isinstance(rows, list):
+        return None
+    rows = [r for r in rows if isinstance(r, dict)]
+    if path is None:
+        _repositories_cache = rows
+    return rows
+
+
 def _census_left_out_note(country: str) -> str:
     """A country name as written, with the reason it has no table when it is
     left out on purpose ("United Kingdom (names several census countries; ...)")."""
