@@ -22824,32 +22824,56 @@ def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
 
 # What shows a claim's date was converted from the old calendar (lint W172):
 # an Old Style / O.S. / Julian marker, or a double year such as 1751/52.
-_OLD_STYLE_MARKER = re.compile(r'\bold[\s-]?style\b|\bjulian\b', re.IGNORECASE)
+# "Julian" counts only as the calendar ("Julian calendar", "(Julian)"), never
+# as a first name.
+_OLD_STYLE_MARKER = re.compile(
+    r'\bold[\s-]?style\b'
+    r'|\bjulian\b(?=\s*(?:calendar|date|day|style|reckoning|\)))'
+    r'|\(\s*julian\b', re.IGNORECASE)
 # O.S. with its stop: a bare "OS" is as often Ordnance Survey.
 _OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
-_DOUBLE_YEAR = re.compile(r'\b1\d{3}/\d{1,2}\b')
+# 1751/52 or 1751/2, not a reference such as 11/1234/56 or 1752/09/05.
+_DOUBLE_YEAR = re.compile(r'(?<![\d/])(1\d{3})/(\d{1,2})(?![\d/])')
 _WRITTEN_DAY = re.compile(
     r'\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b'
     r'|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b')
 
 
+def _has_double_year(text: str) -> bool:
+    for match in _DOUBLE_YEAR.finditer(text):
+        after = match.group(2)
+        if (int(match.group(1)) + 1) % (10 ** len(after)) == int(after):
+            return True
+    return False
+
+
 def calendar_conversion_shown(claim: dict) -> bool:
-    """True when a claim shows its `date:` was converted from another
-    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian marker
-    or a double year (1751/52), or its `value` writes a day that differs from
-    `date:` (the record's own day beside the converted one, SPEC §11).
-    Structural only: no other wording in a note counts."""
+    """True when a claim shows its gap `date:` was converted from the old
+    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian
+    marker or a double year (1751/52), or its `value` writes the old-calendar
+    day that converts to `date:` (25 Aug 1752 beside 1752-09-05; the record's
+    own day beside the converted one, SPEC §11). Structural only: no other
+    wording counts, and another day in `value` (a baptism after a birth, the
+    banns before a marriage) does not."""
     value = str(claim.get('value') or '')
     notes = str(claim.get('notes') or '')
     for text in (value, notes):
-        if _OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text) \
-                or _DOUBLE_YEAR.search(text):
+        if _OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)                 or _has_double_year(text):
             return True
-    date = str(claim.get('date') or '').strip()
-    for match in _WRITTEN_DAY.finditer(value):
-        written = normalize_date(match.group(0).replace(',', ' '))
-        if written and len(written) == 10 and written != date:
-            return True
+    date = optional_scalar(claim.get('date')) or ''
+    gap = calendar_gap_of(date)
+    if gap is None or len(date) != 10:
+        return False
+    try:
+        target = datetime.date.fromisoformat(date)
+        shift = (datetime.date.fromisoformat(gap[1])
+                 - datetime.date.fromisoformat(gap[0])).days + 1
+        for match in _WRITTEN_DAY.finditer(value):
+            written = normalize_date(match.group(0).replace(',', ' '))
+            if written and len(written) == 10 and                     datetime.date.fromisoformat(written) + datetime.timedelta(days=shift) == target:
+                return True
+    except ValueError:
+        return False
     return False
 
 

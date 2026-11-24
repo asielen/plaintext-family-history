@@ -575,6 +575,24 @@ class RoleSexAndCalendarTests(_PlausibilityBase):
                     self._dated('1752-09-05', extra=f'  notes: "{text}"\n')
                 self.assertEqual(self._codes('W172'), [])
 
+    def test_lookalike_markers_do_not_quiet_a_raw_gap_date(self) -> None:
+        # A parish entry's second day, a first name, a catalogue reference:
+        # none of them shows the gap day was converted.
+        cases = (
+            ('value', 'born 5 September 1752, baptised 12 September 1752'),
+            ('value', 'married 5 Sept 1752 after banns 20 Aug 1752'),
+            ('notes', 'informant Julian Hartley'),
+            ('notes', 'TNA PROB 11/1234/56'),
+            ('value', 'entry dated 1752/09/05'),
+        )
+        for field, text in cases:
+            with self.subTest(text=text):
+                if field == 'value':
+                    self._dated('1752-09-05', value=text)
+                else:
+                    self._dated('1752-09-05', extra=f'  notes: "{text}"\n')
+                self.assertEqual(len(self._codes('W172')), 1)
+
     def test_an_unrelated_note_does_not_quiet_it(self) -> None:
         self._dated('1752-09-05', extra='  notes: "faded ink"\n')
         self.assertEqual(len(self._codes('W172')), 1)
