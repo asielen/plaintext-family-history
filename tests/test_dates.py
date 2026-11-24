@@ -465,6 +465,18 @@ class CalendarRuleIsWrittenDownTests(unittest.TestCase):
             text = self._read(rel)
             self.assertIn("`date:` is always today's (Gregorian) calendar", text, rel)
             self.assertIn('fha date convert', text, rel)
+            # A caution or two readings is never picked silently.
+            self.assertIn('SPEC §11 says which to take', text, rel)
+            self.assertIn('two readings', text, rel)
+
+    def test_spec_covers_the_cases_a_converted_day_gets_wrong(self):
+        # An English register's "11 Feb 1731" (one year) is February 1732 by
+        # today's count; "Nisan 5650" alone is not the year 5650; a feast
+        # kept on two days needs the record's place to pick one.
+        spec = self._read('SPEC.md')
+        self.assertIn('began the year on 25 March', spec)
+        self.assertIn('A Hebrew month or year alone covers parts of two', spec)
+        self.assertIn('the human is asked', spec)
 
 
 if __name__ == '__main__':

@@ -62,7 +62,7 @@
     {
       "path": ".agents/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "a73910041a455be7828ff5753ece7dc97239f4bff460731e860a9c0139ccdcf3",
+      "sha256": "0353438a54198f7a99a4c4366c0d4936d3450fe52c2800d70d09d51d0c73f8b0",
       "spec_version": "2.33",
       "src": ".claude/skills/mine-transcript/SKILL.md"
     },
@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "df400a2866b2aee3792979033171239179b4aefdab6be7e3aa2a0b1825910a0e",
+      "sha256": "c86b06f71f48736684a36566111ec1268e45c5a7010467f6c331053f0111453d",
       "spec_version": "2.33",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -236,7 +236,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "a73910041a455be7828ff5753ece7dc97239f4bff460731e860a9c0139ccdcf3",
+      "sha256": "0353438a54198f7a99a4c4366c0d4936d3450fe52c2800d70d09d51d0c73f8b0",
       "spec_version": "2.33"
     },
     {
@@ -260,7 +260,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "df400a2866b2aee3792979033171239179b4aefdab6be7e3aa2a0b1825910a0e",
+      "sha256": "c86b06f71f48736684a36566111ec1268e45c5a7010467f6c331053f0111453d",
       "spec_version": "2.33"
     },
     {
@@ -1436,7 +1436,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "2e955afa765dd29e4f4eb4e4a1ed49f7c3c939ecd6cc5f087b7bc1875cf91e44",
+      "sha256": "268ece1b504612aa0087b0fbf5e1a12b59cd603f659b0d53cf106d31518f5813",
       "spec_version": "2.33"
     },
     {
@@ -1479,7 +1479,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "1e571a4ae75d77b7e4bedb3f5f109354828ee8dba657d3e36ace540171cd847f",
+      "sha256": "114e342fb10cd5f1cd6d8afd4f62a69005329d67d4545f2dd4f62637342b91ea",
       "spec_version": "2.33"
     },
     {
@@ -1521,7 +1521,7 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "4f86187d55f3d9354a7426b5ec3b824c335fe8c95d5b3cbb55058054073c2f10",
+      "sha256": "a735f5cf5ad38162a687f3bcaffd006be9d204a96795407106f9a3faec736a8f",
       "spec_version": "2.33",
       "src": "SPEC.md"
     },
