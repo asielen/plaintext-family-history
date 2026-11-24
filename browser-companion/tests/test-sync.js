@@ -354,6 +354,48 @@ test('lib/wvculture.js (the panel) downloads only the images lib/wvculture-recor
   assert.strictEqual(panel.imageUrlOk('http://images.wvculture.org/1/2.gif'), false, 'https only');
 });
 
+test('lib/wvculture.js (the panel) follows a FamilySearch badge only to the pages lib/wvculture-record.js names', () => {
+  // The content script turns the badge's address into a page (wvPartnerPage);
+  // the panel fetches it. One rule, two copies: one battery. And the picture
+  // the panel reads off the page is the one the page reader would read.
+  const wvRecord = require('../src/lib/wvculture-record.js');
+  const miniDom = require('./mini-dom.js');
+  const w = {};
+  new Function('window', readSrc('lib/wvculture.js'))(w);
+  const panel = w.FHA.wvculture;
+  for (const u of [
+    'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
+    'http://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
+    'https://ARCHIVE.WVCULTURE.ORG/VRR/VA_VIEW2.ASPX?filmnumber=1&imagenumber=2',
+    'https://archive.wvculture.org:8443/vrr/va_view2.aspx?FilmNumber=1&ImageNumber=2',
+    'https://a:b@archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1&ImageNumber=2',
+    'https://archive.wvculture.org.evil.example/vrr/va_view2.aspx?FilmNumber=1&ImageNumber=2',
+    'https://archive.wvculture.org/vrr/other.aspx?FilmNumber=1&ImageNumber=2',
+    'https://images.wvculture.org/vrr/va_view2.aspx?FilmNumber=1&ImageNumber=2',
+    'ftp://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1&ImageNumber=2', '',
+  ]) {
+    const page = wvRecord.wvPartnerPage(u);
+    if (page) assert.ok(panel.pageUrlOk(page.pageUrl), 'the panel refuses a page the reader names: ' + u);
+    if (/^https:/i.test(u)) assert.strictEqual(panel.pageUrlOk(u), page !== null, u);
+  }
+  const parse = (html) => {
+    const root = miniDom.parse(html);
+    const imgs = [];
+    const walk = (n) => (n.childNodes || []).forEach((c) => { if (c.tagName === 'IMG') imgs.push(c); if (c.nodeType === 1) walk(c); });
+    walk(root);
+    return { querySelectorAll: () => imgs };
+  };
+  const view = 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530';
+  for (const name of ['wvculture-view.html', 'wvculture-view-live.html']) {
+    const html = fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures', 'capture-samples', name), 'utf8');
+    const srcs = parse(html).querySelectorAll('img').map((i) => new URL(i.getAttribute('src'), view).href);
+    const read = wvRecord.wvImageUrl(srcs);
+    assert.ok(read, name);
+    assert.strictEqual(panel.viewPageImage(html, view, parse), read, name);
+  }
+  assert.strictEqual(panel.viewPageImage('<img src="https://evil.example/1/2.gif">', view, parse), null);
+});
+
 test('content.js batch-download readers are a verbatim copy of lib/batch-sources.js', () => {
   // Including the FamilySearch person reader, which sends the login: a drift
   // there would be the one that sends a researcher's session elsewhere.

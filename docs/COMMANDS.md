@@ -524,6 +524,8 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A --all        Everyone related to one person: blood relatives
+                              nearest first, then those related by marriage
   fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
   fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
@@ -534,6 +536,7 @@ A read-only view over accepted relationship claims: nothing is written.
 |---|---|
 | `[P-A]` | First person: ID or full name |
 | `[P-B]` | Second person: ID or full name |
+| `--all` | List everyone related to one person, by blood or by marriage |
 | `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
@@ -611,8 +614,13 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --format html   A printable wall calendar for this year
+  fha calendar --format html --year 2027
+                               The same, for another year
 
-Only dates recorded to the month or day appear. Read-only: nothing is written.
+Only dates recorded to the month or day appear. The text views write nothing;
+the wall calendar writes one private page under generated/views/ and names
+living relatives, so keep it to yourself.
 ```
 
 | Argument | What it does |
@@ -621,6 +629,8 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
+| `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
+| `--year` `YYYY` | With --format html: the year to print (default: this year) |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha date`
@@ -1055,12 +1065,16 @@ the same file is refused, and a failed import cleans up after itself.
 
 Downloaded your tree again later? Run this on the newer file. The plan shows
 only what changed since the earlier download: the new people, the new
-statements, and each one the newer file says differently. People it cannot
-match for certain are listed with the reason. (This plan cannot be applied
-yet; it is for checking.)
+statements, and each one the newer file says differently. With --apply only
+those are added. Nothing you have reviewed or edited is changed, and each
+statement that disagrees with what you had gets an open question. People it
+cannot match for certain are listed with the reason, and nothing is added
+for them.
 
-  --plan-out FILE    Also write the full, uncut plan text to FILE.
-  --as-new-tree      Treat a newer download as a separate tree instead.
+  --plan-out FILE      Also write the full, uncut plan text to FILE.
+  --confirm-matches    Show the people the plan names one likely match for,
+                       and ask whether they are the same people.
+  --as-new-tree        Treat a newer download as a separate tree instead.
 ```
 
 | Argument | What it does |
@@ -1069,6 +1083,7 @@ yet; it is for checking.)
 | `--apply` | Write the records (default: print the dry-run plan only). |
 | `--plan-out` `FILE` | Also write the full (uncapped) plan text to FILE; refused inside the archive except its out/ folder. |
 | `--as-new-tree` | Import every person as new even if this looks like a newer download of a tree already imported. Every person arrives a second time, which is usually not what you want. |
+| `--confirm-matches` | For a newer download: show the people the plan could not match for certain but names one likely person for, and ask once whether they are the same people. On yes they are matched for this run; on no, nothing is added for them. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ## `fha wikitree`
@@ -1308,7 +1323,7 @@ hand-edit right after minting. Preview any change first with --dry-run.
 
 ## `fha confirm`
 
-Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 
 ```text
 Write down a suggestion you've decided to accept.
@@ -1319,6 +1334,7 @@ Write down a suggestion you've decided to accept.
   fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
+  fha confirm search <p-id> --repository NAME --result nil|partial|found|unavailable
   fha confirm draft <p-id>
   fha confirm merge <p-merged> --into <p-survivor> --reason "<why>"
 
@@ -1405,6 +1421,24 @@ Append a dated entry to notes/discoveries.md
 | `TEXT` | What was discovered. |
 | `--refs` `IDS` | Comma-separated S-/P-/C-/L-/H- refs. |
 | `--dry-run` | Preview the change without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha confirm search`
+
+Log a search you ran for one person in notes/research-log.md
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person you searched for. |
+| `--repository` `NAME` | Where you searched, e.g. FamilySearch. |
+| `--result` `RESULT` | nil (nothing found), partial, found or unavailable. |
+| `--terms` `TEXT` | What you typed in, e.g. "Thomas Hartley, born about 1840". |
+| `--collection` `TEXT` | The collection or index searched. |
+| `--years` `EDTF` | The years of records it covered, like 1875 or 1911/1925. |
+| `--source` `s-id` | The source the search found (--result found). |
+| `--note` `TEXT` | What was not covered (partial) or why it could not be searched (unavailable). |
+| `--date` `YYYY-MM-DD` | The day you searched (default: today). |
+| `--dry-run` | Preview the entry without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha confirm draft`
