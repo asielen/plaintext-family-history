@@ -727,6 +727,15 @@ The people whose names sound like NAME in any spelling the archive holds (Hartle
 - **Output.** Each person with their years (own accepted birth or baptism and death or burial, else the record's provisional `birth:`/`death:`) and p-id, a name other than their main one shown as "as …", and the closing line "Sounding alike is only a hint: these can be different families." `--json`: one array `[{id, type: "person", label, detail, matched}]` on stdout (`[]` on no match), `matched` being the spelling that matched; messages on stderr.
 - **Exit codes.** 0 found; 1 no one sounds like it; 2 a name that cannot be compared (no Latin or Cyrillic letters, initials only, empty), or `--date`/`--kind` given with it; 3 no usable index (no fallback scan).
 
+### `--spelling-groups [--limit N] [--json]`
+
+One advisory list of the surnames in the archive that sound alike ("Hartley (6), Hartly (2), Hartlie (1): 9 people"), so a researcher sees that three spellings are probably one family. It changes nothing.
+
+- **Grouping.** Each active person's surname (the last word, by the SPEC §13 rule, of `name` and of each public other name, as for `--sounds-like`) is coded with Daitch-Mokotoff, and spellings are grouped by the first code only, not by any shared code, so one odd spelling cannot chain two families together. A group needs two or more distinct spellings (accents and case aside). Names in another script have no code and are left out. The engine is `_lib.surname_spelling_groups`; it takes the surnames already checked as public and reads no file.
+- **Privacy.** As for `--sounds-like`: the index only lists the people, and every name grouped comes from the person's own record, so a private spelling never appears.
+- **Output.** Groups largest first, each spelling with how many people write it, and the closing lines "Names are left exactly as each record wrote them; nothing has been changed." and a pointer to `--sounds-like`. `--json`: the array `[{code, spellings: [{spelling, count}], people}]`. `--limit` (default 50) cuts the groups.
+- **Exit codes.** 0 whether or not groups exist ("No surnames in your records sound alike."); 2 with `--date`, `--kind` or a name; 3 no usable index.
+
 ### Index freshness (D9)
 
 Shared by `find`, `doctor`, `views`, `photoindex`.
@@ -1391,7 +1400,7 @@ Builds the archive as a website in `generated/site/` (or `--out`): relative link
 
 ### Pages
 - **Home**: ancestor pedigree (below) seeded on `site.home_person` else `root_person`, depth `site.home_pedigree_generations` (default 5, max 8); surname A-Z index; recent discoveries; **Sources** grouped by decade of `date_min`, alphabetical within, undated last.
-- **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
+- **Person (curated)**: summary; family chart; an ancestor fan (five generations; inner rings curved, outer rings radial; names on two lines when long, with years); biography (`[[s-…]]` numbered footnotes, `[[p-…]]` links); timeline (as `fha views timeline`: by date, grouped by decade, type/value/source link); photo strip (§9 face tags); Stories; Friends & Family; sources index (same query as `fha views sources-index`). A person with descendants also gets "See descendants of {name} →" in a `<details>` disclosure, opening the descendant explorer seeded on them.
 - **Person (stub)**: one-line entries on their couple's section.
 - **Source**: scan thumbnail (the Files list's privacy-checked image, `role: front` preferred) linking to the full scan; citation, metadata, claims table with status badges, files list.
 - **Place**: embedded OpenStreetMap iframe with marker when coords exist (offline an empty frame; the map link always works); `notes:`; `history:`; claims; `within:` children.
@@ -1855,6 +1864,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
+| `fha find --spelling-groups` (T C) | "Which of my surnames are probably one family?" Surnames in the records that sound alike, with how many people write each (§4a). Advisory; nothing is renamed. |
 | `fha find --sounds-like "NAME"` (T C) | "Is she spelled another way somewhere?" The people whose names sound like NAME in any spelling, grouped by spelling, with the Daitch-Mokotoff and census Soundex codes (§4a). A hint, never a merge; `merge-identities` and `research-next` use it. |
 | `find-photos` skill (A) | "Show me grandma's photos." Answers from the photo index, offers the gallery page. Read-only. |
 | `photo-context` skill (A) | "What do we know about this photo?" Drafts a better caption from the archive's own knowledge; human approves exact text; writes via `set-summary`. |
