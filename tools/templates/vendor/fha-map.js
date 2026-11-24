@@ -442,11 +442,18 @@
 
     var followed = -1;
     function follow(index) {
+      var was = followed;
       followed = index;
       svg.classed('map-following', index >= 0);
       if (picker) picker.value = index >= 0 ? String(index) : '';
       drawFollowed();
-      if (index < 0) return;
+      if (index < 0) {
+        if (was >= 0) {   // the journey's text goes with its line
+          clear(panel);
+          panel.appendChild(el('p', 'Choose a pin to see the place and the people the records put there.', 'note'));
+        }
+        return;
+      }
       pins.classed('is-active', false);
       showJourney(panel, journeys[index], byId);
     }
