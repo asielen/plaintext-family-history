@@ -11053,13 +11053,21 @@ class _SiteBuilder:
             if not r['date_edtf']:
                 continue
             try:
-                lo, _hi = edtf_bounds(str(r['date_edtf']))
+                lo, hi = edtf_bounds(str(r['date_edtf']))
             except (ValueError, TypeError):
                 return None     # an unreadable date might be the first one
-            dates.append((lo, str(r['date_edtf'])))
-        if not dates:
+            dates.append((lo, hi, _stat_year(r['date_edtf'])))
+        precise = [d for d in dates if d[2] is not None]
+        if not precise:
             return None
-        return _stat_year(min(dates)[1])
+        first_lo, _first_hi, first_year = min(precise)
+        # A loosely dated marriage stops the count only when it must have
+        # come first (its whole range ends before the dated one begins). A
+        # census "married before 1850" beside an 1840 register entry may be
+        # the same wedding, and leaves the 1840 standing.
+        if any(hi < first_lo for _lo, hi, year in dates if year is None):
+            return None
+        return first_year
 
     def _stats_seed_behind(self, seed: str) -> bool:
         """Whether the generation table may start behind a starting person

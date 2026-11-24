@@ -381,6 +381,23 @@ class ReviewFixTests(_Base):
         self.build()
         self.assertRegex(self.page(), r'Women .*Born in the 1800s 21 years 3 people')
 
+    def _same_wedding_twice(self, vague, dated='1840'):
+        # The register says 1840; another record dates the same wedding more
+        # loosely. It could be the same wedding, so she still counts.
+        for i in range(3):
+            w = self.person(f'Ann{chr(97 + i)} Hale', 'F', born='1820', died='1890')
+            self.claim('marriage', dated, [w], roles={w: 'spouse'})
+            self.claim('marriage', vague, [w], roles={w: 'spouse'})
+        self.build()
+        self.assertRegex(self.page(),
+                         rf'Women .*Born in the 1800s {int(dated) - 1820} years 3 people')
+
+    def test_a_census_married_before_date_does_not_drop_her(self):
+        self._same_wedding_twice('[..1850]')
+
+    def test_a_decade_record_of_the_same_wedding_does_not_drop_her(self):
+        self._same_wedding_twice('184X', dated='1845')
+
     def test_a_cousin_marriage_keeps_every_generation(self):
         # Xavier is the mother's father and also the father's mother's father.
         x = self.person('Xavier Hale', 'M', born='1800', died='1870')
