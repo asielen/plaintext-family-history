@@ -7215,6 +7215,12 @@ def run_lint(
     backlog = [] if scoped else _needs_sourcing_backlog(registry)
     registry.lap('needs-sourcing list')
 
+    # Leads to check: things worth a look that a correct record can carry, so
+    # they are neither findings nor errors. Same rules as the backlog above:
+    # never move the exit code, left out of `--changed`.
+    leads = [] if scoped else _leads_to_check(registry)
+    registry.lap('leads to check')
+
     # Hand-authored id-less records: reported as auto-mintable (not E002/E010), so
     # a human's pre-machine record is surfaced and completable, never silently lost.
     # A record still carrying the template's placeholder id gets its own wording -
@@ -7237,7 +7243,7 @@ def run_lint(
         ok=(n_errors == 0),
         exit_code=exit_code,
         data={'n_errors': n_errors, 'n_warnings': n_warnings, 'progress': progress,
-              'wc_note': wc_note, 'backlog': backlog, 'mintable': mintable,
+              'wc_note': wc_note, 'backlog': backlog, 'leads': leads, 'mintable': mintable,
               'changed_note': changed_note, 'timings': list(registry.timings.items())},
         messages=[finding_to_message(f) for f in findings],
         changed=changed,
@@ -7327,6 +7333,11 @@ def _cmd_lint(result: Result, archive_root: Path, use_json: bool = False,
             print('\nNeeds sourcing (worklist - informational, not errors):')
             for line in backlog:
                 print(f'  - {line}')
+        leads = data.get('leads') or []
+        if leads:
+            print('\nLeads to check (informational, not errors):')
+            for line in leads:
+                print(f'  - {line}')
 
     # --timings: once, after everything, on stderr so it never mixes into
     # the report or the JSON document.
@@ -7391,6 +7402,71 @@ def _accepted_vital_pids(registry: Registry) -> set[tuple[str, str]]:
                         continue   # named on the claim but not its actual subject (#126/#136)
                     out.add((ppid, ctype))
     return out
+
+
+# A first name has to be shared by at least this many people with a recorded sex
+# before the archive's own people say anything about it.
+SEX_FROM_NAME_MIN_PEOPLE = 5
+SEX_FROM_NAME_MIN_SHARE = 0.95
+
+
+def _sex_from_name_leads(registry: Registry) -> list[tuple[str, str]]:
+    """Leads (sort name, line) for people with no `sex:` recorded.
+
+    For a 75-year-old genealogist: an unsexed person leaves the tree numbering
+    guessing which side of a couple they sit on. When his own archive has 40
+    women named Margaret and no men, that is worth a look, so the lead says so
+    and sends him to find a record that states her sex. It never picks one for
+    him: SPEC §9 has `sex:` as birth-assigned where a record states it, not
+    taken from name statistics, so the only data read is his own people and
+    the write is `fha person set-sex`, run by him.
+    """
+    def key_of(meta: dict) -> str:
+        name = str(meta.get('name') or '').strip()
+        key = fold_accents(bracket_given_name(name)).lower() if name else ''
+        if len(key) < 2 or ' ' in key or '.' in key:
+            return ''   # "Mrs. Doe": no given name to count
+        return key
+
+    counts: dict[str, dict[str, int]] = {}
+    for meta in registry.person_meta.values():
+        if is_merged_meta(meta):
+            continue
+        sex = str(meta.get('sex') or '').strip()
+        key = key_of(meta)
+        if key and sex in ('M', 'F'):
+            counts.setdefault(key, {'M': 0, 'F': 0})[sex] += 1
+
+    out: list[tuple[str, str]] = []
+    for pid, meta in registry.person_meta.items():
+        if is_merged_meta(meta) or not sex_slot_is_defaulted(meta.get('sex')):
+            continue
+        tally = counts.get(key_of(meta))
+        if not tally:
+            continue
+        total = tally['M'] + tally['F']
+        top = 'F' if tally['F'] >= tally['M'] else 'M'
+        if total < SEX_FROM_NAME_MIN_PEOPLE or tally[top] < SEX_FROM_NAME_MIN_SHARE * total:
+            continue
+        name = str(meta.get('name') or '').strip()
+        given = bracket_given_name(name)
+        kind = 'women' if top == 'F' else 'men'
+        stated = 'female' if top == 'F' else 'male'
+        out.append((name.lower(), (
+            f'{name} has no sex: recorded. In this archive {tally[top]} of {total} '
+            f'people named {given} are {kind}, which is only a hint. Find a record '
+            f'that states it (a birth or baptism entry, a census line); if it says '
+            f'{stated}, run `fha person set-sex {fmt_id_display(pid)} {top}` '
+            f'(it also settles which side of the tree they sit on).')))
+    return out
+
+
+def _leads_to_check(registry: Registry) -> list[str]:
+    """INFORMATIONAL leads (never an error or warning, never in `--json`):
+    things a correct record can carry, so a warning nobody could clear would
+    only teach him to ignore lint. Sorted by kind then person name so the
+    output is the same on every run."""
+    return [line for _name, line in sorted(_sex_from_name_leads(registry))]
 
 
 def _needs_sourcing_backlog(registry: Registry) -> list[str]:
