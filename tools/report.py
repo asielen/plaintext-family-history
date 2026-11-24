@@ -152,6 +152,7 @@ from _lib import (
     build_ahnentafel_map,
     claim_is_own_vital,
     completeness_context,
+    suggest_birth_range,
     _own_vital_claims,
     person_name_key,
     is_placeholder_name,
@@ -1629,6 +1630,74 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
     return len(waiting)
 
 
+def _birth_basis_clauses(basis: list[dict], sex: str, persons: dict) -> list[str]:
+    """The relatives a birth suggestion rests on, in a family's words: ['her
+    husband was born in 1840', 'her eldest child in 1871']. The first clause
+    carries the verb; later ones only the year."""
+    poss = {'F': 'her', 'M': 'his'}.get(sex, 'their')
+    clauses: list[str] = []
+    order = {'spouse': 0, 'mother': 1, 'father': 1, 'parent': 1, 'child': 2, 'siblings': 3}
+    for i, b in enumerate(sorted(basis, key=lambda b: order[b['kind']])):
+        kind = b['kind']
+        if kind == 'siblings':
+            who = f'{poss} brothers and sisters'
+            if len(b['relative']) == 1:
+                who = f'{poss} brother or sister'
+                clauses.append(f"{who} was born in {b['year']}" if i == 0
+                               else f"{who} in {b['year']}")
+                continue
+            span = (str(b['year']) if b['year'] == b['year_to']
+                    else f"{b['year']} to {b['year_to']}")
+            clauses.append(f'{who} were born {span}' if i == 0 else f'{who}, born {span}')
+            continue
+        if kind == 'spouse':
+            rel_sex = str(persons[b['relative']].get('sex') or '').upper()
+            who = f"{poss} {({'M': 'husband', 'F': 'wife'}).get(rel_sex, 'spouse')}"
+        elif kind == 'child':
+            who = f'{poss} eldest child'
+        else:
+            who = f'{poss} {({"mother": "mother", "father": "father"}).get(kind, "parent")}'
+        clauses.append(f"{who} was born in {b['year']}" if i == 0
+                       else f"{who} in {b['year']}")
+    return clauses
+
+
+def _birth_suggestion_lines(conn, ctx: dict, pid_to_pos: dict, label) -> list[str]:
+    """Bucket (d) of section 3b: people with no birth date at all, where
+    relatives' accepted birth years point to a likely range, with the one
+    command that notes it. A suggestion, not a source; never for someone who
+    could be alive (see `_lib.suggest_birth_range`)."""
+    found = []
+    for pid in ctx['persons']:
+        got = suggest_birth_range(ctx, conn, pid)
+        if got:
+            found.append(got)
+    if not found:
+        return []
+    persons = ctx['persons']
+    found.sort(key=lambda g: (g['person'] not in pid_to_pos,
+                              pid_to_pos.get(g['person'], 0), g['hi'] - g['lo'],
+                              persons[g['person']]['name'].lower(), g['person']))
+    lines = [f'**Birth years the family suggests ({len(found)}):** people with no birth '
+             'date, where relatives\' dates point to a likely range. A suggestion, not '
+             'a source.']
+    for g in found[:_LOOSE_SHOWN]:
+        pid = g['person']
+        sex = str(persons[pid].get('sex') or '').upper()
+        subject = {'F': 'she was', 'M': 'he was'}.get(sex, 'they were')
+        clauses = _birth_basis_clauses(g['basis'], sex, persons)
+        reasons = (clauses[0] if len(clauses) == 1 else
+                   ', '.join(clauses[:-1]) + (',' if len(clauses) > 2 else '')
+                   + ' and ' + clauses[-1])
+        lines.append(
+            f'- {label(pid)}: {reasons}, so {subject} probably born between '
+            f"{g['lo']} and {g['hi']}. To note that as a starting guess: "
+            f'`fha person estimate {fmt_id_display(pid)} --birth {g["edtf"]}`')
+    if len(found) > _LOOSE_SHOWN:
+        lines.append(f'- … and {len(found) - _LOOSE_SHOWN} more')
+    return lines
+
+
 def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
     """Where each line of the tree stops, who is not tied to it, and which of
     those share a surname with it (TOOLING §15a, section 3b).
@@ -1765,6 +1834,9 @@ def _section_loose_ends(conn, direct_line: tuple) -> list[str]:
                          + (f', and {more} more' if more > 0 else ''))
         if len(ranked) > _LOOSE_SHOWN:
             lines.append(f'- … and {len(ranked) - _LOOSE_SHOWN} more surnames')
+
+    # (d) Birth years the family suggests.
+    lines.extend(_birth_suggestion_lines(conn, ctx, pid_to_pos, label))
 
     return lines or [
         'No loose ends: every line has parents recorded as far as it goes, and '

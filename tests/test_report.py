@@ -2210,7 +2210,7 @@ class LooseEndsSectionTests(unittest.TestCase):
         self.assertIn("number 6, Thomas Edward Hartley's mother's father.", body)
         self.assertIn("number 7, Thomas Edward Hartley's mother's mother. "
                       'Her mother is not recorded yet.', body)
-        self.assertNotIn('Mary Wells [', body)
+        self.assertNotIn('Mary Wells [', body.split('**Birth years')[0])
 
     def test_a_root_with_no_parents_says_so(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')
@@ -2336,7 +2336,7 @@ class LooseEndsSectionTests(unittest.TestCase):
         self._claim('birth', 'born 1881', [f], date='1881', roles=f'    child: {f}\n')
         body = self._body(self._build(r))
         self.assertIn('(born between 1871 and 1881)', body)
-        self.assertNotIn('1876', body)
+        self.assertNotIn('1876', body.split('**Birth years')[0])
 
     def test_a_witness_on_a_waiting_claim_is_not_counted(self) -> None:
         r = self._person('Thomas Edward Hartley', 'M')
@@ -2360,6 +2360,167 @@ class LooseEndsSectionTests(unittest.TestCase):
         self.assertLessEqual(body.count('Stray'), 5)
         self.assertIn('9 people on their own', body)
         self.assertIn('and 4 more', body)
+
+
+class BirthSuggestionTests(unittest.TestCase):
+    """Bucket (d) of section 3b: a birth range worked out from relatives'
+    accepted birth dates, offered as a ready `fha person estimate` command.
+    Borrows the loose-ends fixture builders without rerunning its tests."""
+
+    SID = LooseEndsSectionTests.SID
+    setUp = LooseEndsSectionTests.setUp
+    tearDown = LooseEndsSectionTests.tearDown
+    _person = LooseEndsSectionTests._person
+    _claim = LooseEndsSectionTests._claim
+    _parent = LooseEndsSectionTests._parent
+    _build = LooseEndsSectionTests._build
+    _body = LooseEndsSectionTests._body
+
+    def _suggest(self, pid: str, cfg: dict) -> dict | None:
+        self._body(cfg)
+        conn = _lib.open_index_db(self.root, ('persons', 'claims', 'relationships'))
+        try:
+            return _lib.suggest_birth_range(_lib.completeness_context(conn), conn, pid)
+        finally:
+            conn.close()
+
+    def _spouses(self, a: str, b: str) -> None:
+        self._claim('marriage', 'married', [a, b], roles=f'    spouse: [{a}, {b}]\n')
+
+    def _edit(self, pid: str, old: str, new: str) -> None:
+        path = next((self.root / 'people' / 'stubs').glob(f'*{pid}.md'))
+        path.write_text(path.read_text(encoding='utf-8').replace(old, new),
+                        encoding='utf-8')
+
+    def _wife(self, husband: int = 1840, child: int = 1871) -> tuple[str, str]:
+        r = self._person('Thomas Edward Hartley', 'M', born=child)
+        sarah = self._person('Sarah Hartley', 'F')
+        hus = self._person('John Hartley', 'M', born=husband)
+        self._parent(r, sarah)
+        self._parent(r, hus)
+        self._spouses(sarah, hus)
+        return r, sarah
+
+    def test_wife_range_comes_from_husband_and_eldest_child(self) -> None:
+        r, sarah = self._wife()
+        cfg = self._build(r)
+        got = self._suggest(sarah, cfg)
+        self.assertEqual((got['lo'], got['hi'], got['edtf']), (1832, 1848, '1832/1848'))
+        self.assertEqual({b['kind'] for b in got['basis']}, {'spouse', 'child'})
+        body = self._body(cfg)
+        self.assertIn('**Birth years the family suggests (1):**', body)
+        self.assertIn('her husband was born in 1840 and her eldest child in 1871, '
+                      'so she was probably born between 1832 and 1848', body)
+        self.assertIn(f'fha person estimate {_lib.fmt_id_display(sarah)} '
+                      '--birth 1832/1848', body)
+        self.assertTrue(_lib.is_valid_edtf('1832/1848'))
+
+    def test_a_suggested_birth_claim_means_no_suggestion(self) -> None:
+        r, sarah = self._wife()
+        self._claim('birth', 'born', [sarah], date='1845', status='suggested',
+                    roles=f'    child: {sarah}\n')
+        self.assertIsNone(self._suggest(sarah, self._build(r)))
+
+    def test_a_provisional_birth_means_no_suggestion(self) -> None:
+        r, sarah = self._wife()
+        self._edit(sarah, 'tier: stub', 'tier: stub\nbirth: 1845~')
+        self.assertIsNone(self._suggest(sarah, self._build(r)))
+
+    def test_a_range_ending_after_1935_is_never_offered(self) -> None:
+        r, sarah = self._wife(husband=1940, child=1960)
+        self.assertIsNone(self._suggest(sarah, self._build(r)))
+
+    def test_a_living_person_is_never_estimated(self) -> None:
+        r, sarah = self._wife()
+        self._edit(sarah, 'living: false', 'living: true')
+        cfg = self._build(r)
+        self.assertIsNone(self._suggest(sarah, cfg))
+        self.assertNotIn('Birth years the family suggests', self._body(cfg))
+
+    def test_relatives_that_disagree_give_no_suggestion(self) -> None:
+        r, sarah = self._wife(husband=1800, child=1900)
+        self.assertIsNone(self._suggest(sarah, self._build(r)))
+
+    def _wells(self, ann_spouse_born: int | None = None, early: int = 1850,
+               late: int = 1866) -> tuple[str, str]:
+        r = self._person('Thomas Edward Hartley', 'M')
+        pa = self._person('Pa Wells', 'M')
+        ann = self._person('Ann Wells', 'F')
+        s1 = self._person('Bob Wells', 'M', born=early)
+        s2 = self._person('Cat Wells', 'F', born=late)
+        for kid in (ann, s1, s2):
+            self._parent(kid, pa)
+        if ann_spouse_born:
+            self._spouses(ann, self._person('Dan Hale', 'M', born=ann_spouse_born))
+        return r, ann
+
+    def test_siblings_are_one_basis(self) -> None:
+        r, ann = self._wells()
+        got = self._suggest(ann, self._build(r))
+        self.assertEqual((got['lo'], got['hi']), (1842, 1874))
+        self.assertEqual([b['kind'] for b in got['basis']], ['siblings'])
+
+    def test_a_spouse_narrows_the_siblings_range(self) -> None:
+        r, ann = self._wells(ann_spouse_born=1860)
+        got = self._suggest(ann, self._build(r))
+        self.assertEqual((got['lo'], got['hi']), (1852, 1868))
+
+    def test_siblings_born_far_apart_are_too_vague(self) -> None:
+        r, ann = self._wells(early=1820, late=1860)
+        self.assertIsNone(self._suggest(ann, self._build(r)))
+
+    def test_a_man_with_a_first_child_in_1900(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M', born=1900)
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        got = self._suggest(f, self._build(r))
+        self.assertEqual((got['lo'], got['hi']), (1850, 1882))
+
+    def test_a_relative_with_only_a_suggested_birth_is_not_used(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        sarah = self._person('Sarah Hartley', 'F')
+        self._parent(r, sarah)
+        self._claim('birth', 'born', [r], date='1871', status='suggested',
+                    roles=f'    child: {r}\n')
+        self.assertIsNone(self._suggest(sarah, self._build(r)))
+
+    def test_mother_and_father_offsets_differ(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M')
+        mum = self._person('Mum Hartley', 'F', born=1820)
+        self._parent(r, mum)
+        r2 = self._person('Second Hartley', 'M')
+        dad = self._person('Dad Hartley', 'M', born=1820)
+        self._parent(r2, dad)
+        cfg = self._build(r)
+        got = self._suggest(r, cfg)
+        self.assertEqual((got['lo'], got['hi']), (1838, 1865))
+        got = self._suggest(r2, cfg)
+        self.assertEqual((got['lo'], got['hi']), (1838, 1870))
+
+    def test_direct_line_comes_first_then_narrowest(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M', born=1900)
+        f = self._person('John Hartley', 'M')
+        self._parent(r, f)
+        outsider = self._person('Aaron Outsider', 'M')
+        self._parent(self._person('Kid Outsider', 'M', born=1900), outsider)
+        body = self._body(self._build(r))
+        lines = [ln for ln in body.split('**Birth years')[1].splitlines()
+                 if ln.startswith('- ')]
+        self.assertEqual(len(lines), 2)
+        self.assertIn('John Hartley', lines[0])
+        self.assertIn('Aaron Outsider', lines[1])
+
+    def test_dry_run_of_the_printed_command_exits_zero(self) -> None:
+        import person
+        r, sarah = self._wife()
+        self._build(r)
+        result = person.run_estimate(self.root, sarah, birth='1832/1848', dry_run=True)
+        self.assertTrue(result.ok)
+        self.assertEqual(result.exit_code, 0)
+
+    def test_no_bucket_when_nobody_qualifies(self) -> None:
+        r = self._person('Thomas Edward Hartley', 'M', born=1900)
+        self.assertNotIn('Birth years the family suggests', self._body(self._build(r)))
 
 
 class AhnentafelPathWordsTests(unittest.TestCase):
