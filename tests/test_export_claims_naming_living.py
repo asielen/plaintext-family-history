@@ -341,7 +341,7 @@ class SharedSiteTests(_SiteBase):
         self.seed()
         self.build()
         html = self.page(f'places/{RIVERSIDE}.html')
-        events = html.split('<h2>Events here</h2>', 1)[1]
+        events = html.split('<h2>Through the years</h2>', 1)[1]
         self.assertIn('1885-04-02', events)
         self.assertIn('1910-06-01', events)
         self.assertIn('Thomas Hartley', events)
