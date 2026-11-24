@@ -108,6 +108,9 @@ function holdOnce() {
   return h;
 }
 
+// What the page's Full-Text panel shows in the test now (null: the page has none).
+const FULLTEXT = { text: null };
+
 // The content script on these pages, as content.js composes the lib.
 function site(service) {
   let cache = null; // the description content.js keeps between the check and the fetch
@@ -162,6 +165,11 @@ function site(service) {
         const r = await fsr.fsImage(id, deps, cache && cache.id === id ? cache.desc : undefined);
         cache = null;
         return r;
+      }
+      case 'familysearchFullText': {
+        // The page's Full-Text panel, when the test opened one (FULLTEXT.text).
+        const doc = { querySelector: () => (FULLTEXT.text == null ? null : { textContent: FULLTEXT.text }) };
+        return fsr.fsFullTextFrom(doc, tab.url, msg.imageId);
       }
       case 'pagehtml': return { ok: true, html: '<html>FamilySearch page ' + tab.url + '</html>' };
       case 'singlefile': return { ok: true, html: '<html>copy of ' + tab.url + '</html>' };
@@ -682,4 +690,75 @@ test('a viewer opened from a record is still captured as that record, not as a b
   await p.capture();
   assert.ok(asset(p.written[0], 'record-data.json'));
   assert.deepStrictEqual(Object.keys(await recordData(p.written[0])).slice(0, 2), ['note', 'record']);
+});
+
+// ── Full-Text transcription (11-2) ───────────────────────────────────────────
+
+test('a film image whose Full-Text panel is open saves FamilySearch\'s machine reading, marked unchecked', async () => {
+  FULLTEXT.text = 'In the name of God Amen , I Joseph Blackwell of Fauquier County do make this my last will';
+  try {
+    const p = await open(FILM_IMAGE);
+    await p.capture();
+    assert.strictEqual(p.written.length, 1, p.result());
+    const b = p.written[0];
+    assert.deepStrictEqual(b.captureJson.assets.map((a) => [a.file, a.role, a.mode]), [
+      ['page-snapshot.html', 'webpage', 'singlefile'],
+      ['record.jpg', 'record', 'familysearch-api'],
+      ['transcript.md', 'transcript', 'familysearch-fulltext'],
+      ['record-data.json', 'site-data', 'familysearch-image-data'],
+    ]);
+    const text = await asset(b, 'transcript.md').blob.text();
+    assert.match(text, /^<!-- AI-DRAFT FamilySearch machine transcription, unchecked, captured \d{4}-\d\d-\d\d -->\n\n/);
+    assert.strictEqual(text.split('AI-DRAFT').length, 2, 'one marker');
+    assert.ok(text.endsWith('Fauquier County do make this my last will\n'));
+    assert.ok(!(await everything(b)).includes(TOKEN));
+  } finally {
+    FULLTEXT.text = null;
+  }
+});
+
+test('Full-Text with markup characters is filed as written, and --> cannot close or reopen the marker', async () => {
+  FULLTEXT.text = 'Smith & Sons <deed> pay $5 --> then <!-- AI-DRAFT again';
+  try {
+    const p = await open(FILM_IMAGE);
+    await p.capture();
+    const text = await asset(p.written[0], 'transcript.md').blob.text();
+    const [marker, ...rest] = text.split('\n\n');
+    assert.strictEqual(marker.match(/-->/g).length, 1, 'the marker closes once, at its own end');
+    const body = rest.join('\n\n');
+    assert.ok(!body.includes('-->') && !body.includes('<!--'));
+    assert.match(body, /^Smith & Sons <deed> pay \$5 --&gt; then &lt;!-- AI-DRAFT again\n$/);
+  } finally {
+    FULLTEXT.text = null;
+  }
+});
+
+test('a film image with no Full-Text still saves as before, with no transcript file', async () => {
+  const p = await open(FILM_IMAGE);
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.deepStrictEqual(p.written[0].captureJson.assets.map((a) => a.role), ['webpage', 'record', 'site-data']);
+});
+
+test('a record\'s image opened with its Full-Text panel brings the transcript with the record', async () => {
+  FULLTEXT.text = 'Calvin Hartley and Harriet his wife';
+  try {
+    const p = await open(FROM_RECORD);
+    await p.capture();
+    const b = p.written[0];
+    assert.deepStrictEqual(b.captureJson.assets.map((a) => [a.file, a.role, a.mode]).filter((a) => a[1] === 'transcript'),
+      [['transcript.md', 'transcript', 'familysearch-fulltext']]);
+  } finally {
+    FULLTEXT.text = null;
+  }
+});
+
+test('the page failing to answer the Full-Text question never fails the capture', async () => {
+  const p = await open(FILM_IMAGE, { wrap: (inner) => async (msg, tab) => {
+    if (msg.action === 'familysearchFullText') return { ok: false, error: 'the page changed under the question' };
+    return inner(msg, tab);
+  } });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.ok(!p.written[0].captureJson.assets.some((a) => a.role === 'transcript'));
 });
