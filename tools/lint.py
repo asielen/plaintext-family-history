@@ -7449,12 +7449,21 @@ def _sex_from_name_leads(registry: Registry) -> list[tuple[str, str]]:
         if total < SEX_FROM_NAME_MIN_PEOPLE or tally[top] < SEX_FROM_NAME_MIN_SHARE * total:
             continue
         name = str(meta.get('name') or '').strip()
-        given = bracket_given_name(name)
         kind = 'women' if top == 'F' else 'men'
         stated = 'female' if top == 'F' else 'male'
-        out.append((name.lower(), (
-            f'{name} has no sex: recorded. In this archive {tally[top]} of {total} '
-            f'people named {given} are {kind}, which is only a hint. Find a record '
+        if _is_restricted(meta.get('restricted')):
+            # A restricted person is never named, not even by first name, on
+            # a list he might paste into an email: the id is enough to act on.
+            who = fmt_id_display(pid)
+            sharing = 'people sharing that first name'
+            sort_key = fmt_id_display(pid)
+        else:
+            who = name
+            sharing = f'people named {bracket_given_name(name)}'
+            sort_key = name.lower()
+        out.append((sort_key, (
+            f'{who} has no sex: recorded. In this archive {tally[top]} of {total} '
+            f'{sharing} are {kind}, which is only a hint. Find a record '
             f'that states it (a birth or baptism entry, a census line); if it says '
             f'{stated}, run `fha person set-sex {fmt_id_display(pid)} {top}` '
             f'(it also settles which side of the tree they sit on).')))

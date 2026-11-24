@@ -352,6 +352,18 @@ class LeadsToCheckTests(_PlausibilityBase):
         # taken from name statistics, so the lead sends him to a record first.
         self.assertIn('record that states', leads[0])
 
+    def test_sex_lead_never_prints_a_restricted_persons_name(self) -> None:
+        # A restricted person's name stays off lint's informational lists; the
+        # lead still helps him, by id, without the name or the given name.
+        self._margarets(20)
+        pid = 'P-zzzzzzzzzz'
+        self._person(pid, 'Margaret Quillfeather', sex=None, extra='restricted: true\n')
+        leads = self._leads()
+        self.assertEqual(len(leads), 1, leads)
+        self.assertNotIn('Quillfeather', leads[0])
+        self.assertNotIn('Margaret', leads[0])
+        self.assertIn(f'fha person set-sex {pid.lower()} F', leads[0])
+
     def test_sex_lead_silent_at_90_percent(self) -> None:
         self._margarets(18, 2)
         self._unsexed(None)
