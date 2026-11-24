@@ -348,5 +348,119 @@ class NameAndGenerationTests(_Base):
         self.assertIn('Grandparents known 1 of 4', text)
 
 
+class ReviewFixTests(_Base):
+    """Review of PR #496: the figures a relative reads must be the ones the
+    records support, and a merged duplicate must not count twice."""
+
+    def tombstone(self, name, survivor, *, living='false', extra=''):
+        pid = 'p-' + _letters(self._next())
+        rel = f'people/merged_{pid}.md'
+        (self.root / rel).write_text(
+            f'---\nid: {pid}\nname: {name}\nliving: {living}\nstatus: merged\n'
+            f'merged_into: {survivor}\n{extra}---\n', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO persons(id, name, surname, sex, living, tier, status, merged_into, path) '
+            'VALUES (?,?,?,?,?,?,?,?,?)',
+            (pid, name, name.split()[-1], 'F', living, 'curated', 'merged', survivor, rel))
+        return pid
+
+    def test_a_loosely_dated_first_marriage_is_not_replaced_by_a_remarriage(self):
+        # Wed in the 1840s (decade only), remarried 1860: no age, not age 40.
+        for i in range(3):
+            w = self.person(f'Ann{chr(97 + i)} Hale', 'F', born='1820', died='1890')
+            self.claim('marriage', '184X', [w], roles={w: 'spouse'})
+            self.claim('marriage', '1860', [w], roles={w: 'spouse'})
+        self.build()
+        self.assertNotIn('40 years', self.page())
+
+    def test_the_first_of_two_well_dated_marriages_counts(self):
+        for i in range(3):
+            w = self.person(f'Ann{chr(97 + i)} Hale', 'F', born='1820', died='1890')
+            self.claim('marriage', '1860', [w], roles={w: 'spouse'})
+            self.claim('marriage', '1841', [w], roles={w: 'spouse'})
+        self.build()
+        self.assertRegex(self.page(), r'Women .*Born in the 1800s 21 years 3 people')
+
+    def test_a_cousin_marriage_keeps_every_generation(self):
+        # Xavier is the mother's father and also the father's mother's father.
+        x = self.person('Xavier Hale', 'M', born='1800', died='1870')
+        me = self.person('Root Hale', 'F', born='1880', died='1950')
+        f = self.person('Fred Hale', 'M', born='1855', died='1920')
+        m = self.person('Mona Hale', 'F', born='1835', died='1910')
+        fm = self.person('Fiona Hale', 'F', born='1830', died='1900')
+        self.parent_of(me, f, m)
+        self.parent_of(m, x)
+        self.parent_of(f, fm)
+        self.parent_of(fm, x)
+        self.config(f'root_person: {me}\nsite:\n  statistics: true\n')
+        self.build()
+        text = self.page()
+        self.assertIn('Grandparents known 2 of 4', text)
+        self.assertIn('Great-grandparents known 1 of 8', text)
+
+    def test_a_living_starting_person_still_gets_the_generation_table(self):
+        # The owner is usually the root person, and living. His row is left
+        # off; his parents' line is counted, as the home page's tree shows it.
+        me = self.person('Owner Hale', 'M', living='true', born='1951')
+        dad = self.person('Dad Hale', 'M', born='1920', died='1990')
+        mum = self.person('Mum Hale', 'F', born='1922', died='1999')
+        gdad = self.person('Gramps Hale', 'M', born='1890', died='1960')
+        self.parent_of(me, dad, mum)
+        self.parent_of(dad, gdad)
+        # The fixture's parent link carries a placeholder date; his own birth
+        # record is what shows he is an adult (a "Private" card on the tree).
+        self.conn.execute(
+            "UPDATE claims SET date_edtf = '1951' WHERE id IN (SELECT claim_id FROM "
+            "claim_persons WHERE person_id = ? AND role = 'child')", (me,))
+        self.config(f'root_person: {me}\nsite:\n  statistics: true\n')
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                self.build(linked=linked)
+                text = self.page()
+                self.assertIn('Parents known 2 of 2', text)
+                self.assertIn('Grandparents known 1 of 4', text)
+                self.assertNotIn('Starting person', text)
+                self.assertNotIn('Owner', text)
+
+    def test_a_by_request_starting_person_gets_no_generation_table(self):
+        me = self.person('Quiet Hale', 'M', living='true', born='1951',
+                         extra='restricted: by-request\n')
+        dad = self.person('Dad Hale', 'M', born='1920', died='1990')
+        mum = self.person('Mum Hale', 'F', born='1922', died='1999')
+        self.parent_of(me, dad, mum)
+        self.config(f'root_person: {me}\nsite:\n  statistics: true\n')
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                self.build(linked=linked)
+                self.assertNotIn('Generation by generation', self.page())
+
+    def test_a_merged_duplicate_is_counted_once_in_the_workbench(self):
+        a = self.person('Zelda Hale', 'F', born='1800', died='1860')
+        self.tombstone('Zelda Hale', a)
+        self.tombstone('Zelda Hale', a)
+        self.conn.commit()
+        future = time.time() + 5
+        os.utime(self.root / '.cache' / 'index.sqlite', (future, future))
+        write_path_manifest(index_manifest_path(self.root), record_path_manifest(self.root))
+        with unittest.mock.patch.object(site, '_today', return_value='2026-06-15'):
+            site.run_site(self.root, self.out, linked=True, workbench=True)
+        self.assertIn('Zelda 1', self.page())
+
+    def test_the_preview_leaves_out_someone_a_merged_duplicate_withholds(self):
+        self.lives(1800, [50, 64, 90])
+        # Their own sources, so withholding them holds back nobody else's dates.
+        a = self.person('Quinn Hale', 'M', born='1801', died='1901', extra='sex: M\n')
+        self.tombstone('Quinn Hale', a, extra='restricted: by-request\n')
+        b = self.person('Rufus Hale', 'M', born='1802', died='1902', extra='sex: M\n')
+        self.tombstone('Rufus Hale', b, living='true')
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                self.build(linked=linked)
+                text = self.page()
+                self.assertIn('Born in the 1800s 64 years 3 people', text)
+                self.assertNotIn('Quinn', text)
+                self.assertNotIn('Rufus', text)
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -10991,32 +10991,52 @@ class _SiteBuilder:
         build, the local preview and workbench included (statistics about the
         living are not worth the risk), and so is anyone restricted or
         by-request."""
+        # Every record merged into a person speaks for them too: a duplicate
+        # marked living or by-request keeps the survivor out, as it does on
+        # the shared site.
+        merged_in: dict[str, list] = {}
+        if self.linked:
+            for row in self.person_meta.values():
+                if row['merged_into']:
+                    survivor = merge_survivor(self._merge_chain(row))
+                    if survivor is not None:
+                        merged_in.setdefault(survivor['id'], []).append(row)
         out: set[str] = set()
         for pid in self.person_pages:
             meta = self.person_meta.get(pid)
-            if meta is None or (meta['living'] or 'unknown').strip().lower() != 'false':
+            # The workbench keeps a merged duplicate's page so it can be
+            # edited; counting it too would count one life twice.
+            if meta is None or meta['merged_into']:
                 continue
             if pid in self.restricted_persons:
                 continue
-            if self.linked and meta['path']:
-                # The local preview skips the restriction scan, but a counted
-                # number is shared with whoever is shown the preview: read the
-                # person's own marker here, and treat an unreadable file as
-                # restricted.
-                marker, trouble = read_restriction_marker(self.archive_root / meta['path'])
-                if trouble is not None or _is_restricted_value(marker):
-                    continue
+            records = [meta] + merged_in.get(pid, [])
+            if any((r['living'] or 'unknown').strip().lower() != 'false' for r in records):
+                continue
+            if self.linked and any(self._stats_marker_withholds(r) for r in records):
+                continue
             out.add(pid)
         return out
+
+    def _stats_marker_withholds(self, row) -> bool:
+        """The local preview skips the restriction scan, but a counted number
+        is shared with whoever is shown the preview: read the record's own
+        marker here, and treat an unreadable file as restricted."""
+        if not row['path']:
+            return False
+        marker, trouble = read_restriction_marker(self.archive_root / row['path'])
+        return trouble is not None or _is_restricted_value(marker)
 
     def _marriage_pick(self, pid: str) -> int | None:
         """The year of a person's first marriage, from their own accepted
         marriage claims, through the same filters as `_person_summary` (no
         negated claim, nobody else's marriage, no restricted claim or source,
         nothing withheld). None when no marriage date is known to within a
-        couple of years."""
+        couple of years, including when the earliest marriage shown is dated
+        too loosely to say (a `184X` wedding and an 1860 remarriage give no
+        age, not the age at the second wedding)."""
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
-        years: list[int] = []
+        dates: list[tuple[str, str]] = []
         for r in self.conn.execute(
             "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c "
             "JOIN claim_persons cp ON c.id = cp.claim_id "
@@ -11030,10 +11050,31 @@ class _SiteBuilder:
                 continue
             if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
                 continue
-            year = _stat_year(r['date_edtf'])
-            if year is not None:
-                years.append(year)
-        return min(years) if years else None
+            if not r['date_edtf']:
+                continue
+            try:
+                lo, _hi = edtf_bounds(str(r['date_edtf']))
+            except (ValueError, TypeError):
+                return None     # an unreadable date might be the first one
+            dates.append((lo, str(r['date_edtf'])))
+        if not dates:
+            return None
+        return _stat_year(min(dates)[1])
+
+    def _stats_seed_behind(self, seed: str) -> bool:
+        """Whether the generation table may start behind a starting person
+        it does not count: a living adult the home tree draws as a "Private"
+        card (owner decisions D16 and D20), never a restricted or by-request
+        one. The local preview reads the markers itself."""
+        meta = self.person_meta.get(seed)
+        if meta is None or meta['merged_into']:
+            return False
+        if not self.linked:
+            return self._tree_card_kind(seed) == 'private'
+        chain = [r for r in self.person_meta.values()
+                 if r['id'] == seed or (r['merged_into'] and
+                                        (merge_survivor(self._merge_chain(r)) or {'id': None})['id'] == seed)]
+        return not any(self._stats_marker_withholds(r) for r in chain)
 
     def _stats_parents(self, pid: str, eligible: set[str]) -> set[str]:
         """The counted people recorded as this person's genetic parents,
@@ -11166,20 +11207,34 @@ class _SiteBuilder:
         seed = normalize_id(str(site_cfg.get('home_person') or ''))
         if seed not in self.person_meta:
             seed = normalize_id(str(self.fha_config.get('root_person', '')))
+        levels: list[list[str]] = []
         if seed in eligible:
-            levels: list[list[str]] = [[seed]]
-            seen = {seed}
-            while len(levels) < 16:
-                nxt: list[str] = []
-                for pid in levels[-1]:
+            levels = [[seed]]
+        elif self._stats_seed_behind(seed):
+            # The usual starting person is the living owner: he is not
+            # counted, but his parents and their line are, as on the home
+            # page's tree. His own row is left off.
+            levels = [[], sorted(self._stats_parents(seed, eligible))]
+            if not levels[1]:
+                levels = []
+        if levels:
+            # Each entry is one place in the tree with the line that led to
+            # it, so a cousin marriage counts the shared ancestor in every
+            # generation he fills, and a record that loops back stops.
+            frontier = [(pid, (pid,)) for pid in levels[-1]]
+            while len(levels) < 16 and frontier:
+                nxt: list[tuple[str, tuple]] = []
+                for pid, path in frontier:
                     for parent in sorted(self._stats_parents(pid, eligible)):
-                        if parent not in seen:
-                            seen.add(parent)
-                            nxt.append(parent)
+                        if parent not in path:
+                            nxt.append((parent, path + (parent,)))
                 if not nxt:
                     break
-                levels.append(nxt)
+                levels.append(sorted({p for p, _ in nxt}))
+                frontier = nxt
             for gen, members in enumerate(levels):
+                if gen == 0 and not members:
+                    continue
                 ages = [a for a in (self._age_at_death(p, born) for p in members) if a is not None]
                 generations.append({
                     'label': self._stat_generation_label(gen),
