@@ -55,7 +55,7 @@
     {
       "path": ".agents/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
+      "sha256": "3085a16ee2753cc21985b8cca3b248efbe8fa5ec2d26c77f4164f595e6ad6210",
       "spec_version": "2.31",
       "src": ".claude/skills/merge-identities/SKILL.md"
     },
@@ -230,7 +230,7 @@
     {
       "path": ".claude/skills/merge-identities/SKILL.md",
       "category": "operating",
-      "sha256": "c40b1a6d07c6ba5a9b94a26b8fb549254316a681858d04ff385c074c230af2d8",
+      "sha256": "3085a16ee2753cc21985b8cca3b248efbe8fa5ec2d26c77f4164f595e6ad6210",
       "spec_version": "2.31"
     },
     {
@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "6f806edd2902ccd7174f17c1494d1f5a969e78616037cbdcd9e6240ca663b155",
+      "sha256": "c39077a656f8de0ea845ac9d894a802661057c95640456935aa3a44237074b43",
       "spec_version": "2.31",
       "src": "tools/_lib.py"
     },
@@ -946,7 +946,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "3e5e66b8cbed5e0d26328ec2c06b12539225bbeb68994835be231d1c4098608a",
+      "sha256": "d7fddf2289e4508164a8ec8f1df045f2fe7a65eebc46f46f4ddfaac5f3226a1f",
       "spec_version": "2.31",
       "src": "tools/report.py"
     },
@@ -1156,7 +1156,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "986a82116aeeaef8e994dcc6bdca0d894868312d3efec664a2dd6fb349a7e503",
+      "sha256": "2aebf7f1149ac330c03892216b401a2c7f206290f793e373178bcac2434a712c",
       "spec_version": "2.31",
       "src": "tools/serve.py"
     },
@@ -1282,7 +1282,7 @@
     {
       "path": ".fha/tools/templates/review.html",
       "category": "operating",
-      "sha256": "9ed70043b5147d3d6effac5f7ac4656d953806f9264e97be3cad004d2b364965",
+      "sha256": "fa591d549a63f0d9bdc5949da00eb293e6cb4253280621bc952fa4c946c24d7c",
       "spec_version": "2.31",
       "src": "tools/templates/review.html"
     },
@@ -1528,7 +1528,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "69ca5cfd306961be37e565c3ecbadf5be97d510d47af6b69a0924e9434ae606b",
+      "sha256": "2c51e9b1ab8a8cb751cbcae36eb1a26eab51334006ccedacd4ad24c6d13d06cd",
       "spec_version": "2.31",
       "src": "TOOLING.md"
     },
