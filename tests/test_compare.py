@@ -338,5 +338,73 @@ class OutputTests(_Base):
         self.assertEqual(before, snapshot())
 
 
+class ReviewRoundTests(_Base):
+    """Cases the first review found: each is something a researcher would hit."""
+
+    def test_a_birth_and_its_baptism_weeks_later_are_not_a_disagreement(self):
+        self.a.source([_birth('1840-03-01', place_text='Easton, New York')], source_type='vital-record')
+        self.a.source([{'type': 'baptism', 'persons': [TOM], 'date': '1840-04-01',
+                        'place_text': 'Albany, New York'}], source_type='church')
+        self.assertEqual(self.a.run().data['disagreeing'], [])
+
+    def test_two_different_weddings_are_not_a_disagreement(self):
+        self.a.person('p-eeeeeeeeee', 'Mary One')
+        self.a.person('p-ffffffffff', 'Jane Two')
+        self.a.source([{'type': 'marriage', 'persons': [TOM, 'p-eeeeeeeeee'], 'date': '1860',
+                        'roles': {'spouse': [TOM, 'p-eeeeeeeeee']}}])
+        self.a.source([{'type': 'marriage', 'persons': [TOM, 'p-ffffffffff'], 'date': '1880',
+                        'roles': {'spouse': [TOM, 'p-ffffffffff']}}])
+        self.assertEqual(self.a.run().data['disagreeing'], [])
+
+    def test_two_records_of_one_wedding_that_differ_still_disagree(self):
+        self.a.person('p-eeeeeeeeee', 'Mary One')
+        for year in ('1860', '1863'):
+            self.a.source([{'type': 'marriage', 'persons': [TOM, 'p-eeeeeeeeee'], 'date': year,
+                            'roles': {'spouse': [TOM, 'p-eeeeeeeeee']}}])
+        self.assertEqual([f['fact'] for f in self.a.run().data['disagreeing']], ['marriage'])
+
+    def test_a_person_with_only_an_occupation_still_has_records_listed(self):
+        self.a.source([{'type': 'occupation', 'persons': [TOM], 'date': '1880', 'value': 'miller'}])
+        result = self.a.run()
+        self.assertTrue(result.ok, [m.text for m in result.messages])
+        self.assertEqual([f['fact'] for f in result.data['facts']], ['occupation'])
+        missing = self.a.run(fact='birth')
+        self.assertEqual(missing.data['facts'], ['occupation'])
+
+    def test_open_ended_dates_give_no_made_up_elapsed_years(self):
+        self.a.source([_birth('../1840')], source_date='1880')
+        self.a.source([_birth('1840')], source_date='1880/..')
+        for row in self.rows():
+            self.assertIsNone(row['recorded_after_years'])
+
+    def test_the_text_table_shows_what_each_record_says(self):
+        self.a.source([{'type': 'name', 'persons': [TOM], 'value': 'Thomas Henry Hartley'}])
+        self.a.source([{'type': 'name', 'persons': [TOM], 'value': 'Thomas Edward Hartley'}])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            compare._cmd_compare(self.a.run(fact='name'))
+        self.assertIn('Thomas Henry Hartley', out.getvalue())
+        self.assertIn('Thomas Edward Hartley', out.getvalue())
+
+    def test_an_old_duplicate_follows_the_whole_merge_chain(self):
+        self.a.source([_birth('1840')])
+        self.a.person('p-eeeeeeeeee', 'Tom Old')
+        self.a.person('p-ffffffffff', 'Tom Middle')
+        for pid, into in (('p-eeeeeeeeee', 'p-ffffffffff'), ('p-ffffffffff', TOM)):
+            path = next((self.a.root / 'people' / 'stubs').glob(f'*{pid}.md'))
+            path.write_text('---\n' + yaml.safe_dump(
+                {'id': pid, 'name': 'Tom', 'living': 'unknown', 'tier': 'stub',
+                 'status': 'merged', 'merged_into': into}, sort_keys=False) + '---\n\n# Tom\n',
+                encoding='utf-8')
+        result = self.a.run(person='p-eeeeeeeeee', fact='birth')
+        self.assertTrue(result.ok, [m.text for m in result.messages])
+        self.assertEqual(result.data['person'], TOM)
+
+    def test_a_cemetery_website_is_not_called_someones_tree(self):
+        self.a.source([_birth('1840')], source_type='website', title='Oak Tree Cemetery burial list')
+        self.a.source([_birth('1841')], source_type='website', title='Pine Tree Lane parish page')
+        self.assertEqual(self.rows()[0]['origin_notes'], [])
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -50,6 +50,7 @@ from _lib import (
     fmt_id_display,
     humanize_edtf,
     id_type_of,
+    index_merge_survivors,
     is_valid_id,
     load_fha_yaml,
     normalize_id,
@@ -63,6 +64,7 @@ from _lib import (
     same_record_subject,
     site_data_reader,
     source_record_subjects,
+    source_dates_agree,
     source_site_collection,
     vital_subjects,
 )
@@ -100,6 +102,12 @@ def _year(iso: str | None) -> int | None:
 
 def _dated(date_min, date_max) -> bool:
     return bool(date_min) and bool(date_max) and (date_min, date_max) != _UNDATED
+
+
+def _closed(date_min, date_max) -> bool:
+    """Both ends are real dates: neither is the index's open-ended stand-in."""
+    return (bool(date_min) and bool(date_max)
+            and date_min != _UNDATED[0] and date_max != _UNDATED[1])
 
 
 def _fact_of_type(claim_type: str) -> str:
@@ -153,11 +161,27 @@ def _fact_claims(conn, pid: str, fact: str, statuses: tuple[str, ...]) -> list[d
     return out
 
 
+def _available_facts(conn, pid: str, statuses: tuple[str, ...]) -> list[str]:
+    """Every fact this person has records for: the usual ones in reading order,
+    then any other claim type they appear in (occupation, immigration, ...)."""
+    smarks = ','.join('?' * len(statuses))
+    types = [r[0] for r in conn.execute(
+        f'SELECT DISTINCT c.type FROM claims c JOIN claim_persons cp ON cp.claim_id=c.id '
+        f'WHERE cp.person_id=? AND c.status IN ({smarks}) ORDER BY c.type', (pid, *statuses))]
+    candidates = list(_FACT_ORDER)
+    for t in types:
+        f = _fact_of_type(t)
+        if f not in candidates:
+            candidates.append(f)
+    return [k for k in candidates if _fact_claims(conn, pid, k, statuses)]
+
+
 def _recorded_after(src: dict, claim: dict) -> dict | None:
     """Years between the event and the record of it, as a range; None when
     either has no date."""
-    if not (_dated(src.get('date_min'), src.get('date_max'))
-            and _dated(claim.get('date_min'), claim.get('date_max'))):
+    # An open end ("before 1840", "after 1880") has no year to subtract.
+    if not (_closed(src.get('date_min'), src.get('date_max'))
+            and _closed(claim.get('date_min'), claim.get('date_max'))):
         return None
     s0, s1 = _year(src['date_min']), _year(src['date_max'])
     c0, c1 = _year(claim['date_min']), _year(claim['date_max'])
@@ -182,18 +206,22 @@ def _source_meta(archive_root: Path, src: dict) -> dict:
         return {}
 
 
+# "Oak Tree Cemetery" is a place, not a family tree: only a tree phrase counts.
+_TREE_TITLE = re.compile(
+    r'\b(?:family|ancestry|ancestor|descendant|pedigree|online|public|member|ancestral)\s+trees?\b'
+    r'|\btrees?\s+(?:of|for)\b|\bpedigree\b', re.I)
+
+
 def _is_someones_tree(meta: dict, title: str) -> bool:
     if str(meta.get('subtype') or '').lower() == 'gedcom':
         return True
     return (str(meta.get('source_type') or '').lower() == 'website'
-            and bool(re.search(r'\btrees?\b', title, re.I)))
+            and bool(_TREE_TITLE.search(title)))
 
 
 def _same_origin(rows: list[dict], sources: dict[str, dict], metas: dict[str, dict],
                  conn, archive_root: Path, fha_config: dict) -> None:
     """Fill `same_origin_as` (row numbers) and `origin_notes` on every row."""
-    from lint import _dates_agree  # W162's own date rule; lint is heavy, load it late
-
     groups: list[tuple[str, set[int]]] = []
     by_source: dict[str, list[int]] = {}
     for r in rows:
@@ -224,7 +252,7 @@ def _same_origin(rows: list[dict], sources: dict[str, dict], metas: dict[str, di
                 ia, ib = info[a], info[b]
                 if (ia[0][0] != ib[0][0] and ia[1][0] == ib[1][0]
                         and same_record_subject(ia[2], ib[2]) and (ia[3] & ib[3])
-                        and _dates_agree(ia[4], ib[4], ia[1][2])):
+                        and source_dates_agree(ia[4], ib[4], ia[1][2])):
                     groups.append(('one record saved from two sites',
                                    set(by_source[a]) | set(by_source[b])))
     for r in rows:
@@ -245,6 +273,7 @@ def _rows(conn, claims: list[dict], pid: str, archive_root: Path, fha_config: di
             s = conn.execute('SELECT * FROM sources WHERE id=?', (c['source_id'],)).fetchone()
             sources[c['source_id']] = dict(s) if s else {'id': c['source_id'], 'title': c['source_id'], 'path': ''}
     metas = {sid: _source_meta(archive_root, s) if s.get('path') else {} for sid, s in sources.items()}
+    people_of = {c['id']: {p for p, _ in _claim_people(conn, c['id'])} for c in claims}
     number = {c['id']: i + 1 for i, c in enumerate(claims)}
     rows = []
     for i, c in enumerate(claims):
@@ -286,6 +315,7 @@ def _rows(conn, claims: list[dict], pid: str, archive_root: Path, fha_config: di
             'confidence': c['confidence'],
             'links': links,
             'anchor': c['anchor'],
+            '_people': people_of[c['id']],
             '_date_min': c['date_min'], '_date_max': c['date_max'],
         })
     _same_origin(rows, sources, metas, conn, archive_root, fha_config)
@@ -304,6 +334,12 @@ def _disagree(rows: list[dict]) -> bool:
     """Two rows whose date ranges do not overlap, or whose places differ."""
     for i, a in enumerate(rows):
         for b in rows[i + 1:]:
+            # A birth and its baptism, a death and its burial, or two different
+            # weddings are different events: they may differ without a conflict.
+            if a['type'] != b['type']:
+                continue
+            if a['type'] == 'marriage' and a['_people'] != b['_people']:
+                continue
             if (_dated(a['_date_min'], a['_date_max']) and _dated(b['_date_min'], b['_date_max'])
                     and (a['_date_max'] < b['_date_min'] or b['_date_max'] < a['_date_min'])):
                 return True
@@ -349,9 +385,11 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
         merged_note = None
         if row['status'] == 'merged' and row['merged_into']:
             # A merged record is read through the merge, as `fha confirm draft` does.
+            # The whole chain (A into B into C) is followed, as the index files claims.
+            survivor = normalize_id(index_merge_survivors(conn).get(pid) or str(row['merged_into']))
             merged_note = (f'{fmt_id_display(pid)} was merged into '
-                           f'{fmt_id_display(row["merged_into"])}; showing the surviving record.')
-            pid = normalize_id(str(row['merged_into']))
+                           f'{fmt_id_display(survivor)}; showing the surviving record.')
+            pid = survivor
             row = conn.execute('SELECT id, name, status, merged_into FROM persons WHERE id=?',
                                (pid,)).fetchone()
             if row is None:
@@ -382,8 +420,8 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
                                     'first_year': years[0] if years else None,
                                     'last_year': years[-1] if years else None})
             # Facts with records that are not listed above, so he can pick one.
-            for k in _FACT_ORDER:
-                if k not in kinds and _fact_claims(conn, pid, k, statuses):
+            for k in _available_facts(conn, pid, statuses):
+                if k not in kinds:
                     existing.append({'fact': k, 'records': len(_fact_claims(conn, pid, k, statuses))})
             if not existing:
                 r = Result(ok=False, exit_code=EXIT_WARNINGS,
@@ -394,7 +432,7 @@ def run_compare(archive_root: Path, fha_config: dict, *, person: str, fact: str 
 
         claims = _fact_claims(conn, pid, fact, statuses)
         if not claims:
-            existing = [k for k in _FACT_ORDER if _fact_claims(conn, pid, k, statuses)]
+            existing = _available_facts(conn, pid, statuses)
             r = Result(ok=False, exit_code=EXIT_WARNINGS,
                        data={**base, 'error': 'no-claims', 'fact': fact, 'facts': existing})
             have = (', '.join(existing) + '.') if existing else 'none yet.'
@@ -429,7 +467,10 @@ def _print_row(row: dict) -> None:
     told = ', '.join(row['informants']) if row['informants'] else 'not named'
     info = _INFORMATION_TEXT.get(str(row['information'] or '').lower(), 'not known')
     how = _EVIDENCE_TEXT.get(str(row['evidence'] or '').lower())
+    value = str(row.get('value') or '').strip()
     print(f"{row['n']:>2}. {_say(row)}")
+    if value:
+        print(f"    Says: {value}")
     print(f"    {row['source_title']} ({src_date}): {after}. Told by: {told}.")
     print(f"    Information: {info}. {(how + '. ') if how else ''}{_status_text(row)}.")
 
