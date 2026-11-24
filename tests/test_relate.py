@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import relate
 import index as index_mod
-from _lib import load_fha_yaml, EXIT_CLEAN, EXIT_FAILURE
+from _lib import load_fha_yaml, fmt_id_display, EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE
 
 GF = 'P-aaaaaaaaaa'      # grandfather (M)
 GM = 'P-bbbbbbbbbb'      # grandmother (F)
@@ -870,6 +870,246 @@ class NameInsteadOfIdTests(unittest.TestCase):
         self.assertEqual(r.data['error'], 'ambiguous-name')
         self.assertEqual(sorted(c.lower() for c in r.data['candidates']),
                          sorted([B.lower(), twin.lower()]))
+
+
+class EveryoneTests(unittest.TestCase):
+    """`fha relate P --all`: one list of everyone related to one person,
+    blood relatives nearest first, then everyone related by marriage."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _build_family()
+
+    def _all(self, who=A, **kw):
+        return relate.run_relate(self.root, load_fha_yaml(self.root), who, None,
+                                 everyone=True, **kw)
+
+    def _rows(self, who=A):
+        return {r['pid'].lower(): r for r in self._all(who).data['relatives']}
+
+    def test_all_lists_blood_then_marriage(self):
+        r = self._all()
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        rows = {x['pid']: x for x in r.data['relatives']}
+        self.assertEqual(rows[XP.lower()]['relationship'], 'father')
+        self.assertEqual(rows[SIB.lower()]['relationship'], 'sister')
+        self.assertEqual(rows[HALF.lower()]['relationship'], 'half-brother')
+        self.assertEqual(rows[B.lower()]['relationship'], 'first cousin')
+        self.assertEqual(rows[AW.lower()]['relationship'], 'wife')
+        self.assertEqual(rows[AWB.lower()]['relationship'], 'brother-in-law')
+        self.assertEqual(rows[YH.lower()]['relationship'], 'uncle by marriage')
+        kinds = [x['kind'] for x in r.data['relatives']]
+        self.assertEqual(kinds, sorted(kinds, key=lambda k: k != 'blood'))
+        order = [x['pid'] for x in r.data['relatives']]
+        order = [o.lower() for o in order]
+        self.assertLess(order.index(XP.lower()), order.index(GF.lower()))
+        self.assertLess(order.index(GF.lower()), order.index(B.lower()))
+        self.assertEqual(r.data['counts']['blood'] + r.data['counts']['by_marriage'],
+                         len(order))
+
+    def test_all_excludes_unrelated_friend(self):
+        root = _build()
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        pids = {x['pid'].lower() for x in r.data['relatives']}
+        self.assertNotIn(FRIEND.lower(), pids)
+        self.assertIn(B.lower(), pids)
+
+    def test_all_never_lists_the_person(self):
+        self.assertNotIn(A.lower(), self._rows())
+
+    def test_all_with_two_people_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), A, B, everyone=True)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('lists everyone related to one person', r.messages[0].text)
+
+    def test_all_with_a_source_id_shows_the_all_example(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'S-0000000000', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertNotIn('Give two', r.messages[0].text)
+        self.assertIn('--all', r.messages[0].text)
+
+    def test_all_with_cm_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), A, None, '450',
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('`--all` and `--cm` do not go together', r.messages[0].text)
+
+    def test_one_person_without_all_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), A, None)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('add --all', r.messages[0].text)
+
+    def test_nobody_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), None, None)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+
+    def test_all_by_name(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'Ann Aye', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(r.data['person'].lower(), A.lower())
+
+    def test_unknown_name_refused_as_before(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'Nobody Here', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+
+    def test_half_may_be_hedged_on_the_row(self):
+        text = self._text()
+        self.assertIn('May Aye', text)
+        self.assertIn('sister (may be half-sister)', text)
+
+    def _text(self, who=A):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(self._all(who))
+        return out.getvalue()
+
+    def test_text_lists_blood_then_marriage_sections(self):
+        text = self._text()
+        self.assertIn('Everyone related to [[', text)
+        self.assertLess(text.index('Blood relatives ('), text.index('Related by marriage ('))
+        self.assertIn('[[' + fmt_id_display(XP) + '|Ex Parent]]', text)
+
+    def test_all_json_round_trip(self):
+        import json
+        d = json.loads(json.dumps(self._all().as_dict()))
+        self.assertEqual(d['data']['person_name'], 'Ann Aye')
+        self.assertEqual(set(d['data']['relatives'][0]),
+                         {'pid', 'name', 'kind', 'relationship', 'half', 'half_relationship',
+                          'certain', 'gens_a', 'gens_b', 'double', 'routes'})
+
+    def test_all_obsidian_links(self):
+        root = _build_family()
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\nlinks: obsidian\n',
+            encoding='utf-8')
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        links = {k.lower(): v for k, v in r.data['links'].items()}
+        self.assertIn(XP.lower(), links)
+        self.assertTrue(links[XP.lower()].startswith('[['))
+        self.assertNotIn(XP.lower(), links[XP.lower()].split('|')[0])
+
+    def test_nobody_related_says_so(self):
+        import contextlib
+        import io
+        root = _build()
+        r = relate.run_relate(root, load_fha_yaml(root), FRIEND, None, everyone=True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = relate._cmd_relate(r)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Nobody in the recorded tree is related to Fred Friend yet', out.getvalue())
+
+    def test_merged_away_record_not_listed(self):
+        root = _build_family()
+        conn = sqlite3.connect(str(root / '.cache' / 'index.sqlite'))
+        conn.execute('UPDATE persons SET merged_into=? WHERE id=?', (SIB.lower(), B.lower()))
+        conn.commit()
+        conn.close()
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        self.assertNotIn(B.lower(), {x['pid'].lower() for x in r.data['relatives']})
+
+
+# A third family for the `--all` wording and order checks.
+E_A = 'P-e1e1e1e1e1'     # (M) the person asked about; married E_W
+E_W = 'P-e2e2e2e2e2'     # (F) his wife
+E_WF = 'P-e3e3e3e3e3'    # (M) her father, "Zed": his father-in-law
+E_G = 'P-e4e4e4e4e4'     # (M) her grandfather
+E_U = 'P-e5e5e5e5e5'     # (M) her uncle
+E_V = 'P-e6e6e6e6e6'     # (M) her first cousin
+E_C = 'P-e7e7e7e7e7'     # (M) her first cousin once removed, "Aaron"
+# Two brothers married two sisters: their children are double first cousins.
+D_P1, D_P2 = 'P-f1f1f1f1f1', 'P-f2f2f2f2f2'      # the brothers' parents
+D_P3, D_P4 = 'P-f3f3f3f3f3', 'P-f4f4f4f4f4'      # the sisters' parents
+D_M1, D_M2 = 'P-f5f5f5f5f5', 'P-f6f6f6f6f6'      # the brothers
+D_F1, D_F2 = 'P-f7f7f7f7f7', 'P-f8f8f8f8f8'      # the sisters
+D_K1, D_K2 = 'P-f9f9f9f9f9', 'P-g1g1g1g1g1'      # the double first cousins
+# A man who married his first cousin: his brother is their son's uncle and,
+# through the wife, also his first cousin once removed.
+C_G = 'P-h1h1h1h1h1'
+C_S1, C_S2 = 'P-h2h2h2h2h2', 'P-h3h3h3h3h3'      # siblings, children of C_G
+C_H, C_HB = 'P-h4h4h4h4h4', 'P-h5h5h5h5h5'       # C_S1's sons
+C_W = 'P-h6h6h6h6h6'                             # C_S2's daughter, C_H's wife
+C_K = 'P-h7h7h7h7h7'                             # their son
+
+
+def _build_wording() -> Path:
+    claims = (
+        _married('C-e000000001', E_A, E_W)
+        + _child_of('C-e000000002', E_W, [E_WF])
+        + _child_of('C-e000000003', E_WF, [E_G])
+        + _child_of('C-e000000004', E_U, [E_G])
+        + _child_of('C-e000000005', E_V, [E_U])
+        + _child_of('C-e000000006', E_C, [E_V])
+        + _child_of('C-f000000001', D_M1, [D_P1, D_P2])
+        + _child_of('C-f000000002', D_M2, [D_P1, D_P2])
+        + _child_of('C-f000000003', D_F1, [D_P3, D_P4])
+        + _child_of('C-f000000004', D_F2, [D_P3, D_P4])
+        + _child_of('C-f000000005', D_K1, [D_M1, D_F1])
+        + _child_of('C-f000000006', D_K2, [D_M2, D_F2])
+        + _child_of('C-h000000001', C_S1, [C_G])
+        + _child_of('C-h000000002', C_S2, [C_G])
+        + _child_of('C-h000000003', C_H, [C_S1])
+        + _child_of('C-h000000004', C_HB, [C_S1])
+        + _child_of('C-h000000005', C_W, [C_S2])
+        + _married('C-h000000006', C_H, C_W)
+        + _child_of('C-h000000007', C_K, [C_H, C_W])
+    )
+    people = [E_A, E_W, E_WF, E_G, E_U, E_V, E_C, D_P1, D_P2, D_P3, D_P4, D_M1, D_M2,
+              D_F1, D_F2, D_K1, D_K2, C_G, C_S1, C_S2, C_H, C_HB, C_W, C_K]
+    sexes = {p: 'M' for p in people}
+    for p in (E_W, D_P2, D_P4, D_F1, D_F2, D_K2, C_S2, C_W):
+        sexes[p] = 'F'
+    names = {p: f'Person {p[2:4].upper()}' for p in people}
+    names.update({E_A: 'Abe Ames', E_W: 'Wanda Ames', E_WF: 'Zed Zane',
+                  E_C: 'Aaron Able', D_K1: 'Kit One', D_K2: 'Kay Two',
+                  C_HB: 'Hank Bell', C_K: 'Kip Bell'})
+    return _write_archive(claims, sexes, names)
+
+
+class EveryoneWordingTests(unittest.TestCase):
+    """The `--all` list names each tie in the words, and the order, the
+    two-person answer uses."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _build_wording()
+
+    def _all(self, who):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), who, None, everyone=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        return r
+
+    def test_father_in_law_comes_before_a_wifes_distant_cousin(self):
+        # Sorting by name alone put "Aaron" (her first cousin once removed)
+        # ahead of "Zed" (her father) in his reunion list.
+        order = [x['pid'].lower() for x in self._all(E_A).data['relatives']]
+        self.assertLess(order.index(E_WF.lower()), order.index(E_C.lower()))
+
+    def test_double_first_cousin_on_the_row(self):
+        r = self._all(D_K1)
+        row = {x['pid'].lower(): x for x in r.data['relatives']}[D_K2.lower()]
+        self.assertEqual(row['relationship'], 'double first cousin')
+        self.assertTrue(row['double'])
+        self.assertEqual(r.data['words'][row['pid']], 'double first cousin')
+
+    def test_every_route_said_as_the_pair_answer_says_it(self):
+        r = self._all(C_K)
+        row = {x['pid'].lower(): x for x in r.data['relatives']}[C_HB.lower()]
+        pair = relate.run_relate(self.root, load_fha_yaml(self.root), C_HB, C_K).data['blood']
+        self.assertEqual(row['relationship'], pair['relationship'])
+        self.assertEqual(row['routes'], pair['routes'])
+        self.assertEqual(len(row['routes']), 2)
+        # One parent of each sibling is recorded, so both lines may be half,
+        # and the list says so as the pair answer does.
+        self.assertEqual(r.data['words'][row['pid']],
+                         'uncle (may be half-uncle); and also first cousin once removed or '
+                         'half first cousin once removed, through another line')
 
 
 if __name__ == '__main__':
