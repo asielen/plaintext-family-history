@@ -652,7 +652,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "67102626b7610dc100602f5131427dff6c016985f97cf6312acb41ac3120bca9",
+      "sha256": "ecdb753e138c17ce75b369217423ccefecd8f408d3da78d0cf15be5acaf73e06",
       "spec_version": "2.35",
       "src": "design/styles.css"
     },
@@ -666,7 +666,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "955ab49285b93917ccb6256446224846219e0f8ebbe5b8b5f6898c9a705bcfa3",
+      "sha256": "cc90c43cb73158bbc09eac64347845f10f842cbcce8a97ec29940d29eb828ca1",
       "spec_version": "2.35",
       "src": "docs/DESIGN.md"
     },
@@ -680,7 +680,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "b8898705236374d01e281bad21fde6e3ad554d8d0152f6d916205ec99cced67a",
+      "sha256": "6784d2d8f846e6ba2196ff07591007185be92065485f9f512d6c20d34dc072b9",
       "spec_version": "2.35",
       "src": "tools/_lib.py"
     },
@@ -1170,7 +1170,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "0efb9906d12ecdc54713c0e1a009df9640304d0f572746121fe5d5e657d78d90",
+      "sha256": "3f552ecaffa01ddcd3005dab6d35131f6656b5fb69370bcb4bf625a44b73da3f",
       "spec_version": "2.35",
       "src": "tools/site.py"
     },
@@ -1268,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "b5c867f4f2a20f6eb8e76a4ddd4e24cc80680312cfa0bc57ffcb4ed48fe78cdc",
+      "sha256": "f70278c0c40cc9da8c9040eac2ccaa3ea4b80333bc9bf74334ce73312275be81",
       "spec_version": "2.35",
       "src": "tools/templates/person.html"
     },
@@ -1473,7 +1473,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "5e1691fa9259c4c1be5e871b0ffeb6830b705f89a6d2e39335208724e55294f9",
+      "sha256": "96c7aeccfad70513924c04e4a3346240866849c16f7be5a8e24ff5b1c3dc8479",
       "spec_version": "2.35"
     },
     {
@@ -1521,14 +1521,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "4064d5c6883f62db0b895c84cdea0c7148912e1b1a33c2ddaaf084f164f18621",
+      "sha256": "e44acbb479df6d4141d824484b0c1e6e931ca24bb322531dd5b3dbec1b14de4c",
       "spec_version": "2.35",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "a5f42f9b9f3b19cab8e4ebd04135e30f1847bb5288099847afefa4122408f084",
+      "sha256": "8139391680b4309c12d4a769dfbae7b65c1f3d5e344de9838bac45e1914e8245",
       "spec_version": "2.35",
       "src": "TOOLING.md"
     },
