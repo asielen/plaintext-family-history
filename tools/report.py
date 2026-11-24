@@ -73,6 +73,8 @@ CODE MAP
     _section_new_since_last      - §2: source/claim/person id set diff vs snapshot
     _section_vitals_gaps         - §3: W101 findings, formatted
     _section_contradictions      - §4: E009 findings, formatted
+    _section_possible_duplicates - §4b: people who look like one person entered
+                                    twice (`_lib.possible_duplicate_people`)
     _section_search_log          - §5: search_log lookups for current leads
     _section_answerable_questions - §5b: open questions with a closeable gap
     _live_alias, _is_missing_key - reconcile's 'MISSING:' catalog key, read/tested
@@ -105,6 +107,8 @@ CODE MAP
                                     re-derived; reads `_fetch_place_
                                     candidates`'s shared result, never its own
     _section_hypotheses          - §7: open working answers + draft-queue backlog
+    _section_loose_ends          - §3b: where each line of the tree stops, people
+                                    not tied to it, same-surname strangers
     _section_promotion_candidates - §7b: direct-line stubs + claim-heavy stubs
                                     (the fha person promote surface; stateless)
     _section_possible_connections - §8: cooccur.run_cooccur top candidates
@@ -136,15 +140,27 @@ from _lib import (
     is_valid_edtf,
     PARKED_CLAIM_SQL as _PARKED_SQL,
     claim_role_pairs,
+    parentage_parties,
+    relationship_claim_parties,
+    spouse_parties,
+    SOCIAL_PARENT_SUBTYPES,
     format_date_spread,
     configure_utf8_stdout,
     EXIT_CLEAN,
     EXIT_ERRORS,
     EXIT_FAILURE,
     EXIT_WARNINGS,
+    ahnentafel_path_words,
     build_ahnentafel_map,
     claim_is_own_vital,
+    completeness_context,
+    _own_vital_claims,
+    person_name_key,
+    is_placeholder_name,
     claim_source_lookup,
+    completeness_context,
+    load_not_same_person,
+    possible_duplicate_people,
     cited_source_ids,
     calendar_years_ago_phrase,
     family_calendar_week,
@@ -183,7 +199,9 @@ SECTIONS: list[tuple[str, str, str]] = [
     ('second-look', '1b', 'Worth a second look'),
     ('new-since-last', '2', 'New since last session'),
     ('vitals-gaps', '3', 'Vitals gaps'),
+    ('loose-ends', '3b', 'Loose ends in the tree'),
     ('contradictions', '4', 'Contradictions'),
+    ('possible-duplicates', '4b', 'Possible duplicate people'),
     ('search-log', '5', 'Search-log awareness'),
     ('answerable-questions', '5b', 'Answerable questions'),
     ('photo-triage', '6', 'Photo processing triage'),
@@ -690,6 +708,52 @@ def _section_contradictions(findings: list) -> list[str]:
 
 
 # ── Section 5: Search-log awareness ───────────────────────────────────────────
+
+
+# ── Section 4b: Possible duplicate people ────────────────────────────────────
+
+_DUPLICATES_SHOWN = 10
+
+
+def _section_possible_duplicates(duplicates: dict) -> list[str]:
+    """After an import the same grandmother can be in the tree twice. This
+    names the pairs that look like it, says why in words, and gives the two
+    ways forward: ask the merge-identities skill "are these the same person?",
+    or record that they are two people so the report stops asking. Nothing
+    here merges or writes. Points stay internal: a line says "strong" or
+    "worth a look", never a score.
+
+    The report is his private view (TOOLING §15a), so living people are
+    named; only each person's main `name:` is printed, never another name
+    that may be one he marked restricted."""
+    pairs = duplicates['pairs']
+    hidden = duplicates['dismissed_hidden']
+    lines: list[str] = []
+    if pairs:
+        noun = 'possible duplicate' if len(pairs) == 1 else 'possible duplicates'
+        each = 'This pair looks' if len(pairs) == 1 else 'Each pair looks'
+        lines.append(f'**{len(pairs)} {noun}.** {each} like one person entered twice. '
+                     'Nothing is merged unless you decide to.')
+        for p in pairs[:_DUPLICATES_SHOWN]:
+            a, b = fmt_id_display(p['person_a']), fmt_id_display(p['person_b'])
+            lines.append(
+                f"- {p['name_a']} [{a}] and {p['name_b']} [{b}] ({p['strength']}): "
+                f"{', '.join(p['reasons'])}. To compare them, ask \"are these the same "
+                'person?". If they are two people: '
+                f'`{fha_launcher()} confirm dismiss {a} {b} --not-same-person`')
+        if len(pairs) > _DUPLICATES_SHOWN:
+            lines.append(f'- … and {len(pairs) - _DUPLICATES_SHOWN} more; they come up '
+                         'here as you settle these.')
+    else:
+        lines.append('No possible duplicate people found.')
+    if hidden:
+        what = ('1 pair you said are two different people is'
+                if hidden == 1 else
+                f'{hidden} pairs you said are two different people are')
+        lines.append(f'({what} not shown. `{fha_launcher()} confirm undismiss --list` '
+                     'lists them.)')
+    return lines
+
 
 def _years_label(years) -> str:
     """A research-log `years:` value for a line: `1880/1890` reads `1880-1890`,
@@ -1499,10 +1563,297 @@ def _section_hypotheses(conn, archive_root: Path) -> list[str]:
     return lines
 
 
+# ── Section 3b: Loose ends in the tree ────────────────────────────────────────
+
+_LOOSE_SHOWN = 5   # top few per bucket - leads for a briefing, not a backlog dump
+
+
+def _tree_components(conn, people: set[str]) -> list[set[str]]:
+    """Groups of people tied together by any recorded relationship.
+
+    Every accepted edge counts (family, social and power ties alike: a
+    neighbour tied to an ancestor is not a stranger), restricted to `people`
+    (merged tombstones are left out by the caller). A person with no edge is
+    a group of one. Largest group first, then by smallest p-id, so the order
+    is the same on every run.
+    """
+    parent = {pid: pid for pid in people}
+
+    def find(x: str) -> str:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for row in conn.execute('SELECT person_id, other_id FROM relationships'):
+        a, b = normalize_id(str(row[0])), normalize_id(str(row[1]))
+        if a in parent and b in parent:
+            ra, rb = find(a), find(b)
+            if ra != rb:
+                parent[max(ra, rb)] = min(ra, rb)
+    groups: dict[str, set[str]] = {}
+    for pid in people:
+        groups.setdefault(find(pid), set()).add(pid)
+    return sorted(groups.values(), key=lambda g: (-len(g), min(g)))
+
+
+def _loose_birth_phrase(ctx: dict, pid: str) -> str:
+    """` (born 1815)`, ` (born about 1810)` or, when accepted birth claims
+    differ, ` (records give 1871; 1881)`; '' when none carries a date.
+
+    Each date is shown as the record wrote it (humanized, so 'about' and
+    'unconfirmed' survive): never a midpoint, and never the widened year
+    bounds the index keeps for sorting."""
+    dates = sorted({humanize_edtf(c['date'])
+                    for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',))
+                    if c['date']})
+    if not dates:
+        return ''
+    if len(dates) == 1:
+        return f' (born {dates[0]})'
+    return f' (records give {"; ".join(dates)})'
+
+
+def _genetic_parent_sexes(conn, pid: str) -> list[str]:
+    """Sex ('M', 'F' or 'U') of each recorded genetic parent of `pid`, from the
+    accepted parent edges - the same edges `build_ahnentafel_map` climbs, but
+    counting people, not numbering slots, so a shared ancestor (cousins who
+    married) still counts as a parent of both."""
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    rows = conn.execute(
+        f"""SELECT DISTINCT r.other_id, p.sex FROM relationships r
+            JOIN persons p ON r.other_id = p.id
+            LEFT JOIN claims c ON r.claim_id = c.id
+            WHERE r.person_id = ? AND r.rel = 'parent'
+              AND COALESCE(LOWER(c.subtype), '') NOT IN ({','.join('?' * len(social))})""",
+        (pid, *social)).fetchall()
+    return [str(r[1] or 'U').upper() for r in rows]
+
+
+def _path_is_guessed(pos: int, root_position: int, pos_to_pid: dict[int, str],
+                     persons: dict) -> bool:
+    """True when someone on the line from the root down to `pos` has no
+    recorded sex (or a sex that disagrees with the slot): the numbering gave
+    them a father/mother slot by default, so the words are a guess."""
+    while pos > root_position:
+        person = persons.get(pos_to_pid.get(pos, ''))
+        sex = str((person or {}).get('sex') or '').upper()
+        if sex != ('F' if pos % 2 else 'M'):
+            return True
+        pos //= 2
+    return False
+
+
+def _unconnected_waiting(conn, unconnected: set[str]) -> int:
+    """How many unconnected people are a real party to a still-`suggested`
+    family-tie claim (relationship, birth or marriage): accepting it would tie
+    them to someone. A witness or informant named on the claim is not a party,
+    and a negated claim creates no tie, so neither counts (the same party rules
+    the index uses when it derives the tree)."""
+    waiting: set[str] = set()
+    claims = conn.execute(
+        "SELECT id, type, subtype FROM claims c WHERE c.status = 'suggested' "
+        "AND COALESCE(c.negated, 0) = 0 "
+        f"AND NOT {_PARKED_SQL} "
+        "AND c.type IN ('relationship', 'birth', 'marriage')").fetchall()
+    for cid, ctype, subtype in claims:
+        pairs = claim_role_pairs(conn.execute(
+            'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
+            'ORDER BY position', (cid,)))
+        party_groups: list[list[str]] = []
+        if ctype == 'relationship':
+            for kind, parties in relationship_claim_parties(pairs, subtype):
+                if kind == 'parentage':
+                    party_groups.append(list(parties[0]) + list(parties[1]))
+                elif kind in ('spouse', 'social'):
+                    party_groups.append(list(parties))
+                else:
+                    party_groups.append([x for t in parties for x in (t[0], t[2])])
+        elif ctype == 'birth':
+            children, parents = parentage_parties(pairs)
+            party_groups.append(list(children) + list(parents))
+        else:
+            party_groups.append(list(spouse_parties(pairs)))
+        for group in party_groups:
+            names = {normalize_id(str(p)) for p in group}
+            if len(names) >= 2:
+                waiting.update(p for p in names if p in unconnected)
+    return len(waiting)
+
+
+def _section_loose_ends(conn, direct_line: tuple, ctx: dict) -> list[str]:
+    """Where each line of the tree stops, who is not tied to it, and which of
+    those share a surname with it (TOOLING §15a, section 3b).
+
+    Leads, never defects: computed fresh every run, counts plus the top few
+    per bucket, nothing written (SPEC §17b - a gap a tool can compute is not
+    written down as a question).
+    """
+    pid_to_pos, root_pid, root_position, root_problems = direct_line
+    persons = ctx['persons']          # merged tombstones already left out
+    people = set(persons)
+
+    def label(pid: str) -> str:
+        return f'{persons[pid]["name"]} [{fmt_id_display(pid)}]'
+
+    def accepted_count(pid: str) -> int:
+        return sum(1 for cid in ctx['person_claims'].get(pid, ())
+                   if ctx['claims'].get(cid, {}).get('status') == 'accepted')
+
+    lines: list[str] = []
+    root_name = persons[root_pid]['name'] if root_pid in persons else None
+
+    # (a) End of the line.
+    if root_problems:
+        for problem in root_problems:
+            lines.append(f"({problem} The ends of the tree's lines are skipped until "
+                         'it is fixed.)')
+    elif root_name is None:
+        lines.append('Set root_person in fha.yaml to see where each line of the tree ends.')
+    elif len(pid_to_pos) <= 1:
+        lines.append(f'No parents are recorded for {root_name} yet, so the tree has '
+                     'no lines to follow.')
+    else:
+        parent_sexes = {pid: _genetic_parent_sexes(conn, pid)
+                        for pid in pid_to_pos if pid in persons}
+        ends = sorted(
+            (pos, pid) for pid, pos in pid_to_pos.items()
+            if pos > root_position and pid in persons
+            and len(parent_sexes[pid]) < 2)
+        pos_to_pid = {pos: pid for pid, pos in pid_to_pos.items()}
+        if ends:
+            lines.append(
+                f'**End of the line ({len(ends)}):** the earliest ancestor on record on '
+                'each line. These are where research can go back further.')
+            for pos, pid in ends[:_LOOSE_SHOWN]:
+                known = parent_sexes[pid]
+                if not known:
+                    gap = 'No parents recorded.'
+                else:
+                    pron = {'F': 'Her', 'M': 'His'}.get(
+                        str(persons[pid].get('sex') or '').upper(), 'Their')
+                    word = {'M': 'mother', 'F': 'father'}.get(known[0], 'other parent')
+                    gap = f'{pron} {word} is not recorded yet.'
+                path = f"{root_name}'s {ahnentafel_path_words(pos, root_position)}"
+                if _path_is_guessed(pos, root_position, pos_to_pid, persons):
+                    path = (f'probably {path} (someone on this line has no sex '
+                            'recorded, so father or mother is a guess)')
+                lines.append(
+                    f'- {label(pid)}{_loose_birth_phrase(ctx, pid)}: number {pos}, '
+                    f'{path}. {gap}')
+            if len(ends) > _LOOSE_SHOWN:
+                lines.append(f'- … and {len(ends) - _LOOSE_SHOWN} more')
+
+    # (b) Not connected to the tree.
+    components = _tree_components(conn, people)
+    main: set[str] = set()
+    if components:
+        main = next((g for g in components if root_pid in g), components[0])
+    unconnected = people - main
+    main_words = (f"{root_name}'s family" if root_name and root_pid in main
+                  else f'the largest connected family group ({len(main)} people)')
+    if unconnected:
+        groups = [g for g in components if g is not main and len(g) >= 2]
+        singles = sorted((pid for g in components if g is not main and len(g) == 1
+                          for pid in g),
+                         key=lambda p: (-accepted_count(p), p))
+        lines.append(
+            f'**Not connected to the tree ({len(unconnected)} people):** no recorded tie '
+            f'links them to {main_words}. After an import this is normal until the '
+            'family ties are reviewed.')
+        for g in groups[:_LOOSE_SHOWN]:
+            lead = max(sorted(g), key=accepted_count)
+            lines.append(f'- A group of {len(g)} around {label(lead)} '
+                         f'({accepted_count(lead)} accepted facts)')
+        if len(groups) > _LOOSE_SHOWN:
+            lines.append(f'- … and {len(groups) - _LOOSE_SHOWN} more groups')
+        if singles:
+            named = [p for p in singles if accepted_count(p)][:_LOOSE_SHOWN]
+            text = f'- {len(singles)} people on their own'
+            if named:
+                text += ', most mentioned first: ' + ', '.join(
+                    f'{label(p)} ({accepted_count(p)} facts)' for p in named)
+                if len(singles) > len(named):
+                    text += f', and {len(singles) - len(named)} more'
+            lines.append(text)
+        waiting = _unconnected_waiting(conn, unconnected)
+        if waiting:
+            lines.append(
+                f'- {waiting} of these {len(unconnected)} are named on family ties still '
+                'waiting in the review queue (section 1). Reviewing those usually '
+                'connects them.')
+    elif people and root_name is not None:
+        lines.append(f"Everyone is connected to {root_name}'s family.")
+
+    # (c) Same surname, not connected.
+    surname = {r[0]: str(r[1] or '').strip()
+               for r in conn.execute('SELECT id, surname FROM persons') if r[0] in people}
+
+    def surname_key(pid: str) -> str:
+        return '' if is_placeholder_name(surname[pid]) else person_name_key(surname[pid])
+
+    tree_keys = {surname_key(p) for p in main} - {''}
+    by_key: dict[str, list[str]] = {}
+    for pid in sorted(unconnected):
+        key = surname_key(pid)
+        if key in tree_keys:
+            by_key.setdefault(key, []).append(pid)
+    if by_key:
+        ranked = sorted(by_key.items(), key=lambda kv: (-len(kv[1]), kv[0]))
+        lines.append(
+            f'**Same surname, not connected ({len(ranked)} '
+            f'surname{"s" if len(ranked) != 1 else ""}):** they share a surname with '
+            'someone in the tree but have no recorded tie to it. Some may be family.')
+        for key, pids in ranked[:_LOOSE_SHOWN]:
+            spellings = [surname[p] for p in people if surname_key(p) == key]
+            shown = max(sorted(set(spellings)), key=spellings.count)
+            ordered = sorted(pids, key=lambda p: (-accepted_count(p), p))
+            names = ', '.join(f'{label(p)}{_loose_birth_phrase(ctx, p)}'
+                              for p in ordered[:_LOOSE_SHOWN])
+            more = len(ordered) - _LOOSE_SHOWN
+            plural = shown if shown.endswith('s') else f'{shown}s'
+            lines.append(f'- {len(pids)} {plural}: {names}'
+                         + (f', and {more} more' if more > 0 else ''))
+        if len(ranked) > _LOOSE_SHOWN:
+            lines.append(f'- … and {len(ranked) - _LOOSE_SHOWN} more surnames')
+
+    return lines or [
+        'No loose ends: every line has parents recorded as far as it goes, and '
+        'everyone is connected.']
+
+
 # ── Section 7b: Promotion candidates ──────────────────────────────────────────
 
 _PROMOTION_SHOWN = 5   # top few per bucket - a briefing, not a backlog dump
 _PROMOTION_DEFAULT_THRESHOLD = 5   # fha.yaml promotion.claims_threshold default
+
+
+def _direct_line_positions(
+    conn, fha_config: dict,
+) -> tuple[dict[str, int], str | None, int, list[str]]:
+    """The numbered direct line, worked out once per report:
+    `(pid -> Ahnentafel position, root p-id, root's position, problems)`.
+
+    Sections 3b and 7b both follow the same line from `root_person`, so the
+    walk happens once and each reads the result. The root is None when
+    `root_person` is unset or matches no one; `problems` holds the plain
+    sentence for a bad `root_generation` (each section adds its own ending),
+    in which case the map is empty - a bad fha.yaml value never crashes a
+    report, and is never silent either (#72).
+    """
+    root_person_raw = fha_config.get('root_person')
+    if not root_person_raw:
+        return {}, None, 1, []
+    root_pid = normalize_id(str(root_person_raw))
+    if not conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone():
+        return {}, None, 1, []
+    try:
+        root_generation = resolve_root_generation(fha_config)
+    except FhaConfigError as e:
+        return {}, root_pid, 1, [str(e)]
+    root_position = root_generation_seed_position(root_generation)
+    return (build_ahnentafel_map(conn, root_pid, root_position=root_position),
+            root_pid, root_position, [])
 
 
 def _stub_person_rows(conn) -> dict[str, dict]:
@@ -1524,7 +1875,8 @@ def _stub_person_rows(conn) -> dict[str, dict]:
     return out
 
 
-def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
+def _section_promotion_candidates(conn, fha_config: dict,
+                                  direct_line: tuple | None = None) -> list[str]:
     """Stubs that have earned a real page - the report side of the promotion
     surface (`fha person promote` / `fha views brackets --fix-promote`).
 
@@ -1583,24 +1935,11 @@ def _section_promotion_candidates(conn, fha_config: dict) -> list[str]:
     }
 
     # Bucket (a): direct-line stubs, closest generations first.
-    pid_to_pos: dict[str, int] = {}
-    root_person_raw = fha_config.get('root_person')
-    if root_person_raw:
-        root_pid = normalize_id(str(root_person_raw))
-        if conn.execute('SELECT id FROM persons WHERE id=?', (root_pid,)).fetchone():
-            # root_generation (#72): which Ahnentafel slot root_person occupies
-            # - #1 by default ('self'), #2 under 'children'. Degrades the same
-            # way the claims_threshold fallback above does: a bad fha.yaml
-            # value never crashes a report, but it is never silent either.
-            try:
-                root_generation = resolve_root_generation(fha_config)
-            except FhaConfigError as e:
-                lines.append(
-                    f'({e} Direct-line stub leads are skipped until it is fixed.)')
-            else:
-                root_position = root_generation_seed_position(root_generation)
-                pid_to_pos = build_ahnentafel_map(
-                    conn, root_pid, root_position=root_position)
+    if direct_line is None:
+        direct_line = _direct_line_positions(conn, fha_config)
+    pid_to_pos, _root_pid, _root_position, root_problems = direct_line
+    for problem in root_problems:
+        lines.append(f'({problem} Direct-line stub leads are skipped until it is fixed.)')
     direct = sorted(
         ((pid, pos) for pid, pos in pid_to_pos.items()
          if pos >= 2 and pid in stubs),
@@ -1840,6 +2179,9 @@ def run_report(
         escalation apart from an ordinary §6b candidate without reparsing
         Markdown (Codex review, PR #142 finding 4 - previously this state
         only ever reached `_render_report`'s Markdown output).
+      - data['possible_duplicates']: §4b's pairs as raw dicts (`person_a`,
+        `person_b`, `name_a`, `name_b`, `points`, `strength`, `reasons`:
+        `_lib.possible_duplicate_people`'s own shape), for a headless consumer.
     The persisted snapshot and `.cache/report_{date}.md` always hold the complete
     report - `--section` narrows what's printed this run, not what's recorded -
     and both written files are listed in `result.changed`.  `result.exit_code`
@@ -1894,7 +2236,7 @@ def run_report(
         (
             'persons', 'sources', 'claims', 'claim_persons', 'claim_links',
             'relationships', 'hypotheses', 'person_files', 'search_log',
-            'places',
+            'places', 'person_variants', 'aliases', 'source_people', 'source_places',
         ),
     )
     if conn is None:
@@ -1903,6 +2245,11 @@ def run_report(
     try:
         prev = {} if full else _load_snapshot(archive_root)
         current = _build_snapshot(conn, archive_root, findings, registry)
+        # One read of every person and claim, shared by §3b and §4b: on a big
+        # imported tree it is the slow part, so the briefing does it once.
+        ctx = completeness_context(conn)
+        duplicates = possible_duplicate_people(
+            conn, ctx, set(load_not_same_person(archive_root)))
 
         # One `places.run_candidates()` fetch, shared by §6b's own listing
         # and the oversight-threshold escalation below it never re-derives
@@ -1921,6 +2268,9 @@ def run_report(
         # per cluster).
         places_registry = read_places_registry(archive_root)
 
+        # One walk of the direct line, read by §3b and §7b.
+        direct_line = _direct_line_positions(conn, fha_config)
+
         bodies = {
             'discoveries': _section_discoveries(conn, prev, current),
             'on-this-day': _section_on_this_day(conn, datetime.date.today()),
@@ -1928,7 +2278,9 @@ def run_report(
             'second-look': _section_second_look(conn),
             'new-since-last': _section_new_since_last(prev, current),
             'vitals-gaps': _section_vitals_gaps(findings, registry),
+            'loose-ends': _section_loose_ends(conn, direct_line, ctx),
             'contradictions': _section_contradictions(findings),
+            'possible-duplicates': _section_possible_duplicates(duplicates),
             'search-log': _section_search_log(conn, current),
             'answerable-questions': _section_answerable_questions(conn, archive_root),
             'photo-triage': _section_photo_triage(
@@ -1936,7 +2288,8 @@ def run_report(
             'place-candidates': _section_place_candidates(
                 archive_root, place_candidates, place_candidates_error, places_registry),
             'hypotheses': _section_hypotheses(conn, archive_root),
-            'promotion-candidates': _section_promotion_candidates(conn, fha_config),
+            'promotion-candidates': _section_promotion_candidates(
+                conn, fha_config, direct_line),
             'possible-connections': _section_possible_connections(archive_root),
         }
 
@@ -2009,6 +2362,7 @@ def run_report(
             'full_markdown': full_md,
             'sections': bodies,
             'place_escalations': place_escalations,
+            'possible_duplicates': duplicates['pairs'],
         },
         # The index warnings also ride as structured messages for headless
         # consumers; the markdown embeds the same texts as the archive-notes

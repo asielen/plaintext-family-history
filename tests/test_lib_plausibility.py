@@ -5,9 +5,11 @@ A warning against a correct record teaches the owner to stop reading lint, so
 the engine fires only when a conflict holds for every date the claims allow.
 These tests call the `_lib` functions directly with hand-built inputs: how a
 date becomes a range (every EDTF precision honoured, open sides unknown), how
-several claims of one fact merge into one range, and the three one-person
+several claims of one fact merge into one range, the three one-person
 rules (W163, W164, W165) that `fha lint` and later the GEDCOM import plan
-both ask through `one_person_problems`.
+both ask through `one_person_problems`, and the family rules (W166-W170:
+couples, parents and children, siblings, loops) asked through
+`family_problems`.
 
 Archive-level behaviour (which claims are read, the message wording, the file
 a finding lands on) is in tests/test_lint_plausibility.py.
@@ -24,8 +26,9 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import _lib
 from _lib import (
-    DatedClaim, claim_date_range, iso_plus_years, merge_fact_range,
-    one_person_problems, plausibility_input_from_claims,
+    DatedClaim, ParentEdge, PlausibilityInput, claim_date_range, family_problems,
+    iso_plus_years, merge_fact_range, one_person_problems,
+    plausibility_input_from_claims,
 )
 
 
@@ -185,6 +188,315 @@ class OnePersonEngineTests(unittest.TestCase):
         found = self._problems([self._claim('c-1', 'burial', [self.ADA], '1880'),
                                 self._claim('c-2', 'census', [self.ADA], '1900')])
         self.assertEqual([p.kind for p in found], ['life-after-death'])
+
+
+class FamilyEngineTests(unittest.TestCase):
+    """W166-W170 over raw claim dicts: couples, parents and children,
+    siblings and loops. Each boundary test sits on both sides of its line,
+    because a warning against a correct family teaches him to ignore lint."""
+
+    MUM, DAD, KID, KID2, ANON = ('p-mmmmmmmmmm', 'p-ffffffffff', 'p-kkkkkkkkkk',
+                                 'p-jjjjjjjjjj', 'p-nnnnnnnnnn')
+
+    def setUp(self) -> None:
+        self.claims: list[dict] = []
+        self.persons = {self.MUM: {'sex': 'F'}, self.DAD: {'sex': 'M'},
+                        self.KID: {'sex': 'F'}, self.KID2: {'sex': 'M'},
+                        self.ANON: {}}
+        self._n = 0
+
+    def _add(self, ctype, persons, date=None, *, roles=None, subtype=None,
+             status='accepted') -> str:
+        self._n += 1
+        cid = f'c-{self._n:010d}'
+        c = {'id': cid, 'type': ctype, 'persons': list(persons), 'status': status}
+        if date is not None:
+            c['date'] = date
+        if roles is not None:
+            c['roles'] = roles
+        if subtype is not None:
+            c['subtype'] = subtype
+        self.claims.append(c)
+        return cid
+
+    def _tie(self, parent, child, subtype=None) -> str:
+        return self._add('relationship', [parent, child],
+                         roles={'parent': [parent], 'child': [child]}, subtype=subtype)
+
+    def _problems(self):
+        data = plausibility_input_from_claims(self.claims, self.persons, {})
+        return family_problems(data)
+
+    def _kinds(self):
+        return [p.kind for p in self._problems()]
+
+    # W167: born after a parent died
+    def test_born_after_mother_died(self) -> None:
+        tie = self._tie(self.MUM, self.KID)
+        self._add('death', [self.MUM], '1869')
+        self._add('birth', [self.KID], '1871')
+        (problem,) = self._problems()
+        self.assertEqual((problem.code, problem.kind, problem.pids),
+                         ('W167', 'born-after-mother-died', (self.KID, self.MUM)))
+        self.assertEqual(problem.numbers['ties'], (tie,))
+
+    def test_born_the_year_the_mother_died_is_silent(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('death', [self.MUM], '1871')
+        self._add('birth', [self.KID], '1871')
+        self.assertEqual(self._kinds(), [])
+
+    def test_posthumous_birth_within_a_year_is_silent(self) -> None:
+        self._tie(self.DAD, self.KID)
+        self._add('death', [self.DAD], '1850-03')
+        self._add('birth', [self.KID], '1851-02')
+        self.assertEqual(self._kinds(), [])
+        self.claims[-1]['date'] = '1852'
+        self.assertEqual(self._kinds(), ['born-after-father-died'])
+
+    def test_unknown_sex_parent_gets_the_fathers_allowance(self) -> None:
+        self._tie(self.ANON, self.KID)
+        self._add('death', [self.ANON], '1850-03')
+        self._add('birth', [self.KID], '1851-02')
+        self.assertEqual(self._kinds(), [])
+        self.claims[-1]['date'] = '1852'
+        self.assertEqual(self._kinds(), ['born-after-father-died'])
+
+    def test_a_burial_stands_in_for_the_parents_death(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('burial', [self.MUM], '1869')
+        self._add('birth', [self.KID], '1871')
+        self.assertEqual(self._kinds(), ['born-after-mother-died'])
+
+    def test_a_baptism_alone_says_nothing_about_how_early_the_birth_was(self) -> None:
+        # A baptism in 1871 allows a birth years earlier, before she died.
+        self._tie(self.MUM, self.KID)
+        self._add('death', [self.MUM], '1869')
+        self._add('baptism', [self.KID], '1871')
+        self.assertEqual(self._kinds(), [])
+
+    def test_social_ties_are_not_read_for_age_or_death(self) -> None:
+        for subtype in ('adoptive', 'step', 'foster', 'guardian'):
+            with self.subTest(subtype=subtype):
+                self.setUp()
+                self._tie(self.MUM, self.KID, subtype=subtype)
+                self._add('death', [self.MUM], '1869')
+                self._add('birth', [self.MUM], '1865')
+                self._add('birth', [self.KID], '1871')
+                self.assertEqual(self._kinds(), [])
+
+    # W168: a parent's age
+    def test_parent_born_after_child(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('birth', [self.MUM], '1880')
+        self._add('birth', [self.KID], '1871')
+        self.assertEqual(self._kinds(), ['parent-born-after-child'])
+
+    def test_parent_too_young_uses_the_oldest_reading(self) -> None:
+        # Mother born 1860, child 1871: she was 11 at most.
+        self._tie(self.MUM, self.KID)
+        self._add('birth', [self.MUM], '1860')
+        self._add('birth', [self.KID], '1871')
+        (problem,) = self._problems()
+        self.assertEqual((problem.kind, problem.numbers['age']), ('parent-too-young', 11))
+        # Child 1872: she could have been 12 by then.
+        self.claims[-1]['date'] = '1872'
+        self.assertEqual(self._kinds(), [])
+
+    def test_mother_at_55_is_silent_at_56_fires(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('birth', [self.MUM], '1800-06-10')
+        self._add('birth', [self.KID], '1856-06-09')
+        self.assertEqual(self._kinds(), [])
+        self.claims[-1]['date'] = '1856-06-10'
+        (problem,) = self._problems()
+        self.assertEqual((problem.kind, problem.numbers['age']), ('mother-too-old', 56))
+
+    def test_year_only_ages_need_the_youngest_reading(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('birth', [self.MUM], '1800')
+        self._add('birth', [self.KID], '1856')
+        self.assertEqual(self._kinds(), [])
+        self.claims[-1]['date'] = '1857'
+        self.assertEqual(self._kinds(), ['mother-too-old'])
+
+    def test_father_too_old_and_unknown_sex_gets_the_fathers_ceiling(self) -> None:
+        for parent in (self.DAD, self.ANON):
+            with self.subTest(parent=parent):
+                self.setUp()
+                self._tie(parent, self.KID)
+                self._add('birth', [parent], '1800')
+                self._add('birth', [self.KID], '1870')
+                self.assertEqual(self._kinds(), [])
+                self.claims[-1]['date'] = '1882'
+                self.assertEqual(self._kinds(), ['father-too-old'])
+
+    def test_a_parent_tie_from_a_birth_claims_roles_counts(self) -> None:
+        self._add('birth', [self.KID, self.MUM], '1871',
+                  roles={'child': [self.KID], 'parent': [self.MUM]})
+        self._add('death', [self.MUM], '1869')
+        self.assertEqual(self._kinds(), ['born-after-mother-died'])
+
+    def test_undated_ties_count_and_suggested_claims_do_not(self) -> None:
+        self._tie(self.MUM, self.KID)
+        self._add('death', [self.MUM], '1869', status='suggested')
+        self._add('birth', [self.KID], '1871')
+        self.assertEqual(self._kinds(), [])
+
+    # W166: couples
+    def test_married_before_born(self) -> None:
+        self._add('birth', [self.KID], '1871')
+        self._add('marriage', [self.KID, self.KID2], '1865')
+        found = [(p.code, p.kind, p.pids) for p in self._problems()]
+        self.assertEqual(found, [('W166', 'married-before-born', (self.KID, self.KID2))])
+
+    def test_married_after_death(self) -> None:
+        self._add('death', [self.KID2], '1860')
+        self._add('marriage', [self.KID, self.KID2], '1865')
+        self.assertEqual(self._kinds(), ['married-after-death'])
+
+    def test_married_young_and_at_fourteen_is_silent(self) -> None:
+        self._add('birth', [self.KID], '1860')
+        self._add('marriage', [self.KID, self.KID2], '1873')
+        (problem,) = self._problems()
+        self.assertEqual((problem.kind, problem.numbers['age']), ('married-young', 13))
+        self.claims[-1]['date'] = '1874'
+        self.assertEqual(self._kinds(), [])
+
+    def test_a_divorce_is_never_called_young(self) -> None:
+        self._add('birth', [self.KID], '1860')
+        self._add('divorce', [self.KID, self.KID2], '1873')
+        self.assertEqual(self._kinds(), [])
+
+    def test_parents_named_on_a_marriage_are_not_spouses(self) -> None:
+        self._add('death', [self.DAD], '1850')
+        self._add('marriage', [self.KID, self.KID2, self.DAD], '1865',
+                  roles={'spouse': [self.KID, self.KID2], 'parent': [self.DAD]})
+        self.assertEqual(self._kinds(), [])
+
+    # W169: siblings
+    def _two_children(self, first, second, parents=None) -> None:
+        for parent in (parents or [self.MUM]):
+            self._tie(parent, self.KID)
+            self._tie(parent, self.KID2)
+        self._add('birth', [self.KID], first)
+        self._add('birth', [self.KID2], second)
+
+    def test_siblings_five_months_apart_fire(self) -> None:
+        self._two_children('1850-01', '1850-06')
+        (problem,) = self._problems()
+        self.assertEqual((problem.code, problem.kind, problem.pids[:2]),
+                         ('W169', 'siblings-too-close', (self.KID2, self.KID)))
+        self.assertEqual((problem.numbers['min_gap'], problem.numbers['max_gap']), (121, 180))
+
+    def test_twins_are_silent(self) -> None:
+        self._two_children('1850-01-04', '1850-01-05')
+        self.assertEqual(self._kinds(), [])
+
+    def test_siblings_eight_months_apart_are_silent(self) -> None:
+        self._two_children('1850-01-01', '1850-09-01')
+        self.assertEqual(self._kinds(), [])
+
+    def test_a_year_only_sibling_between_them_does_not_hide_the_pair(self) -> None:
+        # A third child born "1850" sorts between the two exact births; the
+        # 141-day pair must still be compared, not only birth-order neighbours.
+        self._two_children('1849-12-20', '1850-05-10')
+        third = 'p-tttttttttt'
+        self.persons[third] = {}
+        self._tie(self.MUM, third)
+        self._add('birth', [third], '1850')
+        found = [(p.kind, p.pids[:2]) for p in self._problems()]
+        self.assertEqual(found, [('siblings-too-close', (self.KID2, self.KID))])
+
+    def test_year_only_siblings_never_fire(self) -> None:
+        self._two_children('1850', '1851')
+        self.assertEqual(self._kinds(), [])
+
+    def test_half_siblings_by_two_mothers_are_not_compared(self) -> None:
+        other = 'p-qqqqqqqqqq'
+        self.persons[other] = {'sex': 'F'}
+        self._tie(self.DAD, self.KID)
+        self._tie(self.DAD, self.KID2)
+        self._tie(self.MUM, self.KID)
+        self._tie(other, self.KID2)
+        self._add('birth', [self.KID], '1850-01')
+        self._add('birth', [self.KID2], '1850-06')
+        self.assertEqual(self._kinds(), [])
+
+    def test_same_two_parents_neither_recorded_female_are_compared(self) -> None:
+        self._two_children('1850-01', '1850-06', parents=[self.DAD, self.ANON])
+        self.assertEqual(self._kinds(), ['siblings-too-close'])
+
+    def test_a_pair_seen_through_two_groups_is_reported_once(self) -> None:
+        self._two_children('1850-01', '1850-06', parents=[self.MUM, self.DAD])
+        self.assertEqual(self._kinds(), ['siblings-too-close'])
+
+    # W170: loops
+    def test_loop_of_three_is_one_problem(self) -> None:
+        a, b, c = self.DAD, self.KID2, self.ANON
+        ties = [self._tie(a, b), self._tie(b, c), self._tie(c, a, subtype='adoptive')]
+        (problem,) = self._problems()
+        self.assertEqual((problem.code, problem.kind), ('W170', 'own-ancestor'))
+        # Walk order, starting from the smallest id.
+        self.assertEqual(problem.pids, (a, b, c))
+        self.assertEqual(sorted(problem.numbers['ties']), sorted(ties))
+
+    def test_no_recursion_on_a_deep_line(self) -> None:
+        data = PlausibilityInput()
+        pids = [f'p-{i:010d}' for i in range(5001)]
+        for parent, child in zip(pids, pids[1:]):
+            data.parent_edges[(parent, child)] = ParentEdge(natures={''}, claims=[])
+        self.assertEqual(family_problems(data), [])
+        data.parent_edges[(pids[-1], pids[0])] = ParentEdge(natures={''}, claims=[])
+        (problem,) = family_problems(data)
+        self.assertEqual(len(problem.pids), 5001)
+
+
+class BornByTests(unittest.TestCase):
+    """`born_by_estimate`, behind W173: the latest year each person can have
+    been born, from their own records and their family's."""
+
+    def test_the_import_and_lint_share_one_cutoff(self) -> None:
+        import gedcom_import
+        self.assertEqual(_lib.LIVING_CUTOFF_YEARS, 110)
+        self.assertIs(gedcom_import.LIVING_CUTOFF_YEARS, _lib.LIVING_CUTOFF_YEARS)
+
+    def test_a_deep_line_is_walked_without_recursion(self) -> None:
+        # 5,000 generations, only the last one dated: no RecursionError, and
+        # the first person is born 12 years per generation earlier.
+        depth = 5000
+        pids = [f'p-{i:010d}' for i in range(depth)]
+        children_of = {pids[i]: {pids[i + 1]} for i in range(depth - 1)}
+        parents_of = {pids[i + 1]: {pids[i]} for i in range(depth - 1)}
+        lived = {pids[-1]: [_dc('c-0000000001', '9000-01-01', '9000-12-31', 'census')]}
+        got = _lib.born_by_estimate(_lib.PlausibilityInput(), {}, parents_of,
+                                    children_of, lived)
+        self.assertEqual(got[pids[0]].year, 9000 - 12 * (depth - 1))
+
+    def test_a_loop_is_cut_not_followed_forever(self) -> None:
+        a, b = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'
+        lived = {b: [_dc('c-0000000001', '1900-01-01', '1900-12-31', 'census')]}
+        got = _lib.born_by_estimate(_lib.PlausibilityInput(), {},
+                                    {a: {b}, b: {a}}, {a: {b}, b: {a}}, lived)
+        self.assertEqual(got[b].year, 1900)
+        self.assertEqual(got[a].year, 1888)
+
+    def test_a_sourced_birth_supersedes_the_provisional_estimate(self) -> None:
+        a = 'p-aaaaaaaaaa'
+        data = plausibility_input_from_claims(
+            [{'id': 'c-0000000001', 'type': 'birth', 'persons': [a], 'date': '1950',
+              'status': 'accepted'}], {a: {'birth': '1840'}}, {})
+        got = _lib.born_by_estimate(data, {a: {'birth': '1840'}}, {}, {}, {})
+        self.assertEqual((got[a].year, got[a].evidence[0]), (1950, 'birth'))
+
+    def test_two_birth_readings_are_not_read_as_the_earlier(self) -> None:
+        a = 'p-aaaaaaaaaa'
+        claims = [{'id': f'c-000000000{i}', 'type': 'birth', 'persons': [a], 'date': d,
+                   'status': 'accepted'} for i, d in ((1, '1850'), (2, '1950'))]
+        data = plausibility_input_from_claims(claims, {a: {}}, {})
+        lived = _lib.lived_claims_from_claims(claims, {})
+        self.assertEqual(lived, {})
+        self.assertEqual(_lib.born_by_estimate(data, {a: {}}, {}, {}, lived)[a].year, 1950)
 
 
 if __name__ == '__main__':

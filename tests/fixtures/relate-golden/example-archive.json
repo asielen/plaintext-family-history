@@ -1,14 +1,14 @@
 {
  "p-075114a0f8 p-075114a0f8": {
-  "json_sha256": "bb2d870665dabc11b0dc4628c7fc0938d2874008b3f332b51f72db0d2a0c07eb",
+  "json_sha256": "eb462c2eb9645ce0ae17166a7f717696cb4dbdcc612d1fe573486605007c6339",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Caleb Comstock Hartley is Caleb Comstock Hartley's the same person  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         the same person\n"
  },
  "p-075114a0f8 p-0a1b2c3d4e": {
-  "json_sha256": "74d7f9246a8e4b07967be6f4dc2642eab968bfdf8f269ba1e9fdc473aac727ff",
+  "json_sha256": "7afb153d405079854a993539003f98215de148af6441d9672b6f70020b9c350e",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Caleb Comstock Hartley is Alex James Bradford's great-great-great-great-grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son's son's daughter's son's child\n"
  },
  "p-075114a0f8 p-2b3c4d5e6f": {
-  "json_sha256": "9809997ad5a1e398573d49dc41e314bb98f12e5fe0a04bfa155ce95e36527b79",
+  "json_sha256": "2e520074fbccc604e5fd485c3a34f5532e35aa0214a6be20c9d2f711960d8443",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Caleb Comstock Hartley is James Robert Bradford's great-great-great-grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son's son's daughter's son\n"
  },
  "p-075114a0f8 p-3c4d5e6f7g": {
@@ -24,11 +24,11 @@
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's son's daughter's son's father\n"
  },
  "p-075114a0f8 p-5e6f7g8h9j": {
-  "json_sha256": "b1bbbcd6c513593e3c88a36c24e3a5ec01967022b688fd189d72d66d60c0c1d6",
+  "json_sha256": "52599ca3898234bc2d9c122bdb531843d6078265605bca8a95950c9e580e1a79",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Caleb Comstock Hartley is Edith Louise Hartley's great-great-grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son's son's daughter\n"
  },
  "p-075114a0f8 p-6f7g8h9jka": {
-  "json_sha256": "b8196e7f27675330c976ad52c427b48ffe5cb4065bc90ee5a4be8ede77956caa",
+  "json_sha256": "441379f9efdd05811d153d0f4f026bfc3b42d4a748a1b8311f7aa1c91bac9185",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Caleb Comstock Hartley is Warren Calvin Hartley's great-grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son's son\n"
  },
  "p-075114a0f8 p-7g8h9jkamb": {
@@ -36,7 +36,7 @@
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's son's daughter's mother\n"
  },
  "p-075114a0f8 p-83e768cacb": {
-  "json_sha256": "32b7abb342875c7d2569589c3546c50c5a2d3444d7410046320e887070c5c957",
+  "json_sha256": "6dbf8884fd737db552c3a3c3dec1512edd5146905c5f371893ecd0f06f4e13a6",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Caleb Comstock Hartley is Frances Hartley's grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's daughter\n"
  },
  "p-075114a0f8 p-8h9jkambne": {
@@ -48,7 +48,7 @@
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's associate\n"
  },
  "p-075114a0f8 p-c4b26bb4bc": {
-  "json_sha256": "cea230e68cd0097a17433fcb49c955e1e436648a377c6182b116381a76d994ae",
+  "json_sha256": "d5254cd96aa0c8da935197c12681c36b5b381becadd6bf408ee7344f824f31d4",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Caleb Comstock Hartley is Ethel Hartley's grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's daughter\n"
  },
  "p-075114a0f8 p-cd795c61e0": {
@@ -60,15 +60,15 @@
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's mother\n"
  },
  "p-075114a0f8 p-de957bcda1": {
-  "json_sha256": "408a3329fc422505224cb8b601c20e09ca9aef05c27752122381d91ca90c6f2d",
+  "json_sha256": "62652f4b0d4b0652ac3efe83d6748e53d705697574886a0afe2bcbbc5cf59a99",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Caleb Comstock Hartley is Thomas Edward Hartley's father  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son\n"
  },
  "p-075114a0f8 p-fa7541e871": {
-  "json_sha256": "9bb571e679e1ba572f33d5d53a4851db5bffcf916b6aa9d87d59fd62e3490161",
+  "json_sha256": "e040ec4546302b60feff66477f4c93c1285267800862908a48718cb7f1f8f86d",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Caleb Comstock Hartley is Calvin George Hartley's grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son\n"
  },
  "p-075114a0f8 p-htyn3mpg9g": {
-  "json_sha256": "ca5470fafcc850acb4e52cb73ee58b9e3247111c87e77948480362eeb2047eb9",
+  "json_sha256": "258847e99a87fb0c21d48c7b7e1a25d3ccbbcdcc7f51a77bb34f1e7551b56a0e",
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Caleb Comstock Hartley is Ada Jane Hartley's great-grandfather  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your son's son's daughter\n"
  },
  "p-075114a0f8 p-nf819w33dy": {
@@ -80,19 +80,19 @@
   "text": "[[p-075114a0f8|Caleb Comstock Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-0a1b2c3d4e p-075114a0f8": {
-  "json_sha256": "0cf282d0743ab98fd3f076b659160fc6530f4f6dcb8131d034b8efdce6fb0068",
+  "json_sha256": "9a66cefc5602754b1ad59759cf2a4d29ee6d368f23e050628beaddc6a141d414",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Alex James Bradford is Caleb Comstock Hartley's great-great-great-great-grandchild  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's mother's father's father's father's father\n"
  },
  "p-0a1b2c3d4e p-0a1b2c3d4e": {
-  "json_sha256": "d6576066a5757425b374f5e6946056e22474bb4e3dff728287c1ddaf79dfa3d7",
+  "json_sha256": "04685f777ef09032233ef637d088a55a5cfb76c1863338de61431818192b6143",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Alex James Bradford is Alex James Bradford's the same person  (common ancestor: [[p-0a1b2c3d4e|Alex James Bradford]])\nPath:         the same person\n"
  },
  "p-0a1b2c3d4e p-2b3c4d5e6f": {
-  "json_sha256": "d265b0c73bf38fae6c0fe0bf1a2b667a68c44de67f6f35655243a067a58ab985",
+  "json_sha256": "21648c2826aae09d607ad6af476bd27399af960cabfe8c721c0817f1251fcaff",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Alex James Bradford is James Robert Bradford's child  (common ancestor: [[p-2b3c4d5e6f|James Robert Bradford]])\nPath:         your father\n"
  },
  "p-0a1b2c3d4e p-3c4d5e6f7g": {
-  "json_sha256": "4e30ef137727b281f6de1e12d53fa45550a9b37f6dbfd89542797c7928a594fd",
+  "json_sha256": "b10c9b00d415edffe3ee03a0b24e982a9b7d2918e3c27194489f9842365da0d6",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-3c4d5e6f7g|Carol Anne Simmons]]\nBlood:        Alex James Bradford is Carol Anne Simmons's child  (common ancestor: [[p-3c4d5e6f7g|Carol Anne Simmons]])\nPath:         your mother\n"
  },
  "p-0a1b2c3d4e p-3kq9v8x2m1": {
@@ -100,27 +100,27 @@
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-3kq9v8x2m1|Caesar]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-0a1b2c3d4e p-4d5e6f7g8h": {
-  "json_sha256": "78afd6e9bd742cd9c2dd6ff06ba765bcc54bd169a535a9d9d22196fe3beb41df",
+  "json_sha256": "66dac815ffabbc8fa1235e7f464125b807d0a462e8feaacc3f00088909ce8d13",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        Alex James Bradford is George Arthur Bradford's grandchild  (common ancestor: [[p-4d5e6f7g8h|George Arthur Bradford]])\nPath:         your father's father\n"
  },
  "p-0a1b2c3d4e p-5e6f7g8h9j": {
-  "json_sha256": "814dc8d1b2c9d22f47ea40427f495016f7772929283bda46d9a94140f5dd6616",
+  "json_sha256": "8c76a689062dacda1a88739c6346d2a1290e461c375dda9cff002ac7ce5ee831",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Alex James Bradford is Edith Louise Hartley's grandchild  (common ancestor: [[p-5e6f7g8h9j|Edith Louise Hartley]])\nPath:         your father's mother\n"
  },
  "p-0a1b2c3d4e p-6f7g8h9jka": {
-  "json_sha256": "40a7f3661315f00c4183b4997db2355da34d2e3d025d8c0491d404ec871b9c51",
+  "json_sha256": "7451707f1f41fe1810ce1b95f56199920c422f31116b1811254a9d1e42427639",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Alex James Bradford is Warren Calvin Hartley's great-grandchild  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your father's mother's father\n"
  },
  "p-0a1b2c3d4e p-7g8h9jkamb": {
-  "json_sha256": "d7621a10ffef814aca0be2c9e0a7d4f179274ab71b9e765c8eb9b0730c28d5b7",
+  "json_sha256": "87107a5c1d2e09a31ca36ffff92c3f747f649e9f303b65588c445c79f5736711",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        Alex James Bradford is Clara Mabel Frost's great-grandchild  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your father's mother's mother\n"
  },
  "p-0a1b2c3d4e p-83e768cacb": {
-  "json_sha256": "41f3066a760e90260e1ba73360febd657fcd3a86aa9b557f53d70e1e5292a91a",
+  "json_sha256": "1990332e5da9e8eef84ec20cd81bfd3f393134c33ead8c77d065885e434caf9f",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Alex James Bradford is Frances Hartley's great-great-great-niece or great-great-great-nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's mother's father's father's sister\n"
  },
  "p-0a1b2c3d4e p-8h9jkambne": {
-  "json_sha256": "236196472a9e3a8043fb5cd4acc449d13d617fa03f83907a5fa1dbb8a61b4bd2",
+  "json_sha256": "309bddaeaf5dd153a1168975b07b1645fc77ec07918556b087c8e029ee83a308",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        Alex James Bradford is Harriet Frances Webb's great-great-grandchild  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your father's mother's father's mother\n"
  },
  "p-0a1b2c3d4e p-ajnng40q36": {
@@ -128,27 +128,27 @@
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's mother's father's father's father's associate\n"
  },
  "p-0a1b2c3d4e p-c4b26bb4bc": {
-  "json_sha256": "a1b43b4a9537e4e4f78e98e63b41ed9942d373a66aca262531e8092a0a020497",
+  "json_sha256": "f7399b7ccc8c3b744a2f0a33de27abd7cc0f41640db59c1697c243acd2283035",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Alex James Bradford is Ethel Hartley's great-great-great-niece or great-great-great-nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's mother's father's father's sister\n"
  },
  "p-0a1b2c3d4e p-cd795c61e0": {
-  "json_sha256": "9cf1415312c3c635c725084f4fd1c5cf84f3bbdea4aef838f355127610e03099",
+  "json_sha256": "909be5197010c83d8c6401f309ace6cf52bbdb655689d0292c40a20ba89df157",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Alex James Bradford is Margaret A. Cole's great-great-great-grandchild  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your father's mother's father's father's mother\n"
  },
  "p-0a1b2c3d4e p-d00c678c1a": {
-  "json_sha256": "09d7e064f94cbda73bb4604c9eb1d63913f4e44e1732bf16cb581275f42bcbaf",
+  "json_sha256": "0472133257a382ca2faf38b62cfcdda40b34219273e204f32de073a09162f837",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Alex James Bradford is Chastina Augusta Reed's great-great-great-great-grandchild  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's mother's father's father's father's mother\n"
  },
  "p-0a1b2c3d4e p-de957bcda1": {
-  "json_sha256": "78f3a5412948ccde5fa59016cdc45c6066533a9c24ba895814c43956cfd878fc",
+  "json_sha256": "8fb533bd3d3c4dda7747a729ef849f14c8abc680ba2945378bd3bf2813587c0d",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Alex James Bradford is Thomas Edward Hartley's great-great-great-grandchild  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's mother's father's father's father\n"
  },
  "p-0a1b2c3d4e p-fa7541e871": {
-  "json_sha256": "a31a5f3a767655948c30d20e5785f299d612129f5625be19d917830aad55575e",
+  "json_sha256": "68bbd9c5280dcf88369cfdf89ce0b72d3602727c44c8a7ad9efb4a57dc6ece48",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Alex James Bradford is Calvin George Hartley's great-great-grandchild  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father's mother's father's father\n"
  },
  "p-0a1b2c3d4e p-htyn3mpg9g": {
-  "json_sha256": "10fed4d7e1d7acc8e514a7a410340131ef45d085dc52d77de4836f30a4bcb6e6",
+  "json_sha256": "e3a5b446fc09089deda7c76bbc3cd42db95b558e15276b1995a7971ad367cf5d",
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Alex James Bradford is Ada Jane Hartley's half great-great-niece or half great-great-nephew  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father's mother's father's sister\n"
  },
  "p-0a1b2c3d4e p-nf819w33dy": {
@@ -160,15 +160,15 @@
   "text": "[[p-0a1b2c3d4e|Alex James Bradford]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-2b3c4d5e6f p-075114a0f8": {
-  "json_sha256": "7362584a94948fd036a3fc6f8e3361944b1cc35093f40462c34b6e9e61c47d3b",
+  "json_sha256": "5b16cc51a232e038e091186ac0bca92364dc0e321b177f8c662c3f21b3614034",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        James Robert Bradford is Caleb Comstock Hartley's great-great-great-grandson  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your mother's father's father's father's father\n"
  },
  "p-2b3c4d5e6f p-0a1b2c3d4e": {
-  "json_sha256": "7937494f366e8a290e27b97fc494add6aef79fadc0fc4011cf687ec5779566bf",
+  "json_sha256": "3d0ad4cd75c815740139c1d6318df67f9c158a1eabb23016978b648ec60271d6",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        James Robert Bradford is Alex James Bradford's father  (common ancestor: [[p-2b3c4d5e6f|James Robert Bradford]])\nPath:         your child\n"
  },
  "p-2b3c4d5e6f p-2b3c4d5e6f": {
-  "json_sha256": "69f4bdc75f622a0a88183c3f0973364f4a11c3931fe1aa38c7188cf13be9f792",
+  "json_sha256": "17644fd6f5ed3ed951c844d94bca82421fad2e57fb46bfd5982f3978edb8df92",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        James Robert Bradford is James Robert Bradford's the same person  (common ancestor: [[p-2b3c4d5e6f|James Robert Bradford]])\nPath:         the same person\n"
  },
  "p-2b3c4d5e6f p-3c4d5e6f7g": {
@@ -180,27 +180,27 @@
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-3kq9v8x2m1|Caesar]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-2b3c4d5e6f p-4d5e6f7g8h": {
-  "json_sha256": "7e7def9e76ebb21654f7a7ab0db7b4a7c8e2e4d8124cc7fffa17f34f4bef6612",
+  "json_sha256": "f77f181b838a8ccf13ca3cf36fb58364d2cfbcd101fe69ab78d089f476d1c591",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        James Robert Bradford is George Arthur Bradford's son  (common ancestor: [[p-4d5e6f7g8h|George Arthur Bradford]])\nPath:         your father\n"
  },
  "p-2b3c4d5e6f p-5e6f7g8h9j": {
-  "json_sha256": "d6f548f1b707fffd5d7e03ae3ae048920537a9320e17f90dcbc6cfab2e1aea50",
+  "json_sha256": "fb865757afe757d33fb24c6cceea9615fc863deac38b95dd77b1bee465c4234b",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        James Robert Bradford is Edith Louise Hartley's son  (common ancestor: [[p-5e6f7g8h9j|Edith Louise Hartley]])\nPath:         your mother\n"
  },
  "p-2b3c4d5e6f p-6f7g8h9jka": {
-  "json_sha256": "7b5d8ac17c59c420532205064a0897dd6ec26b397956c16dfbe82e1c21451541",
+  "json_sha256": "48f1a8f1062c647e5f088c40f2f5a44f803ed5522edb748373eed93ab270b225",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        James Robert Bradford is Warren Calvin Hartley's grandson  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your mother's father\n"
  },
  "p-2b3c4d5e6f p-7g8h9jkamb": {
-  "json_sha256": "882ac1ed32a136711f2bcda3b3aa46d744d54502cce4018c1613b1f6338618c8",
+  "json_sha256": "16484305b386864a4b6c90300c3199f824ae585779ac455d20d39a61a88def23",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        James Robert Bradford is Clara Mabel Frost's grandson  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your mother's mother\n"
  },
  "p-2b3c4d5e6f p-83e768cacb": {
-  "json_sha256": "1a8bc8f85c2ed468f463f1db8a4ccdae2f7371e66df24d439a22c54d69821042",
+  "json_sha256": "69a9e72128cac5cd272f91e2304f48205ff83ad7ef4ea6c9e3a38202b7c94f82",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        James Robert Bradford is Frances Hartley's great-great-nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your mother's father's father's sister\n"
  },
  "p-2b3c4d5e6f p-8h9jkambne": {
-  "json_sha256": "ae22b25fde0993dbb69258265044fd535784c28a77eef398398ff8693c9289f8",
+  "json_sha256": "de8f248a381f9280acd5c6a40ac94530313cc0e93e794519b269376313eeb7e8",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        James Robert Bradford is Harriet Frances Webb's great-grandson  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your mother's father's mother\n"
  },
  "p-2b3c4d5e6f p-ajnng40q36": {
@@ -208,27 +208,27 @@
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your mother's father's father's father's associate\n"
  },
  "p-2b3c4d5e6f p-c4b26bb4bc": {
-  "json_sha256": "a51820cc2d1b93c717eeffc6cf4286d237b4488079ec428f1d17d87a4f3a7139",
+  "json_sha256": "78557bfee91c3fbbc029ae242742458a8a1e4240123340dd324ed5901285df7d",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        James Robert Bradford is Ethel Hartley's great-great-nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your mother's father's father's sister\n"
  },
  "p-2b3c4d5e6f p-cd795c61e0": {
-  "json_sha256": "67cb05ac6669befb6c35b568d7e5e0e9fb271bbb83c2043ba94b5d4abc4cc773",
+  "json_sha256": "abf6a2c842b568f0851bf016138835a6c65b9658fb9a852217a754dfd49c0c9f",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        James Robert Bradford is Margaret A. Cole's great-great-grandson  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your mother's father's father's mother\n"
  },
  "p-2b3c4d5e6f p-d00c678c1a": {
-  "json_sha256": "ef42569e406777ef1e0634f3441800e357a9b729cfec54e67d587a0bf07ec161",
+  "json_sha256": "bdaba3cf2837762cd9706cf0bb4dd3837270706775b10826f5c9c24b9e7e8a0c",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        James Robert Bradford is Chastina Augusta Reed's great-great-great-grandson  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your mother's father's father's father's mother\n"
  },
  "p-2b3c4d5e6f p-de957bcda1": {
-  "json_sha256": "88ff8936d76b37da030b666c6df1e11dbc3ac3c4ce131c76fa96f6222880cd53",
+  "json_sha256": "48925c082ac95cffb239da1fc433a8859d17cf0fb844a598348920b0f863100c",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        James Robert Bradford is Thomas Edward Hartley's great-great-grandson  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your mother's father's father's father\n"
  },
  "p-2b3c4d5e6f p-fa7541e871": {
-  "json_sha256": "e436cad5d27a23badf815153f78d7d94a09b2b6ea68a7e3f698afdc55cb4a51a",
+  "json_sha256": "a1a0c866797d2dbe91fa12bff900bdc0e20d058c4829565170062e7934d814fe",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        James Robert Bradford is Calvin George Hartley's great-grandson  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your mother's father's father\n"
  },
  "p-2b3c4d5e6f p-htyn3mpg9g": {
-  "json_sha256": "2f0c189e9f7bf82122958efc66ae0cb2d26e187a3a241baac7d7ae10873b5f5f",
+  "json_sha256": "d1277c671db205ada13298a8ce043c49a5db8a80ab2873a0cd82bcb0600d0190",
   "text": "[[p-2b3c4d5e6f|James Robert Bradford]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        James Robert Bradford is Ada Jane Hartley's half great-nephew  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your mother's father's sister\n"
  },
  "p-2b3c4d5e6f p-nf819w33dy": {
@@ -244,7 +244,7 @@
   "text": "[[p-3c4d5e6f7g|Carol Anne Simmons]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Carol Anne Simmons is Caleb Comstock Hartley's great-great-great-granddaughter-in-law  (Caleb Comstock Hartley's great-great-great-grandson's wife)\nPath:         your husband's mother's father's father's father's father\n"
  },
  "p-3c4d5e6f7g p-0a1b2c3d4e": {
-  "json_sha256": "907fc6094cb9981d07ff06d881ec3ef2a736f31a7a3f63f51e31bea82ee3bca7",
+  "json_sha256": "c06dd1f0267e66858134c36a6abb223dca53e91fec811033dc991f86d46c3a3c",
   "text": "[[p-3c4d5e6f7g|Carol Anne Simmons]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Carol Anne Simmons is Alex James Bradford's mother  (common ancestor: [[p-3c4d5e6f7g|Carol Anne Simmons]])\nPath:         your child\n"
  },
  "p-3c4d5e6f7g p-2b3c4d5e6f": {
@@ -252,7 +252,7 @@
   "text": "[[p-3c4d5e6f7g|Carol Anne Simmons]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Carol Anne Simmons is James Robert Bradford's wife\nPath:         your husband\n"
  },
  "p-3c4d5e6f7g p-3c4d5e6f7g": {
-  "json_sha256": "9c7eb88a671cd1961e433cf59a86ffc9d538b4dca609cbf0762d8ada00693922",
+  "json_sha256": "e1ac81da8cebd19daba91f40a89b6c494db70f129d03f650cc7963d6cdabb059",
   "text": "[[p-3c4d5e6f7g|Carol Anne Simmons]]  <->  [[p-3c4d5e6f7g|Carol Anne Simmons]]\nBlood:        Carol Anne Simmons is Carol Anne Simmons's the same person  (common ancestor: [[p-3c4d5e6f7g|Carol Anne Simmons]])\nPath:         the same person\n"
  },
  "p-3c4d5e6f7g p-3kq9v8x2m1": {
@@ -336,7 +336,7 @@
   "text": "[[p-3kq9v8x2m1|Caesar]]  <->  [[p-3c4d5e6f7g|Carol Anne Simmons]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-3kq9v8x2m1 p-3kq9v8x2m1": {
-  "json_sha256": "2e9c087134ad980455abc252ceee041a0335b9eedd8d9dad86649830b9a2d17f",
+  "json_sha256": "88ea1005a645a391f1b631dce36a5fdb9288ad601a9bdf93b7a624fd93c0fe30",
   "text": "[[p-3kq9v8x2m1|Caesar]]  <->  [[p-3kq9v8x2m1|Caesar]]\nBlood:        Caesar is Caesar's the same person  (common ancestor: [[p-3kq9v8x2m1|Caesar]])\nPath:         the same person\n"
  },
  "p-3kq9v8x2m1 p-4d5e6f7g8h": {
@@ -404,11 +404,11 @@
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's mother's father's father's father's father\n"
  },
  "p-4d5e6f7g8h p-0a1b2c3d4e": {
-  "json_sha256": "af4cacf5922b0ebb665521e1cfd9ff779b8cada68810ba2165d88420e3a8ee08",
+  "json_sha256": "2059ce4b43bfb95d82a9fd5b0f5927ebbba3a29e60ada9212858baa7c67570b7",
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        George Arthur Bradford is Alex James Bradford's grandfather  (common ancestor: [[p-4d5e6f7g8h|George Arthur Bradford]])\nPath:         your son's child\n"
  },
  "p-4d5e6f7g8h p-2b3c4d5e6f": {
-  "json_sha256": "9dc336c99bb1dce69959c16a1be1f1fd73e096c04035b237223a2d837a8c2dda",
+  "json_sha256": "878a6c865a25ff8ecbe0f6a194d6c10befa563c5dba57a8180500021bc83c144",
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        George Arthur Bradford is James Robert Bradford's father  (common ancestor: [[p-4d5e6f7g8h|George Arthur Bradford]])\nPath:         your son\n"
  },
  "p-4d5e6f7g8h p-3c4d5e6f7g": {
@@ -420,7 +420,7 @@
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-3kq9v8x2m1|Caesar]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-4d5e6f7g8h p-4d5e6f7g8h": {
-  "json_sha256": "135d531557c47a44cfb5766e10aa35b80392c0fbc0668ac8ba3fcf364c63d4a3",
+  "json_sha256": "228862c17fbb620b667083efeb99e56286db7323f8d2e410ff9adb3fd59138f7",
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        George Arthur Bradford is George Arthur Bradford's the same person  (common ancestor: [[p-4d5e6f7g8h|George Arthur Bradford]])\nPath:         the same person\n"
  },
  "p-4d5e6f7g8h p-5e6f7g8h9j": {
@@ -480,15 +480,15 @@
   "text": "[[p-4d5e6f7g8h|George Arthur Bradford]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-5e6f7g8h9j p-075114a0f8": {
-  "json_sha256": "d480c24f3ea1e6668fd72db480d2e02d6d4e0e9f1b5937c08cd12869b54efb06",
+  "json_sha256": "eb1153e995deb6ea9ed8e61baffe94c2cd81c313d06723f3eebf75f1b9a0f164",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Edith Louise Hartley is Caleb Comstock Hartley's great-great-granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father's father's father\n"
  },
  "p-5e6f7g8h9j p-0a1b2c3d4e": {
-  "json_sha256": "911dad550b91ae37bffe295864daf7836b2e2cef12aa2ae778e35fbb5694a012",
+  "json_sha256": "39c36dfeb09fcb19093b7d7d33aa7600efc767732b80938db8637709e1fab039",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Edith Louise Hartley is Alex James Bradford's grandmother  (common ancestor: [[p-5e6f7g8h9j|Edith Louise Hartley]])\nPath:         your son's child\n"
  },
  "p-5e6f7g8h9j p-2b3c4d5e6f": {
-  "json_sha256": "f859c2783db31ac58149483ff59f39984afdf1f7261e86fe7d3e7e2557e802fa",
+  "json_sha256": "b1b4f4e75bf190ac77446a1b9128b3c4de8772fa5dc91d0c91fb1b5928b66e64",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Edith Louise Hartley is James Robert Bradford's mother  (common ancestor: [[p-5e6f7g8h9j|Edith Louise Hartley]])\nPath:         your son\n"
  },
  "p-5e6f7g8h9j p-3c4d5e6f7g": {
@@ -504,23 +504,23 @@
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's father\n"
  },
  "p-5e6f7g8h9j p-5e6f7g8h9j": {
-  "json_sha256": "2682dd10f8a9695be4d7bdd4d510be79711a18af8aecd9b8b827d1e288d49ebc",
+  "json_sha256": "3264e8b24bbbdd4d9e5ec2d359fc457d5f3a968f9b9ef2ec04f40545a01662f1",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Edith Louise Hartley is Edith Louise Hartley's the same person  (common ancestor: [[p-5e6f7g8h9j|Edith Louise Hartley]])\nPath:         the same person\n"
  },
  "p-5e6f7g8h9j p-6f7g8h9jka": {
-  "json_sha256": "0d661aeec92bbd7dc6ed72d61ee96fc5bb53490e8d37c17724efc62ae5500add",
+  "json_sha256": "b228eaea575b6a2d4f8bf0be3cd6bc614e0f3dbfa30fe4fcf7d928b4da6a2bfc",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Edith Louise Hartley is Warren Calvin Hartley's daughter  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your father\n"
  },
  "p-5e6f7g8h9j p-7g8h9jkamb": {
-  "json_sha256": "ca14ce9456e9f5ff642c5388738df064539dc748cf50b42bd5b50bda9f96e7ef",
+  "json_sha256": "ba967f0b96ebcff8d7b52701e64810a44c1ca6ab7726ffa21a69a53d9cb5262a",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        Edith Louise Hartley is Clara Mabel Frost's daughter  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your mother\n"
  },
  "p-5e6f7g8h9j p-83e768cacb": {
-  "json_sha256": "19b53184e56947639c9b80df9b099d95a6526616fbddc8bba2ddf92899d3d43f",
+  "json_sha256": "792ff60ba9f0515bcfded6935fe270d05104f0c88a29eb4f0eac69e5d1f5370f",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Edith Louise Hartley is Frances Hartley's great-niece  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's father's sister\n"
  },
  "p-5e6f7g8h9j p-8h9jkambne": {
-  "json_sha256": "14cf4887f6ebf980db6a4f3f39f59833d84d9323443f9e9c7950493178d9afae",
+  "json_sha256": "2b1f56948d93722ab61bf741f6510953d32935097e25a52ddee601955fa08e0b",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        Edith Louise Hartley is Harriet Frances Webb's granddaughter  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your father's mother\n"
  },
  "p-5e6f7g8h9j p-ajnng40q36": {
@@ -528,27 +528,27 @@
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's father's father's associate\n"
  },
  "p-5e6f7g8h9j p-c4b26bb4bc": {
-  "json_sha256": "87c79137bdd811a93bf90da931c7ded70ece19fe49295c5d743c5945876f90cc",
+  "json_sha256": "436ddda68775de028f1b80c0c5204128d6d536719756b9c56c8e31dab0422687",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Edith Louise Hartley is Ethel Hartley's great-niece  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's father's sister\n"
  },
  "p-5e6f7g8h9j p-cd795c61e0": {
-  "json_sha256": "5cd7a68bc62844843e8b554b1932edeb9cf39481686995ba8c96b34b16595a94",
+  "json_sha256": "7989d7cc0527ebc545548b8054b066a18f3994131c578096138391fc21eb962a",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Edith Louise Hartley is Margaret A. Cole's great-granddaughter  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your father's father's mother\n"
  },
  "p-5e6f7g8h9j p-d00c678c1a": {
-  "json_sha256": "26e0d93bb4b43e9361dac93822206f4ff5b7a5c655c55004906388f2f266f576",
+  "json_sha256": "cb1c96c5ba26247da81ea523742a2649805180c4302e0e975e258478728f6034",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Edith Louise Hartley is Chastina Augusta Reed's great-great-granddaughter  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's father's father's mother\n"
  },
  "p-5e6f7g8h9j p-de957bcda1": {
-  "json_sha256": "9cdf3e2b343a49937cd5c0bab180b2cf64ef295cb789944208cf319e98f4f959",
+  "json_sha256": "78dc0221795cb39aa2f663cb0fc135fc16d47b3426b5626f52e996ab0da43c25",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Edith Louise Hartley is Thomas Edward Hartley's great-granddaughter  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's father's father\n"
  },
  "p-5e6f7g8h9j p-fa7541e871": {
-  "json_sha256": "504a133d3ca8f9eb5308e991b427a09f90cc8beffc2c619d0d26307452d40e9f",
+  "json_sha256": "648a2016fc1e310f76bf8ea2ddeb443e848cdef56dc64b6e5aef23f910bc51d3",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Edith Louise Hartley is Calvin George Hartley's granddaughter  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father's father\n"
  },
  "p-5e6f7g8h9j p-htyn3mpg9g": {
-  "json_sha256": "3d01479db25eafda61e701917c4fbe71cba8c36af7793578b78f2b7ed55e4392",
+  "json_sha256": "4936bd1e180cfa8f1657e40b941dbc0804710bf8fe57d86226df36f7289d6604",
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Edith Louise Hartley is Ada Jane Hartley's half-niece  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father's sister\n"
  },
  "p-5e6f7g8h9j p-nf819w33dy": {
@@ -560,15 +560,15 @@
   "text": "[[p-5e6f7g8h9j|Edith Louise Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-6f7g8h9jka p-075114a0f8": {
-  "json_sha256": "3229b545baf7bbe5c0b5f5f8e862539cd00f382293659cf16b42126daa8f1369",
+  "json_sha256": "efaaf990e0535d5e67d51d8f708b0623aef2f7c4057b297e65604b46734187a0",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Warren Calvin Hartley is Caleb Comstock Hartley's great-grandson  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father's father\n"
  },
  "p-6f7g8h9jka p-0a1b2c3d4e": {
-  "json_sha256": "5a22078e09a6fc850fe44a16def64cfc184dff3ce7438a4e7850bb85b159d6b9",
+  "json_sha256": "f2f6df30062333342fbd312fad4f008fa6683a1203b52bf6db05a51f1524d8a3",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Warren Calvin Hartley is Alex James Bradford's great-grandfather  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your daughter's son's child\n"
  },
  "p-6f7g8h9jka p-2b3c4d5e6f": {
-  "json_sha256": "68db714d4bd4d33ccb555fe5c1c1df4ac328a81b7788e16baecd20d57a77c49a",
+  "json_sha256": "ceb6187dd3b3643ef0ba1650296d7c927abb5aaae80c0c8acb05407e7d84aadb",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Warren Calvin Hartley is James Robert Bradford's grandfather  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your daughter's son\n"
  },
  "p-6f7g8h9jka p-3c4d5e6f7g": {
@@ -584,11 +584,11 @@
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's son's father\n"
  },
  "p-6f7g8h9jka p-5e6f7g8h9j": {
-  "json_sha256": "bacac0ef612cb5d330cb4ac0416d30871d2fa2cc51e1e6ecba1e78d89486fa29",
+  "json_sha256": "9d64b7e934e532c4a8c45f7aa3604cc53b7f9b89f9620273e61e6ad6baa6a3cc",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Warren Calvin Hartley is Edith Louise Hartley's father  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         your daughter\n"
  },
  "p-6f7g8h9jka p-6f7g8h9jka": {
-  "json_sha256": "e1cb49df143558f9cda92777b3200555edbb25bb1b9d8e505bcb064777c27dd1",
+  "json_sha256": "ff7d7d87f9657b185e6389bd703a1649c391e7b8ae3c376b2d9dd6ca6dc74074",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Warren Calvin Hartley is Warren Calvin Hartley's the same person  (common ancestor: [[p-6f7g8h9jka|Warren Calvin Hartley]])\nPath:         the same person\n"
  },
  "p-6f7g8h9jka p-7g8h9jkamb": {
@@ -596,11 +596,11 @@
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's mother\n"
  },
  "p-6f7g8h9jka p-83e768cacb": {
-  "json_sha256": "aba525f9295ba81d71545c2a5dd1fc9a20fcc8c7497dcb511734d10176a3600f",
+  "json_sha256": "851286467e73919383774b3cf28ea65e3d6569774f7d7a3032b8051a6a6840a9",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Warren Calvin Hartley is Frances Hartley's nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's sister\n"
  },
  "p-6f7g8h9jka p-8h9jkambne": {
-  "json_sha256": "804ad539fe323acf6a0f740c47f475ee672b0a310bfb6d6edebe4f6ef3ef1706",
+  "json_sha256": "356f31262d6af32e171c7be498daf3a36513dc8a5058e2f669f1392169eaa767",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        Warren Calvin Hartley is Harriet Frances Webb's son  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your mother\n"
  },
  "p-6f7g8h9jka p-ajnng40q36": {
@@ -608,27 +608,27 @@
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's father's associate\n"
  },
  "p-6f7g8h9jka p-c4b26bb4bc": {
-  "json_sha256": "c2120978b44e9d93d81156073be3108d3fffadc7a1607146ffb2a97d777bb44a",
+  "json_sha256": "924578c3fb9744880d81efa9f38110f7cb697aa9a248dd8efcba085ef5d8ad73",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Warren Calvin Hartley is Ethel Hartley's nephew  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's sister\n"
  },
  "p-6f7g8h9jka p-cd795c61e0": {
-  "json_sha256": "d894da0ca8a675006a68d70fc5fcf35aa9a0b1d1379dcc65db9fb832ca3d7c2e",
+  "json_sha256": "6cbcf1bb8b5ad257a758b8af6245f3ef885db7d9b3c663bb64f19f724a9d52ba",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Warren Calvin Hartley is Margaret A. Cole's grandson  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your father's mother\n"
  },
  "p-6f7g8h9jka p-d00c678c1a": {
-  "json_sha256": "21adace5df55c14a3ab10c74928e0c2468aaf2257187f9d2c437be456078af09",
+  "json_sha256": "0dbb336e127793e5fca0bb60ebf56ad78765e1c5b2e7b2a798c9fdd1fe3e89ef",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Warren Calvin Hartley is Chastina Augusta Reed's great-grandson  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's father's mother\n"
  },
  "p-6f7g8h9jka p-de957bcda1": {
-  "json_sha256": "e75b0867db8e3afddf507d5f958085bda20fa1b318946767d06269aef8c52177",
+  "json_sha256": "faf4480c7042f9fc498a4a30f445a73734e20cf7eae24cdb192b903ef83f5f11",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Warren Calvin Hartley is Thomas Edward Hartley's grandson  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's father\n"
  },
  "p-6f7g8h9jka p-fa7541e871": {
-  "json_sha256": "1c36a4e842c0b4310d71a8875a17cac58d0e68e0f02fe0a362785ed78a42308a",
+  "json_sha256": "bef818f24f190c84be0056835029ace62c13d10b02874d6503acfe8cee0f9c7d",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Warren Calvin Hartley is Calvin George Hartley's son  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father\n"
  },
  "p-6f7g8h9jka p-htyn3mpg9g": {
-  "json_sha256": "cddfecfa2920dbbdb1aad812d879d0535a9cfdb874761354e6fac3061bd1244b",
+  "json_sha256": "69d39d4002159383c6f75140a786fe86eb9ef0d1f9dcb1ccba2fc2933c379840",
   "text": "[[p-6f7g8h9jka|Warren Calvin Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Warren Calvin Hartley is Ada Jane Hartley's half-brother  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your sister\n"
  },
  "p-6f7g8h9jka p-nf819w33dy": {
@@ -644,11 +644,11 @@
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's father's father's father's father\n"
  },
  "p-7g8h9jkamb p-0a1b2c3d4e": {
-  "json_sha256": "e6c1ffd3b7185da34b1151a6589676451d9517f0cccd45dd3e8fa6677d5cc658",
+  "json_sha256": "a7f2bce734b6c993149514759fdb1ab104f5ff2cde55ef24dbe6306c61c87b70",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Clara Mabel Frost is Alex James Bradford's great-grandmother  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your daughter's son's child\n"
  },
  "p-7g8h9jkamb p-2b3c4d5e6f": {
-  "json_sha256": "df4c35f3386c24f4a841b2408d1c3c13127995f874f4bed1ba5fb398a2ad0020",
+  "json_sha256": "58ced2dd984d0a0c3847edbf43f26def6732f653112ef990f0e1b8a4b591866c",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Clara Mabel Frost is James Robert Bradford's grandmother  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your daughter's son\n"
  },
  "p-7g8h9jkamb p-3c4d5e6f7g": {
@@ -664,7 +664,7 @@
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's son's father\n"
  },
  "p-7g8h9jkamb p-5e6f7g8h9j": {
-  "json_sha256": "5a74520465ecac083d92ffa745c53a0669f61566ef2a2fbee90884ef9c728b59",
+  "json_sha256": "c1e7ab1e961d3439502f959b4813041f24bd3ea6ee1aa3e86dcf313c4d6f0181",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Clara Mabel Frost is Edith Louise Hartley's mother  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         your daughter\n"
  },
  "p-7g8h9jkamb p-6f7g8h9jka": {
@@ -672,7 +672,7 @@
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your daughter's father\n"
  },
  "p-7g8h9jkamb p-7g8h9jkamb": {
-  "json_sha256": "7e38c736ccfa5eb84b0b8f7b07b3a5e96f6c1e0aebce541822fe4bb3d8172175",
+  "json_sha256": "8baa5a2cccacc488b7c7127dd5a87d8c48ae1048044cc1fcdac1f393748960bf",
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        Clara Mabel Frost is Clara Mabel Frost's the same person  (common ancestor: [[p-7g8h9jkamb|Clara Mabel Frost]])\nPath:         the same person\n"
  },
  "p-7g8h9jkamb p-83e768cacb": {
@@ -720,15 +720,15 @@
   "text": "[[p-7g8h9jkamb|Clara Mabel Frost]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-83e768cacb p-075114a0f8": {
-  "json_sha256": "62250386b6e1e273dee3919add6b084a53c0d0717c1fe2f8711468d0e2047fa0",
+  "json_sha256": "8d7d5d4057786291624c6ea90f4561399b1ddf5836c3cbed3ada85e3b6399369",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Frances Hartley is Caleb Comstock Hartley's granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father\n"
  },
  "p-83e768cacb p-0a1b2c3d4e": {
-  "json_sha256": "3b67aacf3b5e9c29f9fc3e7d5b715bf85af7b9eae9fe1ab21ed082a6e83ff233",
+  "json_sha256": "08ef41e216a3b42e13a00d9e71a01e83079b364eff0f26f1aea6f39024c3b164",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Frances Hartley is Alex James Bradford's great-great-great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter's son's child\n"
  },
  "p-83e768cacb p-2b3c4d5e6f": {
-  "json_sha256": "97c7559a0cacb77c7fda38feb3ba1cbd69f63e6778cccd1f8b574622e2e27930",
+  "json_sha256": "a192810e0e5ba07ac566cbc0f91051bdac9255673edd3c5e13e0f228fe61ee5b",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Frances Hartley is James Robert Bradford's great-great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter's son\n"
  },
  "p-83e768cacb p-3c4d5e6f7g": {
@@ -744,11 +744,11 @@
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's son's daughter's son's father\n"
  },
  "p-83e768cacb p-5e6f7g8h9j": {
-  "json_sha256": "e2da52605543ff10343e464702b7977142fd26c083740e0a5f86ec942ee4f3d0",
+  "json_sha256": "206131e8539394ede91dbbd8543853eb91cf28697a99f00e6829eb6779e44037",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Frances Hartley is Edith Louise Hartley's great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter\n"
  },
  "p-83e768cacb p-6f7g8h9jka": {
-  "json_sha256": "0ef7210ce0d7b0a7dd439b4ef06f6832964608b1c71e151f5688b33f6253e4aa",
+  "json_sha256": "866539117093aa90b9d9e03ae7a05b09f326938e416a9d98c1701733bdfd5754",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Frances Hartley is Warren Calvin Hartley's aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son\n"
  },
  "p-83e768cacb p-7g8h9jkamb": {
@@ -756,7 +756,7 @@
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's son's daughter's mother\n"
  },
  "p-83e768cacb p-83e768cacb": {
-  "json_sha256": "bcb3a931c0926a374432dca808536e8cd46fa6b794adceab4973ab8ff21ac957",
+  "json_sha256": "f37c20aff987d352b98d1e2d351e4ff290b47512a4da6aa48bdeecb64b779858",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Frances Hartley is Frances Hartley's the same person  (common ancestor: [[p-83e768cacb|Frances Hartley]])\nPath:         the same person\n"
  },
  "p-83e768cacb p-8h9jkambne": {
@@ -768,27 +768,27 @@
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's associate\n"
  },
  "p-83e768cacb p-c4b26bb4bc": {
-  "json_sha256": "44ea53ab91124cbb6a94103480d45578b44d1cd35a91a205bbd8a163c2de37e1",
+  "json_sha256": "688de848b571b6f45b67b5ee1baacdbfb92ac900bd878884994ba590721c8c15",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Frances Hartley is Ethel Hartley's sister  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your sister\n"
  },
  "p-83e768cacb p-cd795c61e0": {
-  "json_sha256": "3acd9c917086412fa585a91fa8f97fb093218dd77c467f5f446f8e55cf8c0c2a",
+  "json_sha256": "81f1fcbf142323c6288b1a9223524c3aa5db9a7aab46c4d8dd2a8c8a49a11034",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Frances Hartley is Margaret A. Cole's daughter  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your mother\n"
  },
  "p-83e768cacb p-d00c678c1a": {
-  "json_sha256": "c20e38f9555bbcb70152856f438f8ff60fa436df65ed512e5ae9a4c0bfb19498",
+  "json_sha256": "34da80690daaa91cd65a7369ab45b8f6ff189c9b8f7f48dd3257551391e7f3c7",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Frances Hartley is Chastina Augusta Reed's granddaughter  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's mother\n"
  },
  "p-83e768cacb p-de957bcda1": {
-  "json_sha256": "3622f5197f165f7fb3da87127deb4d47a3c72dfcddb0ca8792832ab3e802a77d",
+  "json_sha256": "ed37c6512ddcd1c1935d8187dbf1df01005297fd74d4207ff525a1517096ee42",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Frances Hartley is Thomas Edward Hartley's daughter  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father\n"
  },
  "p-83e768cacb p-fa7541e871": {
-  "json_sha256": "40e1b21b0a2a020fcf4ab5c1b9099fff7a7e0203ed20186c30453c8624b57656",
+  "json_sha256": "3d2ae4d6a6e210cffdac91fe7ca86a63871774cb99b94706c34377af9dcacd58",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Frances Hartley is Calvin George Hartley's sister  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother\n"
  },
  "p-83e768cacb p-htyn3mpg9g": {
-  "json_sha256": "88c648fa6fcfdc0c08620b58dff13c5853366a8fe038033ffa330de56dc0cdba",
+  "json_sha256": "70195d8a14c366af694c9a87f83f47a1493de1e87c81c2151cf1c78649feeaca",
   "text": "[[p-83e768cacb|Frances Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Frances Hartley is Ada Jane Hartley's aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's daughter\n"
  },
  "p-83e768cacb p-nf819w33dy": {
@@ -804,11 +804,11 @@
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Harriet Frances Webb is Caleb Comstock Hartley's granddaughter-in-law  (Caleb Comstock Hartley's grandson's wife)\nPath:         your husband's father's father\n"
  },
  "p-8h9jkambne p-0a1b2c3d4e": {
-  "json_sha256": "9f04b37a7f13d6e6b6d5d6a0d62ee58deefd7ee5ec02870be69cdf25f6fc3e7c",
+  "json_sha256": "22562a0b04f4c87ed890f60035686f245a01620a825f133d7b26ef626f140cd3",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Harriet Frances Webb is Alex James Bradford's great-great-grandmother  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your son's daughter's son's child\n"
  },
  "p-8h9jkambne p-2b3c4d5e6f": {
-  "json_sha256": "32d63a442df71f433c946d9b03121be971cd90ec1553fdc678b5f998c96628a3",
+  "json_sha256": "a090f05a79fcc0298fe150ac0194f32cb312f6d42a4c6bb1a7faf0329b87e88f",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Harriet Frances Webb is James Robert Bradford's great-grandmother  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your son's daughter's son\n"
  },
  "p-8h9jkambne p-3c4d5e6f7g": {
@@ -824,11 +824,11 @@
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's daughter's son's father\n"
  },
  "p-8h9jkambne p-5e6f7g8h9j": {
-  "json_sha256": "6ecaf90bc0962c834f0008240adcd82e0f7e0b9abe23278e3c6fd997828fd81e",
+  "json_sha256": "5a83423e246109779a8819fb3c5b1a0ebd7f43a4471ef7a93bd833613ca69c50",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Harriet Frances Webb is Edith Louise Hartley's grandmother  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your son's daughter\n"
  },
  "p-8h9jkambne p-6f7g8h9jka": {
-  "json_sha256": "b728ba29651b2f49fca6112d22a21122275a2c76ac60fe9f8ed89ffa833b9c69",
+  "json_sha256": "44c599952fea016e3370a0fba0e6e93d65cb918d42b51958e4bc05a1c5add082",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Harriet Frances Webb is Warren Calvin Hartley's mother  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         your son\n"
  },
  "p-8h9jkambne p-7g8h9jkamb": {
@@ -840,7 +840,7 @@
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Harriet Frances Webb is Frances Hartley's sister-in-law  (Frances Hartley's brother's wife)\nPath:         your husband's sister\n"
  },
  "p-8h9jkambne p-8h9jkambne": {
-  "json_sha256": "f52f61b46e4ad3814a808447602cb1d783a5fcbb8fdf07d483b7fc7fddbec345",
+  "json_sha256": "e97b249cc5cb0856481c4aba58a7442e29e59d2f4e18a0a5e8259f5fa63b4ae0",
   "text": "[[p-8h9jkambne|Harriet Frances Webb]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        Harriet Frances Webb is Harriet Frances Webb's the same person  (common ancestor: [[p-8h9jkambne|Harriet Frances Webb]])\nPath:         the same person\n"
  },
  "p-8h9jkambne p-ajnng40q36": {
@@ -924,7 +924,7 @@
   "text": "[[p-ajnng40q36|Charley Layng]]  <->  [[p-8h9jkambne|Harriet Frances Webb]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your associate's son's wife\n"
  },
  "p-ajnng40q36 p-ajnng40q36": {
-  "json_sha256": "5aa48babda1243e0f84fd305993dcd81e3dd3fd96151104d3ea1f48bdc9da4e7",
+  "json_sha256": "4f509e370d1540a0130e4d0ffa4d43e65757d014dfcdc0eac8d7fcbdcf7c5a04",
   "text": "[[p-ajnng40q36|Charley Layng]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        Charley Layng is Charley Layng's the same person  (common ancestor: [[p-ajnng40q36|Charley Layng]])\nPath:         the same person\n"
  },
  "p-ajnng40q36 p-c4b26bb4bc": {
@@ -960,15 +960,15 @@
   "text": "[[p-ajnng40q36|Charley Layng]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-c4b26bb4bc p-075114a0f8": {
-  "json_sha256": "02b2e1ea9477bbbbfff2aba8cb46c7cd4a6064e1bc90ee91c2af0aa6ed90415e",
+  "json_sha256": "5d4170772bbb35d64367d2abf952199d7ae6538bdb5195b24de26436a7b7fcc2",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Ethel Hartley is Caleb Comstock Hartley's granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father\n"
  },
  "p-c4b26bb4bc p-0a1b2c3d4e": {
-  "json_sha256": "178a56065599fc22ae656a2874f93c1764c8ef773f7aaa825aed1a73a7155e1f",
+  "json_sha256": "03d5cf7ca3efa293bd2d39704c55230c827f5324708cf56a0459504741d62383",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Ethel Hartley is Alex James Bradford's great-great-great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter's son's child\n"
  },
  "p-c4b26bb4bc p-2b3c4d5e6f": {
-  "json_sha256": "1fbf6c4cb328375486d5c9af6d49b24d10757a1312396c250733f84f2236b700",
+  "json_sha256": "e16f132f88c0dc2b5e61b7587a4f3128d3ef93f8bca49485a3e7616b3f71b901",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Ethel Hartley is James Robert Bradford's great-great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter's son\n"
  },
  "p-c4b26bb4bc p-3c4d5e6f7g": {
@@ -984,11 +984,11 @@
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's son's daughter's son's father\n"
  },
  "p-c4b26bb4bc p-5e6f7g8h9j": {
-  "json_sha256": "241387e1483e09976ecd3b194b0d9b07ef92df4ac81d20e90f57f20289a92dd5",
+  "json_sha256": "f9c86beec8350c8c83fcc8b1db4566b3b14bdb3f0d02ad5a3c1b58ef0b5e520f",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Ethel Hartley is Edith Louise Hartley's great-aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son's daughter\n"
  },
  "p-c4b26bb4bc p-6f7g8h9jka": {
-  "json_sha256": "1d9050b5bb6038332571486462e27fa68e158ec98f6e65d9894e6a48ccfb9455",
+  "json_sha256": "9918d50270d2ae77d950adbadc3ce9f5460c35f58f04bc7bcc0f02f92fc0bfd9",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Ethel Hartley is Warren Calvin Hartley's aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's son\n"
  },
  "p-c4b26bb4bc p-7g8h9jkamb": {
@@ -996,7 +996,7 @@
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's son's daughter's mother\n"
  },
  "p-c4b26bb4bc p-83e768cacb": {
-  "json_sha256": "5fcdabea39104ec796419540dec31d0a59b6d85e95591656aa227cbc3a23211d",
+  "json_sha256": "269612e2341c24f2a5820a4f507dcbcc87208cd403ead23809d9db8b8c37bbd1",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Ethel Hartley is Frances Hartley's sister  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your sister\n"
  },
  "p-c4b26bb4bc p-8h9jkambne": {
@@ -1008,27 +1008,27 @@
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's associate\n"
  },
  "p-c4b26bb4bc p-c4b26bb4bc": {
-  "json_sha256": "d41875b283959221cb02e3645771e889ab22fc11b363a580961159943c5ed40b",
+  "json_sha256": "d32894fab5ea6ba213c54bef02d1c2b625defc4e4c61055fe45a7eb5eb8d6c6d",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Ethel Hartley is Ethel Hartley's the same person  (common ancestor: [[p-c4b26bb4bc|Ethel Hartley]])\nPath:         the same person\n"
  },
  "p-c4b26bb4bc p-cd795c61e0": {
-  "json_sha256": "bfe54921e97c31c5ee5ff5da428da3c78668a0f3e5b4df45d2ba91bb7c088f88",
+  "json_sha256": "652230c4605a09c7b6e7697be8f1b09c3a67b9c3947afc2b932f905ef1023570",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Ethel Hartley is Margaret A. Cole's daughter  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your mother\n"
  },
  "p-c4b26bb4bc p-d00c678c1a": {
-  "json_sha256": "d0de09b86074c3cc659a668303931733dde95b3a3bac56b0ccc37f39dd75c994",
+  "json_sha256": "33afa26572ee851b2c6c571ede3f9214ec3a1d64761afc76e01b7859cfc8a919",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Ethel Hartley is Chastina Augusta Reed's granddaughter  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's mother\n"
  },
  "p-c4b26bb4bc p-de957bcda1": {
-  "json_sha256": "ce02a65f1ad77ab303663702e129bd33650e1d91c52d69c6ba72ebe173740a5f",
+  "json_sha256": "c5c8aef0ac35ea6ac4d63eb195ffb958c782adc901ac0347a3251e1e7cd0915e",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Ethel Hartley is Thomas Edward Hartley's daughter  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father\n"
  },
  "p-c4b26bb4bc p-fa7541e871": {
-  "json_sha256": "1651efbbb51287470fc39b4d08b83fb11e5afd08e469ebda068d7e03048b6d95",
+  "json_sha256": "65cbf10129d3d61499b838bc80685eb013da03dca809899aca0cc372d0a7e132",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Ethel Hartley is Calvin George Hartley's sister  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother\n"
  },
  "p-c4b26bb4bc p-htyn3mpg9g": {
-  "json_sha256": "f9682d41cb3df6f1b48d4f1ba820e109c9970e85a839eaa4f76cfe744836c1ee",
+  "json_sha256": "79c9ed5cac9c578b6633fc5fdedb65a87a6ed2ea21fcae2e8051c8a013f235c4",
   "text": "[[p-c4b26bb4bc|Ethel Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Ethel Hartley is Ada Jane Hartley's aunt  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your brother's daughter\n"
  },
  "p-c4b26bb4bc p-nf819w33dy": {
@@ -1044,11 +1044,11 @@
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Margaret A. Cole is Caleb Comstock Hartley's daughter-in-law  (Caleb Comstock Hartley's son's wife)\nPath:         your husband's father\n"
  },
  "p-cd795c61e0 p-0a1b2c3d4e": {
-  "json_sha256": "117a5eb942a9359401163f9ce776a138a77ec88e7781c3ea584b979df51f153f",
+  "json_sha256": "376208a618a4ce50a996136dac54d635b9d2d362b50a812d3e1e4aba63fa7820",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Margaret A. Cole is Alex James Bradford's great-great-great-grandmother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son's son's daughter's son's child\n"
  },
  "p-cd795c61e0 p-2b3c4d5e6f": {
-  "json_sha256": "e1700e6979d6b5e8663d31b195250c89a35cf537a8689a92c6d335c27b45802f",
+  "json_sha256": "56389267802cf9ec031deed93b6aa264b7b88993143c7f86540188d806901df4",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Margaret A. Cole is James Robert Bradford's great-great-grandmother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son's son's daughter's son\n"
  },
  "p-cd795c61e0 p-3c4d5e6f7g": {
@@ -1064,11 +1064,11 @@
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's daughter's son's father\n"
  },
  "p-cd795c61e0 p-5e6f7g8h9j": {
-  "json_sha256": "1a6cea66397ecd3846fac476107481814067a528b722a711671108de1021171b",
+  "json_sha256": "313c9f7317b2d69668ef62787292adc9b0e9a3388218380b17e1811616fca325",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Margaret A. Cole is Edith Louise Hartley's great-grandmother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son's son's daughter\n"
  },
  "p-cd795c61e0 p-6f7g8h9jka": {
-  "json_sha256": "b0b3b24c896df20d06bc39da54300f9315c6b284103c159f43f112a52e8af07f",
+  "json_sha256": "201584f1897180778fa59f4a52f41811428515e2492f022ba7a0cce8aa82fec7",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Margaret A. Cole is Warren Calvin Hartley's grandmother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son's son\n"
  },
  "p-cd795c61e0 p-7g8h9jkamb": {
@@ -1076,7 +1076,7 @@
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's daughter's mother\n"
  },
  "p-cd795c61e0 p-83e768cacb": {
-  "json_sha256": "21cedfbff1e90a106210c4b9a1976fa8c24626542b9c6a442d43953708a25f04",
+  "json_sha256": "834aeadc8717dd76bb1793244ed2164a7cf78854b3d6a34a4e73a066ff3bfd16",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Margaret A. Cole is Frances Hartley's mother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your daughter\n"
  },
  "p-cd795c61e0 p-8h9jkambne": {
@@ -1088,11 +1088,11 @@
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your husband's associate\n"
  },
  "p-cd795c61e0 p-c4b26bb4bc": {
-  "json_sha256": "26c861c380261b3c7fd632499edd672c4ae5aa945ba995e27a50de0de84d0741",
+  "json_sha256": "bad845178d0f3422af62c3fd97320a4f7b3dfae95f16b9d22c97983fc9337aee",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Margaret A. Cole is Ethel Hartley's mother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your daughter\n"
  },
  "p-cd795c61e0 p-cd795c61e0": {
-  "json_sha256": "853884908605d9d95583824b4e4cf2cb669251407256cedd331a63bd4d9c492f",
+  "json_sha256": "dfa2b2b27d8bafa7e85dc354b420b77a74cc6dde77254f0a136865a874dfc41a",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Margaret A. Cole is Margaret A. Cole's the same person  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         the same person\n"
  },
  "p-cd795c61e0 p-d00c678c1a": {
@@ -1104,11 +1104,11 @@
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Margaret A. Cole is Thomas Edward Hartley's wife\nPath:         your husband\n"
  },
  "p-cd795c61e0 p-fa7541e871": {
-  "json_sha256": "552a9ee536300e127166de07b15341edf82408fcb454c3e4e78002faf351feeb",
+  "json_sha256": "4d8ae5d9f7954d30bcdc80753d4b3317fb792f0bd1caad8f04edc281673bc42a",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Margaret A. Cole is Calvin George Hartley's mother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son\n"
  },
  "p-cd795c61e0 p-htyn3mpg9g": {
-  "json_sha256": "28bfca6136a1d106bb4379c2d5421819e013a72eb7036517837e18e85dd865a8",
+  "json_sha256": "3701e29000eb48c55fa888579e4a64bb08f266ad2d7b4699e713532fa839a99a",
   "text": "[[p-cd795c61e0|Margaret A. Cole]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Margaret A. Cole is Ada Jane Hartley's grandmother  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your son's daughter\n"
  },
  "p-cd795c61e0 p-nf819w33dy": {
@@ -1124,11 +1124,11 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's father\n"
  },
  "p-d00c678c1a p-0a1b2c3d4e": {
-  "json_sha256": "8243737275a2eb01672debc8fdf5d045291efe9fca26e2d3df3afd6c6e446771",
+  "json_sha256": "cb431df95d8ddd07078ac0138fbb9748803ad900659e0613631f9748f21b5a78",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Chastina Augusta Reed is Alex James Bradford's great-great-great-great-grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son's son's daughter's son's child\n"
  },
  "p-d00c678c1a p-2b3c4d5e6f": {
-  "json_sha256": "a19418df8a4b91f10ff7ad49d1090091efc71008e4706bb3cadb0f342dd882ef",
+  "json_sha256": "4d2e58f21a3ee52f528270efa92726e852a80d0e8ee5b9cb2e6225968ae58243",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Chastina Augusta Reed is James Robert Bradford's great-great-great-grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son's son's daughter's son\n"
  },
  "p-d00c678c1a p-3c4d5e6f7g": {
@@ -1144,11 +1144,11 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's son's daughter's son's father\n"
  },
  "p-d00c678c1a p-5e6f7g8h9j": {
-  "json_sha256": "c47b8e4dd7f0ed0d56243deac5b4c62ac6ae5f852b6eda5838088de72f34a2e4",
+  "json_sha256": "87fe77d0e75710c6aae26d8032a4cffb95152314b7220d01ef2017012c813954",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Chastina Augusta Reed is Edith Louise Hartley's great-great-grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son's son's daughter\n"
  },
  "p-d00c678c1a p-6f7g8h9jka": {
-  "json_sha256": "aab8aa1bfe6cda4180f135e57a8f8104827abe068b3c8b72978a25988c74d7c2",
+  "json_sha256": "5ed0f15c26bd74b2e9ec37f840b3ae92318a45362e3a232874e3a2b48973fa8f",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Chastina Augusta Reed is Warren Calvin Hartley's great-grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son's son\n"
  },
  "p-d00c678c1a p-7g8h9jkamb": {
@@ -1156,7 +1156,7 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's son's daughter's mother\n"
  },
  "p-d00c678c1a p-83e768cacb": {
-  "json_sha256": "3493a31ce2d2f9a3f93a60e88e8731307e86f663e8bafc5d3169e4241c3ad319",
+  "json_sha256": "a55807bfd2a23292849383e19505b1fec93eb0a8d5ce12e58d05b2a113aee71f",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Chastina Augusta Reed is Frances Hartley's grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's daughter\n"
  },
  "p-d00c678c1a p-8h9jkambne": {
@@ -1168,7 +1168,7 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's associate\n"
  },
  "p-d00c678c1a p-c4b26bb4bc": {
-  "json_sha256": "2b597568527c8c1721854aa37a44c1e1ccb456253e52013a925d50ec5c601f33",
+  "json_sha256": "da07977ad6bcabb24b1dbbf3f867c4f4fb9a9ba46c091e9a81a9525cf4c079fd",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Chastina Augusta Reed is Ethel Hartley's grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's daughter\n"
  },
  "p-d00c678c1a p-cd795c61e0": {
@@ -1176,19 +1176,19 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Chastina Augusta Reed is Margaret A. Cole's mother-in-law  (Margaret A. Cole's husband's mother)\nPath:         your son's wife\n"
  },
  "p-d00c678c1a p-d00c678c1a": {
-  "json_sha256": "e4ea4abec14e53e3eb99bba2222105dd8ffd989ba6890070c5165e0f644284ed",
+  "json_sha256": "ac43608261424dccd49c6280cbfb39b763e491f99045cd76962b93dd877c089f",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Chastina Augusta Reed is Chastina Augusta Reed's the same person  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         the same person\n"
  },
  "p-d00c678c1a p-de957bcda1": {
-  "json_sha256": "fd6c25048c6a6c87881e9b79a457c228b613285643dc74bb8f95de93d28faeec",
+  "json_sha256": "124d8b9c602761dfef8f976abcb899bf82e1145218e2e4f0b153e212709cff55",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Chastina Augusta Reed is Thomas Edward Hartley's mother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son\n"
  },
  "p-d00c678c1a p-fa7541e871": {
-  "json_sha256": "44ab4811de0dcdd67a82f6e3857350bba2a65667f72736431f7fdfcafa75d817",
+  "json_sha256": "549ae2cdfe500e2f15c9f636365a818c95885f9c5d358987870339011c76c16d",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Chastina Augusta Reed is Calvin George Hartley's grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son\n"
  },
  "p-d00c678c1a p-htyn3mpg9g": {
-  "json_sha256": "1d734ca8e9d4a5f85376dc8bb9d79873354240b149bb325047e195fcc64c8a0f",
+  "json_sha256": "98a77c1f2c819492af72cef10ddd1b014996e7858a49383652d8c8869eb83366",
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Chastina Augusta Reed is Ada Jane Hartley's great-grandmother  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your son's son's daughter\n"
  },
  "p-d00c678c1a p-nf819w33dy": {
@@ -1200,15 +1200,15 @@
   "text": "[[p-d00c678c1a|Chastina Augusta Reed]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-de957bcda1 p-075114a0f8": {
-  "json_sha256": "8dacdfaf027f782651156d7f7f36aa275d3abda3dfa1cca591f8e4ecf949eb90",
+  "json_sha256": "42adac0274487ef637d7a0357a487a618a9d2a30c46ec9cab0f1eed7efcb4aa2",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Thomas Edward Hartley is Caleb Comstock Hartley's son  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father\n"
  },
  "p-de957bcda1 p-0a1b2c3d4e": {
-  "json_sha256": "2df19ca2e814824ed47f77f8693bdf37f5ee8dd2aabdf36aa0ae23d65ffa6b8b",
+  "json_sha256": "cf53f0db5fe7b7ba25127e1bde59af76f1ab17d5486c94d6e4bccb196bf3693d",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Thomas Edward Hartley is Alex James Bradford's great-great-great-grandfather  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son's son's daughter's son's child\n"
  },
  "p-de957bcda1 p-2b3c4d5e6f": {
-  "json_sha256": "cbbb4e621ea8ec0b072621cbaf2518864be5e5edcef644fd6ba5c7517ee18b7f",
+  "json_sha256": "f934e950e0d4129bc0a7305030cb03776ce779c31dd7f8fe3e1207715899b819",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Thomas Edward Hartley is James Robert Bradford's great-great-grandfather  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son's son's daughter's son\n"
  },
  "p-de957bcda1 p-3c4d5e6f7g": {
@@ -1224,11 +1224,11 @@
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's daughter's son's father\n"
  },
  "p-de957bcda1 p-5e6f7g8h9j": {
-  "json_sha256": "eb9aee38b72eb45e6b1cad89695886362cdabc5712a1bc696503ed71245d30cc",
+  "json_sha256": "d63f6e7a1936a6c14da7b128c6a6bda9842c9e8955142667c7be9a4a06ae335f",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Thomas Edward Hartley is Edith Louise Hartley's great-grandfather  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son's son's daughter\n"
  },
  "p-de957bcda1 p-6f7g8h9jka": {
-  "json_sha256": "fedcae987df6aa079a000a94ed245ae2230a20c24c8ccdcb5304364b610a7afc",
+  "json_sha256": "df5158f893d7ac3d9abd48b08cdb4c9089d4455be40fc8cf4d0630f3ee157291",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Thomas Edward Hartley is Warren Calvin Hartley's grandfather  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son's son\n"
  },
  "p-de957bcda1 p-7g8h9jkamb": {
@@ -1236,7 +1236,7 @@
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's son's daughter's mother\n"
  },
  "p-de957bcda1 p-83e768cacb": {
-  "json_sha256": "fc8b41a5a7c00cc50e55af9c557b1e809d41b8d3be02cc7ccf4d16796cfce9e9",
+  "json_sha256": "d8fc99f5d4f580b0200ad38a24fbbd02229ba4360ceaee6c990bc35a56301f10",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Thomas Edward Hartley is Frances Hartley's father  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your daughter\n"
  },
  "p-de957bcda1 p-8h9jkambne": {
@@ -1248,7 +1248,7 @@
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your associate\n"
  },
  "p-de957bcda1 p-c4b26bb4bc": {
-  "json_sha256": "145d3dee1e05f2cea5badd7b33d21a22f106e4b22cd1c00e1c791b2b99f26455",
+  "json_sha256": "4476e8c00d3c76b03da3fe550a6fc4c7b55bb24628b335a19149954236a6b1b8",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Thomas Edward Hartley is Ethel Hartley's father  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your daughter\n"
  },
  "p-de957bcda1 p-cd795c61e0": {
@@ -1256,19 +1256,19 @@
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Thomas Edward Hartley is Margaret A. Cole's husband\nPath:         your wife\n"
  },
  "p-de957bcda1 p-d00c678c1a": {
-  "json_sha256": "138fad504e477a0810f95b91c5fa2499f12b6cc95abf742db1e4c7eb18ca4006",
+  "json_sha256": "eb1d3eac3a4f96832150336804d5f7eaac877dca3ed499f1fcd9b8d8062d1e63",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Thomas Edward Hartley is Chastina Augusta Reed's son  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your mother\n"
  },
  "p-de957bcda1 p-de957bcda1": {
-  "json_sha256": "6c7d3dc894a41bb3ee4ef9383f60a2d096bf6860fe71447f0cef53941f5fa9d2",
+  "json_sha256": "6578879ca3344ede3feb71c8c9f89122eadc16e32c2c0e20fcfbe665d8c3c2e9",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Thomas Edward Hartley is Thomas Edward Hartley's the same person  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         the same person\n"
  },
  "p-de957bcda1 p-fa7541e871": {
-  "json_sha256": "e91be5af628c85af7bcdfd603d956869a3cd712c693cc0b17d9db30ac70c6b30",
+  "json_sha256": "02142b9c51732e80324be6dd057fa1c376833c24ca2736299e97faef2853105d",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Thomas Edward Hartley is Calvin George Hartley's father  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son\n"
  },
  "p-de957bcda1 p-htyn3mpg9g": {
-  "json_sha256": "6d049d0df1ef138a79a5ead018a1631e250f1b2de1d4ee11d608794c7ac59c40",
+  "json_sha256": "9057b7848d34ad72425e61857e6cce95244af4c56f50b24e983a5a5e2183ce34",
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Thomas Edward Hartley is Ada Jane Hartley's grandfather  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your son's daughter\n"
  },
  "p-de957bcda1 p-nf819w33dy": {
@@ -1280,15 +1280,15 @@
   "text": "[[p-de957bcda1|Thomas Edward Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-fa7541e871 p-075114a0f8": {
-  "json_sha256": "a9d56bf6d9660b179f37fdafbf1e83c37f0796b37b26f87532c65118966385b1",
+  "json_sha256": "de43ac0beefa2f836c8e6a65d87e1261c222616fdc9b5566bc95e28e0e9df1a8",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Calvin George Hartley is Caleb Comstock Hartley's grandson  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father\n"
  },
  "p-fa7541e871 p-0a1b2c3d4e": {
-  "json_sha256": "469d0cd0628184c02b0c7aa5356dd53616afefb30c4261f566dd932c43c7fd8c",
+  "json_sha256": "32aae8f955668c2db55bf8916cf4ac7f7ad5933b8f550af2d223b40836e2f869",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Calvin George Hartley is Alex James Bradford's great-great-grandfather  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your son's daughter's son's child\n"
  },
  "p-fa7541e871 p-2b3c4d5e6f": {
-  "json_sha256": "fda7968a4250c00d0a6be0612465f2cac1609d4778496df62fba323fe00a81b6",
+  "json_sha256": "1a52f29d253b1b57917f98b6c7921dbf8b464fcb89d54d0e36b86695276f59fd",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Calvin George Hartley is James Robert Bradford's great-grandfather  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your son's daughter's son\n"
  },
  "p-fa7541e871 p-3c4d5e6f7g": {
@@ -1304,11 +1304,11 @@
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's daughter's son's father\n"
  },
  "p-fa7541e871 p-5e6f7g8h9j": {
-  "json_sha256": "16bcd12774efb52334e0b866535a68d765e9ea04a934a914e3120c6c05ddaba0",
+  "json_sha256": "95d71b98f03e75c9ce59368930a17771b6a96c753b46e978958f6eac25a70d5d",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Calvin George Hartley is Edith Louise Hartley's grandfather  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your son's daughter\n"
  },
  "p-fa7541e871 p-6f7g8h9jka": {
-  "json_sha256": "180c96ac60585c1e85fc3833f69ba5bc2ca1cbbe511a210ddad5d6f42a467601",
+  "json_sha256": "efc946f2ab46080326eb72735aca68e95ac18ef7abae6317dd34edc2c4b7b972",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Calvin George Hartley is Warren Calvin Hartley's father  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your son\n"
  },
  "p-fa7541e871 p-7g8h9jkamb": {
@@ -1316,7 +1316,7 @@
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your son's daughter's mother\n"
  },
  "p-fa7541e871 p-83e768cacb": {
-  "json_sha256": "e7dad64cb8d6da044d67106f7f9ebd47bd0912434a8f2fc10a14f97a22774cb2",
+  "json_sha256": "a2f48e006c68f09d6c546957fddb140522a28598c0aa166bf1d87f389cc9e1bc",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Calvin George Hartley is Frances Hartley's brother  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your sister\n"
  },
  "p-fa7541e871 p-8h9jkambne": {
@@ -1328,27 +1328,27 @@
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's associate\n"
  },
  "p-fa7541e871 p-c4b26bb4bc": {
-  "json_sha256": "43b34af68e6983993902fe06439c5a76ec84ede925d0ab6240eadabb8f4dce66",
+  "json_sha256": "ff748d740f05b8b870b4dfb22f2740a17ccd73cba5ce4337dd30d32d4df089bb",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Calvin George Hartley is Ethel Hartley's brother  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your sister\n"
  },
  "p-fa7541e871 p-cd795c61e0": {
-  "json_sha256": "f5beec6792585420ed284bf630fb007f76fdf3daaa9034fe1a446ee5073830c4",
+  "json_sha256": "64876472d737c622e3a94a1f622f5af24b2d12edb702fe3475d25c1d6c3b5521",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Calvin George Hartley is Margaret A. Cole's son  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your mother\n"
  },
  "p-fa7541e871 p-d00c678c1a": {
-  "json_sha256": "289c25e30d179299ec2682d311b9deca35de5d105d51be9f19d0783903a24e88",
+  "json_sha256": "b29e42b64a7d8fd5613bd502b5abf8316fdb6c735b2977fb6c6b09e44d21b8a3",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Calvin George Hartley is Chastina Augusta Reed's grandson  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's mother\n"
  },
  "p-fa7541e871 p-de957bcda1": {
-  "json_sha256": "425ef868cca6c6e4cd2e5ca80d9a4c4a7621b4335ac6eea557ebe0ddbee77605",
+  "json_sha256": "5c366c22cbd1256670895690a8476419e67a79d8254d36ccc49586553524506f",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Calvin George Hartley is Thomas Edward Hartley's son  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father\n"
  },
  "p-fa7541e871 p-fa7541e871": {
-  "json_sha256": "1e05c5982edc1b9bc0f7800d268ae45f8ee178159f3dfeb10f2dae73294f2171",
+  "json_sha256": "fab16c0ff819dac1c498d98b9ec51c4e0a145f3727c3871ce39e0d89d7640cec",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Calvin George Hartley is Calvin George Hartley's the same person  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         the same person\n"
  },
  "p-fa7541e871 p-htyn3mpg9g": {
-  "json_sha256": "55c779fcc7cdfc4d8ee8b5b726ce697f2225778a7692e3fc65ade03226230529",
+  "json_sha256": "754ef3016075f7f2d489dc8e977241f0c7b5fa9857bc3788e9e71c4b7adeba41",
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Calvin George Hartley is Ada Jane Hartley's father  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your daughter\n"
  },
  "p-fa7541e871 p-nf819w33dy": {
@@ -1360,15 +1360,15 @@
   "text": "[[p-fa7541e871|Calvin George Hartley]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-htyn3mpg9g p-075114a0f8": {
-  "json_sha256": "60526b8057389cb5fc743c3b8b13cb6f783169b0ea2fc5eb7712609169ae09bd",
+  "json_sha256": "3e6fdd9acd25977487aa2520d8b2b4d72dcfcb11a586c348515280de2f0bfc45",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-075114a0f8|Caleb Comstock Hartley]]\nBlood:        Ada Jane Hartley is Caleb Comstock Hartley's great-granddaughter  (common ancestor: [[p-075114a0f8|Caleb Comstock Hartley]])\nPath:         your father's father's father\n"
  },
  "p-htyn3mpg9g p-0a1b2c3d4e": {
-  "json_sha256": "394026a7fbe305962333e762d1744400124defd393fb448f5917f8185180ef42",
+  "json_sha256": "c546d7b3e7295f63cd544bab0c38bbefb1506aadf1d2a38521ebbce55b0e7645",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-0a1b2c3d4e|Alex James Bradford]]\nBlood:        Ada Jane Hartley is Alex James Bradford's half great-great-aunt  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your brother's daughter's son's child\n"
  },
  "p-htyn3mpg9g p-2b3c4d5e6f": {
-  "json_sha256": "8ca6f0a4eb671e2b44fcef6ae13d42a4d425faffc93b6d109aa7c26850357566",
+  "json_sha256": "d5cc00bbdd320214821c069df41360bea1f4ed1bd477291709545086a6a14c7f",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-2b3c4d5e6f|James Robert Bradford]]\nBlood:        Ada Jane Hartley is James Robert Bradford's half great-aunt  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your brother's daughter's son\n"
  },
  "p-htyn3mpg9g p-3c4d5e6f7g": {
@@ -1384,11 +1384,11 @@
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-4d5e6f7g8h|George Arthur Bradford]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's daughter's son's father\n"
  },
  "p-htyn3mpg9g p-5e6f7g8h9j": {
-  "json_sha256": "82fa33b3e36661dc406ef23ebfe448d2b2cdc2ac4156ba686166b3510ae31bce",
+  "json_sha256": "a3038717346484a44f26a31bad6eb10dbd1e1eeab0896a406265befdaba528bf",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-5e6f7g8h9j|Edith Louise Hartley]]\nBlood:        Ada Jane Hartley is Edith Louise Hartley's half-aunt  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your brother's daughter\n"
  },
  "p-htyn3mpg9g p-6f7g8h9jka": {
-  "json_sha256": "149c16fc98706ac79de6567f0c36ec7976d51a6a0aeb1288e7713fac6354ab18",
+  "json_sha256": "5d09da25554180388e66d7c1b83c6d97b096f27bf233f9cf9abe7999377f44d0",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-6f7g8h9jka|Warren Calvin Hartley]]\nBlood:        Ada Jane Hartley is Warren Calvin Hartley's half-sister  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your brother\n"
  },
  "p-htyn3mpg9g p-7g8h9jkamb": {
@@ -1396,7 +1396,7 @@
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-7g8h9jkamb|Clara Mabel Frost]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your brother's daughter's mother\n"
  },
  "p-htyn3mpg9g p-83e768cacb": {
-  "json_sha256": "4a3295d611d9d53595ef91b3a456865067191a1105895492ad432eea4a78fc4c",
+  "json_sha256": "d361a5b39a8b5929f7e3d7aa6662840989267bcd5bbe44bb309ab5c6079e8282",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-83e768cacb|Frances Hartley]]\nBlood:        Ada Jane Hartley is Frances Hartley's niece  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's sister\n"
  },
  "p-htyn3mpg9g p-8h9jkambne": {
@@ -1408,31 +1408,31 @@
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-ajnng40q36|Charley Layng]]\nBlood:        no blood relationship found in the recorded tree\nPath:         your father's father's associate\n"
  },
  "p-htyn3mpg9g p-c4b26bb4bc": {
-  "json_sha256": "cf404b84ecbeba9e543cefef87deb347815f2bd8f894a1960d2456baeb2e00a7",
+  "json_sha256": "771cb9b5c1485910b0dac6bcb22fcd5cad43265b36ebf236dd4ffc9da372088e",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-c4b26bb4bc|Ethel Hartley]]\nBlood:        Ada Jane Hartley is Ethel Hartley's niece  (common ancestors: [[p-cd795c61e0|Margaret A. Cole]], [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's sister\n"
  },
  "p-htyn3mpg9g p-cd795c61e0": {
-  "json_sha256": "8dcf0ab563d106a1b8f15d2402e411eae259dde811a8bc208d9eb290e8e0af0d",
+  "json_sha256": "282e3a1953777e00aaa3973b8983fa5115303032dad964dd0476a79b0c137996",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-cd795c61e0|Margaret A. Cole]]\nBlood:        Ada Jane Hartley is Margaret A. Cole's granddaughter  (common ancestor: [[p-cd795c61e0|Margaret A. Cole]])\nPath:         your father's mother\n"
  },
  "p-htyn3mpg9g p-d00c678c1a": {
-  "json_sha256": "234d10ce90f5d0ff5a2f0ba56061a8ad565dfc2611d063e754f517dd3ee2fee5",
+  "json_sha256": "3fc951347f49c0c7f53a16baaa7516f319a18e6ed48f0da49fe2fdda16229d75",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-d00c678c1a|Chastina Augusta Reed]]\nBlood:        Ada Jane Hartley is Chastina Augusta Reed's great-granddaughter  (common ancestor: [[p-d00c678c1a|Chastina Augusta Reed]])\nPath:         your father's father's mother\n"
  },
  "p-htyn3mpg9g p-de957bcda1": {
-  "json_sha256": "0b8f11025ec30460593f3c33d608d38b7a63133d315fda8a3fa22f89f495c213",
+  "json_sha256": "569574a5d5d8520f25b5f9b2e6095a4b9b01b51a2ac6b0edf5e6b58b5eff9127",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-de957bcda1|Thomas Edward Hartley]]\nBlood:        Ada Jane Hartley is Thomas Edward Hartley's granddaughter  (common ancestor: [[p-de957bcda1|Thomas Edward Hartley]])\nPath:         your father's father\n"
  },
  "p-htyn3mpg9g p-fa7541e871": {
-  "json_sha256": "77534dc77b5b57d8555d4ec2b9b0e9f05ffa07194e39ae1b46071943cde5268b",
+  "json_sha256": "7b988df6513177033fe4300660f61a8f0532d4e86b6ff863b045df317b2880d2",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        Ada Jane Hartley is Calvin George Hartley's daughter  (common ancestor: [[p-fa7541e871|Calvin George Hartley]])\nPath:         your father\n"
  },
  "p-htyn3mpg9g p-htyn3mpg9g": {
-  "json_sha256": "fa7921e81cdaad4defa3e1bcedb61f0fe38035437321a4e86ede0e0178942c27",
+  "json_sha256": "a4918821ae0d2293d4186b09a256b5f7de47b8d4ac244431ed7d2e2542993bb7",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Ada Jane Hartley is Ada Jane Hartley's the same person  (common ancestor: [[p-htyn3mpg9g|Ada Jane Hartley]])\nPath:         the same person\n"
  },
  "p-htyn3mpg9g p-nf819w33dy": {
-  "json_sha256": "aae883e51d8a365b5a0b8a9252caee3e3ab9393f05f7ee6eadc13080ab12339d",
+  "json_sha256": "9587595ce9388e5eebae6ed383959af7b992ebe6d3aec358bc4fb1ea42d2d98e",
   "text": "[[p-htyn3mpg9g|Ada Jane Hartley]]  <->  [[p-nf819w33dy|Louisa May Denton]]\nBlood:        Ada Jane Hartley is Louisa May Denton's daughter  (common ancestor: [[p-nf819w33dy|Louisa May Denton]])\nPath:         your mother\n"
  },
  "p-htyn3mpg9g p-s5a8g87at3": {
@@ -1508,11 +1508,11 @@
   "text": "[[p-nf819w33dy|Louisa May Denton]]  <->  [[p-fa7541e871|Calvin George Hartley]]\nBlood:        no blood relationship found in the recorded tree\nBy marriage:  Louisa May Denton is Calvin George Hartley's wife\nPath:         your husband\n"
  },
  "p-nf819w33dy p-htyn3mpg9g": {
-  "json_sha256": "91ea046d29964e5f41f37e7b31ce4ad913bb1392735741b5789515d96b3d4ba9",
+  "json_sha256": "aa4c70c208fb0173114c358a8eb94bea5fc745d1d839f64598ae358f261da3c9",
   "text": "[[p-nf819w33dy|Louisa May Denton]]  <->  [[p-htyn3mpg9g|Ada Jane Hartley]]\nBlood:        Louisa May Denton is Ada Jane Hartley's mother  (common ancestor: [[p-nf819w33dy|Louisa May Denton]])\nPath:         your daughter\n"
  },
  "p-nf819w33dy p-nf819w33dy": {
-  "json_sha256": "628bcc179fc3fa39fd061996cc2cdf7a151015e5a588991bacccb285b41affa7",
+  "json_sha256": "74e43e5ed275129e80e65f36b0bd51955418cf5aed16eeeece1b09f881cdec17",
   "text": "[[p-nf819w33dy|Louisa May Denton]]  <->  [[p-nf819w33dy|Louisa May Denton]]\nBlood:        Louisa May Denton is Louisa May Denton's the same person  (common ancestor: [[p-nf819w33dy|Louisa May Denton]])\nPath:         the same person\n"
  },
  "p-nf819w33dy p-s5a8g87at3": {
@@ -1596,7 +1596,7 @@
   "text": "[[p-s5a8g87at3|Susan Cole]]  <->  [[p-nf819w33dy|Louisa May Denton]]\nBlood:        no blood relationship found in the recorded tree\nPath:         no recorded connection between them\n"
  },
  "p-s5a8g87at3 p-s5a8g87at3": {
-  "json_sha256": "130805e7318beb2cef86ab0887b72e4e1ec4e088ab1ce14e1bcdf4570acf30ab",
+  "json_sha256": "e85754e68020389c8c05cc56f881d87c83c35b3aaf604332dff3cafd2a725e7f",
   "text": "[[p-s5a8g87at3|Susan Cole]]  <->  [[p-s5a8g87at3|Susan Cole]]\nBlood:        Susan Cole is Susan Cole's the same person  (common ancestor: [[p-s5a8g87at3|Susan Cole]])\nPath:         the same person\n"
  }
 }
