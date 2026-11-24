@@ -197,6 +197,29 @@ class QuestionsPageTests(_QBase):
         self.assertNotIn('CLMHEAD-LIVING', html)
         self.assertIn('CLMREF-DAD', html)
 
+    def test_a_conflict_between_two_unsettled_records_can_still_be_shared(self):
+        # lint E009 writes `refs: [c-…, c-…]` for two claims that disagree,
+        # often before he has accepted either. The claims are never shown on
+        # the page, so a review status is no reason to keep the question home.
+        self.config(ON)
+        self.claim('c-1111111111', 's-aaaaaaaaaa', 'birth', '1900', [DAD])
+        self.claim('c-2222222222', 's-aaaaaaaaaa', 'birth', '1902', [DAD], status='disputed')
+        self.claim('c-3333333333', 's-aaaaaaaaaa', 'birth', '1903', [DAD], status='suggested')
+        self.questions(q('CONFLICT: 1900 or 1902?', refs=[DAD, 'c-1111111111', 'c-2222222222']),
+                       q('SUGGESTED: 1903?', refs=[DAD, 'c-3333333333']))
+        self.build()
+        html = self.page('questions.html')
+        self.assertIn('CONFLICT', html)
+        self.assertIn('SUGGESTED', html)
+
+    def test_a_private_claim_in_refs_drops_the_question(self):
+        self.config(ON)
+        self.source('s-dddddddddd', 'A family Bible', restricted_claims=('c-4444444444',))
+        self.claim('c-4444444444', 's-dddddddddd', 'birth', '1900', [DAD])
+        self.questions(q('PRIVATE-CLAIM: is this right?', refs=[DAD, 'c-4444444444']))
+        self.build()
+        self.assertNotIn('PRIVATE-CLAIM', self.page('questions.html'))
+
     def test_questions_are_sorted_by_heading(self):
         self.config(ON)
         self.questions(q('Zed question?', refs=[ME]), q('Alpha question?', refs=[DAD]))

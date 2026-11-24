@@ -9446,11 +9446,14 @@ class _SiteBuilder:
 
     def _question_claim_is_shareable(self, cid: str) -> bool:
         """True when a claim a shared question names may be pointed at: its
-        record has a page here, the claim itself is publishable, and everyone
-        it names has a page. A question about a living cousin's birth record
-        stays home even when the heading never says her name."""
+        record has a page here, neither the claim nor its record is marked
+        private, and everyone it names has a page. A question about a living
+        cousin's birth record stays home even when the heading never says her
+        name. Its review status does not matter: the claim is never shown, and
+        a conflict between two records he has not settled yet (lint E009's
+        `refs: [c-…, c-…]`) is just the kind of question a relative answers."""
         try:
-            row = self.conn.execute('SELECT source_id, status FROM claims WHERE id = ?',
+            row = self.conn.execute('SELECT source_id FROM claims WHERE id = ?',
                                     (cid,)).fetchone()
             named = [r['person_id'] for r in self.conn.execute(
                 'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))]
@@ -9458,7 +9461,7 @@ class _SiteBuilder:
             return False
         if row is None or not row['source_id'] or row['source_id'] not in self.source_pages:
             return False
-        if not self._claim_row_is_publishable(cid, row['source_id'], row['status']):
+        if cid in self.restricted_claims or self._source_hard_restricted(row['source_id']):
             return False
         return all(normalize_id(pid) in self.person_pages for pid in named)
 
