@@ -286,6 +286,10 @@ fha metrics [<p-id>]         how well documented each person is: birth record, c
                             counts unreviewed claims too)
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
                             day, or in the week ahead (--week)
+fha date convert DATE --from julian|gregorian|hebrew
+                            a date in the old calendar or the Hebrew one, as today's day
+                            (never convert in your head); fha date feast NAME YEAR
+                            [--church orthodox] for a feast day
 fha packet <p-id>            person export packet
 fha gedcom import <f.ged>    file a foreign GEDCOM (Ancestry etc.) as one source +
                             person stubs + suggested claims; plan first, --apply to write

@@ -31,6 +31,7 @@ CLI recovery contract: `fha` prints help on no args; unknown subcommands get a "
 | `confirm.py` | fha confirm: human-directed write-back for detection candidates |
 | `convert_mining.py` | fha convert-mining: convert an older transcript-mining output into sources and claims |
 | `cooccur.py` | fha cooccur: connection candidate detection over the claim index |
+| `dates.py` | fha date: convert old-calendar, feast and Hebrew dates (TOOLING §4b) |
 | `doctor.py` | fha doctor: archive health check |
 | `fha.py` | the `fha` dispatcher |
 | `find.py` | fha find: the universal locator |
