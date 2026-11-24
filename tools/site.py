@@ -523,7 +523,8 @@ _PICTURE_QUEUE_PER_WORKER = 4
 # subject): 5 reaches great-great-great-grandparents. Inner rings, where an arc
 # is long, carry each name curved along the ring (given names, then surname,
 # then the years); outer rings, where a curved line would be too short to
-# read, run the name outward along the radius. The switch is chosen per ring by
+# read, run the name outward along the radius, wrapped onto two lines (given
+# names, then surname) when one line would not fit. The switch is chosen per ring by
 # arc length (`_fan_rings`), not fixed by generation. The fan shrinks to the
 # depth actually recorded, so a shallow tree still renders small. MAX is the
 # deepest fan the renderer lays out (each ring doubles the cells).
@@ -3319,16 +3320,19 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
     return out
 
 
-def _fan_fit_radial(name: str, years: str, g: int, r_in: float, t: float,
-                    seg: float) -> dict | None:
+def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: float,
+                    t: float, seg: float) -> dict | None:
     """Lay out one radial-ring label, read outward along the radius.
 
-    A line runs from `r_in + PAD` to `r_in + t - PAD`. Across the cell the room
-    is narrowest at the inner edge (`w = r_in * seg - 2`), and that decides how
-    many lines fit: the name, plus the years when two lines fit. The size is
-    the largest that fits the name's length and the stack's width, capped per
-    ring and rounded down, with the same floor-and-shorten rule as the arc
-    rings. A cell too narrow for even one line at the floor gets no text
+    A long name on an outer ring is wrapped onto two lines (given names, then
+    surname) instead of being shrunk and cut off. Lines run from `r_in + PAD`
+    to `r_in + t - PAD`. Across the cell the room is narrowest at the inner
+    edge (`w = r_in * seg - 2`), and that decides how many lines fit. The
+    years line is kept when some layout with it still reads at the floor; the
+    layout (one line or two) that reads largest wins, and one line wins a tie.
+    The size is the largest that fits the longest line and the stack's width,
+    capped per ring and rounded down; only below the floor is a line
+    shortened. A cell too narrow for even one line at the floor gets no text
     (None); its <title> still names the person.
 
     Returns {'fs', 'lines', 'fy', 'years'} or None."""
@@ -3336,18 +3340,26 @@ def _fan_fit_radial(name: str, years: str, g: int, r_in: float, t: float,
     w = r_in * seg - 2
     if w < _FAN_LH * _FAN_FS_MIN:
         return None
-    with_years = bool(years) and w >= 2 * _FAN_LH * _FAN_FS_MIN
-    count = 2 if with_years else 1
-    fs = min(_FAN_FS_MAX[g], avail / (max(1, len(name)) * _FAN_CW), w / (count * _FAN_LH))
-    fs = math.floor(fs * 10) / 10
-    shown = name
+    options = [[name]]
+    split = _fan_name_lines(name, surname)
+    if len(split) == 2:
+        options.append(split)
+
+    def size(lines: list[str], with_years: bool) -> float:
+        count = len(lines) + (1 if with_years else 0)
+        fs = min([_FAN_FS_MAX[g], w / (count * _FAN_LH)]
+                 + [avail / (max(1, len(x)) * _FAN_CW) for x in lines])
+        return math.floor(fs * 10) / 10
+
+    with_years = bool(years) and any(size(o, True) >= _FAN_FS_MIN for o in options)
+    lines = max(options, key=lambda o: size(o, with_years))      # first wins a tie
+    fs = size(lines, with_years)
     if fs < _FAN_FS_MIN:
         fs = _FAN_FS_MIN
-        shown = _fan_shorten(name, avail)
+        lines = [_fan_shorten(x, avail) for x in lines]
     fy = _fan_years_size(fs, years, avail)
-    if with_years and len(years) * _FAN_CW * fy > avail:
-        with_years = False
-    return {'fs': fs, 'lines': [shown], 'fy': fy, 'years': years if with_years else ''}
+    kept = with_years and len(years) * _FAN_CW * fy <= avail
+    return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
 def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
@@ -3451,7 +3463,7 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
                      for r in fit['radii']]
         else:
-            fit = _fan_fit_radial(name, years, g, r_in, r_out - r_in, seg)
+            fit = _fan_fit_radial(name, surname, years, g, r_in, r_out - r_in, seg)
             paths = []
             if fit is not None:
                 count = len(fit['lines']) + (1 if fit['years'] else 0)
