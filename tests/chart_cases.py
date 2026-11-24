@@ -395,9 +395,10 @@ def _c12(c: _Case) -> str:
 def _c13(c: _Case) -> str:
     """A living spouse and a living child in the middle of a descendant line,
     with a deceased grandchild below them. In a shared build the living people
-    are never named, linked or counted, and the grandchild has no public path
-    to the seed so the explorer does not reach them (the behaviour of
-    `_build_tree_data` today). `fha views` is a private tool and shows all."""
+    are never named or linked; the living child has a recorded child, so is
+    an adult and a "Private" card in the explorer, with the grandchild below
+    (owner decisions D16 and D20, chart plan 13-2). `fha views` is a private
+    tool and shows all."""
     c.person('grandfather', 'Calvin Hartley')
     c.person('dead_son', 'Alan Hartley')
     c.parents('dead_son', 'grandfather')
