@@ -259,6 +259,8 @@ CODE MAP
       ._search_entries: what the search box can find (published pages
           only, behind the site's gates and the shared export reader)
       .build_search_page: data/search-data.js and search.html
+      ._graves / .build_graves_page: graves.html, every family grave by
+          burial place with map and directions links
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -4577,6 +4579,7 @@ class _SiteBuilder:
         self._family_kin = None
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
+        self._graves_cache: list[dict] | None = None      # graves.html groups, built once per build
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
@@ -6628,6 +6631,7 @@ class _SiteBuilder:
             'fan': fan,
             'descendants_tree': descendants_tree,
             'summary': summary,
+            'burial_visit': self._burial_visit(pid, page_dir),
             'biography_html': self._markup(biography_html) if biography_html else None,
             'stories_html': self._markup(stories_html) if stories_html else None,
             'research_html': self._markup(research_html) if research_html else None,
@@ -7154,6 +7158,42 @@ class _SiteBuilder:
             subject['places'] = places
         return subject
 
+    def _person_picked_vitals(self, pid: str) -> dict[str, sqlite3.Row]:
+        """The one accepted claim that speaks for each of a person's vitals
+        (birth, death, marriage, baptism, burial), after every filter the
+        shared site applies. The summary box and the "Buried at" block both
+        read this, so a page can never show one burial in its box and send a
+        visitor to a different grave below it."""
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        rows = self.conn.execute(
+            "SELECT c.id, type, value, date_edtf, date_min, date_max, place_id, place_text, "
+            "source_id, confidence "
+            "FROM claims c "
+            "JOIN claim_persons cp ON c.id = cp.claim_id "
+            f"WHERE cp.person_id = ? AND c.status = 'accepted' "
+            "AND COALESCE(c.negated, 0) = 0 "
+            f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter} "
+            "ORDER BY c.id",
+            (pid,),
+        ).fetchall()
+        rows = [r for r in rows if self._claim_is_own_vital(pid, r['id'], r['type'])]
+        # Standalone: withold vitals whose only support is a withheld source; a fact
+        # established exclusively by a restricted/DNA/publication_ok=false source must
+        # not appear as a public datum with the citation silently redacted. A
+        # restricted CLAIM is withheld too, regardless of its source.
+        if not self.linked:
+            # Show the vital even when its source is withheld (the citation is
+            # redacted); withhold only a restricted claim or a hard-restricted
+            # source (DNA / by-request / publication_ok:false). A vital about a
+            # withheld person is already excluded by `living_filter` above.
+            rows = [r for r in rows
+                    if normalize_id(str(r['id'])) not in self.restricted_claims
+                    and not self._source_hard_restricted(r['source_id'])]
+        by_type: dict[str, sqlite3.Row] = {}
+        for r in sorted(rows, key=vital_pick_key):
+            by_type.setdefault(r['type'], r)   # the most exact accepted of each type
+        return by_type
+
     def _person_summary(self, pid: str, page_dir: Path) -> list[dict]:
         """Accepted vital claims as the summary block (birth/death/marriage/…).
 
@@ -7179,43 +7219,16 @@ class _SiteBuilder:
         first-of-each-type pick, so a relative's record cannot win the slot and
         thereby suppress the person's own.
         """
-        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
-        rows = self.conn.execute(
-            "SELECT c.id, type, value, date_edtf, date_min, date_max, place_id, place_text, "
-            "source_id, confidence "
-            "FROM claims c "
-            "JOIN claim_persons cp ON c.id = cp.claim_id "
-            f"WHERE cp.person_id = ? AND c.status = 'accepted' "
-            "AND COALESCE(c.negated, 0) = 0 "
-            f"AND c.type IN ('birth','death','marriage','baptism','burial') {living_filter} "
-            "ORDER BY c.id",
-            (pid,),
-        ).fetchall()
-        rows = [r for r in rows if self._claim_is_own_vital(pid, r['id'], r['type'])]
+        by_type = self._person_picked_vitals(pid)
         claim_persons: dict[str, str] = {}
         if self.workbench:
             # Raw person lists per claim, for the sourced-row edit affordance's
-            # prefill (built here so the loop below needs no second query pass).
-            for r in rows:
+            # prefill (only the picked claims reach a row).
+            for r in by_type.values():
                 prs = self.conn.execute(
                     'SELECT person_id FROM claim_persons WHERE claim_id = ? ORDER BY position',
                     (r['id'],)).fetchall()
                 claim_persons[r['id']] = ','.join(fmt_id_display(p['person_id']) for p in prs)
-        # Standalone: withold vitals whose only support is a withheld source; a fact
-        # established exclusively by a restricted/DNA/publication_ok=false source must
-        # not appear as a public datum with the citation silently redacted. A
-        # restricted CLAIM is withheld too, regardless of its source.
-        if not self.linked:
-            # Show the vital even when its source is withheld (the citation is
-            # redacted); withhold only a restricted claim or a hard-restricted
-            # source (DNA / by-request / publication_ok:false). A vital about a
-            # withheld person is already excluded by `living_filter` above.
-            rows = [r for r in rows
-                    if normalize_id(str(r['id'])) not in self.restricted_claims
-                    and not self._source_hard_restricted(r['source_id'])]
-        by_type: dict[str, sqlite3.Row] = {}
-        for r in sorted(rows, key=vital_pick_key):
-            by_type.setdefault(r['type'], r)   # the most exact accepted of each type
         summary = []
         for t in _VITAL_ORDER:
             if t in by_type:
@@ -7232,9 +7245,7 @@ class _SiteBuilder:
                     # branch is scrubbed.
                     # A record that also names a living person keeps its
                     # wording home (`_claim_unworded`): the date, or nothing.
-                    'value': r['date_edtf'] or (
-                        '' if not self.linked and self._claim_unworded(r['id'])
-                        else _scrub_internal_encoding(r['value'] or '')),
+                    'value': self._vital_when(r),
                     'place': self._place_html(r['place_text'], r['place_id'], page_dir),
                     'source_html': self._markup(self._source_link(r['source_id'], page_dir)) if r['source_id'] else '',
                     'confidence': r['confidence'] or '',
@@ -7311,6 +7322,168 @@ class _SiteBuilder:
                 _VITAL_LABELS[t] for t in _VITAL_ORDER)}
             summary.sort(key=lambda row: order.get(row['label'], 99))
         return summary
+
+    def _vital_when(self, r: sqlite3.Row) -> str:
+        """When a picked vital happened, as the summary box shows it: the
+        structured date, else the record's own words ("Spring of the flood
+        year"). The graves list uses the same, so the two never disagree."""
+        return r['date_edtf'] or (
+            '' if not self.linked and self._claim_unworded(r['id'])
+            else _scrub_internal_encoding(r['value'] or ''))
+
+    # - graves to visit -
+
+    def _place_coords(self, lid: str | None) -> tuple[float, float, str] | None:
+        """Where a place is on the map: its own coordinates, else those of the
+        first place it sits `within:` that has some. A cemetery nobody has
+        pinned still sends a visitor to its town. Returns (lat, lon, the
+        l-id that gave them), or None."""
+        seen: set[str] = set()
+        while lid and lid in self.place_meta and lid not in seen:
+            seen.add(lid)
+            row = self.place_meta[lid]
+            if row['lat'] is not None and row['lon'] is not None:
+                return row['lat'], row['lon'], lid
+            lid = row['within']
+        return None
+
+    def _place_hierarchy(self, lid: str) -> str:
+        """The place's own hierarchy, else that of the first place it sits
+        `within:` that has one ("Fairview, Kansas" for its cemetery)."""
+        seen: set[str] = set()
+        while lid and lid in self.place_meta and lid not in seen:
+            seen.add(lid)
+            row = self.place_meta[lid]
+            if row['hierarchy']:
+                return row['hierarchy']
+            lid = row['within']
+        return ''
+
+    @staticmethod
+    def _map_links(lat: float, lon: float, zoom: int = 12) -> dict[str, str]:
+        """OpenStreetMap links for one point. The place page uses zoom 12
+        (a town), a grave zoom 16. Directions leave the visitor's own
+        starting point blank for them to fill in. Both need the internet."""
+        return {
+            'map_url': f'https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map={zoom}/{lat}/{lon}',
+            'directions_url': f'https://www.openstreetmap.org/directions?to={lat}%2C{lon}',
+        }
+
+    def _grave_place(self, burial: sqlite3.Row, page_dir: Path) -> dict | None:
+        """Where one picked burial is, for the person page and the graves
+        list: the registered place with its hierarchy and links, or the
+        words the claim was written with. None when it names no place."""
+        lid = burial['place_id']
+        if lid and lid in self.place_meta:
+            coords = self._place_coords(lid)
+            name = self.place_names.get(lid) or fmt_id_display(lid)
+            hierarchy = self._place_hierarchy(lid)
+            lead = name.lower() + ','
+            if hierarchy.lower().startswith(lead):
+                hierarchy = hierarchy[len(lead):].strip()   # do not say the name twice
+            elif hierarchy.lower() == name.lower():
+                hierarchy = ''
+            out = {'key': lid, 'name': name, 'hierarchy': hierarchy, 'registered': True,
+                   'coords': coords is not None, 'map_url': '', 'directions_url': ''}
+            if lid in self.place_pages:
+                href = _rel_href(self.places_dir / _page_filename(lid), page_dir)
+                out['html'] = self._markup(
+                    f'<a href="{html.escape(href, quote=True)}">{_escape(name)}</a>')
+            else:
+                out['html'] = self._markup(_escape(name))
+            if coords:
+                out.update(self._map_links(coords[0], coords[1], 16))
+            return out
+        text = _scrub_internal_encoding(burial['place_text'] or '').strip()
+        if not text:
+            return None
+        return {'key': None, 'name': text, 'hierarchy': '', 'registered': False,
+                'coords': False, 'map_url': '', 'directions_url': '',
+                'html': self._markup(_escape(text))}
+
+    def _burial_visit(self, pid: str, page_dir: Path) -> dict | None:
+        """The "Buried at ... Map, Directions" line for one person page: only
+        when the picked accepted burial (the one the summary box shows) names
+        a registered place that has a map position, its own or its town's."""
+        burial = self._person_picked_vitals(pid).get('burial')
+        if burial is None:
+            return None
+        place = self._grave_place(burial, page_dir)
+        if place is None or not place['coords']:
+            return None
+        return place
+
+    def _graves(self) -> list[dict]:
+        """Every family grave, grouped by burial place, for graves.html;
+        empty when there are none (then there is no page and no link).
+        Worked out once per build. Same people and same picked burial as the
+        person pages: nobody living, unknown, restricted, by-request or
+        merged away, and only accepted claims the summary box would show."""
+        if self._graves_cache is not None:
+            return self._graves_cache
+        page_dir = self.out_dir
+        self._footnotes = None            # sources here are named links, not footnotes
+        groups: dict[object, dict] = {}
+        for pid in sorted(self.person_pages):
+            meta = self.person_meta[pid]
+            if meta['merged_into'] or (meta['living'] or '') in ('true', 'unknown'):
+                continue
+            if not self.linked and self._person_is_redacted(meta):
+                continue
+            picked = self._person_picked_vitals(pid)
+            burial = picked.get('burial')
+            if burial is None:
+                continue
+            place = self._grave_place(burial, page_dir)
+            if place is None:
+                continue
+            death = picked.get('death')
+            name = meta['name'] or fmt_id_display(pid)
+            row = {
+                'person_html': self._markup(self._person_link(pid, page_dir)),
+                # A structured date reads "buried 1901"; with none, the
+                # record's own words stand alone (they are a sentence, and
+                # "buried Ada was buried ..." would read as nonsense).
+                'burial_date': burial['date_edtf'] or '',
+                'burial_words': '' if burial['date_edtf'] else self._vital_when(burial),
+                'death_date': (death['date_edtf'] or '') if death is not None else '',
+                'death_words': ('' if death is None or death['date_edtf']
+                                else self._vital_when(death)),
+                'source_html': (self._markup(self._source_link(burial['source_id'], page_dir))
+                                if burial['source_id'] else ''),
+                'sort': (burial['date_min'] or '9999', fold_accents(name).lower(), pid),
+            }
+            if place['registered']:
+                group = groups.setdefault(place['key'], {**place, 'rows': []})
+                # The plot as the record wrote it ("Fairview Cemetery,
+                # Section B, Lot 47") is what a visitor needs at the gate.
+                written = _scrub_internal_encoding(burial['place_text'] or '').strip()
+                if written and written.lower() != place['name'].lower():
+                    row['place_text'] = written
+            else:
+                # Burials at a place nobody registered: one list at the end,
+                # each row keeping the place as it was written.
+                group = groups.setdefault(None, {
+                    'key': None, 'name': 'Other burial places', 'registered': False, 'rows': []})
+                row['place_text'] = place['name']
+                row['sort'] = (place['name'].lower(),) + row['sort']
+            group['rows'].append(row)
+        ordered = sorted(
+            (g for g in groups.values() if g['registered']),
+            key=lambda g: (fold_accents(g['name']).lower(), g['key']))
+        ordered += [g for g in groups.values() if not g['registered']]
+        for g in ordered:
+            g['rows'].sort(key=lambda r: r['sort'])
+        self._graves_cache = ordered
+        return ordered
+
+    def build_graves_page(self) -> None:
+        """Write graves.html when anyone has an accepted burial to list."""
+        groups = self._graves()
+        if not groups:
+            return
+        self._write_page(self.out_dir / 'graves.html', 'graves.html',
+                         {'root_prefix': '.', 'groups': groups})
 
     def _provisional_vital(self, pid: str, field: str) -> str | None:
         """Read one provisional (unsourced) `birth:`/`death:` estimate from a
@@ -9025,7 +9198,7 @@ class _SiteBuilder:
         map_url = None
         map_embed_url = None
         if lat is not None and lon is not None:
-            map_url = f'https://www.openstreetmap.org/?mlat={lat}&mlon={lon}#map=12/{lat}/{lon}'
+            map_url = self._map_links(lat, lon)['map_url']
             # The embed endpoint needs an explicit bounding box; roughly a
             # town-scale window around the pin reads best for family places.
             d_lat, d_lon = 0.03, 0.05
@@ -10560,7 +10733,7 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
-            'hero': hero, 'root_prefix': '.',
+            'hero': hero, 'root_prefix': '.', 'has_graves': bool(self._graves()),
             # The workbench shows this week instead of the shared site's month
             # panel: it is the owner's daily view, as `fha report`'s is.
             'calendar': (self._family_calendar(page_dir)
@@ -10885,9 +11058,10 @@ class _SiteBuilder:
     def _page_count(self) -> int:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
-        search is on. `run()` and `--dry-run` both report this one number."""
+        search is on, plus graves.html when anyone has a grave to list.
+        `run()` and `--dry-run` both report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
-                + 2 + (1 if self.show_search else 0))
+                + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0))
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -10951,6 +11125,7 @@ class _SiteBuilder:
             self.build_person_page(pid)
         for lid in sorted(self.place_pages):
             self.build_place_page(lid)
+        self.build_graves_page()
         self.build_discoveries_page()
         self.build_index_page()
         if self.show_search:
@@ -10971,6 +11146,7 @@ class _SiteBuilder:
         return [self.persons_dir, self.sources_dir, self.places_dir,
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
+                self.out_dir / 'graves.html',
                 # Listed whether search is on or off, so switching it off
                 # removes the old page (the search data lives in data/).
                 self.out_dir / 'search.html']
