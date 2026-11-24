@@ -22411,29 +22411,28 @@ def _sibling_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
                 born.append((birth.lo, birth.hi, child, birth))
         born.sort(key=lambda b: b[:3])
         days = [(_iso_day_number(lo), _iso_day_number(hi)) for lo, hi, _, _ in born]
-        pairs = []
         for i, (a_lo_day, a_hi_day) in enumerate(days):
+            a_lo, a_hi, a, a_birth = born[i]
             for j in range(i + 1, len(born)):
+                b_lo_day, b_hi_day = days[j]
                 # Sorted by earliest day: once b's earliest day is a full
                 # SIBLING_MIN_GAP_DAYS past a's latest, no later b can fire.
-                if days[j][0] - a_hi_day >= SIBLING_MIN_GAP_DAYS:
+                if b_lo_day - a_hi_day >= SIBLING_MIN_GAP_DAYS:
                     break
-                pairs.append((born[i], born[j], days[i], days[j]))
-        for ((a_lo, a_hi, a, a_birth), (b_lo, b_hi, b, b_birth),
-             (a_lo_day, a_hi_day), (b_lo_day, b_hi_day)) in pairs:
-            pair = frozenset((a, b))
-            if pair in seen or a_hi > b_lo:
-                continue
-            min_gap = b_lo_day - a_hi_day
-            max_gap = b_hi_day - a_lo_day
-            if min_gap > SIBLING_TWIN_DAYS and max_gap < SIBLING_MIN_GAP_DAYS:
-                seen.add(pair)
-                pids = (b, a, *key)
-                problems.append(PlausibilityProblem(
-                    'W169', 'siblings-too-close', pids,
-                    (tuple(b_birth.claims), tuple(a_birth.claims)),
-                    {'min_gap': min_gap, 'max_gap': max_gap,
-                     'sexes': tuple(data.sex.get(p, '') for p in pids)}))
+                b_lo, b_hi, b, b_birth = born[j]
+                pair = frozenset((a, b))
+                if pair in seen or a_hi > b_lo:
+                    continue
+                min_gap = b_lo_day - a_hi_day
+                max_gap = b_hi_day - a_lo_day
+                if min_gap > SIBLING_TWIN_DAYS and max_gap < SIBLING_MIN_GAP_DAYS:
+                    seen.add(pair)
+                    pids = (b, a, *key)
+                    problems.append(PlausibilityProblem(
+                        'W169', 'siblings-too-close', pids,
+                        (tuple(b_birth.claims), tuple(a_birth.claims)),
+                        {'min_gap': min_gap, 'max_gap': max_gap,
+                         'sexes': tuple(data.sex.get(p, '') for p in pids)}))
     return problems
 
 
