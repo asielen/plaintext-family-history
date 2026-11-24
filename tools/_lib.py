@@ -22187,6 +22187,7 @@ def lived_claims_from_claims(
                  for k, v in (survivors or {}).items()}
     wanted = {s.strip() for s in statuses}
     lived: dict[str, list[DatedClaim]] = {}
+    vital_held: dict[tuple, int] = {}
     for claim in claims:
         if not isinstance(claim, dict):
             continue
@@ -22214,6 +22215,19 @@ def lived_claims_from_claims(
                 subjects = named if len(named) == 1 else []
             own_vital = set(subjects)
         for pid in dict.fromkeys(survivors.get(p, p) for p in named if p not in own_vital):
+            if own_vital:
+                # A relative on a birth or death record: records of one
+                # person's one event merge into one range, so only the latest
+                # end counts for the relative too (two births, 1900 and 1930,
+                # leave the mother born by the later one).
+                key = (ctype, frozenset(own_vital), pid)
+                held = vital_held.get(key)
+                if held is not None:
+                    old = lived[pid][held]
+                    if (dated.hi, dated.claim_id) > (old.hi, old.claim_id):
+                        lived[pid][held] = dated
+                    continue
+                vital_held[key] = len(lived.get(pid, []))
             lived.setdefault(pid, []).append(dated)
     return lived
 

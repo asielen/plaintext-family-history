@@ -372,6 +372,19 @@ class ProbablyNotLivingTests(_PlausibilityBase):
         self.assertEqual(len(found), 1)
         self.assertIn('A census record names her in 1880', found[0].message)
 
+    def test_two_disagreeing_birth_claims_naming_the_parent_read_as_one_range(self) -> None:
+        # Ben's accepted births say 1900 and 1930. Merged, he is born by 1930
+        # and she by 1918 (108 years): not worth asking. Read separately her
+        # 1900 record would put her born by 1900 and warn on a correct tree.
+        self._person(self.ADA, 'Ada Hartley', sex='F', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        for sid, cid, date in ((self.S1, 'C-1111111111', '1900'),
+                               (self.S2, 'C-2222222222', '1930')):
+            self._source(sid, self._claim(
+                cid, 'birth', [self.BEN, self.ADA], date=date,
+                roles=f'{{child: [{self.BEN}], parent: [{self.ADA}]}}'))
+        self.assertEqual(self._w173(), [])
+
     def test_a_note_claim_does_not_count(self) -> None:
         self._person(self.ADA, 'Ada Hartley', living='unknown')
         self._source(self.S1, self._claim('C-1111111111', 'note', [self.ADA], date='1880'))
