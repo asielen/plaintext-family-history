@@ -102,6 +102,7 @@
 
   <h2 id="people">People{% if workbench %}
     <a class="wb-add" href="#" data-wb-open="tpl-mint">Add a person&hellip;</a>{% endif %}</h2>
+  {% if statistics %}<p><a href="statistics.html">Family statistics</a></p>{% endif %}
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>

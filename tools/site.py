@@ -4363,6 +4363,76 @@ def _search_year(value) -> str:
     return m.group(1) if m else ''
 
 
+# - the optional statistics page (`site: statistics: true`, TOOLING §12) -
+
+# Fewer people than this and a figure is not worth printing: one long life
+# should not pass for "how long the family lived".
+_STATS_MIN_PEOPLE = 3
+
+
+def _stat_year(edtf) -> int | None:
+    """The year a date says, for the statistics page: its middle year, but only
+    when the date is known to within a couple of years (`1840`, `1840~` and
+    `1840-06-14` count; `184X`, "before 1840" and an unreadable date do not).
+    A decade guessed as a year would pull every median toward it."""
+    if not edtf:
+        return None
+    try:
+        lo, hi = edtf_bounds(str(edtf))
+        lo_y, hi_y = int(lo[:4]), int(hi[:4])
+    except (ValueError, TypeError):
+        return None
+    if lo_y <= 1 or hi_y >= 9999 or hi_y - lo_y > 2:
+        return None
+    return (lo_y + hi_y) // 2
+
+
+def _stat_median(values: list[int]) -> int | None:
+    """The middle value (halves round up), or None for too few people. A
+    median, never a mean: one very long life should not move the line."""
+    if len(values) < _STATS_MIN_PEOPLE:
+        return None
+    vals = sorted(values)
+    mid = len(vals) // 2
+    if len(vals) % 2:
+        return vals[mid]
+    return (vals[mid - 1] + vals[mid] + 1) // 2
+
+
+def _stat_century(year: int) -> str:
+    return f'{year // 100 * 100}s'
+
+
+def _stats_bar_svg(rows: list[tuple[str, int]], max_value: int, title: str,
+                   unit: str = '') -> str:
+    """A small horizontal bar chart as inline SVG: no script, colours from
+    `currentColor` and the `--accent` token only, so it follows the site's
+    light and dark themes and prints in black and white. `rows` is
+    (label, number); the same numbers also go in a table beside it, for screen
+    readers and print. Deterministic: a rebuild writes the same bytes."""
+    if not rows:
+        return ''
+    label_w, bar_w, row_h = 170, 300, 26
+    width = label_w + bar_w + 70
+    height = row_h * len(rows) + 4
+    top = max(max_value, 1)
+    parts = [f'<svg class="stats-chart" xmlns="http://www.w3.org/2000/svg" role="img" '
+             f'aria-label="{_escape(title)}" viewBox="0 0 {width} {height}" '
+             f'width="{width}" height="{height}" style="max-width:100%;height:auto">']
+    for i, (label, value) in enumerate(rows):
+        y = 2 + i * row_h
+        w = max(2, round(bar_w * value / top)) if value > 0 else 0
+        parts.append(
+            f'<text x="{label_w - 8}" y="{y + 17}" text-anchor="end" fill="currentColor" '
+            f'font-size="13">{_escape(label)}</text>'
+            f'<rect x="{label_w}" y="{y + 3}" width="{w}" height="{row_h - 8}" '
+            f'fill="var(--accent, currentColor)"/>'
+            f'<text x="{label_w + w + 6}" y="{y + 17}" fill="currentColor" '
+            f'font-size="13">{value}{_escape(unit)}</text>')
+    parts.append('</svg>')
+    return ''.join(parts)
+
+
 def _search_data_js(data: dict) -> str:
     """`window.FHA_SEARCH = {...};` for `data/search-data.js`.
 
@@ -4452,7 +4522,10 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
-        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # The statistics page: off unless asked for (TOOLING §12).
+        self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
+                                             statistics_warning) if w]
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -10414,7 +10487,7 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'index.html', 'index.html', {
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
-            'hero': hero, 'root_prefix': '.',
+            'hero': hero, 'root_prefix': '.', 'statistics': self.show_statistics,
             # The workbench shows this week instead of the shared site's month
             # panel: it is the owner's daily view, as `fha report`'s is.
             'calendar': (self._family_calendar(page_dir)
@@ -10736,12 +10809,270 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'search.html', 'search.html',
                          {'root_prefix': '.', 'linked': self.linked})
 
+    # - the statistics page (`site: statistics: true`) -
+
+    def _stats_eligible(self) -> set[str]:
+        """Who the statistics may count: people who have a page here and are
+        known to be dead. Living and unknown people are left out in every
+        build, the local preview and workbench included (statistics about the
+        living are not worth the risk), and so is anyone restricted or
+        by-request."""
+        out: set[str] = set()
+        for pid in self.person_pages:
+            meta = self.person_meta.get(pid)
+            if meta is None or (meta['living'] or 'unknown').strip().lower() != 'false':
+                continue
+            if pid in self.restricted_persons:
+                continue
+            if self.linked and meta['path']:
+                # The local preview skips the restriction scan, but a counted
+                # number is shared with whoever is shown the preview: read the
+                # person's own marker here, and treat an unreadable file as
+                # restricted.
+                marker, trouble = read_restriction_marker(self.archive_root / meta['path'])
+                if trouble is not None or _is_restricted_value(marker):
+                    continue
+            out.add(pid)
+        return out
+
+    def _marriage_pick(self, pid: str) -> int | None:
+        """The year of a person's first marriage, from their own accepted
+        marriage claims, through the same filters as `_person_summary` (no
+        negated claim, nobody else's marriage, no restricted claim or source,
+        nothing withheld). None when no marriage date is known to within a
+        couple of years."""
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        years: list[int] = []
+        for r in self.conn.execute(
+            "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c "
+            "JOIN claim_persons cp ON c.id = cp.claim_id "
+            "WHERE cp.person_id = ? AND c.type = 'marriage' AND c.status = 'accepted' "
+            f"AND COALESCE(c.negated, 0) = 0 {living_filter} ORDER BY c.id", (pid,)):
+            if not self._claim_is_own_vital(pid, r['id'], 'marriage'):
+                continue
+            if not self.linked and normalize_id(str(r['id'])) in self.restricted_claims:
+                continue
+            if not self.linked and self._source_hard_restricted(r['source_id']):
+                continue
+            if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
+                continue
+            year = _stat_year(r['date_edtf'])
+            if year is not None:
+                years.append(year)
+        return min(years) if years else None
+
+    def _stats_parents(self, pid: str, eligible: set[str]) -> set[str]:
+        """The counted people recorded as this person's genetic parents,
+        through edges a shared page would show. A parent the statistics do not
+        count is simply absent, never a gap a visitor could read."""
+        found: set[str] = set()
+        for r in self.conn.execute(
+            "SELECT r.other_id, r.claim_id, c.subtype, c.source_id, c.status "
+            "FROM relationships r LEFT JOIN claims c ON c.id = r.claim_id "
+            "WHERE r.person_id = ? AND r.rel = 'parent' ORDER BY r.other_id, r.claim_id", (pid,)):
+            other = r['other_id']
+            if other not in eligible or other in found:
+                continue
+            if not is_genetic_parent_subtype((r['subtype'] or '').strip().lower() or None):
+                continue
+            if not self.linked and not self._claim_row_is_publishable(
+                    r['claim_id'], r['source_id'], r['status']):
+                continue
+            found.add(other)
+        return found
+
+    @staticmethod
+    def _stat_name_rows(counter: dict[str, dict[str, int]], limit: int = 10) -> list[dict]:
+        """The commonest names, folded so `Müller` and `Muller` count together,
+        shown under the spelling used most (ties: alphabetical)."""
+        rows = []
+        for spellings in counter.values():
+            shown = sorted(spellings, key=lambda n: (-spellings[n], n))[0]
+            rows.append({'name': shown, 'count': sum(spellings.values())})
+        rows.sort(key=lambda r: (-r['count'], r['name'].lower(), r['name']))
+        return rows[:limit]
+
+    @staticmethod
+    def _stat_generation_label(gen: int) -> str:
+        if gen == 0:
+            return 'Starting person'
+        if gen == 1:
+            return 'Parents'
+        if gen == 2:
+            return 'Grandparents'
+        if gen == 3:
+            return 'Great-grandparents'
+        n = gen - 2
+        suffix = 'th' if 10 <= n % 100 <= 20 else {1: 'st', 2: 'nd', 3: 'rd'}.get(n % 10, 'th')
+        return f'{n}{suffix} great-grandparents'
+
+    def _age_at_death(self, pid: str, born: dict[str, int]) -> int | None:
+        if pid not in born:
+            return None
+        dy = _stat_year(self._vitals_cached(pid).get('death'))
+        if dy is None or not 0 <= dy - born[pid] <= 120:
+            return None
+        return dy - born[pid]
+
+    def _statistics_context(self) -> dict:
+        """Everything the statistics page prints, worked out from counted
+        people only (`_stats_eligible`) and dates known to within a couple of
+        years."""
+        eligible = self._stats_eligible()
+        pids = sorted(eligible)
+        born: dict[str, int] = {}
+        lifespans: list[tuple[str, int, int]] = []    # (sex, born year, age at death)
+        wedded: list[tuple[str, int, int]] = []       # (sex, born year, age at first marriage)
+        no_sex = 0
+        for pid in pids:
+            vitals = self._vitals_cached(pid)
+            by = _stat_year(vitals.get('birth'))
+            sex = (self.person_meta[pid]['sex'] or '').strip().upper()
+            if by is None:
+                continue
+            born[pid] = by
+            age = self._age_at_death(pid, born)
+            if age is not None:
+                lifespans.append((sex, by, age))
+            my = self._marriage_pick(pid)
+            if my is not None and 0 <= my - by <= 100:
+                if sex in ('F', 'M'):
+                    wedded.append((sex, by, my - by))
+                else:
+                    no_sex += 1
+
+        def by_century(items: list[tuple[str, int, int]], sexes: tuple[str, ...]) -> list[dict]:
+            groups: dict[str, list[int]] = {}
+            for sex, year, value in items:
+                if not sexes or sex in sexes:
+                    groups.setdefault(_stat_century(year), []).append(value)
+            return [{'label': f'Born in the {century}', 'short': century,
+                     'value': _stat_median(groups[century]), 'count': len(groups[century])}
+                    for century in sorted(groups)]
+
+        # Children per family: a couple of two counted people with at least one
+        # counted genetic child; a child belongs to the couple only when
+        # exactly two counted people are their genetic parents.
+        families: dict[tuple[str, str], int] = {}
+        for pid in pids:
+            parents = sorted(self._stats_parents(pid, eligible))
+            if len(parents) == 2:
+                key = (parents[0], parents[1])
+                families[key] = families.get(key, 0) + 1
+        sizes: dict[int, int] = {}
+        for n_children in families.values():
+            k = min(n_children, 11)
+            sizes[k] = sizes.get(k, 0) + 1
+        child_rows = [{'label': ('11 or more' if k == 11 else str(k)), 'count': sizes[k]}
+                      for k in sorted(sizes)]
+
+        # Common names.
+        given: dict[str, dict[str, dict[str, int]]] = {'F': {}, 'M': {}}
+        surnames: dict[str, dict[str, int]] = {}
+        for pid in pids:
+            meta = self.person_meta[pid]
+            name = (meta['name'] or '').strip()
+            if not name or is_placeholder_name(name):
+                continue
+            sex = (meta['sex'] or '').strip().upper()
+            first = bracket_given_name(name)
+            if first and ' ' not in first and sex in given:
+                spell = given[sex].setdefault(fold_accents(first).lower(), {})
+                spell[first] = spell.get(first, 0) + 1
+            surname = person_surname(name, meta['surname']) or ''
+            if surname:
+                spell = surnames.setdefault(fold_accents(surname).lower(), {})
+                spell[surname] = spell.get(surname, 0) + 1
+
+        # Generation by generation: the direct line of the home person (or the
+        # root person), through counted people only. The walk stops at anyone
+        # the statistics do not count, so nothing hides behind a gap.
+        generations: list[dict] = []
+        site_cfg = self.fha_config.get('site') if isinstance(self.fha_config.get('site'), dict) else {}
+        seed = normalize_id(str(site_cfg.get('home_person') or ''))
+        if seed not in self.person_meta:
+            seed = normalize_id(str(self.fha_config.get('root_person', '')))
+        if seed in eligible:
+            levels: list[list[str]] = [[seed]]
+            seen = {seed}
+            while len(levels) < 16:
+                nxt: list[str] = []
+                for pid in levels[-1]:
+                    for parent in sorted(self._stats_parents(pid, eligible)):
+                        if parent not in seen:
+                            seen.add(parent)
+                            nxt.append(parent)
+                if not nxt:
+                    break
+                levels.append(nxt)
+            for gen, members in enumerate(levels):
+                ages = [a for a in (self._age_at_death(p, born) for p in members) if a is not None]
+                generations.append({
+                    'label': self._stat_generation_label(gen),
+                    'known': f'{len(members)} of {2 ** gen}',
+                    'born': _stat_median([born[p] for p in members if p in born]),
+                    'age': _stat_median(ages)})
+
+        return {
+            'lived': by_century(lifespans, ()),
+            'married_women': by_century(wedded, ('F',)),
+            'married_men': by_century(wedded, ('M',)),
+            'no_sex': no_sex,
+            'children': child_rows,
+            'women': self._stat_name_rows(given['F']),
+            'men': self._stat_name_rows(given['M']),
+            'surnames': self._stat_name_rows(surnames),
+            'generations': generations,
+        }
+
+    def build_statistics_page(self) -> None:
+        """`statistics.html`: how long the family lived, how old they were at
+        their first marriage, how many children they had, the commonest
+        names, and the direct line generation by generation. Written only
+        when fha.yaml says `site: statistics: true`."""
+        ctx = self._statistics_context()
+
+        def table(rows: list[dict]) -> list[dict]:
+            return [{'label': r['label'], 'count': r['count'],
+                     'text': None if r['value'] is None else f"{r['value']} years"}
+                    for r in rows]
+
+        def chart(rows: list[dict], title: str) -> str:
+            shown = [(r['short'], r['value']) for r in rows if r['value'] is not None]
+            if not shown:
+                return ''
+            return self._markup(_stats_bar_svg(shown, max(v for _, v in shown), title, ' years'))
+
+        kids = ctx['children']
+        enough_kids = sum(r['count'] for r in kids) >= _STATS_MIN_PEOPLE
+        kids_svg = ''
+        if enough_kids:
+            kids_svg = self._markup(_stats_bar_svg(
+                [(r['label'], r['count']) for r in kids], max(r['count'] for r in kids),
+                'Number of families, by how many children they had'))
+        self._write_page(self.out_dir / 'statistics.html', 'statistics.html', {
+            'lived': table(ctx['lived']),
+            'lived_svg': chart(ctx['lived'], 'Median age at death, by century of birth'),
+            'women': table(ctx['married_women']),
+            'women_svg': chart(ctx['married_women'],
+                               'Median age at first marriage, women, by century of birth'),
+            'men': table(ctx['married_men']),
+            'men_svg': chart(ctx['married_men'],
+                             'Median age at first marriage, men, by century of birth'),
+            'no_sex': ctx['no_sex'],
+            'children': kids, 'children_svg': kids_svg, 'enough_children': enough_kids,
+            'women_names': ctx['women'], 'men_names': ctx['men'],
+            'surnames': ctx['surnames'], 'generations': ctx['generations'],
+            'root_prefix': '.',
+        })
+
     def _page_count(self) -> int:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
-        search is on. `run()` and `--dry-run` both report this one number."""
+        search is on and statistics.html when statistics are on. `run()` and
+        `--dry-run` both report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
-                + 2 + (1 if self.show_search else 0))
+                + 2 + (1 if self.show_search else 0) + (1 if self.show_statistics else 0))
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -10809,6 +11140,8 @@ class _SiteBuilder:
         self.build_index_page()
         if self.show_search:
             self.build_search_page()
+        if self.show_statistics:
+            self.build_statistics_page()
         self._finish_pictures()
         if self.needs_serial_rebuild:
             return 0   # `_site_payload` builds again, one picture at a time
@@ -10827,7 +11160,9 @@ class _SiteBuilder:
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
                 # Listed whether search is on or off, so switching it off
                 # removes the old page (the search data lives in data/).
-                self.out_dir / 'search.html']
+                self.out_dir / 'search.html',
+                # Same for statistics: switching it off removes the old page.
+                self.out_dir / 'statistics.html']
 
     def reset_preview(self) -> list[str]:
         """Names of the existing files/subtrees a rebuild would first remove,
