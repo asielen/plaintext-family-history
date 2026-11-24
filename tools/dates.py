@@ -236,14 +236,13 @@ HEB_ALIASES = {
     'marcheshvan': 8, 'cheshvan': 8, 'kislew': 9, 'teves': 10, 'tebet': 10,
     'shvat': 11, "sh'vat": 11, 'shebat': 11,
     'adar i': 12, 'adar 1': 12, 'adar rishon': 12,
-    'adar ii': 13, 'adar 2': 13, 'adar sheni': 13, 'veadar': 13,
+    'adar alef': 12, 'adar aleph': 12,
+    'adar ii': 13, 'adar 2': 13, 'adar sheni': 13, 'adar bet': 13, 'adar beit': 13,
+    'veadar': 13,
     'нисан': 1, 'ияр': 2, 'сиван': 3, 'таммуз': 4, 'тамуз': 4, 'ав': 5, 'элул': 6,
     'тишрей': 7, 'хешван': 8, 'мархешван': 8, 'кислев': 9, 'тевет': 10, 'шват': 11,
     'адар': 12, 'адар ii': 13, 'адар бет': 13,
 }
-# The spellings that say "first Adar" outright; plain "Adar" in a leap year
-# could be either one and is never guessed.
-_FIRST_ADAR_WORDS = {'adar i', 'adar 1', 'adar rishon'}
 
 
 def heb_leap(y: int) -> bool:
@@ -364,7 +363,9 @@ def _read_year(text: str) -> tuple[int, str]:
     the year 1731 to the reckoning of the day and 1732 to ours. The second
     part must be the last one or two digits of the next year, so a typo is
     refused rather than read as some other year."""
-    m = re.fullmatch(r'(\d{1,4})(?:/(\d{1,2}))?', text)
+    # Three or four figures: "32" alone is a day or a short year, never
+    # the year 32.
+    m = re.fullmatch(r'(\d{3,4})(?:/(\d{1,2}))?', text)
     if not m:
         raise DateInputError
     year = int(m.group(1))
@@ -429,7 +430,7 @@ def parse_civil_date(text: str) -> tuple[int, int | None, int | None, str]:
         (r'(\d{1,2}) ([a-z]+\.?) (\S+)', ('d', 'm', 'y')),   # 11 feb 1731/32
         (r'([a-z]+\.?) (\d{1,2}) (\S+)', ('m', 'd', 'y')),   # february 11 1732
         (r'([a-z]+\.?) (\S+)', ('m', 'y')),                  # feb 1732
-        (r'(\d{1,4}/\d{1,2})', ('y',)),                      # 1731/32
+        (r'(\d{3,4}/\d{1,2})', ('y',)),                      # 1731/32
     )
     for pattern, order in patterns:
         m = re.fullmatch(pattern, low)

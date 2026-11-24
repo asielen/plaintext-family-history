@@ -191,6 +191,8 @@ class HebrewTests(unittest.TestCase):
         self.assertEqual(self._greg('14 Adar I 5784'), '2024-02-23')
         self.assertEqual(self._greg('14 Adar 2 5784'), '2024-03-24')
         self.assertEqual(self._greg('14 Adar Sheni 5784'), '2024-03-24')
+        self.assertEqual(self._greg('14 Adar Bet 5784'), '2024-03-24')
+        self.assertEqual(self._greg('14 Adar Alef 5784'), '2024-02-23')
 
     def test_historical_dates_checked_on_hebcal(self):
         self.assertEqual(self._greg('1 Tishrei 5600'), '1839-09-09')
@@ -288,6 +290,7 @@ class ConvertTests(unittest.TestCase):
         for typed, cal in (('30 Feb 1732', 'julian'), ('29 Feb 1701', 'julian'),
                            ('31 Apr 1900', 'gregorian'), ('not a date', 'julian'),
                            ('about 1732', 'julian'), ('', 'julian'),
+                           ('11 Feb 32', 'julian'),          # never the year 32
                            ('1 Smarch 5650', 'hebrew'), ('Nisan 5650', 'hebrew')):
             with self.subTest(typed=typed):
                 result = dates.run_convert(typed, cal)
