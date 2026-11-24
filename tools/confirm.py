@@ -175,6 +175,10 @@ from _lib import (
     locate_claim_records,
     EXIT_CLEAN,
     EXIT_ERRORS,
+    append_research_log_entry,
+    is_valid_edtf,
+    render_research_log_entry,
+    research_log_path,
     EXIT_FAILURE,
     EXIT_WARNINGS,
     ClaimEditRefused,
@@ -1736,6 +1740,114 @@ def run_add_discovery(
     result.note_changed(path)
     result.add('info', f'Appended discovery to {path.name}: {entry}', path=path)
     return result
+
+
+# ── Verb: log a search he ran (SPEC §17c) ────────────────────────────────────────
+
+SEARCH_RESULTS = ('nil', 'partial', 'found', 'unavailable')
+_FULL_DATE_RE = re.compile(r'^\d{4}-\d{2}-\d{2}$')
+
+
+def run_confirm_search(
+    archive_root: Path, person_id: str, *, repository: str, result: str,
+    collection: str = '', terms: str = '', source_id: str | None = None,
+    note: str = '', years: str = '', date: str | None = None, dry_run: bool = False,
+) -> Result:
+    """File a search he ran for one person in `notes/research-log.md`.
+
+    For the owner: after he looked for someone on another website and found
+    nothing, one click writes that down, so the next report and `research-next`
+    say "already searched" instead of sending him back to the same page. The
+    person's id in `question:` is what makes the search count for that person
+    (SPEC §17c). `result` is `nil`, `partial` (needs `note`), `found` (needs
+    `source_id`) or `unavailable` (needs `note`, why it could not be searched).
+
+    `data` is {'status', 'person_id', 'entry'}. Every refusal is a usage error
+    (exit 2) that names the next step; nothing is written on one.
+    """
+    res = Result(data={'status': None, 'person_id': None, 'entry': None})
+
+    def refuse(status: str, message: str) -> Result:
+        return result_fail(res, status, message, exit_code=EXIT_ERRORS)
+
+    pid = normalize_id(person_id) if is_valid_id(person_id or '') else ''
+    profile = find_person_record_path(archive_root, pid) if pid else None
+    if profile is None or id_type_of(pid) != 'P':
+        return refuse('not-found',
+                      f'No one in the archive has the ID {person_id}. '
+                      'Run `fha find --json "name"` to look the person up.')
+    res.data['person_id'] = fmt_id_display(pid)
+    meta = read_record(profile).get('meta') or {}
+    if is_merged_meta(meta):
+        survivor = normalize_id(str(meta.get('merged_into') or ''))
+        where = f' Log it on {fmt_id_display(survivor)} instead.' if is_valid_id(survivor) else ''
+        return refuse('merged', f'{fmt_id_display(pid)} was merged into another record.{where} '
+                                'Nothing was written.')
+    name = ' '.join(str(meta.get('name') or '').split()) or fmt_id_display(pid)
+
+    repository = ' '.join((repository or '').split())
+    if not repository:
+        return refuse('failed', 'Say where you searched with --repository, '
+                                'for example --repository FamilySearch.')
+    result = (result or '').strip().lower()
+    if result not in SEARCH_RESULTS:
+        return refuse('failed', f'--result is one of {", ".join(SEARCH_RESULTS)}, not {result!r}. '
+                                'Use nil when the search found nothing.')
+    note = ' '.join((note or '').split())
+    if result == 'found':
+        if not (source_id and is_valid_id(source_id) and id_type_of(source_id) == 'S'):
+            return refuse('failed', 'A search that found something names the source it filed: add '
+                                    '--source s-… (capture the record first, then log the search).')
+        result_text = f'found [[{normalize_id(source_id)}]]'
+    elif result in ('partial', 'unavailable'):
+        if not note:
+            why = 'what was not covered' if result == 'partial' else 'why it could not be searched'
+            return refuse('failed', f'A {result} search needs --note saying {why}.')
+        result_text = f'{result} ({note})'
+    else:
+        result_text = 'nil'
+
+    date = (date or '').strip() or _today()
+    try:
+        if not _FULL_DATE_RE.match(date):
+            raise ValueError(date)
+        datetime.date.fromisoformat(date)
+    except ValueError:
+        return refuse('failed', 'Write the day the search was run, like 2026-11-22.')
+    years = (years or '').strip()
+    if years and not is_valid_edtf(years):
+        return refuse('failed', 'Write the years the search covered like 1875 or 1911/1925.')
+
+    question = convert_written_links(
+        '', f'[[{pid}|{name}]]', link_writer(archive_root))
+    entry = render_research_log_entry(
+        date=date, question=question, repository=repository, collection=collection,
+        terms=terms, result=result_text, years=years)
+    res.data['entry'] = entry
+    outcome = {'nil': 'nothing found', 'found': 'found a record', 'partial': 'partly searched',
+               'unavailable': 'could not be searched'}[result]
+
+    if dry_run:
+        res.data['status'] = 'ok'
+        res.add('info', f'[dry-run] Would append to notes/research-log.md:\n{entry}')
+        res.add('info', '[dry-run] No file written.')
+        return res
+
+    sink = append_research_log_entry(
+        archive_root, date=date, question=question, repository=repository,
+        collection=collection, terms=terms, result=result_text, years=years, person_id=pid)
+    if sink == 'none':
+        return result_fail(res, 'failed',
+                           'Could not write notes/research-log.md. Check the file is not '
+                           'open or read-only, then run the command again.')
+    log_path = research_log_path(archive_root)
+    res.data['status'] = 'ok'
+    res.note_changed(log_path)
+    res.add('info',
+            f'Logged in notes/research-log.md: searched {repository} for {name} on {date}, '
+            f'{outcome}. The next report will show this search as already run.',
+            path=log_path)
+    return res
 
 
 # ── Verb: accept AI-DRAFT prose ─────────────────────────────────────────────────
@@ -3935,6 +4047,17 @@ def _cmd_discovery(args: argparse.Namespace) -> int:
         dry_run=bool(getattr(args, 'dry_run', False))))
 
 
+def _cmd_search(args: argparse.Namespace) -> int:
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return _emit(run_confirm_search(
+        archive_root, args.person_id, repository=args.repository or '', result=args.result or '',
+        collection=args.collection or '', terms=args.terms or '', source_id=args.source,
+        note=args.note or '', years=args.years or '', date=args.date,
+        dry_run=bool(getattr(args, 'dry_run', False))))
+
+
 def _cmd_draft(args: argparse.Namespace) -> int:
     archive_root = resolve_root_arg(args)
     if archive_root is None:
@@ -4034,6 +4157,27 @@ def _add_subcommands(subs: argparse._SubParsersAction, *, suppress_root: bool) -
     root_arg(dv_p)
     dv_p.set_defaults(func=_cmd_discovery)
 
+    se_p = subs.add_parser(
+        'search', help='Log a search you ran for one person in notes/research-log.md')
+    se_p.add_argument('person_id', metavar='p-id', help='The person you searched for.')
+    se_p.add_argument('--repository', metavar='NAME', required=True,
+                      help='Where you searched, e.g. FamilySearch.')
+    se_p.add_argument('--result', metavar='RESULT', required=True,
+                      help='nil (nothing found), partial, found or unavailable.')
+    se_p.add_argument('--terms', metavar='TEXT',
+                      help='What you typed in, e.g. "Thomas Hartley, born about 1840".')
+    se_p.add_argument('--collection', metavar='TEXT', help='The collection or index searched.')
+    se_p.add_argument('--years', metavar='EDTF',
+                      help='The years of records it covered, like 1875 or 1911/1925.')
+    se_p.add_argument('--source', metavar='s-id', help='The source the search found (--result found).')
+    se_p.add_argument('--note', metavar='TEXT',
+                      help='What was not covered (partial) or why it could not be searched (unavailable).')
+    se_p.add_argument('--date', metavar='YYYY-MM-DD', help='The day you searched (default: today).')
+    se_p.add_argument('--dry-run', action='store_true', dest='dry_run',
+                      help='Preview the entry without writing.')
+    root_arg(se_p)
+    se_p.set_defaults(func=_cmd_search)
+
     dr_p = subs.add_parser('draft', help='Accept AI-DRAFT prose markers in a person profile')
     dr_p.add_argument('person_id', metavar='p-id', help='The person whose profile to accept drafts in.')
     dr_p.add_argument('--dry-run', action='store_true', dest='dry_run',
@@ -4066,6 +4210,7 @@ Write down a suggestion you've decided to accept.
   fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
+  fha confirm search <p-id> --repository NAME --result nil|partial|found|unavailable
   fha confirm draft <p-id>
   fha confirm merge <p-merged> --into <p-survivor> --reason "<why>"
 
@@ -4078,7 +4223,7 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     """Register 'confirm' onto the main fha parser."""
     p = subs.add_parser(
         'confirm',
-        help='Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)',
+        help='Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)',
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

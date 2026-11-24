@@ -10230,6 +10230,19 @@ RESEARCH_SITES: tuple = (
 )
 
 
+def research_search_terms(subject: dict) -> str:
+    """What he typed into the other website, in words, for the research log:
+    "Thomas Hartley, born about 1840, New York". Only what the subject carries,
+    so a living person's entry is the name alone."""
+    name = ' '.join(x for x in (subject.get('given'), subject.get('surname')) if x)
+    parts = [name] if name else []
+    if subject.get('birth_year'):
+        parts.append(f"born about {subject['birth_year']}")
+    if subject.get('birth_place'):
+        parts.append(str(subject['birth_place']))
+    return ', '.join(parts)
+
+
 def research_search_links(subject: dict) -> list[dict]:
     """The searches to offer for one person: `[{key, label, group, note, url}]`.
 
@@ -16759,6 +16772,225 @@ def update_path_manifest(
         else:
             manifest[path] = mtime
     write_path_manifest(manifest_path, manifest)
+
+
+# ── The research log writer (SPEC §17c) ───────────────────────────────────────
+# One writer for `notes/research-log.md`, shared by `fha capture` (a capture is
+# itself a logged search) and `fha confirm search` (the workbench's "nothing
+# found" button), so both write the same entry shape and keep the index in step.
+
+SEARCH_LOG_DDL = """CREATE TABLE IF NOT EXISTS search_log(
+  date TEXT, person_id TEXT, question TEXT, repository TEXT, collection TEXT,
+  years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT
+)"""
+
+
+RESEARCH_LOG_HEADER = (
+    '# Research log\n'
+    '\n'
+    'Every search run, by hand or by `fha capture`, one entry per search, so no '
+    'collection is searched twice by accident.\n'
+)
+
+
+def research_log_path(archive_root: Path) -> Path:
+    """The one search log (SPEC §17c): `notes/research-log.md`."""
+    return Path(archive_root) / 'notes' / 'research-log.md'
+
+
+def research_log_value(value: str, *, quote: bool) -> str:
+    """One research-log field value on one line.
+
+    The index reads each field as the text after `field:` with one layer of
+    matching quotes stripped, so a free-text value (a page title, a
+    collection) is wrapped in double quotes and any double quote inside it
+    becomes a single one - a title like `Say "hi": a page` then reads back
+    whole. Line breaks fold to spaces: one field is one line.
+    """
+    v = ' '.join(str(value or '').split())
+    if quote or v[:1] in ('"', "'") or ': ' in v or ' #' in v:
+        return '"' + v.replace('"', "'") + '"'
+    return v
+
+
+def render_research_log_entry(*, date: str, question: str, repository: str,
+                              collection: str = '', terms: str = '', result: str,
+                              years: str = '') -> str:
+    """One SPEC §17c entry: a list item, its other fields indented below it.
+
+    `collection`, `years` and `terms` are left out when not given; `date`,
+    `question`, `repository` and `result` are always written.
+    """
+    lines = [f'- date: {date}',
+             f'  question: {research_log_value(question, quote=True)}',
+             f'  repository: {research_log_value(repository, quote=False)}']
+    if (collection or '').strip():
+        lines.append(f'  collection: {research_log_value(collection, quote=True)}')
+    if (years or '').strip():
+        lines.append(f'  years: {research_log_value(years, quote=False)}')
+    if (terms or '').strip():
+        lines.append(f'  terms: {research_log_value(terms, quote=True)}')
+    lines.append(f'  result: {result}')
+    return '\n'.join(lines) + '\n'
+
+
+def append_research_log_entry(
+    archive_root: Path,
+    *,
+    date: str,
+    question: str,
+    repository: str,
+    collection: str = '',
+    terms: str = '',
+    result: str,
+    years: str = '',
+    person_id: str | None = None,
+) -> str:
+    """Record one search in the research log (SPEC §17c).
+
+    For the owner: a search he ran, or the capture add-on ran for him, is
+    written down once, so the next session can say "already searched" instead
+    of repeating it. The entry is appended to `notes/research-log.md` - the one
+    search log, the same file hand searches go in - creating the file with a
+    short purpose line when it is absent. That file is the durable record:
+    `fha index` rebuilds `search_log` from it every time, and it lives under
+    notes/ so backups and git keep it.
+
+    When `.cache/index.sqlite` already exists, the row is *also* written
+    straight into its `search_log` table (`person_id` is whatever the caller
+    resolved, None for a capture's stub; `source_id` is null) so `fha report`
+    sees it at once, without waiting for the next rebuild. Returns 'index' or
+    'log' for the caller's status line (favoring 'index' when both succeed),
+    'none' when neither landed; a logging failure is reported but never fails
+    the caller.
+    """
+    archive_root = Path(archive_root)
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    log_path = research_log_path(archive_root)
+    log_rel = str(log_path.relative_to(archive_root))   # the index's own path form
+
+    # Was the index up to date with the log BEFORE this write touched it?
+    # Only then may the write mark the log as read afterwards: an entry
+    # typed by hand or synced in from another machine must keep the index
+    # stale until `fha index` replays it (#304 review).
+    log_was_indexed = db_path.exists() and research_log_is_indexed(archive_root, log_path)
+
+    entry = render_research_log_entry(
+        date=date, question=question, repository=repository,
+        collection=collection, terms=terms, result=result, years=years)
+    log_ok = False
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # A file last saved by hand or by a git merge may not end in a
+        # newline; appending straight on would glue this entry onto the last
+        # one and the index would read neither (#304 review). Entries are
+        # kept apart by a blank line.
+        try:
+            size = log_path.stat().st_size
+        except FileNotFoundError:
+            size = None
+        if size is None:
+            prefix = RESEARCH_LOG_HEADER + '\n'
+        elif size == 0:
+            prefix = ''
+        else:
+            with open(log_path, 'rb') as tail:
+                tail.seek(-1, os.SEEK_END)
+                prefix = '\n' if tail.read(1) == b'\n' else '\n\n'
+        with open(log_path, 'a', encoding='utf-8', newline='') as f:
+            f.write(prefix + entry)
+        log_ok = True
+    except OSError as e:
+        print(f'WARNING: could not write {log_rel}: {e}', file=sys.stderr)
+
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(SEARCH_LOG_DDL)
+                conn.execute(
+                    """INSERT INTO search_log
+                       (date, person_id, question, repository, collection, years,
+                        terms, result, source_id, path)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (date, person_id, question, repository, collection,
+                     (years or None), terms, result, None, log_rel),
+                )
+                if log_ok:
+                    refresh_research_log_text(conn, log_path, log_rel)
+                conn.commit()
+            finally:
+                conn.close()
+            # The research log is a freshness input (an index that has not
+            # read it is missing searches). This write just put its own row
+            # in the index, so record the log as read - otherwise every
+            # logged search would make `fha doctor` call a correct index stale.
+            if log_ok and log_was_indexed:
+                mark_research_log_indexed(archive_root, log_path)
+            return 'index'
+        except Exception as e:  # noqa: BLE001
+            print(f'WARNING: could not write search_log row ({e})'
+                  + (' (still logged in the research log)' if log_ok else ''),
+                  file=sys.stderr)
+
+    return 'log' if log_ok else 'none'
+
+
+def refresh_research_log_text(conn: sqlite3.Connection, log_path: Path, log_rel: str) -> None:
+    """Keep `fha find --text` in step: the research log is a note, and the
+    index holds its text in `notes_fts`. Replaced whole, as a rebuild would.
+    An index without that table (an old or partial one) is left alone."""
+    try:
+        content = log_path.read_text(encoding='utf-8')
+        conn.execute('DELETE FROM notes_fts WHERE path=?', (log_rel,))
+        conn.execute('INSERT INTO notes_fts(path, content) VALUES (?,?)', (log_rel, content))
+    except (sqlite3.Error, OSError, UnicodeDecodeError):
+        pass
+
+
+def _research_log_rel(path: Path, archive_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path(archive_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return path.as_posix()
+
+
+def research_log_is_indexed(archive_root: Path, log_path: Path) -> bool:
+    """True when the index's stored manifest records the research log exactly
+    as it is on disk now (same mtime, or absent on both sides) - i.e. every
+    entry in it is already in `search_log`. A missing or unreadable manifest
+    is False: nothing proves the index read the log."""
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    if stored is None:
+        return False
+    try:
+        current = log_path.stat().st_mtime
+    except OSError:
+        current = None
+    return stored.get(_research_log_rel(log_path, archive_root)) == current
+
+
+def mark_research_log_indexed(archive_root: Path, log_path: Path) -> None:
+    """Patch the index's path manifest for the research log this run just wrote.
+
+    `fha index` lists every notes/ file among the ones it read, so a log
+    changed behind its back reads as stale. A write that also put its row
+    straight into `search_log` has kept the index exactly as current as the
+    file, the same contract `index.upsert_source` keeps for one source.
+    Called only when `research_log_is_indexed` held before the append - so the
+    one new entry is the caller's own, never a hand-typed or synced one the
+    index has not seen. Best effort: a failure here only costs one "run fha
+    index" suggestion.
+    """
+    try:
+        mtime = log_path.stat().st_mtime
+    except OSError:
+        mtime = None
+    try:
+        update_path_manifest(index_manifest_path(archive_root),
+                             {_research_log_rel(log_path, archive_root): mtime})
+    except Exception:  # noqa: BLE001 - never fail a write over cache bookkeeping
+        pass
 
 
 def manifest_diff(

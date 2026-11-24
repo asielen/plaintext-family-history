@@ -1291,6 +1291,21 @@ def _echo_dismiss(kw):
     return f'fha confirm dismiss {kw.get("person_a", "?")} {kw.get("person_b", "?")}'
 
 
+def _verb_search(state, kw, dry_run):
+    return confirm.run_confirm_search(
+        state.archive_root, kw.get('person_id', ''), repository=kw.get('repository', ''),
+        result=kw.get('result', ''), terms=kw.get('terms', ''), dry_run=dry_run)
+
+
+def _echo_search(kw):
+    parts = ['fha confirm search', kw.get('person_id', '?'),
+             '--repository', _q(kw.get('repository', '?'))]
+    if kw.get('terms'):
+        parts += ['--terms', _q(kw['terms'])]
+    parts += ['--result', kw.get('result', '?')]
+    return ' '.join(parts)
+
+
 def _verb_set_living(state, kw, dry_run):
     return person.run_set_living(
         state.archive_root, kw.get('person_id', ''), kw.get('value', ''), dry_run=dry_run)
@@ -1932,6 +1947,11 @@ VERBS: dict[str, dict] = {
                         'run': _verb_cooccur, 'echo': _echo_cooccur, 'reindex': 'source'},
     'confirm.dismiss': {'schema': {'person_a': 'str', 'person_b': 'str'},
                         'run': _verb_dismiss, 'echo': _echo_dismiss, 'reindex': 'none'},
+    # The workbench's "Nothing found" after a search-link click. The writer puts
+    # its own search_log row in the index, as capture does, so no rebuild.
+    'confirm.search': {'schema': {'person_id': 'str', 'repository': 'str', 'terms': 'str',
+                                  'result': 'str'},
+                       'run': _verb_search, 'echo': _echo_search, 'reindex': 'none'},
     'person.set-living': {'schema': {'person_id': 'str', 'value': 'str'},
                           'run': _verb_set_living, 'echo': _echo_set_living, 'reindex': 'full'},
     'person.set-profile-photo': {'schema': {'person_id': 'str', 'value': 'str'},

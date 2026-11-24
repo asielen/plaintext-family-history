@@ -2121,5 +2121,35 @@ class OnThisDayTests(unittest.TestCase):
                         full.index('## 1. Review queue'))
 
 
+class LoggedSearchShowsInReportTests(unittest.TestCase):
+    """A search filed with `fha confirm search` is "already searched" in the
+    next report, so he is not sent back to the same website."""
+
+    def test_a_nil_search_he_filed_shows_as_already_searched(self) -> None:
+        import shutil
+        import confirm
+        import index
+        example = ROOT / 'example-archive'
+        if not example.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / 'arc'
+            shutil.copytree(example, root, ignore=shutil.ignore_patterns('generated', '.cache'))
+            thomas = 'p-de957bcda1'
+            r = confirm.run_confirm_search(
+                root, thomas, repository='Ancestry', result='nil', date='2026-11-22')
+            self.assertEqual(r.exit_code, 0)
+            index.build_index(root, _lib.load_fha_yaml(root))
+            conn = sqlite3.connect(root / '.cache' / 'index.sqlite')
+            conn.row_factory = sqlite3.Row
+            try:
+                lines = report._section_search_log(conn, {'vitals_gap_person_ids': [thomas]})
+            finally:
+                conn.close()
+        self.assertTrue(any(
+            'Thomas Edward Hartley' in ln and 'Ancestry: already searched 2026-11-22' in ln
+            for ln in lines), lines)
+
+
 if __name__ == '__main__':
     unittest.main()

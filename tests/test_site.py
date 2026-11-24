@@ -9443,6 +9443,29 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
         self.assertIn('referrerpolicy="no-referrer"', page)
         self.assertNotIn('<details class="wb-research"', page)   # he is not living
 
+    def test_each_link_carries_what_nothing_found_files_and_shows_the_last_search(self):
+        import confirm
+        r = confirm.run_confirm_search(
+            self.root, self.THOMAS, repository='Ancestry', result='nil', date='2026-11-22')
+        self.assertEqual(r.exit_code, 0)
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args), {
+            'person_id': self.THOMAS, 'repository': 'Ancestry', 'result': 'nil',
+            'terms': 'Thomas Hartley, born about 1840, New York'})
+        self.assertRegex(page, r'Ancestry</a>.*?searched 2026-11-22: nothing found')
+        self.assertEqual(page.count('searched 2026-11-22'), 1)   # only the site he logged
+
+    def test_a_living_subject_logs_the_name_alone(self):
+        self._edit(self.THOMAS, 'living: false', 'living: true')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args)['terms'], 'Thomas Hartley')
+
     def test_a_living_relative_is_left_out_of_every_url(self):
         self._edit('p-cd795c61e0', 'living: false', 'living: true')
         hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))

@@ -1122,6 +1122,50 @@
     });
   });
 
+  /* "Look for her on other websites": the link opens the other site's own
+     search in a new tab (the browser does that; nothing is prevented). When he
+     comes back, a short line asks how it went, so a search that found nothing
+     is filed in the research log and is not repeated next session.
+     "Nothing found" opens the usual preview/confirm for `confirm.search`.
+     "Found something" only explains: the capture add-on files a found record
+     and logs the search itself, so logging it here too would count it twice. */
+  document.addEventListener('click', function (e) {
+    var link = e.target.closest('a[data-wb-search]');
+    if (!link) return;
+    var li = link.closest('li') || link.parentNode;
+    var old = li.querySelector('.wb-search-back');
+    if (old) old.remove();
+    var box = document.createElement('span');
+    box.className = 'wb-search-back';
+    var ask = document.createElement('span');
+    ask.textContent = 'Back from ' + link.textContent + '? ';
+    box.appendChild(ask);
+    function button(label, attrs) {
+      var b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'btn btn-sm';
+      b.textContent = label;
+      Object.keys(attrs || {}).forEach(function (k) { b.setAttribute(k, attrs[k]); });
+      box.appendChild(b);
+      box.appendChild(document.createTextNode(' '));
+      return b;
+    }
+    button('Nothing found', {
+      'data-wb-open': 'tpl-confirm', 'data-wb-verb': 'confirm.search', 'data-wb-direct': '',
+      'data-wb-args': link.getAttribute('data-wb-search-args') || '{}'
+    });
+    var found = button('Found something');
+    var done = button('Not finished');
+    found.addEventListener('click', function () {
+      ask.textContent = 'Save the record with the capture add-on; it files the search for you. ';
+      Array.prototype.slice.call(box.querySelectorAll('button')).forEach(function (b) {
+        if (b !== done) b.remove();
+      });
+    });
+    done.addEventListener('click', function () { box.remove(); });
+    li.appendChild(box);
+  });
+
   /* open a file in the OS editor via POST /api/open (buttons with data-wb-open-file) */
   document.addEventListener('click', function (e) {
     var b = e.target.closest('[data-wb-open-file]');

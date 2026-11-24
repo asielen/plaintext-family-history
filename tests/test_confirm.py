@@ -1751,5 +1751,124 @@ class DismissNotSamePersonTests(unittest.TestCase):
         self.assertEqual(code, 0)
 
 
+# ── fha confirm search: "nothing found" goes in the research log ────────────────
+
+THOMAS = 'p-de957bcda1'      # Thomas Edward Hartley, deceased, in the example archive
+
+
+class ConfirmSearchTests(unittest.TestCase):
+    """`fha confirm search` files a search he ran in notes/research-log.md, so
+    the next report says "already searched" instead of repeating it."""
+
+    @classmethod
+    def setUpClass(cls) -> None:
+        if not EXAMPLE.is_dir():
+            raise unittest.SkipTest('example-archive not present')
+        import index
+        cls.index = index
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / 'arc'
+        shutil.copytree(EXAMPLE, self.root)
+        self.log = self.root / 'notes' / 'research-log.md'
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _run(self, **kw):
+        args = dict(repository='FamilySearch', result='nil', date='2026-11-22')
+        args.update(kw)
+        return confirm.run_confirm_search(self.root, THOMAS, **args)
+
+    def test_live_run_appends_the_17c_entry(self) -> None:
+        before = self.log.read_text(encoding='utf-8')
+        r = self._run(terms='Thomas Hartley, born about 1840, New York')
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        after = self.log.read_text(encoding='utf-8')
+        self.assertTrue(after.startswith(before))
+        self.assertEqual(
+            after[len(before):],
+            '\n- date: 2026-11-22\n'
+            '  question: "[[p-de957bcda1|Thomas Edward Hartley]]"\n'
+            '  repository: FamilySearch\n'
+            '  terms: "Thomas Hartley, born about 1840, New York"\n'
+            '  result: nil\n')
+        text = ' '.join(m.text for m in r.messages)
+        self.assertIn('searched FamilySearch for Thomas Edward Hartley on 2026-11-22, nothing found', text)
+        self.assertIn('already run', text)
+
+    def test_dry_run_writes_nothing_and_shows_the_entry(self) -> None:
+        before = self.log.read_bytes()
+        r = self._run(dry_run=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(self.log.read_bytes(), before)
+        text = ' '.join(m.text for m in r.messages)
+        self.assertIn('- date: 2026-11-22', text)
+        self.assertIn('result: nil', text)
+
+    def test_a_log_without_a_final_newline_still_gets_a_blank_line(self) -> None:
+        self.log.write_bytes(self.log.read_bytes().rstrip(b'\n'))
+        self._run()
+        self.assertIn('result: found [[s-7k2m9q4w1e]]\n\n- date: 2026-11-22',
+                      self.log.read_text(encoding='utf-8'))
+
+    def test_a_fresh_index_has_the_row_with_the_person(self) -> None:
+        self._run()
+        config = load_fha_yaml(self.root)
+        self.index.build_index(self.root, config)
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute(
+                "SELECT person_id, repository, result FROM search_log WHERE date='2026-11-22'"
+            ).fetchall()
+        finally:
+            conn.close()
+        self.assertEqual(rows, [(THOMAS, 'FamilySearch', 'nil')])
+
+    def test_partial_found_and_unavailable_write_their_result_forms(self) -> None:
+        self._run(result='partial', note='only 1850 was indexed')
+        self._run(result='found', source_id='s-7k2m9q4w1e')
+        self._run(result='unavailable', note='the site was down', years='1850/1870')
+        text = self.log.read_text(encoding='utf-8')
+        self.assertIn('  result: partial (only 1850 was indexed)', text)
+        self.assertIn('  result: found [[s-7k2m9q4w1e]]', text)
+        self.assertIn('  years: 1850/1870\n  result: unavailable (the site was down)', text)
+
+    def test_refusals_exit_2_name_the_next_step_and_write_nothing(self) -> None:
+        before = self.log.read_bytes()
+        cases = [
+            (dict(), 'p-0000000000', 'fha find --json'),
+            (dict(result='found'), THOMAS, '--source'),
+            (dict(result='partial'), THOMAS, '--note'),
+            (dict(result='unavailable'), THOMAS, '--note'),
+            (dict(date='2026-11'), THOMAS, 'like 2026-11-22'),
+            (dict(date='22 Nov 2026'), THOMAS, 'like 2026-11-22'),
+            (dict(years='whenever'), THOMAS, '1911/1925'),
+            (dict(result='maybe'), THOMAS, 'nil'),
+            (dict(repository=' '), THOMAS, '--repository'),
+        ]
+        for kw, pid, needle in cases:
+            with self.subTest(kw=kw, pid=pid):
+                r = confirm.run_confirm_search(
+                    self.root, pid, **{**dict(repository='FamilySearch', result='nil',
+                                              date='2026-11-22'), **kw})
+                self.assertEqual(r.exit_code, 2)
+                self.assertIn(needle, ' '.join(m.text for m in r.messages))
+                self.assertEqual(self.log.read_bytes(), before)
+
+    def test_cli_verb_logs_the_search(self) -> None:
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = confirm._standalone_main(
+                ['search', THOMAS, '--repository', 'Ancestry', '--result', 'nil',
+                 '--date', '2026-11-22', '--root', str(self.root)])
+        self.assertEqual(code, 0)
+        self.assertIn('repository: Ancestry', self.log.read_text(encoding='utf-8'))
+        self.assertIn('searched Ancestry for Thomas Edward Hartley', out.getvalue())
+
+
 if __name__ == '__main__':
     unittest.main()

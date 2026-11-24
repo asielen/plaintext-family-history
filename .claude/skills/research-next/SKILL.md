@@ -67,7 +67,7 @@ The archive already knows what it doesn't know: open questions, working answers 
 
 5. **Emit a plan-shaped list.** Present the leads as a short ranked plan the human can act on, top pick first. Each lead gives the record set, the repository, the search terms, the reason, and two labels: free or paid, and online, in person or by letter. Anything about the repository not confirmed this session carries "(check this)". End with the single best next move.
 
-6. **Log any executed search back.** If the human runs a lead (in this session, or reports back that he did), append one entry to **`notes/research-log.md`**, the archive's one search log (SPEC §17c). Put the working answer or the person in `question:`. A person ID there makes the search count for that person, so "already searched (date)" keeps working:
+6. **Log any executed search back.** If the human runs a lead (in this session, or reports back that he did), log it with `fha confirm search <p-id> --repository NAME --result nil` (add `--terms`, `--collection`, `--years`; `found` takes `--source`, `partial` and `unavailable` take `--note`), or by hand for a search that is not about one person. Either way it is one entry in **`notes/research-log.md`**, the archive's one search log (SPEC §17c). Put the working answer or the person in `question:`. A person ID there makes the search count for that person, so "already searched (date)" keeps working:
    ```yaml
    - date: 2026-07-01
      question: "[[h-…]] Thomas Hartley death record"

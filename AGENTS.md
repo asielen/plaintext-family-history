@@ -190,7 +190,7 @@ fha claim new --source s-id --type … --value …    mint a brand-new claim ont
                             --negated mints a SPEC §8.6 confirmed absence, "researched, did
                             not happen", writing negated: true + evidence: negative)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
-                            decision (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+                            decision (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <p-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
                             backfill any record section an older stub is still missing (never
