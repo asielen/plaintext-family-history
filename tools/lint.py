@@ -76,6 +76,8 @@ from _lib import (
     ParentEdge,
     PARENTAGE_CLAIM_TYPES,
     LIVING_CUTOFF_YEARS,              # W173: probably not living
+    role_sex_conflicts,               # W171: a role word against `sex:`
+    calendar_gap_of,                  # W172: a date inside a calendar gap
     PLAUSIBLE_MIN_PARENT_AGE,
     born_by_estimate,
     claim_date_range,
@@ -379,6 +381,7 @@ configure_utf8_stdout()
 #                                   root file by path that no source owns (#249)
 #    _check_died_but_living      - W136: an accepted death/burial for a person still
 #                                   treated as living (living: unknown or true)
+#    _check_role_sex, _check_calendar_gaps - W171 a role against sex:, W172 a date in a calendar gap
 #    _check_dates_that_cannot_be_true - W163-W170: one person's own dates, and a
 #                                   family's, that cannot all be true (_lib's
 #                                   plausibility engine)
@@ -4684,6 +4687,9 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
     _check_dates_that_cannot_be_true(registry, findings)
     # W173: marked living: unknown, but the family's dates say over 110
     _check_probably_not_living(registry, findings, alias_map)
+    # W171, W172: a role that contradicts `sex:`, a date in a calendar gap
+    _check_role_sex(registry, findings, alias_map)
+    _check_calendar_gaps(registry, findings)
     registry.lap('dates that cannot all be true')
 
     # W107 (claims): a claim still naming a merged person. Once an error
@@ -4955,6 +4961,93 @@ def _check_dates_that_cannot_be_true(registry: Registry, findings: list[Finding]
             problem, lambda p: _person_label(registry, p),
             lambda cid: _claim_ref(registry, cid))
         findings.append(Finding('W', code, _profile_path_for(registry, pid), message))
+
+
+def _check_role_sex(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W171: "Ada Hartley is recorded as male, but claim c-... names him as
+    the bride." A husband and wife swapped by an import, or a wrong `sex:`,
+    shows here before it puts someone in the wrong place on the tree.
+
+    A role word that implies a sex (`_lib.SEX_IMPLYING_ROLES`: mother, wife,
+    daughter, bride, widow; father, husband, son, groom, bridegroom, widower)
+    against a recorded `sex: M` or `F`. Accepted and suggested claims (a
+    mistake is cheapest to fix before accepting); disputed, rejected,
+    superseded and negated ones are skipped. A merged record counts for its
+    survivor. One finding per person and claim, on the person's profile.
+    Report only."""
+    survivors = _registry_merge_survivors(registry)
+    sex_by_pid = {pid: str(meta.get('sex') or '').strip()
+                  for pid, meta in registry.person_meta.items()}
+    for sid in sorted(registry.source_claims):
+        for claim in registry.source_claims[sid]:
+            if not isinstance(claim, dict) or not _claim_in_w171_scope(claim):
+                continue
+            seen: set[str] = set()
+            for pid, role, _implied in role_sex_conflicts(claim, sex_by_pid, alias_map):
+                pid = survivors.get(pid, pid)
+                meta = registry.person_meta.get(pid) or {}
+                if pid in seen or str(meta.get('status', '')).strip().lower() == 'merged':
+                    continue
+                recorded = sex_by_pid.get(pid, '')
+                if recorded not in ('M', 'F'):
+                    continue
+                seen.add(pid)
+                male = recorded == 'M'
+                him = 'him' if male else 'her'
+                his = 'his' if male else 'her'
+                set_to = 'F' if male else 'M'
+                shown = fmt_id_display(pid)
+                message = (
+                    f'{_person_label(registry, pid)} is recorded as '
+                    f'{"male" if male else "female"} (sex: {recorded}), but claim '
+                    f'{_claim_ref(registry, str(claim.get("id") or "?"))} names {him} as '
+                    f'the {role}. One of the two is wrong. If the claim names the wrong '
+                    f'person, fix its roles: in that source record; if {his} sex is '
+                    f'recorded wrong, run `fha person set-sex {shown} {set_to}`.')
+                findings.append(Finding('W', 'W171', _profile_path_for(registry, pid), message))
+
+
+def _claim_in_w171_scope(claim: dict) -> bool:
+    """Accepted or suggested, and not a claim saying the event did not happen."""
+    if claim_status(claim) not in ('accepted', 'suggested'):
+        return False
+    return str(claim.get('negated')).strip().lower() != 'true'
+
+
+def _check_calendar_gaps(registry: Registry, findings: list[Finding]) -> None:
+    """W172: "3 to 13 September 1752 never happened in England and its
+    colonies." Most English dates before 1752 in old records are written in
+    the old (Julian) calendar, and a `date:` that falls in a skipped stretch
+    is nearly always one of those copied in as it was written.
+
+    A claim's `date:` is always today's (Gregorian) calendar (SPEC §11), so a
+    note on the claim does not quiet this: the date itself is what to fix,
+    and the message names `fha date convert` for it. A date that is only a
+    year or a month, or a range reaching outside the gap, is never read.
+    Accepted and suggested claims, not negated; filed on the source record.
+    Report only."""
+    for sid in sorted(registry.source_claims):
+        path = registry.source_paths.get(sid)
+        for claim in registry.source_claims[sid]:
+            if not isinstance(claim, dict) or not _claim_in_w171_scope(claim):
+                continue
+            date = optional_scalar(claim.get('date'))
+            gap = calendar_gap_of(date) if date else None
+            if gap is None or path is None:
+                continue
+            message = (
+                f'Claim {_claim_ref(registry, str(claim.get("id") or "?"))} gives the date '
+                f'{humanize_edtf(date)}, but {gap[2]}, so a record written there never '
+                f'carried that day. If this source is from those places, the date was '
+                f'probably written in the old (Julian) calendar and copied in as written. '
+                f"Keep the source's own words in value:, work out the day in today's "
+                f'calendar with `fha date convert "{date}" --from julian`, and put that '
+                f'day in date:. If you already converted it from the old calendar, the '
+                f'date is right and this reminder can be left alone: a note does not '
+                f"silence it, because date: is always today's calendar.")
+            findings.append(Finding('W', 'W172', Path(path), message))
 
 
 def _this_year() -> int:

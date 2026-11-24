@@ -22705,6 +22705,61 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
     return (lo_known, hi_known)
 
 
+# Role words that name a sex (lint W171): the six SPEC §8.3 kin synonyms
+# plus the words marriage and death records add. Closed on purpose: `sister`,
+# `grandmother` and the rest would catch more, but it is a list that never
+# ends, and each extra word is another way to fire on a correct record.
+SEX_IMPLYING_ROLES: dict[str, str] = {
+    'mother': 'F', 'wife': 'F', 'daughter': 'F', 'bride': 'F', 'widow': 'F',
+    'father': 'M', 'husband': 'M', 'son': 'M', 'groom': 'M',
+    'bridegroom': 'M', 'widower': 'M',
+}
+
+
+def role_sex_conflicts(
+    claim: dict, sex_by_pid: dict[str, str], alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """`(pid, role word, implied sex)` for each person a claim calls by a word
+    that implies the other sex than the one recorded for them.
+
+    The role is read as written (lower-cased), never folded through
+    `role_meaning`: `wife` must stay `wife`, not become `spouse`. Only a
+    recorded `M` or `F` is compared; `intersex`, `unknown` and a missing
+    `sex:` never conflict (W120 asks for a missing one)."""
+    found: list[tuple[str, str, str]] = []
+    for pid, role in resolve_claim_persons_with_roles(claim, alias_map):
+        word = clean_role_word(role).lower()
+        implied = SEX_IMPLYING_ROLES.get(word)
+        recorded = sex_by_pid.get(pid, '')
+        if implied and recorded in ('M', 'F') and recorded != implied \
+                and (pid, word, implied) not in found:
+            found.append((pid, word, implied))
+    return found
+
+
+# The days a calendar change skipped (lint W172): (first, last, who and when).
+CALENDAR_GAPS: tuple[tuple[str, str, str], ...] = (
+    ('1582-10-05', '1582-10-14',
+     'Catholic Europe (Spain, Portugal, the Italian states, Poland) moved to '
+     'the new calendar and skipped 5 to 14 October 1582'),
+    ('1752-09-03', '1752-09-13',
+     'Great Britain and its colonies, America included, moved to the new '
+     'calendar and skipped 3 to 13 September 1752'),
+)
+
+
+def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
+    """The calendar gap a date lies wholly inside, or None. A year, a month or
+    a range that reaches outside the gap is never inside it."""
+    span = claim_date_range({'date': date})
+    if span is None or span[0] is None or span[1] is None:
+        return None
+    for gap in CALENDAR_GAPS:
+        if gap[0] <= span[0] and span[1] <= gap[1]:
+            return gap
+    return None
+
+
 def iso_plus_years(iso: str, years: int) -> str:
     """The same month and day `years` later, as an ISO day.
 
