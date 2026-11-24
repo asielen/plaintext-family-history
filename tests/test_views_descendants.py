@@ -345,6 +345,15 @@ class DescendantReviewFixTests(_TwoLinesBase):
         self.assertTrue(nums['1.1'].startswith('John Hartley Junior'), nums)
         self.assertTrue(nums['1.1.1'].startswith('Anna Hartley'), nums)
 
+    def test_a_tie_entered_backwards_lower_down_keeps_that_branch(self):
+        # John junior recorded by mistake as a child of his living daughter
+        # Kit: his branch stays on the page.
+        self._with([], [('s-dsdsdsdsd8', 'Mistaken entry', 'A tie keyed backwards.',
+                         R._rel('bk', C1, [GL]), '', None)])
+        nums = self.numbered(self.desc_text())
+        self.assertTrue(nums['1.1'].startswith('John Hartley Junior'), nums)
+        self.assertTrue(nums['1.1.1'].startswith('Anna Hartley'), nums)
+
     def test_a_living_cousins_child_is_not_named_as_a_spouse_either(self):
         QN = 'p-qnqnqnqnqn'
         self._with([(QN, 'Quinn Hartley', 'M', 'false', '')],

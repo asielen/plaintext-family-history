@@ -6303,10 +6303,11 @@ def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
     `root`. SPEC §21: a living person's own descendants are neither named nor
     counted, so these people stay off the page even when their other parent
     is a cousin the report lists (cousins who married, one still living).
-    `root` is never among them, nor reached through: a tie keyed backwards
-    (the subject recorded as his own descendant's child) must not empty the
-    report."""
+    A person on the line from `root` down to that living person is never
+    among them: a tie keyed backwards (a man recorded as his own living
+    daughter's child) must not take his branch off the page."""
     reached, living = {root}, set()
+    parents: dict[str, set[str]] = {}     # within the report's lines
     frontier = [root]
     while frontier:
         following = []
@@ -6315,20 +6316,31 @@ def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
                 state = rp.state(c)
                 if state == _PERSON_LIVING:
                     living.add(c)
-                elif state == _PERSON_SHOWN and c not in reached:
-                    reached.add(c)
-                    following.append(c)
+                    parents.setdefault(c, set()).add(pid)
+                elif state == _PERSON_SHOWN:
+                    parents.setdefault(c, set()).add(pid)
+                    if c not in reached:
+                        reached.add(c)
+                        following.append(c)
         frontier = following
     below: set[str] = set()
-    frontier = sorted(living)
-    while frontier:
-        following = []
-        for pid in frontier:
-            for c in _desc_children(rp, pid):
-                if c not in below and c != root:
-                    below.add(c)
-                    following.append(c)
-        frontier = following
+    for person in sorted(living):
+        line_up, stack = set(), [person]
+        while stack:
+            for par in parents.get(stack.pop(), ()):
+                if par not in line_up:
+                    line_up.add(par)
+                    stack.append(par)
+        seen, frontier = set(), [person]
+        while frontier:
+            following = []
+            for pid in frontier:
+                for c in _desc_children(rp, pid):
+                    if c not in seen and c not in line_up and c != person:
+                        seen.add(c)
+                        following.append(c)
+            frontier = following
+        below |= seen
     return below
 
 
