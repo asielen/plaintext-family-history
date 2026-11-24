@@ -330,6 +330,7 @@ from _lib import (
     is_placeholder_name,
     person_surname,
     research_search_links,
+    research_search_terms,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -7136,11 +7137,46 @@ class _SiteBuilder:
         subject = self._person_research_subject(pid) if self.workbench else None
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
+        links = research_search_links(subject)
+        last = self._research_last_searches(pid)
+        for link in links:
+            # What "Nothing found" files: the person, the site's own label and
+            # what was typed in (workbench.js reads this off the link).
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
+                            'result': 'nil'}
+            link['searched'] = last.get(link['label'].casefold(), '')
         return {
-            'research_links': research_search_links(subject),
+            'research_links': links,
             'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
             'research_given': subject.get('given') or name,
         }
+
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
+
+    def _research_last_searches(self, pid: str) -> dict[str, str]:
+        """For this person, the latest logged search at each website, as the
+        words shown beside its link ("searched 2026-11-22: nothing found"),
+        keyed by the website's name in lower case. So he sees what he already
+        tried before he clicks."""
+        try:
+            rows = self.conn.execute(
+                "SELECT date, repository, result FROM search_log WHERE person_id = ? "
+                "ORDER BY date, rowid", (pid,)).fetchall()
+        except sqlite3.Error:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:                                # later rows overwrite earlier ones
+            kind = str(r['result'] or '').split(' ', 1)[0].lower()
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
+        return out
 
     def _person_research_subject(self, pid: str) -> dict | None:
         """What a search on another website may say about this person, or None

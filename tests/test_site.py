@@ -9779,6 +9779,76 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
         self.assertIn('referrerpolicy="no-referrer"', page)
         self.assertNotIn('<details class="wb-research"', page)   # he is not living
 
+    def test_each_link_carries_what_nothing_found_files_and_shows_the_last_search(self):
+        import confirm
+        r = confirm.run_confirm_search(
+            self.root, self.THOMAS, repository='Ancestry', result='nil', date='2026-11-22')
+        self.assertEqual(r.exit_code, 0)
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args), {
+            'person_id': self.THOMAS, 'repository': 'Ancestry', 'result': 'nil',
+            'terms': 'Thomas Hartley, born about 1840, New York; father Caleb Hartley; '
+                     'mother Chastina Reed; spouse Margaret Cole, married about 1871, Fairview'})
+        self.assertRegex(page, r'Ancestry</a>.*?searched 2026-11-22: nothing found')
+        self.assertEqual(page.count('searched 2026-11-22'), 1)   # only the site he logged
+
+    def test_a_search_that_could_not_be_run_shows_as_still_to_do(self):
+        # SPEC §17c: an unavailable or requested entry is still to do, never
+        # "already searched".
+        log = self.root / 'notes' / 'research-log.md'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(f'\n- date: 2026-11-20\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Find a Grave\n  result: unavailable (the site was down)\n'
+                    f'\n- date: 2026-11-21\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Ancestry\n  result: requested (letter to the county)\n')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertNotIn('searched 2026-11-20', page)
+        self.assertNotIn('searched 2026-11-21', page)
+        self.assertRegex(page, r'Find a Grave</a>.*?tried 2026-11-20: could not be searched, still to do')
+        self.assertRegex(page, r'Ancestry</a>.*?asked for the records 2026-11-21, still to do')
+
+    def test_a_grave_site_logs_the_married_surname_it_searched(self):
+        subject = {'given': 'Mary', 'surname': 'Cole', 'married_surname': 'Hartley',
+                   'birth_year': 1840}
+        self.assertEqual(_lib.research_search_terms(subject, 'findagrave'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'billiongraves'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'familysearch'),
+                         'Mary Cole, born about 1840')
+
+    def test_each_site_logs_what_its_own_link_searched(self):
+        # A nil is only worth what was really searched: a newspaper link sends
+        # only the name and a span of years, so its log must not claim a birth
+        # year and place, and FamilySearch's must name the parents it sent.
+        s = {'given': 'Thomas', 'surname': 'Hartley', 'birth_year': 1840,
+             'birth_place': 'New York', 'death_year': 1910, 'father_given': 'Caleb',
+             'father_surname': 'Hartley', 'places': ['New York']}
+        t = _lib.research_search_terms
+        self.assertEqual(t(s, 'familysearch'), 'Thomas Hartley, born about 1840, New York; '
+                                               'died about 1910; father Caleb Hartley')
+        self.assertEqual(t(s, 'newspapers'), 'Thomas Hartley, newspapers 1835 to 1915')
+        self.assertEqual(t(s, 'chroniclingamerica'), 'Thomas Hartley, newspapers 1840 to 1910')
+        self.assertEqual(t(s, 'findmypast'), 'Thomas Hartley, born about 1840, died about 1910')
+        self.assertEqual(t(s, 'ukdiscovery'), 'Thomas Hartley')
+        # A place with no year still says which event it was.
+        self.assertEqual(t({'given': 'Thomas', 'surname': 'Hartley', 'birth_place': 'Ohio',
+                            'death_place': 'Boston'}, 'familysearch'),
+                         'Thomas Hartley, born in Ohio; died in Boston')
+        self.assertEqual(t({**s, 'places': ['Suwalki, podlaskie']}, 'geneteka'),
+                         'Thomas Hartley, baptisms 1840 to 1841, province podlaskie')
+
+    def test_a_living_subject_logs_the_name_alone(self):
+        self._edit(self.THOMAS, 'living: false', 'living: true')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args)['terms'], 'Thomas Hartley')
+
     def test_a_living_relative_is_left_out_of_every_url(self):
         self._edit('p-cd795c61e0', 'living: false', 'living: true')
         hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))

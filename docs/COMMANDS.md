@@ -1320,7 +1320,7 @@ hand-edit right after minting. Preview any change first with --dry-run.
 
 ## `fha confirm`
 
-Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 
 ```text
 Write down a suggestion you've decided to accept.
@@ -1331,6 +1331,7 @@ Write down a suggestion you've decided to accept.
   fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
+  fha confirm search <p-id> --repository NAME --result nil|partial|found|unavailable
   fha confirm draft <p-id>
   fha confirm merge <p-merged> --into <p-survivor> --reason "<why>"
 
@@ -1417,6 +1418,24 @@ Append a dated entry to notes/discoveries.md
 | `TEXT` | What was discovered. |
 | `--refs` `IDS` | Comma-separated S-/P-/C-/L-/H- refs. |
 | `--dry-run` | Preview the change without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha confirm search`
+
+Log a search you ran for one person in notes/research-log.md
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person you searched for. |
+| `--repository` `NAME` | Where you searched, e.g. FamilySearch. |
+| `--result` `RESULT` | nil (nothing found), partial, found or unavailable. |
+| `--terms` `TEXT` | What you typed in, e.g. "Thomas Hartley, born about 1840". |
+| `--collection` `TEXT` | The collection or index searched. |
+| `--years` `EDTF` | The years of records it covered, like 1875 or 1911/1925. |
+| `--source` `s-id` | The source the search found (--result found). |
+| `--note` `TEXT` | What was not covered (partial) or why it could not be searched (unavailable). |
+| `--date` `YYYY-MM-DD` | The day you searched (default: today). |
+| `--dry-run` | Preview the entry without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha confirm draft`

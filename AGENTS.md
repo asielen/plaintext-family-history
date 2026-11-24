@@ -191,7 +191,7 @@ fha claim new --source s-id --type … --value …    mint a brand-new claim ont
                             --negated mints a SPEC §8.6 confirmed absence, "researched, did
                             not happen", writing negated: true + evidence: negative)
 fha confirm <verb> …         act on a detection candidate, report prompt, or confirmed
-                            decision (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+                            decision (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 fha person new "Name" …      mint a brand-new person stub from nothing (provisional vitals)
 fha person promote <p-id> [--into FOLDER]   graduate a stub to curated: tier flip, filing,
                             backfill any record section an older stub is still missing (never
@@ -341,7 +341,7 @@ Record the issue number against the local entry, and the local entry in the issu
 
 ### Playbooks (workflow skills)
 
-Nineteen workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
+Twenty workflow playbooks live at `.claude/skills/{name}/SKILL.md` (where Claude Code finds them; an installed archive carries identical copies at `.agents/skills/`, where Codex finds them). They are portable markdown procedures: `fha` invocations and judgment only, no harness APIs (the standard they follow is `.claude/skills/_STANDARD.md`). Each one's frontmatter `description` states its trigger in the human's own words ("process the inbox", "review the census claims", "are these the same person?", "what should I work on?").
 
 If your harness loads skills natively, prefer the matching skill over improvising. If it does not (any harness reading this file without a skill loader), treat them as documentation: when a request matches a playbook's trigger, **read that SKILL.md and follow it** before doing the task freehand. The playbooks restate the contract above; they never relax it, and they bind the same in every harness.
 
