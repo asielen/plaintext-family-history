@@ -340,7 +340,7 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `p-id` | Seed person for traversal. |
 | `--mode` `{ancestors,descendants,fan}` | ancestors: pedigree BFS; descendants: all descendants + in-law spouses; fan: all edge types (default 2 hops). |
 | `--generations` `N` | Maximum generations / hops (default: unlimited; fan default: 2). |
-| `--format` `{json,dot,html}` | Output format (default: json). html is not available here; run `fha site` for a browsable tree. |
+| `--format` `{json,dot,html}` | Output format (default: json). dot is a family chart for Graphviz: each family a union point and a sibling bar, adopted or step ties dashed, friends dotted. Both formats name everyone, living people included (private research use); to share a tree use `fha site`, `fha packet` or `fha gedcom`. html is not available here; run `fha site` for a browsable tree. |
 | `--out` `FILE` | Write output to FILE instead of stdout. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
