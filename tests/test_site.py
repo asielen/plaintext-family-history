@@ -13224,7 +13224,11 @@ class GravesTests(_Base):
         self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
         without = self._run()['pages']
         self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
-        self.assertEqual(self._run()['pages'], without + 1)
+        # The cemetery has coordinates, so the burial also puts a pin on the
+        # family map: graves.html and map.html are both new.
+        self.assertEqual(self._run()['pages'], without + 2)
+        self.assertTrue((self.out_dir / 'graves.html').is_file())
+        self.assertTrue((self.out_dir / 'map.html').is_file())
 
     def test_two_builds_are_byte_identical(self):
         self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
