@@ -13,7 +13,7 @@
     {% else %}<p class="empty">no map position recorded yet{% if workbench %} - set it on the place page{% endif %}</p>{% endif %}
     {% endif %}
     <ul class="index-list">
-      {% for r in g.rows %}<li>{{ r.person_html }}{% if r.place_text %}, {{ r.place_text }}{% endif %}{% if r.burial_date %}, buried {{ r.burial_date }}{% endif %}{% if r.death_date %}, died {{ r.death_date }}{% endif %} {{ r.source_html }}</li>
+      {% for r in g.rows %}<li>{{ r.person_html }}{% if r.place_text %}, {{ r.place_text }}{% endif %}{% if r.burial_date %}, buried {{ r.burial_date }}{% elif r.burial_words %}, {{ r.burial_words }}{% endif %}{% if r.death_date %}, died {{ r.death_date }}{% elif r.death_words %}, {{ r.death_words }}{% endif %} {{ r.source_html }}</li>
       {% endfor %}
     </ul>
   </section>

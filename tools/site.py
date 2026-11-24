@@ -7433,8 +7433,14 @@ class _SiteBuilder:
             name = meta['name'] or fmt_id_display(pid)
             row = {
                 'person_html': self._markup(self._person_link(pid, page_dir)),
-                'burial_date': self._vital_when(burial),
-                'death_date': self._vital_when(death) if death is not None else '',
+                # A structured date reads "buried 1901"; with none, the
+                # record's own words stand alone (they are a sentence, and
+                # "buried Ada was buried ..." would read as nonsense).
+                'burial_date': burial['date_edtf'] or '',
+                'burial_words': '' if burial['date_edtf'] else self._vital_when(burial),
+                'death_date': (death['date_edtf'] or '') if death is not None else '',
+                'death_words': ('' if death is None or death['date_edtf']
+                                else self._vital_when(death)),
                 'source_html': (self._markup(self._source_link(burial['source_id'], page_dir))
                                 if burial['source_id'] else ''),
                 'sort': (burial['date_min'] or '9999', fold_accents(name).lower(), pid),

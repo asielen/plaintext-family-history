@@ -1156,7 +1156,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "b239f40e8ba4f138b13961e1e0ee6d1b1c07aa28e3b75023c3cbeee02dc4eddb",
+      "sha256": "ca82b00e612b83b127b9f255d7c0086832c672cf342d7a83e11975ddc683e294",
       "spec_version": "2.31",
       "src": "tools/site.py"
     },
@@ -1212,7 +1212,7 @@
     {
       "path": ".fha/tools/templates/graves.html",
       "category": "operating",
-      "sha256": "f785938b57b62ccc47acb45d93d14bf96749404fa74fc87588b56d36f019a1f9",
+      "sha256": "0aada4a225cb5696c55b41d77fe7faeb1f848f77f3ba9f845a70e217baec08b7",
       "spec_version": "2.31",
       "src": "tools/templates/graves.html"
     },

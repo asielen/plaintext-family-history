@@ -12636,6 +12636,18 @@ class GravesTests(_Base):
         self.assertIn('Spring of the flood year', self._read('persons/p-aaaaaaaaaa.html'))
         self.assertIn('Spring of the flood year', self._read('graves.html'))
 
+    def test_graves_row_with_no_date_does_not_put_buried_before_a_sentence(self):
+        # Record wording is a sentence; "buried Ada Hartley was buried..." reads
+        # as nonsense on the list a relative prints for the cemetery trip.
+        self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
+        self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
+        self.conn.execute(
+            "UPDATE claims SET date_edtf = NULL, value = 'Ada Hartley was buried beside her husband'")
+        self._run()
+        graves = self._read('graves.html')
+        self.assertIn('Ada Hartley was buried beside her husband', graves)
+        self.assertNotIn('buried Ada Hartley', graves)
+
 
 if __name__ == '__main__':
     unittest.main()
