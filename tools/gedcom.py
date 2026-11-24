@@ -119,7 +119,9 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     Result,
+    CLAIM_WITHHELD,
     claim_is_own_vital,
+    indexed_claim_verdict,
     claim_role_pairs,
     configure_utf8_stdout,
     fmt_id_display,
@@ -606,7 +608,7 @@ def _load_marriages(
     """
     rows = conn.execute(
         f"""
-        SELECT c.id, c.date_edtf, c.place_id, c.place_text, c.source_id
+        SELECT c.id, c.type, c.date_edtf, c.place_id, c.place_text, c.source_id
         FROM claims c
         JOIN sources s ON s.id = c.source_id
         WHERE c.type = 'marriage' AND c.status = 'accepted'
@@ -876,10 +878,26 @@ def _gedcom_payload(
         unreadable_sources = privacy.unreadable_sources   # (source id, path)
 
         def _public_claim_row(row: sqlite3.Row) -> bool:
-            """A vital/marriage row not withheld by source or per-claim restriction."""
+            """A vital/marriage row not withheld by source or per-claim
+            restriction, nor by who it names. A death certificate whose
+            informant asked to be left out (`restricted: by-request`) keeps
+            the death out of the file too, as on the shared site; one whose
+            informant is a living son keeps it in, the son unnamed
+            (`_lib.claim_people_verdict`, SPEC §21). GEDCOM carries no
+            claim wording, so a kept claim needs nothing more left out."""
             if normalize_id(str(row['id'])) in restricted_claims:
                 return False
-            return not row['source_id'] or row['source_id'] not in restricted_sources
+            if row['source_id'] and row['source_id'] in restricted_sources:
+                return False
+
+            def withheld(pid: str) -> bool:
+                person = persons.get(pid)
+                return person is not None and _is_redacted(
+                    person, include_living, restricted_persons)
+
+            return indexed_claim_verdict(
+                conn, row['id'], row['type'], withheld=withheld,
+                restricted=restricted_persons.__contains__) != CLAIM_WITHHELD
 
         # One load of the relationship graph serves both traversal and family
         # building (it was previously read twice for the non-`--all` path).
