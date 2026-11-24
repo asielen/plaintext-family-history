@@ -5505,9 +5505,11 @@ class TreeJsonConfidenceTests(_Base):
 
 
     def test_a_private_card_and_its_ties_say_nothing_about_their_evidence(self):
-        # Pat (living) is Gus's child on a family story. The explorer fades
-        # Carl, who is dead and sits under her, but the Private card and the
-        # ties drawn to it carry no rating a visitor could read facts from.
+        # Every parent tie is a family story. Umberto, dead, is Gus's son on
+        # his own story and fades. Carl, dead, sits under Private Pat: the
+        # only ties linking him to Gus name Pat, a living woman, so they
+        # count as unrated and he is not faded. A faded Carl would tell a
+        # visitor that Pat's own parentage rests on a family story.
         self._seed_living_family()
         self.conn.execute("UPDATE claims SET confidence = 'low' WHERE id LIKE 'c-p%'")
         self._run(linked=False)
@@ -5517,8 +5519,24 @@ class TreeJsonConfidenceTests(_Base):
         for e in tree['edges']:
             if 'private-1' in (e['from'], e['to']):
                 self.assertIsNone(e['confidence'], e)
-        self.assertEqual(nodes['p-aaaaaaaaaa']['line_confidence'], 'low')
+        self.assertIsNone(nodes['p-aaaaaaaaaa']['line_confidence'])
         self.assertEqual(nodes['p-dddddddddd']['line_confidence'], 'low')
+
+    def test_nobody_behind_a_private_card_fades_for_her_ties(self):
+        # Only Pat's tie to her father Gus is a family story. On dead Carl's
+        # page, Gus sits behind Private Pat on the family chart and the fan;
+        # on Gus's page, Carl sits under her in the explorer. Fading either,
+        # or printing the key, would say Pat's parentage is weak.
+        self._seed_living_family()
+        self.conn.execute(
+            "UPDATE claims SET confidence = 'low' WHERE id IN (SELECT claim_id FROM relationships"
+            " WHERE person_id = 'p-bbbbbbbbbb' AND other_id = 'p-cccccccccc')")
+        self._run(linked=False)
+        for pid in ('p-aaaaaaaaaa', 'p-cccccccccc'):
+            page = (self.out_dir / 'persons' / f'{pid}.html').read_text(encoding='utf-8')
+            self.assertIn('Private', page, pid)
+            for word in ('ped-weak', 'fan-seg-weak', 'low-confidence record'):
+                self.assertNotIn(word, page, f'{word!r} on {pid}')
 
     def test_the_explorer_page_says_what_fading_means_only_when_someone_is_faded(self):
         self._gus_and_pat()

@@ -3381,7 +3381,8 @@ def _weak_slot(info: dict | None) -> bool:
     """Whether a chart cell is drawn faded: its line to the subject is low.
     A Private or redacted card is never faded, so a faded card could not
     tell a visitor anything about a living person's records."""
-    return bool(info) and not info.get('private') and not info.get('redacted')         and info.get('line_confidence') == 'low'
+    return (bool(info) and not info.get('private') and not info.get('redacted')
+            and info.get('line_confidence') == 'low')
 
 
 def _any_weak_slot(labels: dict, generations: int) -> bool:
@@ -9781,15 +9782,16 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
-        lines = line_confidence(shown_id[seed], [
-            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
         # A Private card carries no detail about itself, and that includes how
-        # well its ties are proven: the line is worked out through it (a dead
-        # grandchild below it still fades correctly), but neither the card nor
-        # the ties drawn to it say anything about their evidence.
+        # well its ties are proven. Those ties are claims naming a living
+        # person, so they count as unrated before the line is worked out: a
+        # dead grandchild faded only because Pat's own parentage is a family
+        # story would tell every visitor that about Pat.
         for e in edges:
             if e['from'].startswith('private-') or e['to'].startswith('private-'):
                 e['confidence'] = None
+        lines = line_confidence(shown_id[seed], [
+            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
         nodes = []
         for pid in order:
             if shown_id[pid].startswith('private-'):
@@ -10065,6 +10067,11 @@ class _SiteBuilder:
                 # claim, so the tie is unrated (it is drawn as a guess).
                 tie = (parent_rows[ppid]['confidence']
                        if ppid in parent_rows and ppid not in hyp_parents else None)
+                # A tie to or from a Private card is a claim naming a living
+                # person, so it never fades anyone: a grandparent faded behind
+                # a Private parent would tell visitors her parentage is weak.
+                if labels[num].get('private') or labels[slot_num].get('private'):
+                    tie = None
                 labels[slot_num]['tie_confidence'] = tie
                 labels[slot_num]['line_confidence'] = weaker_confidence(
                     tie, labels[num].get('line_confidence'))
