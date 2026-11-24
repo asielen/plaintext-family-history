@@ -6065,7 +6065,6 @@ def _reg_other_parent(rp: _ReportPrivacy, child: str, pid: str, spouses) -> str 
     return None
 
 
-
 def _reg_families(rp: _ReportPrivacy, pid: str, hidden: set[str]) -> tuple[list, int]:
     """One person's children the report may name, as families `(other parent
     or None, [(child, tie info, birth claim)])`, and how many living children
