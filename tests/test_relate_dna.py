@@ -303,5 +303,40 @@ class FitsListTests(unittest.TestCase):
         self.assertIn('one relationship', out)
 
 
+class MisfitCauseTests(unittest.TestCase):
+    """When the amount is outside the recorded tie, the suggested causes fit
+    which way it misses: a half relationship is offered only for a full tie
+    with too little DNA, never for half-siblings or for too much."""
+
+    def _text(self, gens_a, gens_b, half, cm):
+        dna = relate._dna_answer({'gens_a': gens_a, 'gens_b': gens_b, 'half': half}, 1, cm)
+        self.assertFalse(dna['fits_recorded'])
+        return ' '.join(relate._dna_lines(dna)).lower()
+
+    def test_full_tie_too_little_suggests_half(self):
+        self.assertIn('a half relationship', self._text(2, 2, False, 200))
+
+    def test_half_tie_too_little_does_not_suggest_half(self):
+        out = self._text(1, 1, True, 450)
+        self.assertNotIn('a half relationship', out)
+        self.assertIn('wrong or missing parent', out)
+
+    def test_too_much_does_not_suggest_half(self):
+        out = self._text(1, 1, None, 3600)
+        self.assertNotIn('a half relationship', out)
+        self.assertIn('closer tie', out)
+
+    def test_lineal_tie_does_not_suggest_half(self):
+        self.assertNotIn('a half relationship', self._text(0, 2, False, 500))
+
+    def test_one_other_fit_does_not_say_which(self):
+        from unittest import mock
+        with mock.patch.object(relate, 'shared_cm_table', return_value=_table_without('great_grandparent')):
+            dna = relate._dna_answer({'gens_a': 0, 'gens_b': 3, 'half': False}, 1, 3600)
+            out = ' '.join(relate._dna_lines(dna))
+        self.assertEqual(len(dna['fits']), 1)
+        self.assertNotIn('decide which', out)
+
+
 if __name__ == '__main__':
     unittest.main()

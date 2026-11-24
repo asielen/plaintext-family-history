@@ -328,6 +328,24 @@ def _also_fits(fits: list[dict], cm: float, shown: int = 5) -> str:
     return text
 
 
+def _misfit_causes(rows: list[dict], cm: float) -> str:
+    """What could explain an amount outside the recorded tie, matched to which
+    way it misses: a half relationship only means LESS DNA, so it is offered
+    only for a full collateral tie with too little, never for half-siblings,
+    for a grandparent, or for too much."""
+    if cm > max(r['high_cm'] for r in rows):
+        return ('A closer tie, a second route between them the tree does not show, or a '
+                'wrong parent in the tree could explain it.')
+    table = {r['key']: r for r in shared_cm_table().get('rows') or []}
+    full = [table[r['key']] for r in rows if r['key'] in table and not table[r['key']]['half']]
+    if (cm < min(r['low_cm'] for r in rows) and len(full) == len(rows)
+            and any(t['near'] >= 1 and expected_shared_cm(t['near'], t['far'], True)
+                    for t in full)):
+        return ('A half relationship, a wrong or missing parent in the tree, or a '
+                'different tie could explain it.')
+    return 'A wrong or missing parent in the tree, or a different tie could explain it.'
+
+
 def _dna_lines(dna: dict) -> list[str]:
     """The DNA line and the lines under it, without the label column."""
     rows, cm = dna['expected'], dna.get('cm')
@@ -362,11 +380,10 @@ def _dna_lines(dna: dict) -> list[str]:
                          + '; '.join(_usual(r) for r in rows) + ').')
             if dna.get('note'):
                 lines.append(dna['note'])
-            lines.append((f'It fits: {also}. ' if also else '')
-                         + 'A wrong or missing parent in the tree, a half relationship, or a '
-                         'different tie could explain it.')
+            lines.append((f'It fits: {also}. ' if also else '') + _misfit_causes(rows, cm))
         else:
-            lines.append(f'{_fig(cm)} cM fits: {also}. {_CM_DOCUMENTS}' if also
+            documents = _CM_DOCUMENTS if len(dna['fits']) > 1 else 'Documents decide.'
+            lines.append(f'{_fig(cm)} cM fits: {also}. {documents}' if also
                          else f'{_fig(cm)} cM fits no relationship in the chart.')
         table = shared_cm_table()
         if cm < 20:

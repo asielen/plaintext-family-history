@@ -8,6 +8,8 @@
     "tool": "https://dnapainter.com/tools/sharedcmv4"
   },
   "licence": "CC BY 4.0 (Creative Commons Attribution 4.0 International), as stated on the DNA Painter Shared cM Project 4.0 tool page",
+  "licence_url": "https://creativecommons.org/licenses/by/4.0/",
+  "changes": "Transcribed from the chart into one row per relationship (average, low and high cM); relationship names reworded into plain English. No figure changed.",
   "credit": "Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0",
   "rows": [
     {"key": "parent_child", "label": "a parent and child", "near": 0, "far": 1, "half": false, "average": 3485, "low": 2376, "high": 3720},

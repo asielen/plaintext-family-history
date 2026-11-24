@@ -1,7 +1,7 @@
 {
   "manifest_version": "1",
   "spec_version": "2.29",
-  "generated": "2026-11-23",
+  "generated": "2026-11-24",
   "files": [
     {
       "path": ".agents/skills/README.md",
@@ -905,7 +905,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "b6841d6802e990f73a79613e0d21dfb034c00f4d82adcdb3436a8da35ef54c5f",
+      "sha256": "11b8062b3c95de57a39d9a86973189db648ee2d1950d3b1cdc3b61e7007c0d85",
       "spec_version": "2.29",
       "src": "tools/relate.py"
     },
@@ -1136,7 +1136,7 @@
     {
       "path": ".fha/tools/shared_cm.json",
       "category": "operating",
-      "sha256": "2430218f34ec1ca61e4b9d7402f53e3717914890493d5bc7fb99847adb89b7d2",
+      "sha256": "883a449a48fb8d1ae49559de80bfd1c1e879c1accc996bd20d234fc74f18df8d",
       "spec_version": "2.29",
       "src": "tools/shared_cm.json"
     },
@@ -1494,7 +1494,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "d31f2799618a55477a6fed7e39d2d114fa74a44ee788ce719692b14ef5134cae",
+      "sha256": "7d89a732a4a60722b55d41d54044bdd0887993cdfee4d7afd1a07dcf7126c4fe",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
