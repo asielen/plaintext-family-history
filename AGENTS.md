@@ -281,7 +281,9 @@ fha find --json <ID|text>    machine-readable result list ([{id,type,label,detai
 fha find --sounds-like "NAME"   people whose names sound like NAME in any spelling
 fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), advisory, changes nothing
                             (Daitch-Mokotoff; Jan also finds John); a hint, never a merge
-fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
+fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path,
+                            and how much DNA such relatives usually share
+fha relate --cm <N>          which relationships N shared cM fits (several; never a percentage)
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
