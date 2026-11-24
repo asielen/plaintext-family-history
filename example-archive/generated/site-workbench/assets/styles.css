@@ -351,6 +351,10 @@ img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); 
 mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
+/* Family rows (her father's death, her children's births) read lighter than
+   her own records, with a hollow bullet so colour is not the only signal. */
+.timeline li.tl-family { color: var(--ink-soft); font-size: var(--text-sm); list-style-type: circle; }
+.timeline .tl-age { color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
 
 /* A person named but without a page of their own - dotted underline, no link
    (mirrors the tree's stub-node convention). */
