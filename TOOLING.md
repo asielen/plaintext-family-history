@@ -1926,7 +1926,7 @@ Every command's flags are in `docs/COMMANDS.md`, generated from the commands the
 | `transcribe-audio` skill (A) | "Run this through whisper." Local faster-whisper pass attached beside the original transcript; both always kept. |
 | `transcribe-source` skill (A) | "Type out what this scan says." Reads an image-only source and writes a `role: transcript` companion (`fha process --more`), marked `<!-- AI-DRAFT … -->` until a human checks it against the image. Drafts no claims; a contradiction with an accepted claim becomes an open question. Its detectors are lint W124 and `fha find --text`'s coverage note; that same marker is what makes `fha find --text` label a hit from an unchecked transcript (§4a D15). |
 | `write-biography` skill (A) | "Draft Margaret's bio." Consumes the draft queue; AI-DRAFT markers. |
-| `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. |
+| `research-next` skill (A) | "Where should I look for X?" Log-aware leads; writes working answers (`h-` entries, SPEC §17) into questions. Repository names come from `fha repositories`. |
 | `write-records-request` skill (A) | "Write to the county for the death certificate." Drafts a short records request from accepted facts, in the conversation, with placeholders and "(check this)" on every address and fee; saves it under `notes/research/letters/` on a yes; logs `result: requested` once he says it went. Sends nothing. |
 | `merge-identities` skill (A) | "Same person" / "two people." Frontier-tier candidate. |
 | `place-research` skill (A) | "Fill in Suwałki's history." Loose citations OK. |
