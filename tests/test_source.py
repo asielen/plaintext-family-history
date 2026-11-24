@@ -568,5 +568,92 @@ class SourceNoteCliTests(unittest.TestCase):
         self.assertIn('fha find s-zzzzzzzzzz', out)
 
 
+# ── fha source new --type proof-argument ─────────────────────────────────────────
+
+class SourceNewProofTests(unittest.TestCase):
+    """A written argument can start as a proper source record, without a file."""
+
+    PERSON = 'p-de957bcda1'
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = _mk_archive(Path(self._tmp.name))
+        (self.root / 'people' / 'h').mkdir(parents=True)
+        (self.root / 'people' / 'h' / f'thomas-hartley_{self.PERSON}.md').write_text(
+            f'---\nid: {self.PERSON}\nname: Thomas Edward Hartley\n---\n\n# Thomas\n',
+            encoding='utf-8')
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def _new(self, **kw):
+        kw.setdefault('title', 'When Thomas Edward Hartley was born')
+        kw.setdefault('source_type', 'proof-argument')
+        return source.run_source_new(self.root, **kw)
+
+    def _proofs(self) -> list[Path]:
+        d = self.root / 'sources' / 'proofs'
+        return sorted(d.glob('*.md')) if d.is_dir() else []
+
+    def test_writes_record_under_proofs_with_section_headings(self) -> None:
+        result = self._new(people=self.PERSON, date='2026-11-22')
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        (path,) = self._proofs()
+        self.assertTrue(path.name.startswith('when-thomas-edward-hartley-was-born_s-'))
+        text = path.read_text(encoding='utf-8')
+        for key in ('id:', 'aliases:', 'title:', 'source_type: proof-argument',
+                    "source_date: '2026-11-22'", 'source_class: authored',
+                    'repository: this archive', 'people:', 'created:'):
+            self.assertIn(key, text)
+        self.assertNotIn('\nfiles:', text)
+        self.assertIn('written for this archive, 22 November 2026.', text)
+        self.assertIn(f'[[{self.PERSON}|Thomas Edward Hartley]]', text)
+        order = [text.index(h) for h in (
+            '## Claims', '## The question', '## The evidence',
+            '## The reasoning', '## Conclusion', '## Notes')]
+        self.assertEqual(order, sorted(order))
+        # He is not told `fha process` made it: no document came through the inbox.
+        self.assertNotIn('fha process', text)
+        self.assertIn('This proof argument - yours to write.', text)
+        rec = read_record(path)
+        self.assertEqual(rec['meta']['source_type'], 'proof-argument')
+        self.assertEqual(rec['claims'], [])
+
+    def test_other_types_are_refused_with_the_inbox_hint(self) -> None:
+        result = self._new(source_type='census')
+        self.assertNotEqual(result.exit_code, EXIT_CLEAN)
+        self.assertIn('fha process', ' '.join(m.text for m in result.messages))
+        self.assertEqual(self._proofs(), [])
+
+    def test_dry_run_prints_path_and_text_and_writes_nothing(self) -> None:
+        result = self._new(dry_run=True)
+        self.assertEqual(result.exit_code, EXIT_CLEAN)
+        self.assertEqual(self._proofs(), [])
+        shown = '\n'.join(m.text for m in result.messages)
+        self.assertIn('sources/proofs/when-thomas-edward-hartley-was-born_s-', shown)
+        self.assertIn('## The question', shown)
+
+    def test_unknown_person_blank_title_and_bad_date_are_refused(self) -> None:
+        for kw in ({'people': 'p-aaaaaaaaaa'}, {'title': '  '}, {'date': 'sometime'}):
+            result = self._new(**kw)
+            self.assertNotEqual(result.exit_code, EXIT_CLEAN, kw)
+        self.assertEqual(self._proofs(), [])
+
+    def test_two_runs_mint_two_records(self) -> None:
+        self._new()
+        self._new()
+        self.assertEqual(len(self._proofs()), 2)
+
+    def test_cli_writes_record(self) -> None:
+        import fha
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(io.StringIO()):
+            rc = fha.main(['source', 'new', '--type', 'proof-argument',
+                           '--title', 'When Thomas was born',
+                           '--root', str(self.root)])
+        self.assertEqual(rc, 0)
+        self.assertEqual(len(self._proofs()), 1)
+
+
 if __name__ == '__main__':
     unittest.main()
