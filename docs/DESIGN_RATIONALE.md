@@ -327,6 +327,12 @@ Other limits:
 - **Matching on titles or collection names.** Sites word them differently and change them; the collection number is what the record itself carries.
 - **Writing our own collection map.** Sourcer's is maintained and covers the sites the archive uses; `build_record_collections.py` refreshes our copy from it.
 
+**Possible duplicate people (report §4b).** After an Ancestry or FamilySearch import the same grandmother is often in the tree twice. `fha report` lists pairs whose first given name and surname match on some recorded name, after folding case and accents, or are close spellings ("Hartley" and "Hartly"). A pair is never listed when anything says they are two people: a different recorded sex, Jr against Sr, a parent, child, spouse or ancestor tie between them, his own "not the same person", or birth or death dates that cannot be one life. Two exact dates that differ are a hard stop because a child who died young often had the name given again to the next one; approximate dates get two years of grace because a census age drifts. What the pair shares (birth, death, a parent, a spouse, a birthplace) adds weight, and a pair is listed only past a bar a bare name match does not reach: one import can hold dozens of undated namesakes, and listing them would bury the real duplicates. He sees "strong" or "worth a look" and the reasons in words, never the points: a number would claim a precision this guess does not have. The scan reads the index; `fha gedcom import` keeps its own check against the tree on disk, because an import can run before any index exists.
+
+- **An edit-distance score on the whole name.** Rearranged and short names give false matches; comparing the given name and the surname separately does not.
+- **Nickname tables.** The list never ends (Peggy, Polly, Molly for Margaret and Mary), and each entry is an edge case to defend. A recorded `name_variants` entry already matches.
+- **Soundex.** It is built for English spellings and folds Polish, German and Italian names into the wrong groups.
+
 ---
 
 ## 13. Linking place text: the hierarchy rule
