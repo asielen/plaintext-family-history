@@ -95,6 +95,7 @@ Every skill obeys the contract (AGENTS.md): AI-drafted claims are `status: sugge
 ### 2.2 Judgment-heavy skills
 
 - `merge-identities` ([SKILL.md](.claude/skills/merge-identities/SKILL.md)): the "same person or two people?" decision, run on the frontier tier (§1). Reads both people's neighborhoods (`fha find --related`, co-occurrence), proposes a merge or a split for human confirmation, and enacts a confirmed merge with `fha confirm merge` (dry-run first). A `merged_into` person is never directly referenced again (lint W107 lists any left; it counts for the survivor meanwhile, SPEC §9).
+- `weigh-evidence` ([SKILL.md](.claude/skills/weigh-evidence/SKILL.md)): records that disagree, and conclusions built from several clues. Lays every record about one fact side by side with `fha compare`, explains plainly why they might differ, asks the five questions a careful conclusion answers, and on the human's yes drafts a proof-argument source (`fha source new --type proof-argument`) whose four written sections each end in an AI-DRAFT marker and whose concluded claim is `suggested` (`fha claim new --status suggested`). Run on the frontier tier (§1). Every write waits for his yes; it never rules, never edits an existing claim, and never calls a conclusion proved.
 - `place-research` ([SKILL.md](.claude/skills/place-research/SKILL.md)): "fill in this place's history." Drafts dated `history:` entries and place notes (loose citations are acceptable, since place context is not vital fact), links `[[l-…]]`, and proposes registry entries for `fha confirm place` to write; for a place without coordinates it previews `fha places geocode --place` and runs it on the human's yes.
 
 ### 2.3 Photos and sharing
@@ -131,7 +132,7 @@ Both skills work ahead of `fha process` for audio and video, as `import-notes` d
 
 ## 3. Build status
 
-The workflow skills are authored: `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all nineteen SKILL.md files. Each skill's status is in [`.claude/skills/README.md`](.claude/skills/README.md); the tests that show this layer is done are in TOOLING.md §15.
+The workflow skills are authored: `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all twenty SKILL.md files. Each skill's status is in [`.claude/skills/README.md`](.claude/skills/README.md); the tests that show this layer is done are in TOOLING.md §15.
 
 The workbench harness configuration (§1) is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its maintenance is keeping those files accurate as harnesses change.
 
