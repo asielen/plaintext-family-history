@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "68cc1718800f6b6544c5c64007f0abfc625cff95c5f2b91b2cd692266dc593e8",
+      "sha256": "ed0625976fecb0f67c5f0ff286ca2915ee463f04c5ee58e5fa3418ec0070209f",
       "spec_version": "2.28",
       "src": "tools/_lib.py"
     },
@@ -786,7 +786,7 @@
     {
       "path": ".fha/tools/fha.py",
       "category": "operating",
-      "sha256": "32c2bfaedac3b1d7d8d5eb83d97df608e86a604aa6e0ec82ee347e51855b8834",
+      "sha256": "6878486a7a01b8200c5950cf61763e351b6ac70da48d2f8efc161f06b91ae2a8",
       "spec_version": "2.28",
       "src": "tools/fha.py"
     },
@@ -929,6 +929,13 @@
       "sha256": "59ac7420d1fc42c0b05ab4cae3bbcae318177eeab5df446d542107b1308639b0",
       "spec_version": "2.28",
       "src": "tools/repositories.json"
+    },
+    {
+      "path": ".fha/tools/repositories.py",
+      "category": "operating",
+      "sha256": "64524609383327f4a7d978d7aaa85acb7d174bd14dee699cf015ad40b07927e6",
+      "spec_version": "2.28",
+      "src": "tools/repositories.py"
     },
     {
       "path": ".fha/tools/requirements.txt",
@@ -1388,7 +1395,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "570164754a9f0a53d5341338633970f388e88115dbd71c2443c77ead4dcbc789",
+      "sha256": "5ad77bbb93f7f3244f37cfd27ecc557661547a342993e576d10be1f9c745a8cb",
       "spec_version": "2.28"
     },
     {
@@ -1413,7 +1420,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "98567748212c70f1dc248daa8cc45502d31ca394d2a360cae812c34a98af149f",
+      "sha256": "d2e3372d4a396bf5988b91394c5bb89de91710e3c21efac71945561cf1150398",
       "spec_version": "2.28"
     },
     {
@@ -1480,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "64221cb3ead21ff3be8b1fa419262192d9f26a23127ba89711ea46e595e22db0",
+      "sha256": "1caa9c6d59d4be4a7fe660cec31d3a820a3b58f6090cdb0adb2dc16c4741bae7",
       "spec_version": "2.28",
       "src": "TOOLING.md"
     },

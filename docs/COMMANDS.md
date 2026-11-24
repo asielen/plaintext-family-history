@@ -30,6 +30,7 @@ current folder.
 - [`fha relate`](#fha-relate)
 - [`fha metrics`](#fha-metrics)
 - [`fha calendar`](#fha-calendar)
+- [`fha repositories`](#fha-repositories)
 - [`fha photoindex`](#fha-photoindex)
 - [`fha xref`](#fha-xref)
 - [`fha cooccur`](#fha-cooccur)
@@ -541,6 +542,35 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
+| `--json` | Machine-readable JSON output |
+| `--root` `PATH` | Archive root (overrides auto-detection) |
+
+## `fha repositories`
+
+Where are the records? Archives and record sites for a place, year and kind of record.
+
+```text
+Where are the records? Archives and record sites for a place, a year and a kind
+of record, from the list that ships with the tools.
+
+  fha repositories --place l-xxxxxxxxxx --year 1911 --record death
+  fha repositories --place Fairview --year 1860 --record birth
+  fha repositories --country "United States" --year 1880 --record census
+
+A place with dated history is looked up under the government that held it in
+that year and under the country it is in today; each line says which. Every
+line says what it costs and how to reach it. Read-only.
+```
+
+| Argument | What it does |
+|---|---|
+| `--place` `L-ID|TOWN` | A registered place, by l-id or name |
+| `--country` `NAME|CC` | A country by name or two-letter code, for a place not registered yet |
+| `--year` `YYYY` | The year the record was made |
+| `--record` `KIND` | Kind of record: birth, baptism, marriage, death, burial, grave, census, military, immigration, probate, land, newspaper, church |
+| `--topic` `{jewish,african-american}` | A topic list: jewish or african-american |
+| `--access` `{free,paid,any}` | free keeps free and free-with-account; paid keeps paid and part-paid |
+| `--limit` `N` | How many to list (default 10) |
 | `--json` | Machine-readable JSON output |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
