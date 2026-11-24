@@ -167,6 +167,7 @@ from _lib import (
     cited_source_ids,
     connected_facts,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
+    place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,       # the one ID form tools write and show: all lowercase,
     bracket_given_name,      # default child token, title-aware - shared with lint W103,
     reconcile_bracket_entries,   # keeps a still-true hand-written child token (W103),
@@ -1101,6 +1102,14 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     query row to carry status/confidence/reviewed alongside the display
     columns.
     """
+    if isinstance(row, dict) and row.get('kind') == 'context':
+        # Background about the place, not a record of the family. A period
+        # written to the year begins on 1 January: print the year, not a day
+        # the records never gave.
+        iso = row['date_iso']
+        when = iso[:4] if iso.endswith('-01-01') else iso
+        return (f"{when} - place history: {place_history_phrase(row)} "
+                f"[[{fmt_id_display(row['place_id'])}]]")
     date_str = row['date_edtf'] or '(undated)'
     place = _place_label(row['place_text'], row['place_id'], conn)
     line = f'{date_str} - {row["type"]}: {row["value"]}'
@@ -1215,11 +1224,17 @@ def _generate_timeline(
     # a blank line BEFORE each ### header - we don't know whether a new section
     # is starting until we've already seen the first row of it.  Collecting first
     # lets us emit clean separators in a second pass without lookahead.
+    # Place-history rows: when a place the person was recorded at changed
+    # government between their first and last record there, say so.
+    main_rows = insert_context_rows(
+        list(main_rows),
+        place_history_context(conn, place_visits_from_rows(main_rows)))
     sections: list[tuple[str | None, list[sqlite3.Row]]] = []
     current_decade: str | None = 'UNSET'   # sentinel; distinct from None (= undated)
     current_rows: list[sqlite3.Row] = []
     for row in main_rows:
-        decade_hdr = _decade_from_edtf(row['date_edtf'])
+        decade_hdr = _decade_from_edtf(
+            row['date_iso'] if isinstance(row, dict) else row['date_edtf'])
         if decade_hdr != current_decade:
             if current_rows or current_decade != 'UNSET':
                 sections.append((current_decade if current_decade != 'UNSET' else None, current_rows))
