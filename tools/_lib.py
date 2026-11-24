@@ -22316,6 +22316,7 @@ class BornBy:
     `evidence` is one of:
       ('own', DatedClaim)                   a dated record names them
       ('birth' | 'baptism', DatedClaim)     their own birth or baptism
+      ('death' | 'burial', DatedClaim)      their own death or burial
       ('provisional', value)                the `birth:` estimate on their record
       ('child', child_pid, BornBy)          a genetic child's own BornBy, less
                                             PLAUSIBLE_MIN_PARENT_AGE
@@ -22326,8 +22327,18 @@ class BornBy:
     evidence: tuple
 
 
-_BORN_BY_RANK = {'own': 0, 'birth': 1, 'baptism': 2, 'provisional': 3,
-                 'child': 4, 'parent-died': 5}
+_BORN_BY_RANK = {'own': 0, 'birth': 1, 'baptism': 2, 'death': 3, 'burial': 4,
+                 'provisional': 5, 'child': 6, 'parent-died': 7}
+
+# The roles that put someone at the event on the claim's date, so they were
+# born by it: the event's own people and parties, and those the record says
+# were there. Not `informant` or a descriptive role (`narrator`,
+# `grandchild`): mine-transcript puts the living aunt who tells of her
+# grandfather's 1890 death on that claim, dated 1890, and she was not born
+# by then.
+_BORN_BY_ROLES: frozenset[str] = (
+    (CLAIM_ROLE_WORDS - {'informant'})
+    | {'subject', 'godparent', 'officiant', 'grantor', 'grantee'})
 
 
 def lived_claims_from_claims(
@@ -22340,7 +22351,8 @@ def lived_claims_from_claims(
     year they were born by.
 
     Any type counts but `note` (a researcher's jotting dated today says
-    nothing about the person), in any role, with the same status and
+    nothing about the person), in a role that puts them at the event
+    (`_BORN_BY_ROLES`, or no role), with the same status and
     `negated:` rules as `plausibility_input_from_claims`. A person's own
     birth, baptism, death or burial is left out: those are merged into one
     range there, so two disagreeing birth years never read as the earlier
@@ -22371,13 +22383,16 @@ def lived_claims_from_claims(
             subtype=str(optional_scalar(claim.get('subtype')) or '').lower())
         pairs = resolve_claim_persons_with_roles(claim, alias_map)
         named = list(dict.fromkeys(p for p, _role in pairs))
+        present = {p for p, role in pairs
+                   if role is None or role_meaning(role) in _BORN_BY_ROLES}
         own_vital: set[str] = set()
         if ctype in _PLAUSIBILITY_VITAL_TYPES:
             subjects = vital_subjects(ctype, pairs)
             if subjects is None:
                 subjects = named if len(named) == 1 else []
             own_vital = set(subjects)
-        for pid in dict.fromkeys(survivors.get(p, p) for p in named if p not in own_vital):
+        for pid in dict.fromkeys(survivors.get(p, p) for p in named
+                                 if p not in own_vital and p in present):
             if own_vital:
                 # A relative on a birth or death record: records of one
                 # person's one event merge into one range, so only the latest
@@ -22408,7 +22423,9 @@ def born_by_estimate(
     """The latest year each person can have been born, with the evidence.
 
     Read from, in this order on a tie: a dated record naming them
-    (`lived`), their own birth (or, with none, baptism), the provisional
+    (`lived`, less any dated before an accepted birth: that is a conflict,
+    not a bound), their own birth (or, with none, baptism), their own death
+    (or, with none, burial), the provisional
     `birth:` on their record (only when no birth claim is accepted, since a
     sourced birth supersedes it, SPEC §9), each genetic child's own
     estimate less PLAUSIBLE_MIN_PARENT_AGE (so through grandchildren too),
@@ -22433,14 +22450,27 @@ def born_by_estimate(
 
     def _own(pid: str) -> list[BornBy]:
         found: list[BornBy] = []
-        for c in lived.get(pid, []):
-            found.append(BornBy(int(c.hi[:4]), ('own', c)))
         facts = data.facts.get(pid, {})
         birth, bapt = facts.get('birth'), facts.get('baptism')
         fact = birth if birth else bapt
+        born_lo = birth.lo if birth else None
+        for c in lived.get(pid, []):
+            # A record dated before his accepted birth is a conflict, not a
+            # bound: a misfiled 1900 census must not tell him a man born in
+            # 1950 is over 110 and should be marked dead.
+            if born_lo is not None and c.hi < born_lo:
+                continue
+            found.append(BornBy(int(c.hi[:4]), ('own', c)))
         if fact is not None and fact.hi is not None and fact.claims:
             found.append(BornBy(int(fact.hi[:4]),
                                 ('birth' if birth else 'baptism', _latest_claim(fact))))
+        # Someone who died or was buried by a year was born by it too, so a
+        # child known only from a death record still ages the parents.
+        death, burial = facts.get('death'), facts.get('burial')
+        ended = death if death else burial
+        if ended is not None and ended.hi is not None and ended.claims:
+            found.append(BornBy(int(ended.hi[:4]),
+                                ('death' if death else 'burial', _latest_claim(ended))))
         meta = persons.get(pid)
         if birth is None and isinstance(meta, dict):
             value = optional_scalar(meta.get('birth'))

@@ -443,6 +443,58 @@ class ProbablyNotLivingTests(_PlausibilityBase):
         self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1950'))
         self.assertEqual(self._w173(), [])
 
+    def test_a_living_storyteller_is_not_aged_by_the_story(self) -> None:
+        # He interviews his aunt Cara about her grandfather's 1890 death and
+        # her grandfather's 1870 birth: the claims carry the event's date,
+        # not the day she told it, so she is not "born by 1890".
+        self._person(self.ADA, 'Will Hartley', sex='M', living='false')
+        self._person(self.CARA, 'Cara Hartley', living='unknown')
+        for role, ctype, date in (('narrator', 'death', '1890'),
+                                  ('grandchild', 'birth', '1870'),
+                                  ('informant', 'immigration', '1880')):
+            with self.subTest(role=role):
+                subject = {'death': 'deceased', 'birth': 'child'}.get(ctype, 'subject')
+                self._source(self.S1, self._claim(
+                    'C-1111111111', ctype, [self.ADA, self.CARA], date=date,
+                    roles=f'{{{subject}: [{self.ADA}], {role}: [{self.CARA}]}}'))
+                self.assertEqual(self._w173(), [])
+
+    def test_a_witness_on_an_old_record_still_counts(self) -> None:
+        self._person(self.ADA, 'Will Hartley', sex='M', living='false')
+        self._person(self.CARA, 'Cara Hartley', living='unknown')
+        self._source(self.S1, self._claim(
+            'C-1111111111', 'marriage', [self.ADA, self.CARA], date='1890',
+            roles=f'{{spouse: [{self.ADA}], witness: [{self.CARA}]}}'))
+        self.assertEqual(len(self._w173()), 1)
+
+    def test_a_childs_death_ages_the_undated_parent(self) -> None:
+        # Ben's only record is his death in 1900, so he was born by 1900 and
+        # his father Thomas by 1888.
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.BEN], date='1900'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1900', found[0].message)
+        self.assertIn('c-2222222222', found[0].message)
+
+    def test_an_accepted_birth_is_not_outvoted_by_an_earlier_record(self) -> None:
+        # Born 1950 by his birth record; a misfiled 1900 census names him.
+        # Asking to mark a possibly living 76-year-old dead would put him on
+        # the family site.
+        self._person(self.ADA, 'Ben Hartley', sex='M', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA], date='1950'))
+        self._source(self.S2, self._claim('C-2222222222', 'census', [self.ADA], date='1900'))
+        self.assertEqual(self._w173(), [])
+
+    def test_a_provisional_death_that_is_not_a_date_is_silent(self) -> None:
+        for value in ('unknown', '"?"', 'false'):
+            with self.subTest(value=value):
+                self._person(self.ADA, 'Ada Hartley', living='unknown',
+                             extra=f'death: {value}\n')
+                self.assertEqual(self._w173(), [])
+
     def test_lint_never_writes_living(self) -> None:
         self._father_and_son('1871')
         before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}

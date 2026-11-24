@@ -74,6 +74,7 @@ from _lib import (
     LIVING_CUTOFF_YEARS,              # W173: probably not living
     PLAUSIBLE_MIN_PARENT_AGE,
     born_by_estimate,
+    claim_date_range,
     lived_claims_from_claims,
     plausibility_input_from_claims,
     plausibility_message,
@@ -4974,6 +4975,10 @@ def _check_probably_not_living(
         has = 'have' if he == 'they' else 'has'
         is_ = 'are' if he == 'they' else 'is'
         death = optional_scalar(meta.get('death'))
+        # Only a date counts: `death: unknown` or `death: "?"` says nothing.
+        span = claim_date_range({'date': death}) if death else None
+        if span is None or span[1] is None:
+            death = None
         estimate = born_by.get(pid)
         if death:
             middle = f'{His} record gives a death estimate ({humanize_edtf(death)}).'
@@ -5015,7 +5020,7 @@ def _w173_evidence(registry: Registry, estimate, pronouns: tuple[str, str], ref)
         article = 'An' if word[:1] in 'aeiou' else 'A'
         sex_word = {'his': 'him', 'her': 'her'}.get(his, 'them')
         return f'{article} {word} record names {sex_word} in {estimate.year} ({ref(claim)})'
-    if kind in ('birth', 'baptism'):
+    if kind in ('birth', 'baptism', 'death', 'burial'):
         claim = estimate.evidence[1]
         return f'{His} {kind} is recorded {humanize_edtf(claim.date)} ({ref(claim)})'
     if kind == 'provisional':
