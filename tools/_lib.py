@@ -23593,9 +23593,18 @@ def family_life_events(
                       key=lambda r: (_family_bound(r) is None, r['status'] != 'accepted',
                                      vital_pick_key(r)))
 
+    # A will's "the late Caleb" is a death with no date; the burial register
+    # that dates him 1877 still gives her page "Her father was buried".
+    def _own_end(person: str, rows: list[dict]) -> list[dict]:
+        deaths = _own(person, 'death', rows)
+        if deaths and _family_bound(deaths[0]) is not None:
+            return deaths
+        return [r for r in _own(person, 'burial', rows)
+                if _family_bound(r) is not None] or deaths
+
     own_rows = _claims_naming(pid, None)
     births = _own(pid, 'birth', own_rows)
-    deaths = _own(pid, 'death', own_rows) or _own(pid, 'burial', own_rows)
+    deaths = _own_end(pid, own_rows)
     birth = births[0] if births else None
     death = deaths[0] if deaths else None
     result: dict = {'birth': birth, 'death': death, 'window': None, 'events': []}
@@ -23702,7 +23711,7 @@ def family_life_events(
             if best:
                 picked.append((best[0], None))
         if 'death' in types:
-            best = _own(rel_id, 'death', rows) or _own(rel_id, 'burial', rows)
+            best = _own_end(rel_id, rows)
             if best:
                 picked.append((best[0], None))
         if 'marriage' in types:

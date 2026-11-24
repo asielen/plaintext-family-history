@@ -7933,8 +7933,11 @@ class _SiteBuilder:
         as a bare "birth" line. True when this own-row claim records the same
         relative's same event as a family row: a birth, death or burial (each
         happens once), or a marriage to the same spouse. The other record
-        still sits in her Sources list."""
+        still sits in her Sources list. A record he accepted is never hidden
+        behind a family row that is still unconfirmed (preview only)."""
         for ev in events:
+            if r['status'] == 'accepted' and ev['status'] != 'accepted':
+                continue
             if ev['type'] != r['type'] or not claim_is_own_vital(
                     self.conn, ev['relative_id'], r['id'], r['type'], self._vital_subjects):
                 continue

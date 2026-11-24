@@ -11609,6 +11609,21 @@ class TimelineFamilyRowsTests(_Base):
         tl = self._timeline(linked=True)
         self.assertRegex(tl, r'Her daughter .*?unconfirmed')
         self.assertNotIn('Ethel register entry', tl)
+        # The bible entry he accepted (with its place) is not hidden behind
+        # the unconfirmed row.
+        self.assertIn('Ethel birth entry', tl)
+
+    def test_undated_death_does_not_hide_dated_burial(self):
+        # A will calls him "the late Caleb" (a death with no date); the
+        # burial register dates him 1877. Her page still says he was buried.
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf=NULL, date_min=NULL, date_max=NULL "
+                          "WHERE id='c-fd0000001'")
+        self._seed_claim('c-fbu000001', 's-2222222222', 'burial', 'Caleb buried',
+                         date_edtf='1877-06-01', place_text='Easton', persons=[self.F],
+                         roles={self.F: 'deceased'})
+        tl = self._timeline()
+        self.assertRegex(tl, r'Her father <a [^>]*>Caleb Comstock Hartley</a> was buried at Easton\.')
 
     def test_marriage_to_living_person_dropped(self):
         self._family()
