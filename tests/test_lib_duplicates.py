@@ -387,6 +387,39 @@ class PossibleDuplicatePeopleTests(unittest.TestCase):
         self.assertEqual(result['pairs'], [])
         self.assertEqual(result['impossible_hidden'], 1)
 
+    def test_a_widower_who_remarried_the_next_year_is_not_offered(self) -> None:
+        # Most widowers remarried within a year or two: a death in 1880 and
+        # a marriage in 1881 are two events, not one event typed twice.
+        for died, married in (('1880', '1881'), ('1880-03-01', '1881-06-01')):
+            with self.subTest(died=died, married=married):
+                with tempfile.TemporaryDirectory() as tmp:
+                    arc = _Archive(Path(tmp))
+                    thomas = arc.person('Thomas Hartley', sex='M')
+                    mary1 = arc.person('Mary Cole', sex='F')
+                    mary2 = arc.person('Mary Cole', sex='F')
+                    arc.claim('marriage', [thomas, mary1], date='1870',
+                              roles=f'  roles:\n    spouse: [{thomas}, {mary1}]')
+                    arc.claim('death', [mary1], date=died)
+                    arc.claim('marriage', [thomas, mary2], date=married,
+                              roles=f'  roles:\n    spouse: [{thomas}, {mary2}]')
+                    result = arc.scan()
+                    self.assertEqual(result['pairs'], [])
+                    self.assertEqual(result['impossible_hidden'], 1)
+
+    def test_a_year_one_placeholder_date_does_not_break_the_report(self) -> None:
+        # An imported placeholder birth in year 1 must not crash the scan.
+        m1 = self.a.person('Mary Cole', sex='F')
+        m2 = self.a.person('Mary Cole', sex='F')
+        self._born(m1, '1850')
+        self._born(m2, '1850')
+        ada = self.a.person('Ada Hartley', sex='F')
+        ben = self.a.person('Ben Hartley', sex='M')
+        self._born(ada, '0001-06-01')
+        self._born(ben, '1876-01-01')
+        self.a.parent(ada, m1)
+        self.a.parent(ben, m2)
+        self.assertIn(frozenset((m1, m2)), self._pairs(self.a.scan()))
+
     def test_widowers_two_wives_from_an_import_are_not_offered(self) -> None:
         # The same, the morning after an import: every claim suggested, and
         # the second wife known only through her child's birth.

@@ -22181,19 +22181,39 @@ def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, di
     return out
 
 
-def _widened_plausibility_input(data: PlausibilityInput, years: int) -> PlausibilityInput:
-    """The same input with every date widened by `years` each way.
+DUPLICATE_DAY_SLACK_DAYS = 90   # how far two registers' days may disagree
+
+
+def _widened_plausibility_input(data: PlausibilityInput) -> PlausibilityInput:
+    """The same input with every date known to the day or month widened by
+    DUPLICATE_DAY_SLACK_DAYS each way.
 
     Two records of one person usually come from two sources, and two sources
     disagree by days: a civil birth on the 10th and a baptism "on the 8th",
     a death and a burial typed two days apart. Read at face value those say
     "cannot be one person" and would hide a real duplicate he then never
-    merges. Widened by the same slack the scan allows approximate dates,
-    only a clash of years survives (a wife dead in 1880 marrying in 1885)."""
+    merges. A date known only to the year is already a whole year wide and
+    is left alone, so a wife dead in 1880 and a husband remarried in 1881
+    (two events, not one typed twice) still cannot be one woman. A widened
+    start never passes `0001-01-01`, the archive's floor."""
+    def shift(iso: str, days: int) -> str:
+        try:
+            moved = datetime.date.fromisoformat(iso) + datetime.timedelta(days=days)
+        except (ValueError, OverflowError):
+            return _EDTF_FLOOR if days < 0 else _EDTF_CEILING
+        return moved.isoformat()
+
     def widen(c: DatedClaim) -> DatedClaim:
-        return dataclasses.replace(
-            c, lo=None if c.lo is None else iso_plus_years(c.lo, -years),
-            hi=None if c.hi is None else iso_plus_years(c.hi, years))
+        if c.lo is None or c.hi is None:
+            return c
+        try:
+            span = _iso_day_number(c.hi) - _iso_day_number(c.lo)
+        except ValueError:
+            return c
+        if span >= 300:
+            return c
+        return dataclasses.replace(c, lo=shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                                   hi=shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
 
     out = PlausibilityInput(sex=dict(data.sex), parent_edges=data.parent_edges)
     out.facts = {pid: {t: merge_fact_range([widen(c) for c in fr.claims])
@@ -22218,8 +22238,8 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
     stand and then with b read as a. Hiding a pair hides a real duplicate if
     the answer is wrong, so only a clear clash counts:
 
-    - dates are widened by DUPLICATE_DATE_SLACK_YEARS before the joined
-      reading, so two sources a few days apart never count;
+    - dates known to the day or month are widened by a few months before
+      the joined reading, so two sources a few days apart never count;
     - a problem the records already have apart does not count, and neither
       does any new one built on a claim already in such a problem: a death
       typed before the birth on one record is lint's to report there, not
@@ -22247,8 +22267,7 @@ def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
     before = {(pr.kind, tuple(a if p == b else p for p in pr.pids)) for pr in apart}
     tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
     joined = _widened_plausibility_input(plausibility_input_from_claims(
-        picked_claims, persons, None, {b: a}, statuses=statuses),
-        DUPLICATE_DATE_SLACK_YEARS)
+        picked_claims, persons, None, {b: a}, statuses=statuses))
     return any((pr.kind, pr.pids) not in before
                and not any(dc.claim_id in tainted for side in pr.claims for dc in side)
                for pr in problems(joined))
