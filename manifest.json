@@ -1156,7 +1156,7 @@
     {
       "path": ".fha/tools/serve.py",
       "category": "operating",
-      "sha256": "986a82116aeeaef8e994dcc6bdca0d894868312d3efec664a2dd6fb349a7e503",
+      "sha256": "a992a83141829407e6690afb51cb65b0a9961408816d5b971f0754ac1de49994",
       "spec_version": "2.31",
       "src": "tools/serve.py"
     },
@@ -1268,7 +1268,7 @@
     {
       "path": ".fha/tools/templates/review.html",
       "category": "operating",
-      "sha256": "9ed70043b5147d3d6effac5f7ac4656d953806f9264e97be3cad004d2b364965",
+      "sha256": "ac3c390dd5ac1be3c84957116e2afe434997710a4489da7f049b65c6c28194ec",
       "spec_version": "2.31",
       "src": "tools/templates/review.html"
     },
