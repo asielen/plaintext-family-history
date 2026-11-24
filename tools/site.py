@@ -9327,6 +9327,9 @@ class _SiteBuilder:
                 continue
             if any(s not in self.source_pages for s in sources):
                 continue
+            if any(not self._question_claim_is_shareable(r) for r in refs
+                   if r.startswith('c-')):
+                continue
             # The heading may name people or records in any link form
             # (`[[p-…]]`, a markdown link to the person's file, a bare ID).
             # Any person or record without a page here keeps it home, and so
@@ -9335,6 +9338,7 @@ class _SiteBuilder:
             heading_ids = {normalize_id(m) for m in _BARE_ID_RE.findall(info['heading'])}
             if any((h.startswith('p-') and h not in self.person_pages)
                    or (h.startswith('s-') and h not in self.source_pages)
+                   or (h.startswith('c-') and not self._question_claim_is_shareable(h))
                    for h in heading_ids):
                 continue
             heading_html = _inline_html(info['heading'], render)
@@ -9356,6 +9360,24 @@ class _SiteBuilder:
                 'as UTF-8, then run `fha site` again.')
         found.sort(key=lambda t: (t[0], t[1]))
         return [q for _h, _f, q in found]
+
+    def _question_claim_is_shareable(self, cid: str) -> bool:
+        """True when a claim a shared question names may be pointed at: its
+        record has a page here, the claim itself is publishable, and everyone
+        it names has a page. A question about a living cousin's birth record
+        stays home even when the heading never says her name."""
+        try:
+            row = self.conn.execute('SELECT source_id, status FROM claims WHERE id = ?',
+                                    (cid,)).fetchone()
+            named = [r['person_id'] for r in self.conn.execute(
+                'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))]
+        except sqlite3.DatabaseError:
+            return False
+        if row is None or not row['source_id'] or row['source_id'] not in self.source_pages:
+            return False
+        if not self._claim_row_is_publishable(cid, row['source_id'], row['status']):
+            return False
+        return all(normalize_id(pid) in self.person_pages for pid in named)
 
     def build_questions_page(self) -> None:
         """Write questions.html: the open questions he marked `share: family`,

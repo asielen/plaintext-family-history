@@ -183,6 +183,20 @@ class QuestionsPageTests(_QBase):
         for gone in ('REFS-WIKI', 'REFS-DISP', 'REFS-ODD'):
             self.assertNotIn(gone, html)
 
+    def test_a_claim_about_a_living_person_in_refs_drops_the_question(self):
+        self.config(ON)
+        self.source('s-cccccccccc', 'Liv birth')
+        self.claim('c-cccccccccc', 's-cccccccccc', 'birth', '1990', [LIVE])
+        self.claim('c-bbbbbbbbbb', 's-aaaaaaaaaa', 'birth', '1900', [DAD])
+        self.questions(q('CLMREF-LIVING: is this birth right?', refs=['c-cccccccccc']),
+                       q('CLMHEAD-LIVING: is [[c-cccccccccc]] right?', refs=[DAD]),
+                       q('CLMREF-DAD: is this birth right?', refs=['c-bbbbbbbbbb']))
+        self.build()
+        html = self.page('questions.html')
+        self.assertNotIn('CLMREF-LIVING', html)
+        self.assertNotIn('CLMHEAD-LIVING', html)
+        self.assertIn('CLMREF-DAD', html)
+
     def test_questions_are_sorted_by_heading(self):
         self.config(ON)
         self.questions(q('Zed question?', refs=[ME]), q('Alpha question?', refs=[DAD]))
