@@ -137,6 +137,7 @@ from _lib import (
     name_sound_codes,
     person_surname,
     surname_spelling_groups,
+    recorded_surname,
     name_sound_words,
     translit,
     vital_pick_key,
@@ -3519,10 +3520,18 @@ def run_find_spelling_groups(archive_root: Path, limit: int = _SOUNDS_LIKE_DEFAU
         if record is None:
             unreadable.append(pid)
             continue
-        label, public = record
+        _label, public = record
+        # Only the names that passed the privacy check. The label is the
+        # record's `name:` even when that name is marked private elsewhere.
+        # The main name keeps its hand-set `surname:` (SPEC §13), a `surname:
+        # ""` meaning no surname at all; other names split by the usual rule.
+        meta = _person_frontmatter_all(archive_root / person['path']) or {}
+        main_key = _name_key(str(meta.get('name') or ''))
+        recorded = recorded_surname(meta)
         found = []
-        for written in [label, *public]:
-            surname = person_surname(written)
+        for written in public:
+            is_main = recorded is not None and _name_key(written) == main_key
+            surname = person_surname(written, recorded if is_main else None)
             if surname:
                 found.append(surname)
         surnames[pid] = found

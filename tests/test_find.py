@@ -2731,6 +2731,36 @@ class SoundsLikeTests(unittest.TestCase):
                 for hidden in ('Hartlie', 'Petrowski', 'Petrowska', 'p-snd0000002'):
                     self.assertNotIn(hidden, text)
 
+    def _with_ann(self, body: str, argvs: list[list[str]]) -> list[tuple[str, str]]:
+        path = self.root / 'people' / 'stubs' / 'hartly__ann_p-snd0000001.md'
+        before = path.read_bytes()
+        path.write_text('---\nid: p-snd0000001\naliases: [p-snd0000001]\n' + body +
+                        'living: false\ntier: stub\n---\n\n# Ann\n', encoding='utf-8')
+        try:
+            return [self._find(a)[1:] for a in argvs]
+        finally:
+            path.write_bytes(before)
+
+    def test_spelling_groups_skip_a_main_name_marked_private(self) -> None:
+        got = self._with_ann(
+            'name: Ann Hartly\nname_variants:\n  - {value: Ann Hartly, restricted: true}\n',
+            [['--spelling-groups'], ['--spelling-groups', '--json']])
+        for out, err in got:
+            self.assertNotIn('Hartly', out + err)
+
+    def test_spelling_groups_use_the_recorded_surname(self) -> None:
+        got = self._with_ann('name: Ann Hartly\nsurname: ""\n',
+                             [['--spelling-groups'], ['--spelling-groups', '--json']])
+        for out, err in got:
+            self.assertNotIn('Hartly', out + err)
+
+    def test_spelling_groups_fold_accents_before_coding(self) -> None:
+        from _lib import surname_spelling_groups
+        for accented in ('Bąk', 'Bąk'):
+            groups = surname_spelling_groups({'p-1': [accented], 'p-2': ['Back']})
+            self.assertEqual(len(groups), 1, accented)
+            self.assertEqual(groups[0]['people'], 2, accented)
+
     def test_spelling_groups_json_shape(self) -> None:
         rc, out, _err = self._find(['--spelling-groups', '--json'])
         self.assertEqual(rc, EXIT_CLEAN)

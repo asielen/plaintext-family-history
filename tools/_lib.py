@@ -17700,10 +17700,12 @@ def surname_spelling_groups(person_surnames: dict[str, list[str]]) -> list[dict]
     people_in: dict[str, set[str]] = {}
     for pid, surnames in person_surnames.items():
         for surname in dict.fromkeys(surnames):
-            codes = dm_soundex(surname)
+            # Fold first (and join a loose accent mark to its letter), so
+            # Bąk, a pasted Ba + ogonek and Bak all code and group alike.
+            folded = fold_accents(unicodedata.normalize('NFC', surname)).lower()
+            codes = dm_soundex(folded)
             if not codes:
                 continue
-            folded = fold_accents(surname).lower()
             spelling = by_code.setdefault(codes[0], {}).setdefault(
                 folded, {'forms': {}, 'people': set()})
             spelling['forms'][surname] = spelling['forms'].get(surname, 0) + 1
