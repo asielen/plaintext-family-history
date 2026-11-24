@@ -140,6 +140,8 @@ or run `fha gedcom import family-tree.ged` yourself.
 
 First it shows you a **plan** (how many people, families and statements it found) and writes nothing. Running it again with `--apply` (`fha gedcom import family-tree.ged --apply`, or telling the assistant to go ahead) does the import: every person in your tree becomes a record and every statement becomes a *suggested* fact citing the GEDCOM file, which is filed as a source with your original untouched. If your old program linked photos to people, the plan says which are already in your photo folders, and the assistant can put each person's name on their photo, one at a time. Your tree's statements wait in the same review queue as everything else. You review them a family at a time, whenever you like.
 
+Later, when you've added more on Ancestry, download the tree again and import the new file the same way. Only what changed comes in: the new people and the new statements. Where the two downloads disagree you get an open question to settle, and nothing you already reviewed is changed.
+
 ### Tell it about your own family first (two minutes)
 
 Before you file anything else, tell the assistant about your immediate family. You are the one person the archive is sure to have firsthand knowledge about.

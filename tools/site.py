@@ -537,6 +537,10 @@ _PICTURE_QUEUE_PER_WORKER = 4
 # deepest fan the renderer lays out (each ring doubles the cells).
 _FAN_GENERATIONS = 5
 _FAN_GENERATIONS_MAX = 6
+# The angles a fan can span (`site.fan_degrees`): the half fan, a three-quarter
+# fan and a full circle for a poster.
+_FAN_DEGREES = (180, 270, 360)
+_FAN_DEGREES_DEFAULT = 180
 
 # Fan geometry, in SVG user units (`_render_fan_svg`). A ring's labels follow
 # the arc while its mid-radius arc is at least _FAN_ARC_MIN long; arc rings are
@@ -2489,6 +2493,36 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
+def _fan_settings(site_cfg: dict) -> tuple[int, int, list[str]]:
+    """`site.fan_degrees` and `site.fan_generations`: how wide the person
+    page's ancestor fan opens (180, 270 or 360) and how many generations it
+    draws (1-6). A family printing a reunion poster sets 360 and 6. A value
+    that is not allowed warns once, names the setting and the default used,
+    and the build goes on (the `home_pedigree_generations` rule)."""
+    warnings: list[str] = []
+
+    def whole(key: str, default: int, allowed) -> int:
+        raw = site_cfg.get(key)
+        if raw is None:
+            return default
+        value = raw
+        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+            value = int(raw.strip())              # "360" in quotes is still 360
+        elif isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
+            value = int(raw)                      # 360.0 is the whole number 360
+        if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+            shown = ' or '.join(str(a) for a in allowed) if len(allowed) <= 3 \
+                else f'{allowed[0]} to {allowed[-1]}'
+            warnings.append(f'WARNING: fha.yaml site.{key} {raw!r} is not {shown}; '
+                            f'using the default of {default}.')
+            return default
+        return value
+
+    degrees = whole('fan_degrees', _FAN_DEGREES_DEFAULT, _FAN_DEGREES)
+    generations = whole('fan_generations', _FAN_GENERATIONS, range(1, _FAN_GENERATIONS_MAX + 1))
+    return degrees, generations, warnings
+
+
 def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool, str | None]:
     """An on/off setting under fha.yaml `site:` (`completeness_rings`,
     `calendar`, `search`): `default` when the setting is left out (off for
@@ -3232,7 +3266,11 @@ def _fan_rings(n: int, span: float, r0: float = _FAN_R0) -> list[tuple[str, floa
     r = r0
     for g in range(1, n + 1):
         seg = span / (1 << g)
-        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        # A cell that is a whole half circle (the parents of a full-circle fan)
+        # cannot carry curved text upright from end to end, so it is read level.
+        half_circle = seg >= math.pi - 1e-9
+        mode = ('arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN and not half_circle
+                else 'radial')
         t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
         rings.append((mode, r, r + t))
         r += t
@@ -3275,11 +3313,14 @@ def _fan_years_size(fs: float, years: str, room: float) -> float:
 
 
 def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
-                 seg: float) -> dict:
+                 seg: float, lower: bool = False) -> dict:
     """Lay out one curved-ring label: which lines, at what size, at what radii.
 
     Lines stack across the ring, the first at the larger radius so it reads
-    first on the upper half. The whole name stays on one line when it fits at
+    first on the upper half. On the lower half of a poster fan (`lower`) the
+    hub side is the top as read, so the first line takes the smaller radius,
+    and it is measured there: a long name along the bottom of a poster still
+    fits its cell. The whole name stays on one line when it fits at
     the ring's cap; otherwise given names and surname take a line each. Then
     the size is the largest that fits every line along its own arc and the
     stack across the ring, capped per ring and rounded DOWN to the one decimal
@@ -3300,7 +3341,8 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
         count = len(lines) + (1 if with_years else 0)
 
         def radius(i: int, size: float) -> float:
-            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+            step = ((count - 1) / 2 - i) * _FAN_LH * size
+            return rm - step if lower else rm + step
 
         def room(i: int) -> float:
             return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
@@ -3377,8 +3419,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     readable at its ring, with their years. `labels` is an Ahnentafel map
     {number: {'name', 'surname', 'url', 'redacted', 'private', 'dates'}}:
     number 1 is the subject, 2/3 the parents, 4-7 the grandparents, and so on.
-    The fan is a 180° semicircle (`span_deg`; the poster angles come later)
-    with the subject at the hub. Each cell's fill is a branch colour lightened
+    The fan spans `span_deg` (180, 270 or 360; a family poster uses 270 or
+    360), centred on straight up, with the subject at the hub. Each cell's fill is a branch colour lightened
     by generation, set inline as CSS vars and composed by the stylesheet, so
     custom.css can retint the whole chart.
 
@@ -3396,10 +3438,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     13-2) is a neutral cell reading "Private", with no title, link or line
     colour. Any other withheld slot (`redacted`, or no name) gets its cell and
     nothing else."""
-    if span_deg != 180:
-        # TODO: 08-4 adds the 270° and 360° poster layouts (lower-half text,
-        # the full-circle hub); until then only the semicircle is laid out.
-        raise ValueError(f'fan span {span_deg}° is not supported yet; use 180')
+    if span_deg not in _FAN_DEGREES:
+        raise ValueError(f'fan span {span_deg}° is not one of {_FAN_DEGREES}')
     span = math.radians(span_deg)
     a_start = math.pi / 2 + span / 2
     # Size to the depth actually present, not the configured maximum, so a
@@ -3464,11 +3504,32 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             years = _fan_years(info.get('dates'))
 
         if mode == 'arc':
-            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            # On a 270-degree poster a cell can run from the upper half down
+            # past the horizontal (a parent's cell spans 135 degrees). Its
+            # name keeps to the larger side of the horizontal, so no letters
+            # tip past sideways; the cell itself is drawn whole.
+            t_hi, t_lo = a_hi, a_lo
+            for flat in (math.pi, 0.0):
+                if t_lo + 1e-9 < flat < t_hi - 1e-9:
+                    if t_hi - flat >= flat - t_lo:
+                        t_lo = flat
+                    else:
+                        t_hi = flat
+            t_seg = t_hi - t_lo
+            t_large = 1 if t_seg > math.pi else 0
+            lower = math.sin((t_hi + t_lo) / 2) < -1e-9
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, t_seg, lower)
             # Upper half: each line runs from a_hi to a_lo (left to right
             # over the top), which keeps the text upright.
-            paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
-                     for r in fit['radii']]
+            if lower:
+                # Lower half of a poster fan: the first line already sits at
+                # the smaller radius (the hub side, the top as read), and the
+                # text runs counter-clockwise (left to right along the bottom).
+                paths = [f"M{polar(r, t_lo)} A{r:.1f},{r:.1f} 0 {t_large} 0 {polar(r, t_hi)}"
+                         for r in fit['radii']]
+            else:
+                paths = [f"M{polar(r, t_hi)} A{r:.1f},{r:.1f} 0 {t_large} 1 {polar(r, t_lo)}"
+                         for r in fit['radii']]
         else:
             fit = _fan_fit_radial(name, surname, years, g, r_in, r_out - r_in, seg)
             paths = []
@@ -3513,21 +3574,39 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
         body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
                     if url else f'<g>{title}{text}</g>')
 
-    # subject: filled upper half-disk at the hub (left to right, sweep 1 arcs
-    # over the top, so the hub fills the inner fan rather than hanging below)
-    body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
-                f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    # The subject at the hub: a half disk under a half fan, a sector with the
+    # same opening as the fan, or a whole disk under a full circle. A path from
+    # the left end over the top (sweep 1) fills the half disk.
+    if span_deg == 180:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
+                    f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    elif span_deg == 270:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{cx:.1f},{cy:.1f} '
+                    f'L{polar(r0, a_start)} A{r0:.1f},{r0:.1f} 0 1 1 {polar(r0, a_start - span)} Z"/>')
+    else:
+        body.append(f'<circle class="fan-seg fan-seg-subject" cx="{cx:.1f}" cy="{cy:.1f}" '
+                    f'r="{r0:g}"/>')
     subj_full = labels.get(1, {}).get('name', '')
     if subj_full:
         # The hub is small and the page is already titled with the full name, so
-        # the centre shows just the given name (full name in the tooltip).
+        # the centre shows just the given name (full name in the tooltip). On a
+        # poster the hub is a whole disk and holds given name over surname when
+        # both fit at 15px.
         parts = subj_full.split()
         given = parts[0] if parts else subj_full
         if len(given) > 12:
             given = given[:11] + '…'
+        # The 270 hub is open at the bottom, so its name sits a little high.
+        label_y = cy - r0 * {180: 0.42, 270: 0.3}.get(span_deg, 0.0)
+        shown = html.escape(given)
+        if span_deg != 180:
+            two = _fan_name_lines(subj_full, labels[1].get('surname'))
+            if len(two) == 2 and all(len(t) * _FAN_CW * 15 <= 2 * r0 * 0.8 for t in two):
+                shown = (f'<tspan x="{cx:.1f}" dy="-0.6em">{html.escape(two[0])}</tspan>'
+                         f'<tspan x="{cx:.1f}" dy="1.2em">{html.escape(two[1])}</tspan>')
         body.append(f'<g><title>{html.escape(subj_full)}</title>'
-                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
-                    f'{html.escape(given)}</text></g>')
+                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{label_y:.1f}">'
+                    f'{shown}</text></g>')
 
     out = [f'<svg class="fan-chart" viewBox="0 0 {w:.0f} {h:.0f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Ancestor fan chart">']
@@ -4465,6 +4544,9 @@ class _SiteBuilder:
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # The person page's ancestor fan: its angle and how many generations.
+        self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
+        self._switch_warnings += fan_warnings
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -6591,8 +6673,8 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir,
-                                                            private_cards=True)
+        ahnen, missing_parent_of = self._build_ahnentafel(
+            pid, max(self.fan_generations, 2), page_dir, private_cards=True)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
@@ -6608,7 +6690,8 @@ class _SiteBuilder:
         # ancestors-only chart gets the honest 'Ancestors' heading instead of
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
-        fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
+        fan = (self._markup(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees))
+               if len(ahnen) > 1 else None)
         # Descendant explorer (#115): demoted from the home page (which now
         # carries the marriage-aware ancestor pedigree instead) to a
         # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/

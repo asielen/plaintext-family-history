@@ -1,0 +1,85 @@
+{
+  "_about": "FamilySearch data-service answers (GEDCOM X) for index entries whose image is at a partner archive: the record page shows a \"View on wvculture.org\" badge instead of an image. Fictional people (the Hartley family) and invented record ids (HRT...). The shape follows FamilySearch's own record page code (read 2026-11-24): the image's address is the `about` of the DigitalArtifact source description that the person's first source names, and the partner's name is an agent's persistent identifier. The West Virginia view page address is a real public page (the one in tests/fixtures/capture-samples/wvculture-view-live.html); no FamilySearch record here is real.",
+  "records": {
+    "HRT1-WVD1": {
+      "description": "#sd1",
+      "persons": [
+        {
+          "id": "p1",
+          "principal": true,
+          "identifiers": {
+            "http://gedcomx.org/Persistent": ["https://familysearch.org/ark:/61903/1:1:HRT1-WVD1"]
+          },
+          "sources": [{ "description": "#sd_img", "descriptionId": "sd_img" }],
+          "names": [{ "nameForms": [{ "fullText": "Amos Hartley" }] }],
+          "facts": [
+            { "type": "http://gedcomx.org/Death", "date": { "original": "6 Jan 1921", "formal": "+1921-01-06" } }
+          ]
+        }
+      ],
+      "agents": [
+        {
+          "id": "agent1",
+          "identifiers": { "http://gedcomx.org/Persistent": ["wvculture.org"] },
+          "names": [{ "value": "West Virginia Archives and History" }]
+        }
+      ],
+      "sourceDescriptions": [
+        {
+          "id": "sd1",
+          "about": "https://familysearch.org/ark:/61903/1:1:HRT1-WVD1",
+          "resourceType": "http://gedcomx.org/Person",
+          "titles": [{ "value": "Amos Hartley, \"West Virginia, Deaths, 1804-1999\"" }],
+          "citations": [
+            {
+              "value": "\"West Virginia, Deaths, 1804-1999,\" database, <i>FamilySearch</i> (https://familysearch.org/ark:/61903/1:1:HRT1-WVD1), Amos Hartley, 06 Jan 1921; citing Logan, West Virginia."
+            }
+          ]
+        },
+        {
+          "about": "https://familysearch.org/ark:/61903/1:2:HRT1-WVR1",
+          "resourceType": "http://gedcomx.org/Record"
+        },
+        {
+          "about": "https://familysearch.org/platform/records/collections/1417434",
+          "resourceType": "http://gedcomx.org/Collection",
+          "titles": [{ "value": "West Virginia, Deaths, 1804-1999" }]
+        },
+        {
+          "id": "sd_img",
+          "about": "https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530",
+          "resourceType": "http://gedcomx.org/DigitalArtifact"
+        }
+      ]
+    },
+    "HRT1-OTH1": {
+      "description": "#sd1",
+      "persons": [
+        {
+          "id": "p1",
+          "principal": true,
+          "identifiers": {
+            "http://gedcomx.org/Persistent": ["https://familysearch.org/ark:/61903/1:1:HRT1-OTH1"]
+          },
+          "sources": [{ "description": "#sd_img", "descriptionId": "sd_img" }],
+          "names": [{ "nameForms": [{ "fullText": "Nora Hartley" }] }],
+          "facts": []
+        }
+      ],
+      "sourceDescriptions": [
+        {
+          "id": "sd1",
+          "about": "https://familysearch.org/ark:/61903/1:1:HRT1-OTH1",
+          "resourceType": "http://gedcomx.org/Person",
+          "titles": [{ "value": "Nora Hartley, \"Example State, Deaths\"" }],
+          "citations": [{ "value": "\"Example State, Deaths,\" database, <i>FamilySearch</i>, Nora Hartley." }]
+        },
+        {
+          "id": "sd_img",
+          "about": "https://records.example-state-archive.example/view?id=42",
+          "resourceType": "http://gedcomx.org/DigitalArtifact"
+        }
+      ]
+    }
+  }
+}
