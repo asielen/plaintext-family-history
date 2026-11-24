@@ -4425,6 +4425,15 @@ class TimelinePlaceHistoryTests(_Base):
         self.assertLess(page.index('1856 - residence'), page.index('From 1858'))
         self.assertLess(page.index('From 1861'), page.index('1875 - residence'))
 
+    def test_shared_site_shows_them_too_and_stays_the_same_build_to_build(self):
+        # Place history names no people, so a shared page may carry it.
+        self._seed((1856, 1875))
+        self._run()
+        first = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(first.count('class="tl-context"'), 2)
+        self._run()
+        self.assertEqual(first, self._read('persons/p-aaaaaaaaaa.html'))
+
 
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,

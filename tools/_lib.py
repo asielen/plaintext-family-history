@@ -20913,27 +20913,28 @@ def place_history_context(
         place = conn.execute('SELECT name, hierarchy FROM places WHERE id = ?', (pid,)).fetchone()
         if place is None:
             continue
-        entries = []
+        # The days the government changes: each entry's first day, and the day
+        # after its last. What held on that day is `place_hierarchy_at`'s call
+        # (the one period helper, SPEC A.9); no period covering it means the
+        # place's present hierarchy.
+        days: set[str] = set()
         for r in conn.execute(
-                'SELECT date_min, date_max, hierarchy FROM place_history WHERE place_id = ? '
-                'ORDER BY date_min, rowid', (pid,)).fetchall():
+                'SELECT date_min, date_max FROM place_history WHERE place_id = ?', (pid,)).fetchall():
             elo, ehi = _date_edge(r[0], False), _date_edge(r[1], True)
-            if elo is not None and r[2]:
-                entries.append((elo, ehi, str(r[2])))
-        starts = {e[0] for e in entries}
+            if elo is not None and elo > '0001-12-31':
+                days.add(elo)
+            if ehi is not None and ehi < '9999-01-01':
+                days.add((datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat())
         rows: list[tuple[str, str]] = []
-        for elo, ehi, hier in entries:
-            if elo > '0001-12-31':
-                rows.append((elo, hier))
-            if ehi is not None and ehi < '9999-01-01' and place[1]:
-                nxt = (datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat()
-                if nxt not in starts:
-                    rows.append((nxt, str(place[1])))
-        for iso, hier in sorted(set(rows)):
+        for iso in sorted(days):
             if lo <= iso <= hi:
-                out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
-                            'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
-                            'sort_key': (0, iso, 2, pid, iso)})
+                hier = place_hierarchy_at(conn, pid, iso, iso)[0] or place[1]
+                if hier:
+                    rows.append((iso, str(hier)))
+        for iso, hier in rows:
+            out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
+                        'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
+                        'sort_key': (0, iso, 2, pid, iso)})
     out.sort(key=lambda r: r['sort_key'])
     return out
 
