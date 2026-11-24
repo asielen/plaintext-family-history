@@ -430,6 +430,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/home.md`: the site homepage's introduction, plain markdown written by the human (or drafted by an AI and accepted); `fha site` shows it when present.
 - `notes/discoveries.md`: the log of research wins, appended by `fha confirm discovery`.
 - `notes/cooccur_dismissed.json`: pairs of people the human has said are *not* connected, and pairs he has said are *not the same person*, written by `fha confirm dismiss` and taken back by `fha confirm undismiss`, so the report stops suggesting them.
+- `notes/gedcom-imports/{slug}_{s-id}.csv`: one per `fha gedcom import`, saying which person record each person in the imported file became, so a newer download of the same tree finds the same people (TOOLING §13a2).
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
 - `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
@@ -976,7 +977,15 @@ Two privacy flags; no tier system. Flags appear only where they apply.
 
 - `living: true | false | unknown` (Person): drives redaction in any external export, packet, or publication. **`unknown` is treated as living** for all external-facing output; stubs default to `unknown` (uncertainty is safe by default).
 - `restricted`: a marker placed on whatever should stay out of public output: a **source**, a single **claim**, a whole **person**, or a **name** (an entry in any of a person's name fields, `name_variants`, `name_at_birth`, `married_name` or `also_known_as`, written as `{value:, restricted: true}`, how a private prior name is recorded). Plain `restricted: true` is excluded from public output and from packets unless `--include-restricted` is passed. It may carry a free-text **type** instead (`restricted: dna`, `restricted: by-request`, …) when types must be told apart; two are **no-override**: `dna` (always restricted; requires its own `--include-dna`) and `by-request` (a person who asked to be left out, honored by every export path with no opt-in). The marker keeps material in the archive and out of what leaves it; nothing is deleted, and a restricted name still resolves internally (§18).
-- **Recordings.** A voice cannot be redacted the way a name can, and a recording often names people who are still alive. A source's `speakers:` (Appendix A.10) lists who is heard on its recordings. Public output plays or copies a recording only when the source says `rights: recording_ok: true`, every listed speaker is `living: false` and not restricted, and the source itself may be shared. A recording with any living or unknown speaker, or with no `speakers:` list, stays in the archive: public output names the file and plays nothing. The owner's own working copies play every recording.
+
+**Recordings.** A voice cannot be redacted the way a name can, and a recording often names people who are still alive. A recording is any audio or video file on a source, whatever role its entry gives it. A source's `speakers:` (Appendix A.10) lists who is heard on its recordings. Public output plays or copies a recording only when all of these hold:
+
+- the source says `rights: recording_ok: true` (A.6);
+- `speakers:` lists at least one person, and every speaker is `living: false` and not restricted;
+- no one else the source names (its `people:` and its claims) is living, unknown or restricted, and a name there that does not resolve to a person counts as living;
+- the source itself may be shared under §21.
+
+Any other recording stays in the archive: public output plays nothing and does not give the file's name, which often names the person interviewed. A packet carries a recording only when it would play in public output. The owner's own working copies (the linked site preview and `fha serve`, which are not public output) play every recording.
 
 ## 20. Embedded metadata
 
@@ -1007,7 +1016,7 @@ Generated output that leaves the archive falls into two categories with differen
 
 **Public output, living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and the photos naming them are withheld.
-- A recording is withheld whenever a living or unknown person is heard on it, or no one is listed as heard (§19).
+- A recording plays only under §19's rule: the owner said yes, and everyone heard on it or named by its source has died and is not restricted. Every other recording is withheld.
 - A claim naming a living person is withheld when it is that person's own event, since its date and place are their birthday or wedding: the `child` on a birth or baptism, the `deceased` on a death or burial, a `spouse` on a marriage or divorce (§8.3), and on such a claim anyone named with no role. It is also withheld when it is a `relationship` claim, or when everyone it is about is living: the people under `subject`, `head` or `household_member`, or everyone it names when it names none of those.
 - Any other claim naming a living person is kept, since it may be central to a deceased person's story: a baptism with a living godparent, a census of a household with a living child. Its kind, date and place are shown with the deceased people it is about. The living people are not named, linked, listed or labelled on it, and its own wording, which usually names everyone on the record, is not shown. It adds no one to a chart, the family tree, the calendar, or any list of the family.
 - The source of a kept claim keeps its page and its citation. Its page may show the record's own words and images, which can print a living person's name, but never lists, links or labels that person. A source naming a living person and carrying no kept claim stays out, and its citation reads as withheld.
@@ -1140,14 +1149,14 @@ The organization stays a value (§7); `value_org` only groups claims that name t
 rights:                          # optional publication metadata
   holder: family collection      #   who owns/holds copyright
   publication_ok: false          #   false keeps the source out of the site and every export
-  recording_ok: true             #   the owner agrees the source's recordings may play in shared output (§19)
+  recording_ok: true             #   the owner agrees the source's recordings may play in public output (§19)
 physical_location:               # optional: where the PHYSICAL original lives (changes over time)
   holder: Sam Rivera
   as_of: 2025-05
 ```
 
 - **`rights`:** `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
-- **`recording_ok`:** `true` lets the source's recordings play in public output, under §19's speaker rule. Absent or anything else, they stay in the archive. A tool never sets it on its own.
+- **`recording_ok`:** `true` says the owner has listened to the source's recordings and that `speakers:` names everyone heard on them, background voices included. It lets them play in public output, under §19's rule. Absent or anything else, they stay in the archive. A tool never sets it on its own.
 - **`physical_location`:** who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
 
 ### A.7 Person: `gender` and `external_ids`
@@ -1195,4 +1204,6 @@ quotes:                                  # optional
   - {speaker: p-de957bcda1, text: "We never locked the door, not once.", anchor: "00:14:32"}
 ```
 
-`speakers:` holds bare IDs, as `roles:` does (§8.7): everyone heard, interviewer included, and nobody who is only talked about (they belong on `people:`). It is written only from a speaker the human confirmed. A quote is the speaker's own words exactly as the transcript gives them, at most about forty words, with the `anchor` where they are said (§8.4). A quote is shared under the ordinary rules for its source and its speaker; unlike the recording, it does not need `recording_ok`.
+`speakers:` holds bare IDs, as `roles:` does (§8.7): everyone heard, interviewer included, and nobody who is only talked about (they belong on `people:`). Only a speaker the human has confirmed is written to it. A speaker ID that does not resolve to a readable person record counts as living. A merged-away ID is read as the person it was merged into (§9); a merged-away record marked `living: true` or restricted still holds the recording back.
+
+A quote is the speaker's own words exactly as the transcript gives them, at most forty words, with the `anchor` where they are said (§8.4). Public output shows a quote only when its speaker is on `speakers:`, is `living: false` and not restricted, the source may be shared, and its words name no living, unknown or restricted person; otherwise the quote is withheld whole, never shown under "Living Person". Unlike the recording, a quote does not need `recording_ok`.

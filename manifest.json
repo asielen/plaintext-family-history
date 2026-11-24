@@ -834,7 +834,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "906df5343957a52bce3059a514a0347a149ce07919352cb97ff4fe3950973f45",
+      "sha256": "44edbfe11566d0b3388d6694b368379e468ce13bd9223fda5edd785fbfa307e4",
       "spec_version": "2.40",
       "src": "tools/gedcom_import.py"
     },
@@ -1436,7 +1436,7 @@
     {
       "path": "AGENTS.md",
       "category": "operating",
-      "sha256": "edc8f73aa13541bbe2220fc39aa1822f4ab4bc7659ff76cd585b82c9d78c7988",
+      "sha256": "5c20e0597a9c65b4a6b1b28976f39a4d42c5dd20999b03cd6de8c396adc3d2e9",
       "spec_version": "2.40"
     },
     {
@@ -1461,7 +1461,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "57fe00ba7a791c92ee18b80e65833e9a5d07ed8b02a43e5f93aced1ac9a20e22",
+      "sha256": "c99d1c6ceb2b126c4ef348f5fc1cc5d1586641139a10dc9e6dbc4072da630520",
       "spec_version": "2.40"
     },
     {
@@ -1479,13 +1479,13 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "e7ff6c6a09ea74373255aca6a344e2820e483e71821a8c5c32efc621568351e4",
+      "sha256": "8a91e44b58026fd6c1e180cc342476ee6bc27cd1e037f924eeb76428a59b4341",
       "spec_version": "2.40"
     },
     {
       "path": "docs/FAQ.md",
       "category": "operating",
-      "sha256": "3928d4c1ce45a771a79b5b2052c3df3fc12dcfe4c10ad21afbd3fd6973ade3d0",
+      "sha256": "8d1ee301fe4f357ff8904412793b07e17d37b0d2e878c559e837c1c61a6c1977",
       "spec_version": "2.40"
     },
     {
@@ -1497,7 +1497,7 @@
     {
       "path": "docs/GETTING_STARTED.md",
       "category": "operating",
-      "sha256": "e8500d19fc58b18e01666d1185665ef9eb99678af9696ccbf782f87e2510146b",
+      "sha256": "889b9d8227d711b5798483db981a812067670977a52a657b13c175c49c9ddb81",
       "spec_version": "2.40"
     },
     {
@@ -1521,21 +1521,21 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "77b02ee2ac4e3bf1c0ecb429204f3d55ae08b7f45c4c652420b5624f4b7124ba",
+      "sha256": "7f59c33b6864c59bdc1fe8255722f8e5740f9ffb8617d7537c1bedd2c7795132",
       "spec_version": "2.40",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "52fffbcdebd8f9f18d9162ed40c2939a357f536ffbde4933da88784c2b4dca4e",
+      "sha256": "5a10c2601d590c641c0a7745b2165c39053dcb93c2e80a6a6be82ea4be7ccd7c",
       "spec_version": "2.40",
       "src": "TOOLING.md"
     },
     {
       "path": "docs/TROUBLESHOOTING.md",
       "category": "operating",
-      "sha256": "139808a49ef184a51a66d0f2f9cc920a15ec6dd55dd261aecc58fc85ebf52eea",
+      "sha256": "28e451b4b9773ab30d69a53967e1247afe315cd56a888b590b1d4838d319520d",
       "spec_version": "2.40"
     },
     {
