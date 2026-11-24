@@ -1547,7 +1547,7 @@ def _tree_components(conn, people: set[str]) -> list[set[str]]:
 
 def _loose_birth_phrase(ctx: dict, pid: str) -> str:
     """` (born 1815)`, ` (born about 1810)` or, when accepted birth claims
-    disagree, ` (records disagree: 1871; 1881)`; '' when none carries a date.
+    differ, ` (records give 1871; 1881)`; '' when none carries a date.
 
     Each date is shown as the record wrote it (humanized, so 'about' and
     'unconfirmed' survive): never a midpoint, and never the widened year
@@ -1559,7 +1559,7 @@ def _loose_birth_phrase(ctx: dict, pid: str) -> str:
         return ''
     if len(dates) == 1:
         return f' (born {dates[0]})'
-    return f' (records disagree: {"; ".join(dates)})'
+    return f' (records give {"; ".join(dates)})'
 
 
 def _genetic_parent_sexes(conn, pid: str) -> list[str]:
@@ -1600,9 +1600,10 @@ def _unconnected_waiting(conn, unconnected: set[str]) -> int:
     the index uses when it derives the tree)."""
     waiting: set[str] = set()
     claims = conn.execute(
-        "SELECT id, type, subtype FROM claims WHERE status = 'suggested' "
-        "AND COALESCE(negated, 0) = 0 "
-        "AND type IN ('relationship', 'birth', 'marriage')").fetchall()
+        "SELECT id, type, subtype FROM claims c WHERE c.status = 'suggested' "
+        "AND COALESCE(c.negated, 0) = 0 "
+        f"AND NOT {_PARKED_SQL} "
+        "AND c.type IN ('relationship', 'birth', 'marriage')").fetchall()
     for cid, ctype, subtype in claims:
         pairs = claim_role_pairs(conn.execute(
             'SELECT person_id, role FROM claim_persons WHERE claim_id=? '
