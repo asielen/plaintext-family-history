@@ -472,7 +472,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 "half-brother", "second cousin"
 #    blood_routes              - every separate blood route, nearest first, each
 #                                 with its half state (full, half, or may be half)
-#    blood_answer              - the nearest route, plus the "may be half" note
+#    blood_answer              - the nearest route, plus the "may be half" note,
+#                                 every route and the double word (double first cousin)
 #    marriage_answer           - with no blood route: wife, brother-in-law, stepmother
 #                                 (by the dates), adoptive father, uncle by marriage
 #    kinship_answer            - {blood, by_marriage}, what fha relate prints
@@ -19635,12 +19636,31 @@ def blood_answer(graph: KinshipGraph, a: str, b: str) -> dict | None:
     common_ancestors, gens_a, gens_b, half, half_relationship}) plus `note`:
     when the route may be half, one plain sentence naming both people that
     says so ("... so Ethel Hartley may be Frances Hartley's half-sister."),
-    else None."""
+    else None.
+
+    Children of two brothers who married two sisters hear "double first
+    cousin", and cousins whose grandparents were themselves cousins hear
+    both lines: `routes` is every route, nearest first (the first is the one
+    the top-level keys describe), and `double` is True when there are
+    exactly two full routes at the same cousin degree. Then `relationship`
+    is the double word ("double first cousin") while each entry in `routes`
+    keeps its own line's word."""
     routes = blood_routes(graph, a, b)
     if not routes:
         return None
     answer = dict(routes[0])
     answer['note'] = None
+    first = routes[0]
+    double = (len(routes) == 2
+              and all(r['half'] is False for r in routes)
+              and (routes[1]['gens_a'], routes[1]['gens_b']) == (first['gens_a'], first['gens_b'])
+              and min(first['gens_a'], first['gens_b']) >= 2)
+    if double:
+        answer['relationship'] = kinship_word(
+            first['gens_a'], first['gens_b'], graph.people.get(a, {}).get('sex', ''),
+            double=True)
+    answer['double'] = double
+    answer['routes'] = [dict(r) for r in routes]
     if answer['half'] is None:
         a_name = graph.people.get(a, {}).get('name') or a
         b_name = graph.people.get(b, {}).get('name') or b

@@ -13,6 +13,9 @@ never stored (a layer-3 generated view, SPEC §3 / Part IV):
                 step / foster / guardian parents are not counted into the
                 blood answer (SPEC §12.2). When a parent on the connecting
                 line is unrecorded, a second line says the tie may be half.
+                Two people related more than one way hear every line
+                ("double first cousin", or "and also ... second cousin,
+                through another line").
   By marriage:  only when there is no blood answer: wife, brother-in-law,
                 stepmother, adoptive father, uncle by marriage. A step tie
                 the dates cannot settle gets a second line saying so.
@@ -38,9 +41,10 @@ command around it:
     `claims` for each edge's nature): a GENETIC parent map for the blood
     answer, and an undirected adjacency (every parent/child/spouse/social
     edge, plus derived sibling edges from shared parents) for the path.
-  * `kinship_answer` gives the nearest blood route over the genetic map (one
-    common ancestor or a couple), named by generation and removal
-    (`kinship_word`), with its half state and, when half is open, a note;
+  * `kinship_answer` gives every blood route over the genetic map (one
+    common ancestor or a couple), nearest first, named by generation and
+    removal (`kinship_word`), with its half state, the double word for two
+    full routes at one cousin degree and, when half is open, a note;
     and, only when there is no blood route, the tie by marriage
     (`marriage_answer`), whose step-parent date rule reads each person's
     birth and death dates (`person_life_dates`).
@@ -172,8 +176,9 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
     # common ancestors, and the people a tie by marriage runs through), so
     # the text output reads with names, not bare IDs.
     names = {pid_a: people[pid_a]['name'], pid_b: people[pid_b]['name']}
-    for c in (blood['common_ancestors'] if blood else []) + (
-            by_marriage['via'] if by_marriage else []):
+    route_ancestors = [c for r in (blood['routes'] if blood else [])
+                       for c in r['common_ancestors']]
+    for c in route_ancestors + (by_marriage['via'] if by_marriage else []):
         names[c] = people.get(c, {}).get('name') or fmt_id_display(c)
 
     data = {
@@ -194,6 +199,10 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
 # Every answer line starts its words in this column ("By marriage:" and two
 # spaces), so Blood, By marriage and Path read down one edge.
 _LABEL = 14
+
+# Three routes in all (the Blood line and two "and also" lines) before the
+# rest are only counted: enough to show a cousin marriage, few enough to read.
+_MAX_EXTRA_ROUTES = 2
 
 
 def _id_name(pid: str, name: str, links: dict[str, str] | None = None) -> str:
@@ -224,12 +233,19 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
     names = data.get('names', {})
     blood = data.get('blood')
     if blood:
-        anc = ', '.join(
-            _id_name(c, names.get(c, fmt_id_display(c)), links) for c in blood['common_ancestors']
-        )
+        routes = blood.get('routes') or [blood]
+
+        def ancestors(group: list[str]) -> str:
+            return ', '.join(_id_name(c, names.get(c, fmt_id_display(c)), links) for c in group)
+
+        # Double first cousins descend from both couples, so both are named.
+        groups = ([r['common_ancestors'] for r in routes] if blood.get('double')
+                  else [blood['common_ancestors']])
+        groups = [g for g in groups if g]
         rel = blood['relationship']
-        if blood['common_ancestors']:
-            label = 'common ancestor' if len(blood['common_ancestors']) == 1 else 'common ancestors'
+        if groups:
+            label = 'common ancestor' if sum(map(len, groups)) == 1 else 'common ancestors'
+            anc = '; and '.join(ancestors(g) for g in groups)
             print(f'{"Blood:":<{_LABEL}}{data["a_name"]} is {data["b_name"]}\'s {rel}  ({label}: {anc})')
         else:
             print(f'{"Blood:":<{_LABEL}}{data["a_name"]} is {data["b_name"]}\'s {rel}')
@@ -237,6 +253,24 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         # tie may be half, instead of a plain "sister" he would repeat.
         if blood.get('note'):
             print(f'{"":<{_LABEL}}{blood["note"]}')
+        # Cousins whose grandparents were cousins hear every line, nearest
+        # first, so a DNA match that looks too close has its explanation. A
+        # line through one ancestor whose other parent is unrecorded says it
+        # may be half, as the first line's note does.
+        extra = [] if blood.get('double') else routes[1:]
+        for r in extra[:_MAX_EXTRA_ROUTES]:
+            word = r['relationship']
+            if r.get('half') is None and r.get('half_relationship'):
+                word = f'{word} or {r["half_relationship"]}'
+            line = f'{"":<{_LABEL}}and also {data["b_name"]}\'s {word}, through another line'
+            if r['common_ancestors']:
+                label = 'common ancestor' if len(r['common_ancestors']) == 1 else 'common ancestors'
+                line += f'  ({label}: {ancestors(r["common_ancestors"])})'
+            print(line)
+        more = len(extra) - _MAX_EXTRA_ROUTES
+        if more > 0:
+            noun = 'route' if more == 1 else 'routes'
+            print(f'{"":<{_LABEL}}and {more} more {noun}; run with --json to see them all')
     else:
         print(f'{"Blood:":<{_LABEL}}no blood relationship found in the recorded tree')
 
