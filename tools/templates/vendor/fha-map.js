@@ -198,6 +198,16 @@
   var PLAY_STEP = 10;      // years per step of "Play the years"
   var PLAY_MS = 1000;      // ms per step
 
+  /* True when the viewer has asked their system for less motion. Playing
+   * the years steps the map on its own, so then it is left out and the
+   * slider and "Show all" do the work. */
+  function motionReduced(win) {
+    try {
+      return !!(win && win.matchMedia &&
+                win.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+
   /* Where "Play the years" begins: from the slider's year, or from the
    * first year when the slider is at the end. */
   function playStart(current, years) {
@@ -354,7 +364,9 @@
         stop();
         set(Number(input.value));
       });
-      if (play) {
+      if (play && motionReduced(doc.defaultView)) {
+        play.hidden = true;
+      } else if (play) {
         play.setAttribute('aria-pressed', 'false');
         play.addEventListener('click', function () {
           if (timer === null) start();
@@ -557,7 +569,8 @@
                       stopYears: stopYears, stopText: stopText, journeySegments: journeySegments,
                       stopNumbers: stopNumbers, leftOutText: leftOutText,
                       pinYears: pinYears, shownBy: shownBy, yearText: yearText,
-                      playStart: playStart, nextPlayYear: nextPlayYear};
+                      playStart: playStart, nextPlayYear: nextPlayYear,
+                      motionReduced: motionReduced};
     return;
   }
 

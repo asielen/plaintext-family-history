@@ -945,6 +945,14 @@ class MapLayoutJsTests(unittest.TestCase):
         # on from there.
         self.assertEqual(out['play'], [1840, 1850, 1860, 1870, 1880, 1890, 1895, 1870])
 
+    def test_playing_the_years_is_left_out_for_someone_who_wants_less_motion(self):
+        out = self.run_js(
+            'const win = r => ({matchMedia: q => ({matches: r && q.includes("reduce")})});'
+            'process.stdout.write(JSON.stringify([m.motionReduced(win(true)),'
+            ' m.motionReduced(win(false)), m.motionReduced(undefined), m.motionReduced({})]));',
+            {})
+        self.assertEqual(out, [True, False, False, False])
+
     def test_the_outline_turns_into_shapes(self):
         out = self.run_js(
             'const land = topojson.feature(world, world.objects.land);'
