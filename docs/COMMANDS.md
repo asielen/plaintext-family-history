@@ -926,7 +926,14 @@ later, family by family. Nothing imported is treated as proven. Photos your
 old program linked are looked for in your photo folders. Re-importing
 the same file is refused, and a failed import cleans up after itself.
 
+Downloaded your tree again later? Run this on the newer file. The plan shows
+only what changed since the earlier download: the new people, the new
+statements, and each one the newer file says differently. People it cannot
+match for certain are listed with the reason. (This plan cannot be applied
+yet; it is for checking.)
+
   --plan-out FILE    Also write the full, uncut plan text to FILE.
+  --as-new-tree      Treat a newer download as a separate tree instead.
 ```
 
 | Argument | What it does |
@@ -934,6 +941,7 @@ the same file is refused, and a failed import cleans up after itself.
 | `FILE.ged` | The GEDCOM file to import (e.g. an Ancestry tree download). |
 | `--apply` | Write the records (default: print the dry-run plan only). |
 | `--plan-out` `FILE` | Also write the full (uncapped) plan text to FILE; refused inside the archive except its out/ folder. |
+| `--as-new-tree` | Import every person as new even if this looks like a newer download of a tree already imported. Every person arrives a second time, which is usually not what you want. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ## `fha wikitree`

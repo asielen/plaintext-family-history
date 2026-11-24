@@ -248,10 +248,26 @@ class RingTests(_Base):
                       self.page(f'persons/{ME}.html'))
         return m.group(1) if m else None
 
-    def test_a_record_naming_a_living_person_does_not_fill_the_public_ring(self):
-        # Her death record names a living informant. Her timeline leaves that
-        # record off the shared site, so the ring must not count it either:
-        # a visitor would read "found" with nothing on the page behind it.
+    def test_a_record_about_a_living_person_does_not_fill_the_public_ring(self):
+        # Her birth record is shared with her living twin, so it is his
+        # birth too: her timeline leaves it off the shared site, and the
+        # ring must not count it either, or a visitor would read "found"
+        # with nothing on the page behind it.
+        self.person(ME, 'Ada Example')
+        self.person(LIVE, 'Cleo Example', living='true')
+        self.source('s-1111111111', 'Birth register')
+        self.claim('c-1111111111', 's-1111111111', 'birth', '1900-06-02', [ME, LIVE],
+                   roles={ME: 'child', LIVE: 'child'})
+        self.config(BOTH_ON)
+        self.build()
+        self.assertEqual(self.ring_state('birth'), 'missing')
+        self.build(linked=True)
+        self.assertEqual(self.ring_state('birth'), 'met')
+
+    def test_a_record_also_naming_a_living_informant_fills_the_public_ring(self):
+        # Her death record names a living informant. The record is about
+        # her, so her timeline shows it (without the informant) and the
+        # ring counts it.
         self.person(ME, 'Ada Example')
         self.person(LIVE, 'Cleo Example', living='true')
         self.source('s-1111111111', 'Death register')
@@ -259,9 +275,8 @@ class RingTests(_Base):
                    roles={ME: 'deceased', LIVE: 'informant'})
         self.config(BOTH_ON)
         self.build()
-        self.assertEqual(self.ring_state('end-of-life'), 'missing')
-        self.build(linked=True)
         self.assertEqual(self.ring_state('end-of-life'), 'met')
+        self.assertIn('1900-06-02', self.page(f'persons/{ME}.html'))
 
     def test_an_unreviewed_death_still_marks_a_death_certificate(self):
         # TOOLING §7a: a source that records her own death is her death record,
@@ -398,10 +413,10 @@ class CalendarTests(_Base):
             self.assertNotIn('Cleo Example', panel)
             self.assertNotIn('Dora Example', panel)
 
-    def test_an_event_whose_record_names_a_living_person_is_left_off(self):
+    def test_an_event_whose_record_also_names_a_living_person_is_kept(self):
         # Her son's birth record names her as the mother; the son is dead,
-        # but the claim names a living person, as a timeline line would not
-        # be shown for.
+        # and the record is about him (SPEC §21), so his birthday shows and
+        # she is not named, as on his timeline.
         self.person(ME, 'Ada Example')
         self.person(LIVE, 'Cleo Example', living='true')
         self.source('s-1111111111', 'Birth register')
@@ -409,7 +424,21 @@ class CalendarTests(_Base):
                    roles={ME: 'child', LIVE: 'parent'})
         self.config(BOTH_ON)
         self.build()
-        self.assertNotIn('14 June 1950', self.page('index.html'))
+        panel = self.calendar_panel()
+        self.assertIn('14 June 1950', panel)
+        self.assertNotIn('Cleo Example', self.page('index.html'))
+
+    def test_an_event_whose_record_names_a_by_request_person_is_left_off(self):
+        # A by-request person is honored by every export path (SPEC §19):
+        # named only as the informant, she still keeps the record home.
+        self.person(ME, 'Ada Example')
+        self.person(QUIET, 'Edna Example', extra='restricted: by-request\n')
+        self.source('s-1111111111', 'Death register')
+        self.claim('c-1111111111', 's-1111111111', 'death', '1930-06-14', [ME, QUIET],
+                   roles={ME: 'deceased', QUIET: 'informant'})
+        self.config(BOTH_ON)
+        self.build()
+        self.assertNotIn('14 June 1930', self.page('index.html'))
 
     def test_a_restricted_claims_event_is_left_off(self):
         self.person(ME, 'Ada Example')
