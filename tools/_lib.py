@@ -22386,8 +22386,10 @@ def _sibling_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
 
     Children are grouped by each birth-tie parent recorded `sex: F`, and by
     the same two birth-tie parents when neither is recorded F (full siblings
-    share a mother). Only birth claims count, and neighbours in birth order
-    are compared, so year-only dates never fire it. Filed on the later child."""
+    share a mother). Only birth claims count, so year-only dates never fire
+    it. Every pair within reach is compared, not only neighbours in birth
+    order, so a loosely dated third child sorting between two exact births
+    cannot hide them. Filed on the later child."""
     parents_of: dict[str, set[str]] = {}
     for (parent, child), edge in data.parent_edges.items():
         if edge.genetic:
@@ -22408,12 +22410,22 @@ def _sibling_problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
             if birth and birth.lo is not None and birth.hi is not None:
                 born.append((birth.lo, birth.hi, child, birth))
         born.sort(key=lambda b: b[:3])
-        for (a_lo, a_hi, a, a_birth), (b_lo, b_hi, b, b_birth) in zip(born, born[1:]):
+        days = [(_iso_day_number(lo), _iso_day_number(hi)) for lo, hi, _, _ in born]
+        pairs = []
+        for i, (a_lo_day, a_hi_day) in enumerate(days):
+            for j in range(i + 1, len(born)):
+                # Sorted by earliest day: once b's earliest day is a full
+                # SIBLING_MIN_GAP_DAYS past a's latest, no later b can fire.
+                if days[j][0] - a_hi_day >= SIBLING_MIN_GAP_DAYS:
+                    break
+                pairs.append((born[i], born[j], days[i], days[j]))
+        for ((a_lo, a_hi, a, a_birth), (b_lo, b_hi, b, b_birth),
+             (a_lo_day, a_hi_day), (b_lo_day, b_hi_day)) in pairs:
             pair = frozenset((a, b))
             if pair in seen or a_hi > b_lo:
                 continue
-            min_gap = _iso_day_number(b_lo) - _iso_day_number(a_hi)
-            max_gap = _iso_day_number(b_hi) - _iso_day_number(a_lo)
+            min_gap = b_lo_day - a_hi_day
+            max_gap = b_hi_day - a_lo_day
             if min_gap > SIBLING_TWIN_DAYS and max_gap < SIBLING_MIN_GAP_DAYS:
                 seen.add(pair)
                 pids = (b, a, *key)

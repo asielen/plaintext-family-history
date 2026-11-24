@@ -397,6 +397,17 @@ class FamilyEngineTests(unittest.TestCase):
         self._two_children('1850-01-01', '1850-09-01')
         self.assertEqual(self._kinds(), [])
 
+    def test_a_year_only_sibling_between_them_does_not_hide_the_pair(self) -> None:
+        # A third child born "1850" sorts between the two exact births; the
+        # 141-day pair must still be compared, not only birth-order neighbours.
+        self._two_children('1849-12-20', '1850-05-10')
+        third = 'p-tttttttttt'
+        self.persons[third] = {}
+        self._tie(self.MUM, third)
+        self._add('birth', [third], '1850')
+        found = [(p.kind, p.pids[:2]) for p in self._problems()]
+        self.assertEqual(found, [('siblings-too-close', (self.KID2, self.KID))])
+
     def test_year_only_siblings_never_fire(self) -> None:
         self._two_children('1850', '1851')
         self.assertEqual(self._kinds(), [])
