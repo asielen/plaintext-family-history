@@ -458,3 +458,5 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **The weakest tie on any route.** A person reached through both a story and a certificate would fade although the certificate settles them.
 - **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
 - **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
+
+**How it is drawn.** Only `low` fades (medium is the ordinary single-source case, and fading it would fade most of most trees). Fading alone cannot be the signal: a faded card prints as a grey one and is lost to a colour-blind reader, so the faded card also gets a dotted outline, and the tie is thin and dash-dot (the explorer already uses solid, long dash and dots for the kinds of tie). A key sentence under the chart says what it means, and appears only when something is faded. A Private card is never faded and its ties carry no rating, because a faded card would tell a visitor something about a living person's records.
