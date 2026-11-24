@@ -611,8 +611,13 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --format html   A printable wall calendar for this year
+  fha calendar --format html --year 2027
+                               The same, for another year
 
-Only dates recorded to the month or day appear. Read-only: nothing is written.
+Only dates recorded to the month or day appear. The text views write nothing;
+the wall calendar writes one private page under generated/views/ and names
+living relatives, so keep it to yourself.
 ```
 
 | Argument | What it does |
@@ -621,6 +626,8 @@ Only dates recorded to the month or day appear. Read-only: nothing is written.
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
 | `--json` | Machine-readable JSON output |
+| `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
+| `--year` `YYYY` | With --format html: the year to print (default: this year) |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 
 ## `fha date`
@@ -1055,12 +1062,16 @@ the same file is refused, and a failed import cleans up after itself.
 
 Downloaded your tree again later? Run this on the newer file. The plan shows
 only what changed since the earlier download: the new people, the new
-statements, and each one the newer file says differently. People it cannot
-match for certain are listed with the reason. (This plan cannot be applied
-yet; it is for checking.)
+statements, and each one the newer file says differently. With --apply only
+those are added. Nothing you have reviewed or edited is changed, and each
+statement that disagrees with what you had gets an open question. People it
+cannot match for certain are listed with the reason, and nothing is added
+for them.
 
-  --plan-out FILE    Also write the full, uncut plan text to FILE.
-  --as-new-tree      Treat a newer download as a separate tree instead.
+  --plan-out FILE      Also write the full, uncut plan text to FILE.
+  --confirm-matches    Show the people the plan names one likely match for,
+                       and ask whether they are the same people.
+  --as-new-tree        Treat a newer download as a separate tree instead.
 ```
 
 | Argument | What it does |
@@ -1069,6 +1080,7 @@ yet; it is for checking.)
 | `--apply` | Write the records (default: print the dry-run plan only). |
 | `--plan-out` `FILE` | Also write the full (uncapped) plan text to FILE; refused inside the archive except its out/ folder. |
 | `--as-new-tree` | Import every person as new even if this looks like a newer download of a tree already imported. Every person arrives a second time, which is usually not what you want. |
+| `--confirm-matches` | For a newer download: show the people the plan could not match for certain but names one likely person for, and ask once whether they are the same people. On yes they are matched for this run; on no, nothing is added for them. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ## `fha wikitree`
