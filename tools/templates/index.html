@@ -130,6 +130,7 @@
   <ul class="index-list">
     {% for pl in places %}<li><a href="{{ pl.href }}">{{ pl.name }}</a></li>{% endfor %}
   </ul>
+  {% if has_graves %}<p><a href="graves.html">Graves to visit</a></p>{% endif %}
   {% endif %}
 
   <h2 id="sources">Sources</h2>

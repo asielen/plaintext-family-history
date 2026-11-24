@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block title %}Graves to visit - {{ site_title }}{% endblock %}
+{% block content %}
+<article class="graves">
+  <h1>Graves to visit</h1>
+  <p class="note">Map links open OpenStreetMap and need an internet connection.</p>
+  {% for g in groups %}
+  <section class="grave-place">
+    <h2>{% if g.registered %}{{ g.html }}{% else %}{{ g.name }}{% endif %}</h2>
+    {% if g.registered %}
+    {% if g.hierarchy %}<p class="note">{{ g.hierarchy }}</p>{% endif %}
+    {% if g.coords %}<p><a href="{{ g.map_url }}">Map</a> &middot; <a href="{{ g.directions_url }}">Directions</a></p>
+    {% else %}<p class="empty">no map position recorded yet{% if workbench %} - set it on the place page{% endif %}</p>{% endif %}
+    {% endif %}
+    <ul class="index-list">
+      {% for r in g.rows %}<li>{{ r.person_html }}{% if r.place_text %}, {{ r.place_text }}{% endif %}{% if r.burial_date %}, buried {{ r.burial_date }}{% endif %}{% if r.death_date %}, died {{ r.death_date }}{% endif %} {{ r.source_html }}</li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endfor %}
+</article>
+{% endblock %}
