@@ -9454,7 +9454,8 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
             r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
         self.assertEqual(json.loads(args), {
             'person_id': self.THOMAS, 'repository': 'Ancestry', 'result': 'nil',
-            'terms': 'Thomas Hartley, born about 1840, New York'})
+            'terms': 'Thomas Hartley, born about 1840, New York; father Caleb Hartley; '
+                     'mother Chastina Reed; spouse Margaret Cole, married about 1871, Fairview'})
         self.assertRegex(page, r'Ancestry</a>.*?searched 2026-11-22: nothing found')
         self.assertEqual(page.count('searched 2026-11-22'), 1)   # only the site he logged
 
@@ -9482,6 +9483,23 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
                          'Mary Hartley, born about 1840')
         self.assertEqual(_lib.research_search_terms(subject, 'familysearch'),
                          'Mary Cole, born about 1840')
+
+    def test_each_site_logs_what_its_own_link_searched(self):
+        # A nil is only worth what was really searched: a newspaper link sends
+        # only the name and a span of years, so its log must not claim a birth
+        # year and place, and FamilySearch's must name the parents it sent.
+        s = {'given': 'Thomas', 'surname': 'Hartley', 'birth_year': 1840,
+             'birth_place': 'New York', 'death_year': 1910, 'father_given': 'Caleb',
+             'father_surname': 'Hartley', 'places': ['New York']}
+        t = _lib.research_search_terms
+        self.assertEqual(t(s, 'familysearch'), 'Thomas Hartley, born about 1840, New York; '
+                                               'died about 1910; father Caleb Hartley')
+        self.assertEqual(t(s, 'newspapers'), 'Thomas Hartley, newspapers 1835 to 1915')
+        self.assertEqual(t(s, 'chroniclingamerica'), 'Thomas Hartley, newspapers 1840 to 1910')
+        self.assertEqual(t(s, 'findmypast'), 'Thomas Hartley, born about 1840, died about 1910')
+        self.assertEqual(t(s, 'ukdiscovery'), 'Thomas Hartley')
+        self.assertEqual(t({**s, 'places': ['Suwalki, podlaskie']}, 'geneteka'),
+                         'Thomas Hartley, baptisms 1840 to 1841, province podlaskie')
 
     def test_a_living_subject_logs_the_name_alone(self):
         self._edit(self.THOMAS, 'living: false', 'living: true')

@@ -10139,35 +10139,60 @@ def _search_url_chroniclingamerica(s: dict) -> str:
     death is on file (upstream searched only the birth year then, which can
     never find a marriage notice or an obituary)."""
     p = {'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': _rs_name(s)}
+    start, end = _rs_years_chroniclingamerica(s)
+    if start is not None:
+        p['start_date'], p['end_date'] = f'{start}-01-01', f'{end}-12-31'
+    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+
+
+def _rs_years_chroniclingamerica(s: dict) -> tuple:
+    """(first year, last year) the Chronicling America link searches, or
+    (None, None)."""
     birth, death = s.get('birth_year'), s.get('death_year')
     if birth:
-        p['start_date'] = f'{birth}-01-01'
-    elif death:
-        p['start_date'] = f'{death - 90}-01-01'
-    if death or birth:
-        p['end_date'] = f'{death or birth + 90}-12-31'
-    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+        return birth, (death or birth + 90)
+    if death:
+        return death - 90, death
+    return None, None
 
 
 def _search_url_newspapers(s: dict) -> str:
     """Newspapers.com reads `keyword` and `date-start`/`date-end` (checked by
     hand 2026-11-23; upstream's `query`/`year-start` now drop the years)."""
     p = {'keyword': _rs_name(s)}
-    birth, death = s.get('birth_year'), s.get('death_year')
-    if birth:
-        start, end = birth - 5, (death + 5 if death else birth + 90)
-    elif death:
-        start, end = death - 90, death + 5
-    else:
-        start = end = None
+    start, end = _rs_years_newspapers(s)
     if start and end:
         p['date-start'], p['date-end'] = start, end
     return _rs_url('https://www.newspapers.com/search/results/', p)
 
 
+def _rs_years_newspapers(s: dict) -> tuple:
+    """(first year, last year) the Newspapers.com link searches, or (None, None)."""
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        return birth - 5, (death + 5 if death else birth + 90)
+    if death:
+        return death - 90, death + 5
+    return None, None
+
+
 def _search_url_geneteka(s: dict) -> str | None:
     """Geneteka cannot search without a province, so no province in any place
     text means no link (never a guess)."""
+    found = _rs_geneteka_province(s)
+    if not found:
+        return None
+    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': found[0],
+         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
+    if s.get('birth_year'):
+        # The registration may fall in the year after the birth.
+        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
+    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+
+
+def _rs_geneteka_province(s: dict) -> tuple | None:
+    """(code, name) of the Geneteka province named in the subject's place
+    texts, or None."""
     text = ' '.join(str(x) for x in (s.get('places') or ()))
     words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
 
@@ -10184,16 +10209,8 @@ def _search_url_geneteka(s: dict) -> str | None:
             forms = (province, province + 'i')
         return word in forms
 
-    province = next((code for code, name in _GENETEKA_PROVINCES
-                     if any(names(w, fold_accents(name).lower()) for w in words)), None)
-    if not province:
-        return None
-    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
-         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
-    if s.get('birth_year'):
-        # The registration may fall in the year after the birth.
-        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
-    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+    return next(((code, name) for code, name in _GENETEKA_PROVINCES
+                 if any(names(w, fold_accents(name).lower()) for w in words)), None)
 
 
 def _search_url_ukdiscovery(s: dict) -> str:
@@ -10236,25 +10253,52 @@ RESEARCH_SITES: tuple = (
 )
 
 
-# The sites whose search sends a woman's married surname (graves are marked
-# with it); the log must name the surname that was actually searched.
-_RS_MARRIED_NAME_SITES = frozenset({'findagrave', 'billiongraves'})
-
-
 def research_search_terms(subject: dict, site_key: str = '') -> str:
-    """What he typed into the other website, in words, for the research log:
-    "Thomas Hartley, born about 1840, New York". Only what the subject carries,
-    so a living person's entry is the name alone. For a grave site the surname
-    is her married one when she has one, as that site's link searches it."""
-    surname = subject.get('surname')
-    if site_key in _RS_MARRIED_NAME_SITES:
-        surname = subject.get('married_surname') or surname
-    name = ' '.join(x for x in (subject.get('given'), surname) if x)
-    parts = [name] if name else []
-    if subject.get('birth_year'):
-        parts.append(f"born about {subject['birth_year']}")
-    if subject.get('birth_place'):
-        parts.append(str(subject['birth_place']))
+    """What that website's link searched, in words, for the research log:
+    "Thomas Hartley, born about 1840, New York; father Caleb Hartley; ...".
+    Each site's link sends different things (a newspaper search only the
+    name and a span of years, FamilySearch also the parents and spouse), and
+    a "nothing found" is only worth what was really searched, so the words
+    follow the link of `site_key` field for field. Only what the subject
+    carries, so a living person's entry is the name alone."""
+    s = subject
+    full = site_key in ('familysearch', 'ancestry', 'myheritage', '')
+
+    def event(word: str, year, place) -> str:
+        bits = ([f'{word} about {year}'] if year else []) + ([str(place)] if place else [])
+        return ', '.join(bits)
+
+    def who(prefix: str) -> str:
+        return ' '.join(x for x in (s.get(f'{prefix}_given'), s.get(f'{prefix}_surname')) if x)
+
+    surname = s.get('surname')
+    if site_key in ('findagrave', 'billiongraves'):      # graves are marked with her married name
+        surname = s.get('married_surname') or surname
+    parts = [' '.join(x for x in (s.get('given'), surname) if x)]
+    if full:
+        parts += [event('born', s.get('birth_year'), s.get('birth_place')),
+                  event('died', s.get('death_year'), s.get('death_place'))]
+        parts += [f'{rel} {who(rel)}' if who(rel) else '' for rel in ('father', 'mother')]
+        parts.append(', '.join(x for x in (
+            f'spouse {who("spouse")}' if who('spouse') else '',
+            event('married', s.get('marriage_year'), s.get('marriage_place'))) if x))
+    elif site_key in ('findmypast', 'findagrave', 'billiongraves'):
+        parts += [event('born', s.get('birth_year'), None),
+                  event('died', s.get('death_year'), None)]
+    elif site_key in ('chroniclingamerica', 'newspapers'):
+        start, end = (_rs_years_chroniclingamerica(s) if site_key == 'chroniclingamerica'
+                      else _rs_years_newspapers(s))
+        if start is not None:
+            parts.append(f'newspapers {start} to {end}')
+    elif site_key == 'geneteka':
+        if s.get('birth_year'):
+            parts.append(f"baptisms {s['birth_year']} to {s['birth_year'] + 1}")
+        province = _rs_geneteka_province(s)
+        if province:
+            parts.append(f'province {province[1]}')
+    parts = [p for p in parts if p]
+    if full and len(parts) > 1:
+        return parts[0] + ', ' + '; '.join(parts[1:])
     return ', '.join(parts)
 
 
