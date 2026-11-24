@@ -23194,6 +23194,119 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
     return (lo_known, hi_known)
 
 
+# Role words that name a sex (lint W171): the six SPEC §8.3 kin synonyms
+# plus the words marriage and death records add. Closed on purpose: `sister`,
+# `grandmother` and the rest would catch more, but it is a list that never
+# ends, and each extra word is another way to fire on a correct record.
+SEX_IMPLYING_ROLES: dict[str, str] = {
+    'mother': 'F', 'wife': 'F', 'daughter': 'F', 'bride': 'F', 'widow': 'F',
+    'father': 'M', 'husband': 'M', 'son': 'M', 'groom': 'M',
+    'bridegroom': 'M', 'widower': 'M',
+}
+
+
+def role_sex_conflicts(
+    claim: dict, sex_by_pid: dict[str, str], alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """`(pid, role word, implied sex)` for each person a claim calls by a word
+    that implies the other sex than the one recorded for them.
+
+    The role is read as written (lower-cased), never folded through
+    `role_meaning`: `wife` must stay `wife`, not become `spouse`. Only a
+    recorded `M` or `F` is compared; `intersex`, `unknown` and a missing
+    `sex:` never conflict (W120 asks for a missing one)."""
+    found: list[tuple[str, str, str]] = []
+    for pid, role in resolve_claim_persons_with_roles(claim, alias_map):
+        word = clean_role_word(role).lower()
+        implied = SEX_IMPLYING_ROLES.get(word)
+        recorded = sex_by_pid.get(pid, '')
+        if implied and recorded in ('M', 'F') and recorded != implied \
+                and (pid, word, implied) not in found:
+            found.append((pid, word, implied))
+    return found
+
+
+# The days a calendar change skipped (lint W172): (first, last, who and when).
+CALENDAR_GAPS: tuple[tuple[str, str, str], ...] = (
+    ('1582-10-05', '1582-10-14',
+     'Catholic Europe (Spain, Portugal, the Italian states, Poland) moved to '
+     'the new calendar and skipped 5 to 14 October 1582'),
+    ('1752-09-03', '1752-09-13',
+     'Great Britain and its colonies, America included, moved to the new '
+     'calendar and skipped 3 to 13 September 1752'),
+)
+
+
+def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
+    """The calendar gap a date lies wholly inside, or None. A year, a month or
+    a range that reaches outside the gap is never inside it."""
+    span = claim_date_range({'date': date})
+    if span is None or span[0] is None or span[1] is None:
+        return None
+    for gap in CALENDAR_GAPS:
+        if gap[0] <= span[0] and span[1] <= gap[1]:
+            return gap
+    return None
+
+
+# What shows a claim's date was converted from the old calendar (lint W172):
+# an Old Style / O.S. / Julian marker, or a double year such as 1751/52.
+# "Julian" counts only as the calendar ("Julian calendar", "(Julian)"), never
+# as a first name.
+_OLD_STYLE_MARKER = re.compile(
+    r'\bold[\s-]?style\b'
+    r'|\bjulian[\s-]*(?:calendar|date|style|reckoning)\b'
+    r'|\(\s*julian\s*\)', re.IGNORECASE)
+# O.S. with its stop: a bare "OS" is as often Ordnance Survey.
+_OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
+# 1751/52 or 1751/2, not a reference such as 11/1234/56 or 1752/09/05.
+_DOUBLE_YEAR = re.compile(r'(?<![\d/])(1\d{3})/(\d{1,2})(?![\d/])')
+_WRITTEN_DAY = re.compile(
+    r'\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b'
+    r'|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b')
+
+
+def _has_double_year(text: str) -> bool:
+    for match in _DOUBLE_YEAR.finditer(text):
+        after = match.group(2)
+        if (int(match.group(1)) + 1) % (10 ** len(after)) == int(after):
+            return True
+    return False
+
+
+def calendar_conversion_shown(claim: dict) -> bool:
+    """True when a claim shows its gap `date:` was converted from the old
+    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian
+    marker or a double year (1751/52), or its `value` writes the old-calendar
+    day that converts to `date:` (25 Aug 1752 beside 1752-09-05; the record's
+    own day beside the converted one, SPEC §11). Structural only: no other
+    wording counts, and another day in `value` (a baptism after a birth, the
+    banns before a marriage) does not."""
+    value = str(claim.get('value') or '')
+    notes = str(claim.get('notes') or '')
+    for text in (value, notes):
+        if (_OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)
+                or _has_double_year(text)):
+            return True
+    date = optional_scalar(claim.get('date')) or ''
+    gap = calendar_gap_of(date)
+    if gap is None or len(date) != 10:
+        return False
+    try:
+        target = datetime.date.fromisoformat(date)
+        shift = (datetime.date.fromisoformat(gap[1])
+                 - datetime.date.fromisoformat(gap[0])).days + 1
+        for match in _WRITTEN_DAY.finditer(value):
+            written = normalize_date(match.group(0).replace(',', ' '))
+            if (written and len(written) == 10
+                    and datetime.date.fromisoformat(written)
+                    + datetime.timedelta(days=shift) == target):
+                return True
+    except ValueError:
+        return False
+    return False
+
+
 def iso_plus_years(iso: str, years: int) -> str:
     """The same month and day `years` later, as an ISO day.
 
