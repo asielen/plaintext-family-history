@@ -285,6 +285,7 @@ fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), adviso
 fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path,
                             and how much DNA such relatives usually share
 fha relate --cm <N>          which relationships N shared cM fits (several; never a percentage)
+fha relate <p-A> --all       everyone related to one person: blood relatives nearest first, then by marriage
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested
