@@ -9374,17 +9374,20 @@ class _SiteBuilder:
         if section_starts:
             self._discovery_entries = chunks
         else:
-            # The top level is the indent of the first bullet (a log may be
-            # written with every bullet a space or tab in); deeper is a sub-bullet.
+            # The top level is the shallowest bullet in the file (a log may be
+            # written with every bullet a space or tab in). As in Markdown, a
+            # bullet is a sub-bullet only when it sits two or more columns
+            # deeper; one stray space still makes a sibling entry.
+            def indent_of(ln: str) -> int:
+                return len(ln) - len(ln.lstrip(' \t'))
+
+            top = min((indent_of(ln) for ln in lines if _LIST_RE.match(ln)), default=0)
             entries: list[list[str]] = []
             open_entry = False
-            top: int | None = None
             for ln in lines:
                 bullet = _LIST_RE.match(ln)
-                indent = len(ln) - len(ln.lstrip(' \t'))
-                if bullet and top is None:
-                    top = indent
-                if bullet and indent <= top:
+                indent = indent_of(ln)
+                if bullet and (not open_entry or indent < top + 2):
                     entries.append([ln])
                     open_entry = True
                 elif open_entry and (indent > top or not ln.strip()

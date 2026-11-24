@@ -206,6 +206,23 @@ class ContentTests(_Base):
                 self.assertIn('1880 census page', self.month(page, 'September 2026'))
                 self.assertNotIn('1871</h2>', page)
 
+    def test_uneven_bullet_indents_keep_entries_and_months_apart(self):
+        # First bullet three spaces in, the rest flush; a one-space sibling.
+        notes = self.root / 'notes'
+        notes.mkdir()
+        (notes / 'discoveries.md').write_text(
+            '# Discoveries\n   - 2026-10-01: Found the Hartley farm deed.\n'
+            '- 2026-09-01: Found the 1880 census page.\n'
+            '  - 1921-04-12 is the date on the copy.\n'
+            ' - 2026-08-01: Found the Cole family Bible.\n', encoding='utf-8')
+        self.build()
+        page = self.page()
+        self.assertNotIn('1921</h2>', page)
+        self.assertIn('Hartley farm deed', self.month(page, 'October 2026'))
+        self.assertIn('date on the copy', self.month(page, 'September 2026'))
+        self.assertIn('Cole family Bible', self.month(page, 'August 2026'))
+        self.assertNotIn('Cole family Bible', self.month(page, 'September 2026'))
+
     def test_since_select_needs_script_and_page_works_without_it(self):
         self.build()
         page = self.page()
