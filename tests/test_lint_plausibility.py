@@ -31,7 +31,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import lint
 from _lib import load_fha_yaml
 
-PLAUSIBILITY_CODES = ('W163', 'W164', 'W165')
+PLAUSIBILITY_CODES = ('W163', 'W164', 'W165', 'W166', 'W167', 'W168', 'W169', 'W170')
 
 
 class _PlausibilityBase(unittest.TestCase):
@@ -285,6 +285,138 @@ class OnePersonDatesTests(_PlausibilityBase):
                 findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
                 self.assertEqual([f.message for f in findings
                                   if f.code in PLAUSIBILITY_CODES], [])
+
+
+class FamilyDatesTests(_PlausibilityBase):
+    """W166-W170: dates across a family that cannot all be true."""
+
+    S1, S2, S3 = 'S-1111111111', 'S-2222222222', 'S-3333333333'
+
+    def _tie(self, cid: str, parent: str, child: str, subtype: str | None = None) -> str:
+        return self._claim(cid, 'relationship', [parent, child], subtype=subtype,
+                           roles=f'{{parent: [{parent}], child: [{child}]}}')
+
+    def test_born_after_mother_died_names_the_tie_claim(self) -> None:
+        # The plan's sentence: Margaret born 1871, her mother died 1869.
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W167')
+        message = found.message
+        self.assertTrue(message.startswith(
+            'Margaret Cole (p-bbbbbbbbbb) is recorded as born 1871 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but her mother Ann Cole (p-aaaaaaaaaa) '
+            'died 1869 (c-2222222222 (sources/notes/rec_s-2222222222.md))'), message)
+        self.assertIn('Both cannot be true', message)
+        self.assertIn('The mother tie comes from c-3333333333 '
+                      '(sources/notes/rec_s-3333333333.md)', message)
+        self.assertEqual(Path(found.path).name, 'cole__margaret_P-bbbbbbbbbb.md')
+
+    def test_adoptive_mother_dead_before_birth_is_silent(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN, subtype='adoptive'))
+        self.assertEqual(self._codes('W167'), [])
+
+    def test_parent_tie_from_a_birth_claims_roles_counts(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim(
+            'C-1111111111', 'birth', [self.BEN, self.ADA], date='1871',
+            roles=f'{{child: [{self.BEN}], parent: [{self.ADA}]}}'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1880'))
+        (found,) = self._codes('W168')
+        self.assertIn('before her mother Ann Cole (p-aaaaaaaaaa) was born, 1880', found.message)
+        self.assertIn('The parent tie (c-1111111111 (sources/notes/rec_s-1111111111.md))',
+                      found.message)
+
+    def test_mother_too_old_says_her_age(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Ben Cole', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1870'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1800'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W168')
+        self.assertTrue(found.message.startswith(
+            'Ann Cole (p-aaaaaaaaaa) was at least 69 when her son Ben Cole (p-bbbbbbbbbb) '
+            'was born 1870'), found.message)
+        self.assertIn('older than a mother can be', found.message)
+        self.assertEqual(Path(found.path).name, 'cole__ben_P-bbbbbbbbbb.md')
+
+    def test_marriage_after_spouse_died(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ben Hartley (p-bbbbbbbbbb) died 1860 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but is recorded as marrying Ada Hartley '
+            '(p-aaaaaaaaaa) 1865'), found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__ben_P-bbbbbbbbbb.md')
+
+    def test_divorce_after_spouse_died_says_divorcing(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'divorce', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertIn('but is recorded as divorcing Ada Hartley', found.message)
+
+    def test_marriage_parents_named_on_the_licence_are_not_spouses(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Carl Moss', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.CARA], date='1850'))
+        self._source(self.S2, self._claim(
+            'C-2222222222', 'marriage', [self.ADA, self.BEN, self.CARA], date='1865',
+            roles=f'{{spouse: [{self.ADA}, {self.BEN}], parent: [{self.CARA}]}}'))
+        self.assertEqual(self._codes('W166'), [])
+
+    def test_married_young(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1872'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) was at most 12 at the marriage to Ben Hartley'),
+            found.message)
+
+    def test_siblings_too_close(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Cara Hartley')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1850-01')
+                     + self._claim('C-1111111112', 'birth', [self.CARA], date='1850-06'))
+        self._source(self.S2, self._tie('C-2222222221', self.ADA, self.BEN)
+                     + self._tie('C-2222222222', self.ADA, self.CARA))
+        (found,) = self._codes('W169')
+        self.assertTrue(found.message.startswith(
+            'Cara Hartley (p-cccccccccc) (June 1850'), found.message)
+        self.assertIn('children of Ada Hartley (p-aaaaaaaaaa), born between 121 and 180 '
+                      'days apart', found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__cara_P-cccccccccc.md')
+
+    def test_own_ancestor_loop_is_reported_once(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._tie('C-1111111111', self.ADA, self.BEN)
+                     + self._tie('C-1111111112', self.BEN, self.ADA))
+        (found,) = self._codes('W170')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) is recorded as her own ancestor: Ada Hartley '
+            '(p-aaaaaaaaaa) is the parent of Ben Hartley (p-bbbbbbbbbb), Ben Hartley '
+            '(p-bbbbbbbbbb) is the parent of Ada Hartley (p-aaaaaaaaaa).'), found.message)
+        self.assertIn('c-1111111111 (sources/notes/rec_s-1111111111.md)', found.message)
+        self.assertIn('c-1111111112', found.message)
 
 
 _GIT = shutil.which('git')
