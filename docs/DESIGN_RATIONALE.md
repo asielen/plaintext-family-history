@@ -26,6 +26,7 @@ Contents:
 16. Search links on the workbench person page
 17. Sounds-alike search
 18. Site search: a script, not a data file
+19. Calendar conversion is a tool
 
 ---
 
@@ -150,6 +151,7 @@ Everything not yet proved climbs one ladder, written in one place, the question 
 - **One ladder instead of five mechanisms.** Open questions, separate hypothesis records, a "needs review" status, accepted-but-low claims and guessed tree edges are the same idea. Spread across five places, a reader would have to learn five things. One entry that grows as the research does is one thing to learn.
 - **An `h-` id never becomes a `c-` id.** IDs are typed for life. Settling a working answer creates a new claim from the source that proves it. Both records stay, and the claim may point back at the working answer.
 - **Gaps a tool can compute are never written as questions.** "No birth date" or "no parents" is shown fresh by `fha report` every time. A written copy would only go stale. A question is written down only when a person asks it or two claims conflict.
+- **A birth year worked out from relatives stops at 1935 and rests on accepted facts only.** The report's loose-ends section can say "her husband was born in 1840 and her eldest child in 1871, so she was probably born between 1832 and 1848" and hand over the `fha person estimate` command, but a guessed birth year for someone who may be alive is the kind of detail the privacy rules keep close, so no range ending after 1935 is offered, and nobody marked `living: true`. A relative's birth counts only from an accepted claim, never a suggested claim or a provisional estimate (which may be a guess this same report offered), so a guess is never built on another guess. A relative's vague date stays a span, so "born 1840/1860" never reads as "born in 1850"; a baptism counts only as "born by then", because an adult baptism says little of age. A brother or sister with a different recorded father or mother is left out, since a half-sister from a second marriage can be twenty years younger, and the person's own records cap the range: a woman who died in 1866 was born by 1866. Relatives that disagree give no range at all; that is a lint question, not a guess to offer.
 
 **Rejected.** A separate `needs-review` status (a dated `suggested` claim says the same thing). A "possible" or "uncertain" status. Hypotheses as a separate kind of record apart from questions.
 
@@ -380,6 +382,8 @@ Across a family it also warns when a marriage falls before a spouse's birth or a
 - **Reading a record's role words for a parent's sex.** `sex:` is the one structured place it lives.
 - **Naming the likely sex from a first name as a warning, or setting it.** `sex:` is birth-assigned where a record states it (SPEC §9), and a name is a statistic, not a record. The lead (see TOOLING §3, Leads to check) only counts his own archive and sends him to find the record; it never writes.
 
+**Probably not living (W173).** Lint also names someone still marked `living: unknown` whose records put their birth more than 110 years ago: their own records, their children's births (a parent is at least 12), or a parent's death. The cutoff is 110, not the 130 that `fha metrics` uses, because the two answer different questions. 130 decides on its own that a missing death is a gap, so it has to be certain. 110 only asks: the message names `fha person set-living … false` and he runs it, so his yes is the gate. 110 is also the age `fha gedcom import` already uses for the same flag, so one archive gives one answer. At 130, most undated great-grandparents would stay hidden as "Living Person" on the site. Rejected: flipping the flag automatically, because SPEC §19 keeps `unknown` as the safe default so a mistake over-hides and never shows a living person; and a `living_confirmed:` field, turned down under §5.
+
 ## 16. Search links on the workbench person page
 
 **The rule.** The `fha serve` person page lists links that open other genealogy websites' own searches, filled in from what the archive knows. The links are built in Python when the snapshot is built, and only in the workbench. A living or unknown person goes into a link as a name and nothing else; a restricted or by-request person gets no links; a parent or spouse is named only if their record says they have died and is not restricted. A date or place from a claim or source marked restricted stays out too, as it does on the shared site.
@@ -424,3 +428,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **A JSON file fetched at search time.** It fails from `file://`, which is how the site is shared.
 - **The data inline in every page.** Every page would carry every name, for a box most visits never use.
 - **A second copy of the spelling rule in the script.** Two copies drift; the file carries the table instead, and a test checks that both halves fold a list of names alike.
+
+---
+
+## 19. Calendar conversion is a tool
+
+**The rule.** A date the record gives in another calendar (the old Julian calendar, an Orthodox register, a feast day, a Hebrew date) is converted by `fha date`, never by the AI in its head. The command prints the same day in today's calendar, its weekday, and the claim's `date:` and `notes:` lines; the claim's `value` keeps the record's own words. Feast names are matched exactly, and plain "Adar" in a Hebrew leap year prints both readings.
+
+**Why.** The old calendar ran 10 to 13 days behind today's depending on the century, Easter follows a different rule in each church, and a Hebrew year can have 12 or 13 months. A model doing this arithmetic gets the shift or the Easter wrong with no sign that it did, and the wrong day then sits on the timeline looking right. Arithmetic is what a small tested function does best. The Easter and Hebrew calendar code and the Orthodox feast table come from genealogy-mcp (MIT, Igor Melnikov), with its notice above them in `tools/dates.py`; the tests pin dates published elsewhere (the 1582, 1752 and 1918 switch days, Easter tables, hebcal.com).
+
+**Rejected.**
+
+- **Fuzzy feast matching.** The nearest name to a typo is a confident wrong day; an unknown name is refused with the list instead.
+- **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
+- **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.
