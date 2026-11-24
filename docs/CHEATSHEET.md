@@ -51,6 +51,7 @@ fha reorganize                # preview moving loose documents/ files into type 
 fha backup                    # dated zip beside the archive; to restore, unzip it
 fha update-tools --dry-run --repo PATH-TO-PROJECT   # preview a tools update (docs/UPDATING.md)
 fha relate p-aaaa p-bbbb      # how are these two related?
+fha relate --cm 450           # which relationships fit 450 cM of shared DNA?
 fha metrics                   # who still lacks a birth, census or marriage record?
 fha metrics "Ann Smith"       # one person's checks in detail, by name or p-id
 fha calendar today            # who in the family was born, married or died on this day?
