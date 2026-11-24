@@ -9929,10 +9929,12 @@ def parse_cm(text) -> float | None:
     "), or None when it is not a plain non-negative number."""
     if not isinstance(text, str):
         return None
-    s = re.sub(r'\s*cm\s*$', '', text.strip().replace(',', ''), flags=re.I).strip()
-    if not re.fullmatch(r'\d+(\.\d+)?', s):
+    s = re.sub(r'\s*cm\s*$', '', text.strip(), flags=re.I).strip()
+    # Commas only as thousands separators, so a mistyped "1,2,3" is refused
+    # rather than read as 123.
+    if not re.fullmatch(r'(\d{1,3}(,\d{3})+|\d+)(\.\d+)?', s):
         return None
-    return float(s)
+    return float(s.replace(',', ''))
 
 
 # ── one record set on several sites (record_collections.json) ───────────────

@@ -250,8 +250,14 @@ _CM_TOO_BIG = ('That is more than a parent and child share. It usually means the
                'person tested twice, or identical twins.')
 _CM_MISSING = ("The shared-DNA table is missing from this archive's tools. "
                'Run `fha update-tools` to restore it.')
-_CM_NO_ROW = ('no typical figure is listed for this relationship; relatives this distant '
-              'often share little or no detectable DNA.')
+_CM_NO_ROW = 'The Shared cM Project chart gives no figure for this relationship.'
+_CM_NO_HALF_ROW = ('The chart gives no figure for the {form} form of this tie, so that '
+                   'reading cannot be checked.')
+
+
+def _cm_ceiling(table: dict) -> float:
+    """The most any relationship in the chart shares (a parent and child)."""
+    return max(r['high'] for r in table['rows'])
 
 
 def _cm_lookup(cm: float) -> Result:
@@ -262,7 +268,7 @@ def _cm_lookup(cm: float) -> Result:
     data = {'cm': cm, 'fits': [], 'note': None, 'credit': table.get('credit')}
     if not table:
         data['note'] = _CM_MISSING
-    elif cm > max(r['high'] for r in table['rows']):
+    elif cm > _cm_ceiling(table):
         data['note'] = _CM_TOO_BIG
     else:
         data['fits'] = [_cm_row(r) for r in cm_fits(cm, table)]
@@ -275,7 +281,11 @@ def _dna_answer(blood: dict | None, n_routes: int, cm: float | None) -> dict | N
     """The DNA part of a two-person answer: what the recorded blood tie
     usually shares and, with `cm`, whether that amount fits it. None with no
     blood tie (a tie by marriage shares no DNA by itself). Both rows when the
-    tie may be half, so he never repeats one guess."""
+    tie may be half, so he never repeats one guess.
+
+    `fits_recorded` is None, not False, when the chart has no figure for the
+    tie (or for one reading of a tie that may be half) and the amount fits no
+    reading it does have: a gap in the chart is not evidence against his tree."""
     if not blood or not (blood['gens_a'] or blood['gens_b']):
         return None       # no tie, or the same person twice
     table = shared_cm_table()
@@ -287,23 +297,43 @@ def _dna_answer(blood: dict | None, n_routes: int, cm: float | None) -> dict | N
         dna['note'] = _CM_MISSING
         return dna
     halves = [False, True] if blood['half'] is None else [bool(blood['half'])]
-    rows = [expected_shared_cm(blood['gens_a'], blood['gens_b'], h, table) for h in halves]
-    rows = [r for r in rows if r]
+    found = {h: expected_shared_cm(blood['gens_a'], blood['gens_b'], h, table) for h in halves}
+    rows = [r for r in found.values() if r]
+    unlisted = [h for h, r in found.items() if not r]
     dna['expected'] = [_cm_row(r) for r in rows]
     dna['more_than_one_route'] = n_routes > 1
     if not rows:
         dna['note'] = _CM_NO_ROW
+    elif unlisted:
+        dna['note'] = _CM_NO_HALF_ROW.format(form='half' if unlisted[0] else 'full')
     if cm is not None:
-        dna['fits_recorded'] = any(r['low'] <= cm <= r['high'] for r in rows)
+        if any(r['low'] <= cm <= r['high'] for r in rows):
+            dna['fits_recorded'] = True
+        elif unlisted:
+            dna['fits_recorded'] = None
+        else:
+            dna['fits_recorded'] = False
         here = {r['key'] for r in rows}
         dna['fits'] = [_cm_row(f) for f in cm_fits(cm, table) if f['key'] not in here]
     return dna
+
+
+def _also_fits(fits: list[dict], cm: float, shown: int = 5) -> str:
+    """The first few other relationships an amount fits, saying how many more
+    there are, so a cut list never reads as the whole list."""
+    text = ', '.join(f['label'] for f in fits[:shown])
+    if len(fits) > shown:
+        text += (f', and {len(fits) - shown} more (`fha relate --cm {_fig(cm)}` '
+                 f'lists them all)')
+    return text
 
 
 def _dna_lines(dna: dict) -> list[str]:
     """The DNA line and the lines under it, without the label column."""
     rows, cm = dna['expected'], dna.get('cm')
     lines: list[str] = []
+    if not rows and dna.get('note'):
+        lines.append(dna['note'])
     if cm is None:
         if len(rows) == 1:
             r = rows[0]
@@ -316,27 +346,33 @@ def _dna_lines(dna: dict) -> list[str]:
                 f'(nearly all {_fig(first["low_cm"])} to {_fig(first["high_cm"])} cM); '
                 f'{second["label"]} about {_fig(second["average_cm"])} cM '
                 f'(nearly all {_fig(second["low_cm"])} to {_fig(second["high_cm"])} cM).')
-    elif rows:
-        also = ', '.join(f['label'] for f in dna['fits'][:5])
+        if rows and dna.get('note'):
+            lines.append(dna['note'])
+    elif dna['note'] != _CM_MISSING:
+        also = _also_fits(dna['fits'], cm)
         if dna['fits_recorded']:
             hit = [r for r in rows if r['low_cm'] <= cm <= r['high_cm']]
             lines.append(f'{_fig(cm)} cM fits {" and ".join(r["label"] for r in hit)} '
                          f'(nearly all share between {_fig(min(r["low_cm"] for r in hit))} '
                          f'and {_fig(max(r["high_cm"] for r in hit))} cM).')
             lines.append(f'It also fits: {also}. {_CM_DOCUMENTS}' if also else _CM_DOCUMENTS)
-        else:
+        elif rows:
             lines.append(f'{_fig(cm)} cM is outside what {" or ".join(r["label"] for r in rows)} '
                          f'usually share ('
                          + '; '.join(_usual(r) for r in rows) + ').')
+            if dna.get('note'):
+                lines.append(dna['note'])
             lines.append((f'It fits: {also}. ' if also else '')
                          + 'A wrong or missing parent in the tree, a half relationship, or a '
                          'different tie could explain it.')
+        else:
+            lines.append(f'{_fig(cm)} cM fits: {also}. {_CM_DOCUMENTS}' if also
+                         else f'{_fig(cm)} cM fits no relationship in the chart.')
+        table = shared_cm_table()
         if cm < 20:
             lines.append(_CM_TOO_SMALL)
-        elif cm > 3720:
+        elif table and cm > _cm_ceiling(table):
             lines.append(_CM_TOO_BIG)
-    if not rows and dna.get('note'):
-        lines.append(dna['note'])
     if dna['more_than_one_route']:
         lines.append('Because they are related by more than one route, they may share more '
                      'than this.')
@@ -347,15 +383,19 @@ def _dna_lines(dna: dict) -> list[str]:
 
 def _print_cm_lookup(data: dict) -> None:
     cm = data['cm']
-    if not data['fits']:
-        print(f'{_fig(cm)} cM of shared DNA: {data["note"] or "fits no relationship in the table."}')
+    fits = data['fits']
+    if not fits:
+        print(f'{_fig(cm)} cM of shared DNA: {data["note"] or "fits no relationship in the chart."}')
     else:
-        print(f'{_fig(cm)} cM of shared DNA fits several relationships. '
-              f'Closest typical amount first:')
-        for f in data['fits']:
-            print(f'  {f["label"]:<62}typical {_fig(f["average_cm"])} cM, '
+        if len(fits) == 1:
+            print(f'{_fig(cm)} cM of shared DNA fits one relationship in the chart:')
+        else:
+            print(f'{_fig(cm)} cM of shared DNA fits several relationships. '
+                  f'Closest typical amount first:')
+        for f in fits:
+            print(f'  {f["label"]}: typical {_fig(f["average_cm"])} cM, '
                   f'nearly all {_fig(f["low_cm"])} to {_fig(f["high_cm"])} cM')
-        print('DNA alone cannot say which of these it is; documents decide. If the two '
+        print('DNA alone cannot settle a relationship; documents decide. If the two '
               'families married into each other more than once, people can share more DNA '
               'than these figures suggest.')
         if data.get('note'):

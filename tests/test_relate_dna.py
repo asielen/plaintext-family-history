@@ -192,7 +192,8 @@ class CmHelperTests(unittest.TestCase):
         self.assertEqual(_lib.parse_cm('1,234 cM'), 1234)
         self.assertEqual(_lib.parse_cm(' 450cm '), 450)
         self.assertEqual(_lib.parse_cm('72.5'), 72.5)
-        for bad in ('abc', '-3', '', None, 'nan', 'inf'):
+        self.assertEqual(_lib.parse_cm('12,345.5'), 12345.5)
+        for bad in ('abc', '-3', '', None, 'nan', 'inf', '1,2,3', '12,34'):
             self.assertIsNone(_lib.parse_cm(bad), bad)
 
     def test_table_rows_are_ordered(self):
@@ -210,13 +211,96 @@ class CmHelperTests(unittest.TestCase):
     def test_expected_lookup_orders_generations(self):
         self.assertEqual(_lib.expected_shared_cm(2, 1, False)['key'], 'aunt_uncle')
         self.assertEqual(_lib.expected_shared_cm(1, 2, False)['key'], 'aunt_uncle')
-        self.assertIsNone(_lib.expected_shared_cm(9, 9, False))
+        self.assertIsNone(_lib.expected_shared_cm(10, 10, False))
 
     def test_cm_fits_sorted_by_closeness(self):
         fits = _lib.cm_fits(450)
         gaps = [abs(f['average'] - 450) for f in fits]
         self.assertEqual(gaps, sorted(gaps))
         self.assertTrue(all(f['low'] <= 450 <= f['high'] for f in fits))
+
+
+def _table_without(*keys):
+    """The bundled table minus some rows: a tie the chart gives no figure for."""
+    t = dict(_lib.shared_cm_table())
+    t['rows'] = [r for r in t['rows'] if r['key'] not in keys]
+    return t
+
+
+class MissingRowTests(unittest.TestCase):
+    """A tie the chart has no figure for must not read as evidence against
+    it, and must not claim the two share little DNA."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.family = tr._build_family()
+
+    def _run_without(self, keys, a, b, cm=None):
+        from unittest import mock
+        with mock.patch.object(relate, 'shared_cm_table', return_value=_table_without(*keys)):
+            return _run(self.family, a, b, cm=cm)
+
+    def test_no_row_does_not_say_they_share_little(self):
+        res, _, out, _ = self._run_without(['first_cousin'], tr.A, tr.B)
+        self.assertEqual(res.data['dna']['expected'], [])
+        self.assertNotIn('little', out)
+        self.assertNotIn('distant', out)
+        self.assertIn('no figure', out)
+
+    def test_no_row_with_cm_is_unknown_not_a_misfit(self):
+        res, _, out, _ = self._run_without(['first_cousin'], tr.A, tr.B, cm='450')
+        self.assertIsNone(res.data['dna']['fits_recorded'])
+        self.assertIn('450 cM', out)
+        self.assertIn('half first cousins', out)
+        self.assertIn('Documents decide', out)
+
+    def test_maybe_half_with_half_row_missing_is_unknown(self):
+        res, _, out, _ = self._run_without(['half_sibling'], tr.A, tr.MAYBE, cm='1000')
+        self.assertIsNone(res.data['dna']['fits_recorded'])
+        self.assertIn('outside what full siblings usually share', out)
+        self.assertIn('no figure for the half form', out)
+
+    def test_maybe_half_with_half_row_missing_still_fits_full(self):
+        res, _, out, _ = self._run_without(['half_sibling'], tr.A, tr.MAYBE, cm='2600')
+        self.assertTrue(res.data['dna']['fits_recorded'])
+
+
+class ChartCoverageTests(unittest.TestCase):
+    """Rows read from the Shared cM Project 4.0 chart beyond the first 18."""
+
+    def test_more_chart_rows(self):
+        want = {(1, 4, False): (420, 186, 713), (1, 3, True): (431, 184, 668),
+                (1, 4, True): (208, 103, 284), (2, 3, True): (224, 62, 469),
+                (3, 3, True): (120, 10, 325), (2, 5, False): (117, 25, 238),
+                (9, 9, False): (11, 0, 42)}
+        for (n, f, h), figs in want.items():
+            row = _lib.expected_shared_cm(n, f, h)
+            self.assertIsNotNone(row, (n, f, h))
+            self.assertEqual((row['average'], row['low'], row['high']), figs, (n, f, h))
+
+    def test_chart_has_no_great_great_grandparent_figure(self):
+        self.assertIsNone(_lib.expected_shared_cm(0, 4, False))
+
+
+class FitsListTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.family = tr._build_family()
+
+    def test_also_fits_never_silently_cut(self):
+        res, _, out, _ = _run(self.family, tr.A, tr.B, cm='150')
+        fits = res.data['dna']['fits']
+        self.assertGreater(len(fits), 5)
+        self.assertIn(f'and {len(fits) - 5} more', out)
+        self.assertIn('fha relate --cm 150', out)
+
+    def test_lookup_one_fit_is_not_several(self):
+        bare = Path(tempfile.mkdtemp())
+        (bare / 'fha.yaml').write_text('roots:\n  documents: documents\n', encoding='utf-8')
+        res, _, out, _ = _run(bare, None, None, cm='3600')
+        self.assertEqual(len(res.data['fits']), 1)
+        self.assertNotIn('several', out)
+        self.assertIn('one relationship', out)
 
 
 if __name__ == '__main__':
