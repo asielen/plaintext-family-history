@@ -6275,12 +6275,15 @@ def _desc_is_birth(info: dict) -> bool:
 
 
 def _desc_marriage_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
-                         pid: str) -> list[str]:
+                         pid: str, hidden: set[str]) -> list[str]:
     """`Married Ann Price, 1838 [3]` for each spouse, earliest first. A living
-    spouse is the shared label with no date; a restricted one is left out."""
+    spouse is the shared label with no date; a restricted one, or one in
+    `hidden` (a living person's descendant), is left out."""
     ties = rp.ties(pid, 'spouse')
     lines = []
     for sp in sorted(ties, key=lambda s: (ties[s]['date'] is None, ties[s]['date'] or '', s)):
+        if sp in hidden:
+            continue
         state = tally.see(sp)
         if state == _PERSON_RESTRICTED:
             continue
@@ -6299,7 +6302,10 @@ def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
     """Everyone descended from a living (or not-known-dead) descendant of
     `root`. SPEC §21: a living person's own descendants are neither named nor
     counted, so these people stay off the page even when their other parent
-    is a cousin the report lists (cousins who married, one still living)."""
+    is a cousin the report lists (cousins who married, one still living).
+    `root` is never among them, nor reached through: a tie keyed backwards
+    (the subject recorded as his own descendant's child) must not empty the
+    report."""
     reached, living = {root}, set()
     frontier = [root]
     while frontier:
@@ -6319,7 +6325,7 @@ def _desc_below_living(rp: _ReportPrivacy, root: str) -> set[str]:
         following = []
         for pid in frontier:
             for c in _desc_children(rp, pid):
-                if c not in below:
+                if c not in below and c != root:
                     below.add(c)
                     following.append(c)
         frontier = following
@@ -6409,7 +6415,7 @@ def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[s
             out.append(f'{pad}- {number} {name}{mark}{years}'
                        f'{_cite_all(fn, set(tie_sources) | year_sources)}')
             inner = '  ' * depth
-            for line in _desc_marriage_lines(rp, fn, tally, pid):
+            for line in _desc_marriage_lines(rp, fn, tally, pid, hidden):
                 out.append(f'{inner}- {line}')
             listed, living_n = _desc_shown_children(rp, pid, hidden)
             if depth >= generations:

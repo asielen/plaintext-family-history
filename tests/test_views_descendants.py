@@ -328,6 +328,34 @@ class DescendantReviewFixTests(_TwoLinesBase):
         at = next(i for i, ln in enumerate(lines) if '1.1.2 Zed Hartley' in ln)
         self.assertFalse(lines[at + 1].startswith('      '), lines[at + 1])   # nothing under Zed
 
+    def _with(self, people, sources):
+        base_people, base_sources = self.people, self.sources
+        self.people = lambda: base_people() + people
+        self.sources = lambda: base_sources() + sources
+        self.tearDown()
+        self.setUp()
+
+    def test_a_tie_entered_backwards_does_not_empty_the_report(self):
+        # Thomas recorded by mistake as a child of his living daughter Lena:
+        # his descendants are still listed (he is not "a living person's
+        # descendant" on his own report).
+        self._with([], [('s-dsdsdsdsd8', 'Mistaken entry', 'A tie keyed backwards.',
+                         R._rel('bk', T, [CL]), '', None)])
+        nums = self.numbered(self.desc_text())
+        self.assertTrue(nums['1.1'].startswith('John Hartley Junior'), nums)
+        self.assertTrue(nums['1.1.1'].startswith('Anna Hartley'), nums)
+
+    def test_a_living_cousins_child_is_not_named_as_a_spouse_either(self):
+        QN = 'p-qnqnqnqnqn'
+        self._with([(QN, 'Quinn Hartley', 'M', 'false', '')],
+                   [('s-dsdsdsdsd7', 'Quinn baptism', 'Baptism of Quinn.',
+                     R._rel('qn', QN, [G2, CL])
+                     + R._claim('c-marrQY0000', 'marriage', [QN, YV], '1970',
+                                roles=f'{{spouse: [{QN}, {YV}]}}'), '', None)])
+        text = self.desc_text()
+        self.assertIn('Yvonne Hartley', text)
+        self.assertNotIn('Quinn', text)
+
     def test_a_repeated_entry_cites_its_own_parent_tie(self):
         text = self.desc_text()
         see = [ln for ln in text.splitlines() if 'Xavier Hartley (see' in ln]
