@@ -1521,14 +1521,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "7f59c33b6864c59bdc1fe8255722f8e5740f9ffb8617d7537c1bedd2c7795132",
+      "sha256": "34e93c3516e1553f45dbb0eba90587b26f44f131d980e1a52262415db9531dd1",
       "spec_version": "2.40",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "0e64d743b1885fd126e5f1d0b2004491b430cf6e5c1cf41b738e1893b8c0454e",
+      "sha256": "de8b062616d4e09306c2fd0df0735c52534e6cd17ae4935fb9c624329fe55461",
       "spec_version": "2.40",
       "src": "TOOLING.md"
     },

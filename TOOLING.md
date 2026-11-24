@@ -1240,7 +1240,7 @@ README.txt   ← manifest + "derived export, not research data" disclaimer + dat
 profile/     ← person .md (+ research file only with --include-research)
 timeline.md  ← freshly generated; unsettled claims kept and tagged (§7)
 sources/     ← every source record citing the person
-files/       ← those sources' files (original names)
+files/       ← those sources' files (original names; a recording only under §12 Recordings)
 photos/      ← all photos of the person
 ```
 

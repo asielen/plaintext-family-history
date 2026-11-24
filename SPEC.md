@@ -1028,7 +1028,7 @@ Generated output that leaves the archive falls into two categories with differen
 - DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in public output without an additional, independent non-DNA source establishing the same fact.
 
 **Scope (what "public output" covers):**
-- `fha site`: the static HTML snapshot.
+- `fha site`: the static HTML snapshot (not its `--linked` local preview).
 - Any other public-publication export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
 
 **Private export (`fha packet`), its own rules, per TOOLING §8:**
@@ -1206,4 +1206,4 @@ quotes:                                  # optional
 
 `speakers:` holds bare IDs, as `roles:` does (§8.7): everyone heard, interviewer included, and nobody who is only talked about (they belong on `people:`). Only a speaker the human has confirmed is written to it. A speaker ID that does not resolve to a readable person record counts as living. A merged-away ID is read as the person it was merged into (§9); a merged-away record marked `living: true` or restricted still holds the recording back.
 
-A quote is the speaker's own words exactly as the transcript gives them, at most forty words, with the `anchor` where they are said (§8.4). Public output shows a quote only when its speaker is on `speakers:`, is `living: false` and not restricted, the source may be shared, and its words name no living, unknown or restricted person; otherwise the quote is withheld whole, never shown under "Living Person". Unlike the recording, a quote does not need `recording_ok`.
+A quote is the speaker's own words exactly as the transcript gives them, at most forty words, with the `anchor` where they are said (§8.4). A quote that names or describes a living, unknown or restricted person is not written; tools do not read a quote's words, so this is for whoever drafts it and the owner to check. Public output shows a quote only when its speaker is on `speakers:`, is `living: false` and not restricted, and the source may be shared; otherwise the quote is withheld whole, never shown under "Living Person". Unlike the recording, a quote does not need `recording_ok`.
