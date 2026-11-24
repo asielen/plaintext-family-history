@@ -32,6 +32,7 @@ The archive's "on this day" column: a warm, plain way into the family's history.
    - "this week", "the next few days" → `fha calendar --week --json`
    - "this month", "in June", "anything in March?" → `fha calendar --json` (this month) or `fha calendar june --json`
    - a named day, "the 14th of June" → `fha calendar june 14 --json`
+   - a printable year, "a calendar for the kitchen wall" → `fha calendar --format html` writes a wall calendar (private: it names living relatives).
 
    Exit `2` means the words did not read as a day or month: the tool's message names the forms it takes. Translate it, or ask one plain question ("the 14th of which month?"). Exit `3` means there is no index yet: run `fha index`, then the calendar again.
 
