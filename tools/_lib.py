@@ -22822,6 +22822,37 @@ def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
     return None
 
 
+# What shows a claim's date was converted from the old calendar (lint W172):
+# an Old Style / O.S. / Julian marker, or a double year such as 1751/52.
+_OLD_STYLE_MARKER = re.compile(r'\bold[\s-]?style\b|\bjulian\b', re.IGNORECASE)
+# O.S. with its stop: a bare "OS" is as often Ordnance Survey.
+_OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
+_DOUBLE_YEAR = re.compile(r'\b1\d{3}/\d{1,2}\b')
+_WRITTEN_DAY = re.compile(
+    r'\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b'
+    r'|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b')
+
+
+def calendar_conversion_shown(claim: dict) -> bool:
+    """True when a claim shows its `date:` was converted from another
+    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian marker
+    or a double year (1751/52), or its `value` writes a day that differs from
+    `date:` (the record's own day beside the converted one, SPEC §11).
+    Structural only: no other wording in a note counts."""
+    value = str(claim.get('value') or '')
+    notes = str(claim.get('notes') or '')
+    for text in (value, notes):
+        if _OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text) \
+                or _DOUBLE_YEAR.search(text):
+            return True
+    date = str(claim.get('date') or '').strip()
+    for match in _WRITTEN_DAY.finditer(value):
+        written = normalize_date(match.group(0).replace(',', ' '))
+        if written and len(written) == 10 and written != date:
+            return True
+    return False
+
+
 def iso_plus_years(iso: str, years: int) -> str:
     """The same month and day `years` later, as an ISO day.
 

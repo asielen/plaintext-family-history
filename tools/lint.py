@@ -78,6 +78,7 @@ from _lib import (
     LIVING_CUTOFF_YEARS,              # W173: probably not living
     role_sex_conflicts,               # W171: a role word against `sex:`
     calendar_gap_of,                  # W172: a date inside a calendar gap
+    calendar_conversion_shown,        # W172: the claim shows it was converted
     PLAUSIBLE_MIN_PARENT_AGE,
     born_by_estimate,
     claim_date_range,
@@ -4975,8 +4976,9 @@ def _check_role_sex(
     against a recorded `sex: M` or `F`. Accepted and suggested claims (a
     mistake is cheapest to fix before accepting); disputed, rejected,
     superseded and negated ones are skipped. A merged record counts for its
-    survivor. One finding per person and claim, on the person's profile.
-    Report only."""
+    survivor. Someone with a `gender:` recorded is not compared: the role
+    words follow identity (SPEC A.7), and neither fix would be right. One
+    finding per person and claim, on the person's profile. Report only."""
     survivors = _registry_merge_survivors(registry)
     sex_by_pid = {pid: str(meta.get('sex') or '').strip()
                   for pid, meta in registry.person_meta.items()}
@@ -4991,7 +4993,7 @@ def _check_role_sex(
                 if pid in seen or str(meta.get('status', '')).strip().lower() == 'merged':
                     continue
                 recorded = sex_by_pid.get(pid, '')
-                if recorded not in ('M', 'F'):
+                if recorded not in ('M', 'F') or str(meta.get('gender') or '').strip():
                     continue
                 seen.add(pid)
                 male = recorded == 'M'
@@ -5023,9 +5025,13 @@ def _check_calendar_gaps(registry: Registry, findings: list[Finding]) -> None:
     is nearly always one of those copied in as it was written.
 
     A claim's `date:` is always today's (Gregorian) calendar (SPEC §11), so a
-    note on the claim does not quiet this: the date itself is what to fix,
-    and the message names `fha date convert` for it. A date that is only a
-    year or a month, or a range reaching outside the gap, is never read.
+    correctly converted old-style day can land in the gap too (25 August 1752
+    old style is 5 September 1752). A claim that shows it was converted is
+    left alone (`_lib.calendar_conversion_shown`: an Old Style / O.S. /
+    Julian marker or a double year in `value` or `notes`, or a `value` day
+    that differs from `date:`); any other note does not quiet it (owner,
+    2026-11-24). A date that is only a year or a month, or a range reaching
+    outside the gap, is never read.
     Accepted and suggested claims, not negated; filed on the source record.
     Report only."""
     for sid in sorted(registry.source_claims):
@@ -5035,18 +5041,18 @@ def _check_calendar_gaps(registry: Registry, findings: list[Finding]) -> None:
                 continue
             date = optional_scalar(claim.get('date'))
             gap = calendar_gap_of(date) if date else None
-            if gap is None or path is None:
+            if gap is None or path is None or calendar_conversion_shown(claim):
                 continue
             message = (
                 f'Claim {_claim_ref(registry, str(claim.get("id") or "?"))} gives the date '
                 f'{humanize_edtf(date)}, but {gap[2]}, so a record written there never '
                 f'carried that day. If this source is from those places, the date was '
                 f'probably written in the old (Julian) calendar and copied in as written. '
-                f"Keep the source's own words in value:, work out the day in today's "
+                f"Keep the record's own date in value:, work out the day in today's "
                 f'calendar with `fha date convert "{date}" --from julian`, and put that '
-                f'day in date:. If you already converted it from the old calendar, the '
-                f'date is right and this reminder can be left alone: a note does not '
-                f"silence it, because date: is always today's calendar.")
+                f'day in date:. If you already converted it, the date is fine: put the '
+                f"record's own date in value: (or write Old Style in notes:) and this "
+                f'reminder goes away.')
             findings.append(Finding('W', 'W172', Path(path), message))
 
 

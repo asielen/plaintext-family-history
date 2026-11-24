@@ -67,13 +67,13 @@ class _PlausibilityBase(unittest.TestCase):
 
     def _claim(self, cid: str, ctype: str, persons: list[str], *, date: str | None = None,
                roles: str = '', status: str = 'accepted', subtype: str | None = None,
-               extra: str = '') -> str:
+               extra: str = '', value: str | None = None) -> str:
         lines = [f'- id: {cid}', f'  type: {ctype}', f'  persons: [{", ".join(persons)}]']
         if roles:
             lines.append(f'  roles: {roles}')
         if subtype is not None:
             lines.append(f'  subtype: {subtype}')
-        lines.append(f'  value: "a {ctype}"')
+        lines.append(f'  value: "{value if value is not None else "a " + ctype}"')
         lines.append(f'  status: {status}')
         if status == 'accepted':
             lines.append('  reviewed: 2026-01-01')
@@ -484,11 +484,20 @@ class RoleSexAndCalendarTests(_PlausibilityBase):
         self._marriage(roles, status='rejected')
         self.assertEqual(self._codes('W171'), [])
 
-    def test_name_link_resolves_through_the_alias_map(self) -> None:
+    def test_labelled_id_link_resolves(self) -> None:
         self._person(self.ADA, 'Ada Hartley', sex='M')
         self._person(self.BEN, 'Ben Hartley', sex='M')
         self._marriage(f'{{bride: ["[[{self.ADA}|Ada]]"], groom: [{self.BEN}]}}')
         self.assertEqual(len(self._codes('W171')), 1)
+
+    def test_a_recorded_gender_is_not_second_guessed(self) -> None:
+        # SPEC A.7: `gender:` is identity beside a birth-assigned `sex:`. A
+        # man recorded `sex: F, gender: man` is rightly the husband on his
+        # marriage record; neither fix the message offers would be right.
+        self._person(self.ADA, 'Ada Hartley', sex='F', extra='gender: man\n')
+        self._person(self.BEN, 'Ben Hartley', sex='F')
+        self._marriage(f'{{husband: [{self.ADA}], wife: [{self.BEN}]}}')
+        self.assertEqual(self._codes('W171'), [])
 
     def test_other_words_are_not_read(self) -> None:
         self._person(self.ADA, 'Ada Hartley', sex='M')
@@ -496,10 +505,12 @@ class RoleSexAndCalendarTests(_PlausibilityBase):
         self._marriage(f'{{sister: [{self.ADA}], witness: [{self.BEN}]}}')
         self.assertEqual(self._codes('W171'), [])
 
-    def _dated(self, date: str, *, status: str = 'accepted', extra: str = '') -> None:
+    def _dated(self, date: str, *, status: str = 'accepted', extra: str = '',
+               value: str | None = None) -> None:
         self._person(self.ADA, 'Ada Hartley')
         self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA],
-                                          date=date, status=status, extra=extra))
+                                          date=date, status=status, extra=extra,
+                                          value=value))
 
     def test_1752_gap_day_fires_and_points_to_fha_date(self) -> None:
         self._dated('1752-09-05')
@@ -535,10 +546,37 @@ class RoleSexAndCalendarTests(_PlausibilityBase):
                 self._dated(day)
                 self.assertEqual(self._codes('W172'), [])
 
-    def test_a_note_does_not_quiet_it(self) -> None:
-        # D10: a claim's `date:` is always today's calendar, so a note about
-        # the old calendar cannot make a gap day right.
-        self._dated('1752-09-05', extra='  notes: "Old Style date as written"\n')
+    def test_a_date_copied_straight_from_the_record_fires(self) -> None:
+        self._dated('1752-09-07', value='7 Sep 1752')
+        self.assertEqual(len(self._codes('W172')), 1)
+
+    def test_a_converted_date_with_the_old_day_in_value_is_silent(self) -> None:
+        # 25 August 1752 old style is 5 September 1752 today: date: holds the
+        # converted day, value: the record's own (owner, 2026-11-24).
+        self._dated('1752-09-05', value='25 Aug 1752')
+        self.assertEqual(self._codes('W172'), [])
+
+    def test_a_converted_1582_date_is_silent(self) -> None:
+        self._dated('1582-10-10', value='baptized 30 September 1582')
+        self.assertEqual(self._codes('W172'), [])
+
+    def test_an_old_style_marker_or_double_year_is_silent(self) -> None:
+        cases = (
+            ('value', '5 Sep 1752 O.S.'),
+            ('notes', 'Old Style date converted with fha date convert'),
+            ('notes', 'converted from the Julian calendar'),
+            ('value', '5 Sept 1752/53'),
+        )
+        for field, text in cases:
+            with self.subTest(text=text):
+                if field == 'value':
+                    self._dated('1752-09-05', value=text)
+                else:
+                    self._dated('1752-09-05', extra=f'  notes: "{text}"\n')
+                self.assertEqual(self._codes('W172'), [])
+
+    def test_an_unrelated_note_does_not_quiet_it(self) -> None:
+        self._dated('1752-09-05', extra='  notes: "faded ink"\n')
         self.assertEqual(len(self._codes('W172')), 1)
 
 
