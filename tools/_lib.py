@@ -9882,6 +9882,68 @@ def unsaved_image_checker(archive_root: Path, fha_config: dict):
     return image_unsaved
 
 
+# ── how much DNA relatives share (shared_cm.json) ───────────────────────────
+# A DNA match page says "450 cM"; he wants to know what that could mean.
+# tools/shared_cm.json holds The Shared cM Project 4.0 (Blaine T. Bettinger,
+# CC BY 4.0): typical and usual-range centimorgans per relationship. `fha
+# relate` reads it for its DNA line and `--cm`. It is a lookup of published
+# ranges that overlap; nothing here turns a number into a probability.
+
+SHARED_CM_PATH = Path(__file__).resolve().parent / 'shared_cm.json'
+
+_shared_cm_cache: dict | None = None
+
+
+def shared_cm_table(path: Path | None = None) -> dict:
+    """The shared-cM table ({'credit', 'rows', ...}), read once. A missing or
+    unreadable file gives {} so the caller can say to run `fha update-tools`
+    instead of failing."""
+    global _shared_cm_cache
+    if path is None and _shared_cm_cache is not None:
+        return _shared_cm_cache
+    try:
+        data = json.loads((path or SHARED_CM_PATH).read_text(encoding='utf-8'))
+    except (OSError, ValueError):
+        data = {}
+    if not (isinstance(data, dict) and isinstance(data.get('rows'), list)):
+        data = {}
+    if path is None:
+        _shared_cm_cache = data
+    return data
+
+
+def expected_shared_cm(gens_a: int, gens_b: int, half: bool, table: dict | None = None) -> dict | None:
+    """The table row for a blood tie `gens_a` and `gens_b` generations below
+    the common ancestor (an aunt and her niece are the same row either way
+    round), or None when the chart lists no figure for it."""
+    near, far = sorted((gens_a, gens_b))
+    for row in (table if table is not None else shared_cm_table()).get('rows') or []:
+        if (row['near'], row['far'], bool(row['half'])) == (near, far, bool(half)):
+            return row
+    return None
+
+
+def cm_fits(cm: float, table: dict | None = None) -> list[dict]:
+    """Every row whose usual range holds `cm`, the typical amount nearest
+    first (ties by key, so every run lists them the same way)."""
+    rows = (table if table is not None else shared_cm_table()).get('rows') or []
+    return sorted((r for r in rows if r['low'] <= cm <= r['high']),
+                  key=lambda r: (abs(r['average'] - cm), r['key']))
+
+
+def parse_cm(text) -> float | None:
+    """A centimorgan figure as a person types it ("450", "1,234 cM", " 72.5cm
+    "), or None when it is not a plain non-negative number."""
+    if not isinstance(text, str):
+        return None
+    s = re.sub(r'\s*cm\s*$', '', text.strip(), flags=re.I).strip()
+    # Commas only as thousands separators, so a mistyped "1,2,3" is refused
+    # rather than read as 123.
+    if not re.fullmatch(r'(\d{1,3}(,\d{3})+|\d+)(\.\d+)?', s):
+        return None
+    return float(s.replace(',', ''))
+
+
 # ── one record set on several sites (record_collections.json) ───────────────
 # The same record set often sits on several sites under different collection
 # numbers: the 1850 US census is Ancestry collection 8054 and FamilySearch
