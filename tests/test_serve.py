@@ -760,6 +760,41 @@ class ApiRunTests(_ServeCase):
         self.assertIn('place_text: Manhattan, Kansas', text)
 
 
+class ConfirmSearchVerbTests(_ServeCase):
+    """The "Nothing found" button on the person page logs the search through
+    `confirm.search`, previewed first, with the CLI command echoed."""
+
+    ARGS = {'person_id': 'p-de957bcda1', 'repository': 'Ancestry',
+            'terms': 'Thomas Hartley, born about 1840, New York', 'result': 'nil'}
+
+    def test_no_dry_run_field_is_a_preview_and_writes_nothing(self):
+        before = _tree_hash(self.root)
+        body = json.dumps({'verb': 'confirm.search', 'args': self.ARGS})
+        s, d, _h = self.req('POST', '/api/run', body=body,
+                            headers={'Content-Type': 'application/json',
+                                     'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertEqual(_tree_hash(self.root), before)
+        self.assertIn('- date:', ' '.join(m['text'] for m in json.loads(d)['messages']))
+
+    def test_apply_appends_echoes_the_command_and_the_page_says_searched(self):
+        s, d, _h = self.post_run('confirm.search', self.ARGS, False)
+        self.assertEqual(s, 200)
+        payload = json.loads(d)
+        self.assertTrue(payload['ok'], payload)
+        self.assertEqual(
+            payload['cli_echo'],
+            'fha confirm search p-de957bcda1 --repository "Ancestry" '
+            '--terms "Thomas Hartley, born about 1840, New York" --result nil')
+        log = (self.root / 'notes' / 'research-log.md').read_text(encoding='utf-8')
+        self.assertIn('  repository: Ancestry\n  terms: "Thomas Hartley, born about 1840, New York"\n'
+                      '  result: nil\n', log)
+        s, d, _h = self.req('GET', '/persons/p-de957bcda1.html')
+        txt = d.decode('utf-8')
+        today = __import__('datetime').date.today().isoformat()
+        self.assertIn(f'searched {today}: nothing found', txt)
+
+
 class DuplicateNameMintTests(_ServeCase):
     """The workbench's person.new mint asks about a name that already has
     a record (issue #282) instead of failing opaquely, and "Create a
@@ -2591,6 +2626,128 @@ class DeathAcceptMarksNotLivingTests(_ServeCase):
         self.assertTrue(any(f'fha person set-living {self.ALEX.lower()} unknown' in w
                             for w in warnings), payload['messages'])
         self.assertEqual(self._living_in_index(), 'false')
+
+
+class RememberedDecisionsTests(_ServeCase):
+    """03 PR5: the Review page lists the pairs the archive remembers (not
+    connected, not the same person) and offers Undo for each, through the same
+    preview-then-confirm /api/run path as every other workbench write."""
+
+    def two_people(self):
+        import sqlite3
+        conn = sqlite3.connect(str(self.root / '.cache' / 'index.sqlite'))
+        try:
+            rows = conn.execute('SELECT id FROM persons ORDER BY id LIMIT 2').fetchall()
+        finally:
+            conn.close()
+        return serve.fmt_id_display(rows[0][0]), serve.fmt_id_display(rows[1][0])
+
+    def dismissed_path(self):
+        return self.root / 'notes' / 'cooccur_dismissed.json'
+
+    def test_undismiss_verb_registered(self):
+        v = serve.VERBS['confirm.undismiss']
+        self.assertEqual(v['schema'], {'person_a': 'str', 'person_b': 'str',
+                                       'not_same_person': 'bool'})
+        self.assertEqual(v['reindex'], 'none')
+        self.assertEqual(serve.VERBS['confirm.dismiss']['schema'].get('not_same_person'), 'bool')
+
+    def test_echoes(self):
+        self.assertEqual(serve._echo_dismiss({'person_a': 'p-a', 'person_b': 'p-b'}),
+                         'fha confirm dismiss p-a p-b')
+        self.assertEqual(
+            serve._echo_dismiss({'person_a': 'p-a', 'person_b': 'p-b', 'not_same_person': True}),
+            'fha confirm dismiss p-a p-b --not-same-person')
+        self.assertEqual(serve._echo_undismiss({'person_a': 'p-a', 'person_b': 'p-b'}),
+                         'fha confirm undismiss p-a p-b')
+        self.assertEqual(
+            serve._echo_undismiss({'person_a': 'p-a', 'person_b': 'p-b', 'not_same_person': True}),
+            'fha confirm undismiss p-a p-b --not-same-person')
+
+    def test_dismiss_not_same_person_through_api_is_dated(self):
+        a, b = self.two_people()
+        s, d, _h = self.post_run('confirm.dismiss',
+                                 {'person_a': a, 'person_b': b, 'not_same_person': True}, False)
+        self.assertEqual(s, 200, d)
+        listed = serve.confirm.run_list_dismissed(self.root).data
+        self.assertEqual(len(listed['not_same_person']), 1)
+        self.assertEqual(listed['not_connected'], [])
+
+    def test_undismiss_preview_writes_nothing_then_live_removes_it(self):
+        a, b = self.two_people()
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b)
+        before = self.dismissed_path().read_bytes()
+        args = {'person_a': a, 'person_b': b}
+        s, d, _h = self.post_run('confirm.undismiss', args, True)
+        self.assertEqual(s, 200, d)
+        self.assertEqual(self.dismissed_path().read_bytes(), before)
+        body = json.dumps({'verb': 'confirm.undismiss', 'args': args})  # no dry_run key
+        s, _d, _h = self.req('POST', '/api/run', body=body,
+                             headers={'Content-Type': 'application/json',
+                                      'X-FHA-CSRF': self.state.csrf_token})
+        self.assertEqual(s, 200)
+        self.assertEqual(self.dismissed_path().read_bytes(), before)
+        s, d, _h = self.post_run('confirm.undismiss', args, False, csrf=False)
+        self.assertEqual(s, 403)
+        self.assertEqual(self.dismissed_path().read_bytes(), before)
+        s, d, _h = self.post_run('confirm.undismiss', args, False)
+        self.assertEqual(s, 200, d)
+        self.assertEqual(json.loads(d)['cli_echo'], f'fha confirm undismiss {a} {b}')
+        self.assertEqual(serve.confirm.run_list_dismissed(self.root).data['not_connected'], [])
+
+    def test_undismiss_not_same_person_leaves_the_other_list_alone(self):
+        a, b = self.two_people()
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b)
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b, not_same_person=True)
+        s, d, _h = self.post_run('confirm.undismiss',
+                                 {'person_a': a, 'person_b': b, 'not_same_person': True}, False)
+        self.assertEqual(s, 200, d)
+        listed = serve.confirm.run_list_dismissed(self.root).data
+        self.assertEqual(listed['not_same_person'], [])
+        self.assertEqual(len(listed['not_connected']), 1)
+
+    def test_gather_review_carries_remembered_without_changing_the_count(self):
+        a, b = self.two_people()
+        before = serve.gather_review(self.state)
+        self.assertEqual(before['remembered'], {'not_connected': [], 'not_same_person': []})
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b)
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b, not_same_person=True)
+        after = serve.gather_review(self.state)
+        self.assertEqual(len(after['remembered']['not_connected']), 1)
+        self.assertEqual(len(after['remembered']['not_same_person']), 1)
+        # Remembered pairs never add to the queue.
+        self.assertLessEqual(len(after['items']), len(before['items']))
+
+    def test_review_page_shows_remembered_block_with_undo(self):
+        s, d, _h = self.req('GET', '/review')
+        self.assertEqual(s, 200)
+        self.assertNotIn('wb-remembered', d.decode('utf-8'))
+        a, b = self.two_people()
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b)
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=b, not_same_person=True)
+        s, d, _h = self.req('GET', '/review')
+        txt = d.decode('utf-8')
+        self.assertIn('wb-remembered', txt)
+        self.assertIn('Remembered decisions (2)', txt)
+        self.assertIn('Not the same person', txt)
+        self.assertEqual(txt.count('data-wb-verb="confirm.undismiss"'), 2)
+        self.assertIn('"not_same_person": true', txt)
+
+    def test_deleted_person_shows_without_a_dead_link_and_undo_still_works(self):
+        # A pair whose person record was since deleted: he sees the id, not a
+        # link to a "Not found" page, and Undo still takes the pair back.
+        a, _b = self.two_people()
+        gone = 'p-zzzzzzzzzz'
+        serve.confirm.run_dismiss(self.root, person_a=a, person_b=gone)
+        s, d, _h = self.req('GET', '/review')
+        self.assertEqual(s, 200)
+        txt = d.decode('utf-8')
+        self.assertIn(gone, txt)
+        self.assertNotIn(f'/persons/{gone}.html', txt)
+        self.assertIn(f'/persons/{a.lower()}.html', txt)
+        s, d, _h = self.post_run('confirm.undismiss', {'person_a': a, 'person_b': gone}, False)
+        self.assertEqual(s, 200, d)
+        self.assertEqual(serve.confirm.run_list_dismissed(self.root).data['not_connected'], [])
 
 
 if __name__ == '__main__':

@@ -54,6 +54,7 @@ import datetime
 import difflib
 import fnmatch
 import hashlib
+import heapq
 import html
 import json
 import math
@@ -483,7 +484,8 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    kin_relationship          - one person as seen from an anchor: {words, note, kind, path}
 #
 #  Possible duplicate people (fha report §4b): one person entered twice, scored
-#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_NAME_RATIO: thresholds
+#    DUPLICATE_*_POINTS, DUPLICATE_DATE_SLACK_YEARS, DUPLICATE_DAY_SLACK_DAYS,
+#    DUPLICATE_NAME_RATIO: thresholds
 #    person_vital_window       : a birth or death as a year window (baptism stands in)
 #    possible_duplicate_people : ranked pairs with plain reasons; hard stops drop a pair
 #
@@ -735,6 +737,81 @@ def is_genetic_parent_subtype(subtype: Any) -> bool:
     foster, guardian, surrogate-gestational, social). An unset or
     unrecognised subtype defaults to genetic (SPEC §12.2)."""
     return str(subtype or '').strip().lower() not in SOCIAL_PARENT_SUBTYPES
+
+
+# How strongly a tie is proven, so a chart can show which part of his tree
+# rests on a family story (TOOLING §7 `line_confidence`). Claim confidence
+# words (SPEC §8.5), weakest first; anything else is "not rated".
+CONFIDENCE_RANK: dict[str, int] = {'low': 1, 'medium': 2, 'high': 3}
+_CONFIDENCE_WORD = {rank: word for word, rank in CONFIDENCE_RANK.items()}
+_UNRATED = 4    # above 'high': an unrated tie never weakens a line
+
+
+def stronger_confidence(a: str | None, b: str | None) -> str | None:
+    """The better of two confidence words. A tie told in a family story and
+    shown on a certificate is as strong as the certificate. None, or a word
+    outside the scale, is not rated and loses to any word."""
+    ra, rb = CONFIDENCE_RANK.get(a or ''), CONFIDENCE_RANK.get(b or '')
+    if ra is None:
+        return b if rb is not None else None
+    if rb is None or ra >= rb:
+        return a
+    return b
+
+
+def weaker_confidence(a: str | None, b: str | None) -> str | None:
+    """The weaker of two ties along one line. An unrated tie (None) says
+    nothing about strength, so it never weakens: the rated one is the
+    answer, or None when neither is rated."""
+    ra = CONFIDENCE_RANK.get(a or '', _UNRATED)
+    rb = CONFIDENCE_RANK.get(b or '', _UNRATED)
+    return _CONFIDENCE_WORD.get(min(ra, rb))
+
+
+def line_confidence(seed: str, edges) -> dict[str, str | None]:
+    """For each person reachable from `seed`, the weakest rated parent or
+    child tie on their strongest route from the seed: 'low' | 'medium' |
+    'high', or None when no rated tie lies on that route (the seed itself, or
+    only unrated ties). This is what lets a chart fade everything above
+    Great-grandpa Thomas when his own parents rest on one family story.
+
+    `edges` is an iterable of (a, b, type, confidence) with type in
+    {'parent', 'child', 'spouse'} (any other type is ignored). Parent and
+    child ties are rated by their confidence (None = unrated); spouse ties are
+    never rated, so an in-law takes the line of the person they married.
+    Undirected: a child reached through a weak tie is as weak as an ancestor
+    reached through one. People the seed cannot reach are not in the result.
+
+    Widest-path search: a route is worth its weakest tie and the best route
+    counts. Best value first, so each person is settled once. The idea is
+    topola's propagateConfidence (https://github.com/PeWu/topola,
+    src/confidence.ts, Apache-2.0); this is a fresh implementation.
+    Deterministic: ties between equal values go by person id, and the result
+    is sorted by person id."""
+    adjacency: dict[str, list[tuple[str, int]]] = {}
+    for a, b, etype, conf in edges:
+        if etype == 'spouse':
+            weight = _UNRATED
+        elif etype in ('parent', 'child'):
+            weight = CONFIDENCE_RANK.get(conf or '', _UNRATED)
+        else:
+            continue
+        adjacency.setdefault(a, []).append((b, weight))
+        adjacency.setdefault(b, []).append((a, weight))
+    best: dict[str, int] = {seed: _UNRATED}
+    settled: set[str] = set()
+    heap: list[tuple[int, str]] = [(-_UNRATED, seed)]
+    while heap:
+        neg, node = heapq.heappop(heap)
+        if node in settled:
+            continue
+        settled.add(node)
+        for nxt, weight in adjacency.get(node, ()):
+            value = min(-neg, weight)
+            if nxt not in settled and value > best.get(nxt, 0):
+                best[nxt] = value
+                heapq.heappush(heap, (-value, nxt))
+    return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:
@@ -10210,35 +10287,60 @@ def _search_url_chroniclingamerica(s: dict) -> str:
     death is on file (upstream searched only the birth year then, which can
     never find a marriage notice or an obituary)."""
     p = {'dl': 'page', 'ops': 'AND', 'searchType': 'advanced', 'qs': _rs_name(s)}
+    start, end = _rs_years_chroniclingamerica(s)
+    if start is not None:
+        p['start_date'], p['end_date'] = f'{start}-01-01', f'{end}-12-31'
+    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+
+
+def _rs_years_chroniclingamerica(s: dict) -> tuple:
+    """(first year, last year) the Chronicling America link searches, or
+    (None, None)."""
     birth, death = s.get('birth_year'), s.get('death_year')
     if birth:
-        p['start_date'] = f'{birth}-01-01'
-    elif death:
-        p['start_date'] = f'{death - 90}-01-01'
-    if death or birth:
-        p['end_date'] = f'{death or birth + 90}-12-31'
-    return _rs_url('https://www.loc.gov/collections/chronicling-america/', p)
+        return birth, (death or birth + 90)
+    if death:
+        return death - 90, death
+    return None, None
 
 
 def _search_url_newspapers(s: dict) -> str:
     """Newspapers.com reads `keyword` and `date-start`/`date-end` (checked by
     hand 2026-11-23; upstream's `query`/`year-start` now drop the years)."""
     p = {'keyword': _rs_name(s)}
-    birth, death = s.get('birth_year'), s.get('death_year')
-    if birth:
-        start, end = birth - 5, (death + 5 if death else birth + 90)
-    elif death:
-        start, end = death - 90, death + 5
-    else:
-        start = end = None
+    start, end = _rs_years_newspapers(s)
     if start and end:
         p['date-start'], p['date-end'] = start, end
     return _rs_url('https://www.newspapers.com/search/results/', p)
 
 
+def _rs_years_newspapers(s: dict) -> tuple:
+    """(first year, last year) the Newspapers.com link searches, or (None, None)."""
+    birth, death = s.get('birth_year'), s.get('death_year')
+    if birth:
+        return birth - 5, (death + 5 if death else birth + 90)
+    if death:
+        return death - 90, death + 5
+    return None, None
+
+
 def _search_url_geneteka(s: dict) -> str | None:
     """Geneteka cannot search without a province, so no province in any place
     text means no link (never a guess)."""
+    found = _rs_geneteka_province(s)
+    if not found:
+        return None
+    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': found[0],
+         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
+    if s.get('birth_year'):
+        # The registration may fall in the year after the birth.
+        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
+    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+
+
+def _rs_geneteka_province(s: dict) -> tuple | None:
+    """(code, name) of the Geneteka province named in the subject's place
+    texts, or None."""
     text = ' '.join(str(x) for x in (s.get('places') or ()))
     words = re.findall(r'[\w-]+', fold_accents(re.sub('[‐-―]', '-', text)).lower())
 
@@ -10255,16 +10357,8 @@ def _search_url_geneteka(s: dict) -> str | None:
             forms = (province, province + 'i')
         return word in forms
 
-    province = next((code for code, name in _GENETEKA_PROVINCES
-                     if any(names(w, fold_accents(name).lower()) for w in words)), None)
-    if not province:
-        return None
-    p = {'op': 'gt', 'lang': 'eng', 'bdm': 'B', 'rid': 'B', 'w': province,
-         'search_lastname': s.get('surname'), 'search_name': s.get('given')}
-    if s.get('birth_year'):
-        # The registration may fall in the year after the birth.
-        p['from_date'], p['to_date'] = s['birth_year'], s['birth_year'] + 1
-    return _rs_url('https://geneteka.genealodzy.pl/index.php', p)
+    return next(((code, name) for code, name in _GENETEKA_PROVINCES
+                 if any(names(w, fold_accents(name).lower()) for w in words)), None)
 
 
 def _search_url_ukdiscovery(s: dict) -> str:
@@ -10305,6 +10399,56 @@ RESEARCH_SITES: tuple = (
     {'key': 'ukdiscovery', 'label': 'The National Archives (UK)', 'group': 'Archives',
      'note': 'free catalogue; some records to buy', 'build': _search_url_ukdiscovery},
 )
+
+
+def research_search_terms(subject: dict, site_key: str = '') -> str:
+    """What that website's link searched, in words, for the research log:
+    "Thomas Hartley, born about 1840, New York; father Caleb Hartley; ...".
+    Each site's link sends different things (a newspaper search only the
+    name and a span of years, FamilySearch also the parents and spouse), and
+    a "nothing found" is only worth what was really searched, so the words
+    follow the link of `site_key` field for field. Only what the subject
+    carries, so a living person's entry is the name alone."""
+    s = subject
+    full = site_key in ('familysearch', 'ancestry', 'myheritage', '')
+
+    def event(word: str, year, place) -> str:
+        if not year:            # a bare place would not say which event it was
+            return f'{word} in {place}' if place else ''
+        return ', '.join([f'{word} about {year}'] + ([str(place)] if place else []))
+
+    def who(prefix: str) -> str:
+        return ' '.join(x for x in (s.get(f'{prefix}_given'), s.get(f'{prefix}_surname')) if x)
+
+    surname = s.get('surname')
+    if site_key in ('findagrave', 'billiongraves'):      # graves are marked with her married name
+        surname = s.get('married_surname') or surname
+    parts = [' '.join(x for x in (s.get('given'), surname) if x)]
+    if full:
+        parts += [event('born', s.get('birth_year'), s.get('birth_place')),
+                  event('died', s.get('death_year'), s.get('death_place'))]
+        parts += [f'{rel} {who(rel)}' if who(rel) else '' for rel in ('father', 'mother')]
+        parts.append(', '.join(x for x in (
+            f'spouse {who("spouse")}' if who('spouse') else '',
+            event('married', s.get('marriage_year'), s.get('marriage_place'))) if x))
+    elif site_key in ('findmypast', 'findagrave', 'billiongraves'):
+        parts += [event('born', s.get('birth_year'), None),
+                  event('died', s.get('death_year'), None)]
+    elif site_key in ('chroniclingamerica', 'newspapers'):
+        start, end = (_rs_years_chroniclingamerica(s) if site_key == 'chroniclingamerica'
+                      else _rs_years_newspapers(s))
+        if start is not None:
+            parts.append(f'newspapers {start} to {end}')
+    elif site_key == 'geneteka':
+        if s.get('birth_year'):
+            parts.append(f"baptisms {s['birth_year']} to {s['birth_year'] + 1}")
+        province = _rs_geneteka_province(s)
+        if province:
+            parts.append(f'province {province[1]}')
+    parts = [p for p in parts if p]
+    if full and len(parts) > 1:
+        return parts[0] + ', ' + '; '.join(parts[1:])
+    return ', '.join(parts)
 
 
 def research_search_links(subject: dict) -> list[dict]:
@@ -16852,6 +16996,230 @@ def update_path_manifest(
     write_path_manifest(manifest_path, manifest)
 
 
+# ── The research log writer (SPEC §17c) ───────────────────────────────────────
+# One writer for `notes/research-log.md`, shared by `fha capture` (a capture is
+# itself a logged search) and `fha confirm search` (the workbench's "nothing
+# found" button), so both write the same entry shape and keep the index in step.
+
+SEARCH_LOG_DDL = """CREATE TABLE IF NOT EXISTS search_log(
+  date TEXT, person_id TEXT, question TEXT, repository TEXT, collection TEXT,
+  years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT
+)"""
+
+
+RESEARCH_LOG_HEADER = (
+    '# Research log\n'
+    '\n'
+    'Every search run, by hand or by `fha capture`, one entry per search, so no '
+    'collection is searched twice by accident.\n'
+)
+
+
+def research_log_path(archive_root: Path) -> Path:
+    """The one search log (SPEC §17c): `notes/research-log.md`."""
+    return Path(archive_root) / 'notes' / 'research-log.md'
+
+
+def research_log_value(value: str, *, quote: bool) -> str:
+    """One research-log field value on one line.
+
+    The index reads each field as the text after `field:` with one layer of
+    matching quotes stripped, so a free-text value (a page title, a
+    collection) is wrapped in double quotes and any double quote inside it
+    becomes a single one - a title like `Say "hi": a page` then reads back
+    whole. Line breaks fold to spaces: one field is one line.
+    """
+    v = ' '.join(str(value or '').split())
+    if quote or v[:1] in ('"', "'") or ': ' in v or ' #' in v:
+        return '"' + v.replace('"', "'") + '"'
+    return v
+
+
+def render_research_log_entry(*, date: str, question: str, repository: str,
+                              collection: str = '', terms: str = '', result: str,
+                              years: str = '') -> str:
+    """One SPEC §17c entry: a list item, its other fields indented below it.
+
+    `collection`, `years` and `terms` are left out when not given; `date`,
+    `question`, `repository` and `result` are always written.
+    """
+    lines = [f'- date: {date}',
+             f'  question: {research_log_value(question, quote=True)}',
+             f'  repository: {research_log_value(repository, quote=False)}']
+    if (collection or '').strip():
+        lines.append(f'  collection: {research_log_value(collection, quote=True)}')
+    if (years or '').strip():
+        lines.append(f'  years: {research_log_value(years, quote=False)}')
+    if (terms or '').strip():
+        lines.append(f'  terms: {research_log_value(terms, quote=True)}')
+    lines.append(f'  result: {result}')
+    return '\n'.join(lines) + '\n'
+
+
+def append_research_log_entry(
+    archive_root: Path,
+    *,
+    date: str,
+    question: str,
+    repository: str,
+    collection: str = '',
+    terms: str = '',
+    result: str,
+    years: str = '',
+    person_id: str | None = None,
+    require_log: bool = False,
+) -> str:
+    """Record one search in the research log (SPEC §17c).
+
+    For the owner: a search he ran, or the capture add-on ran for him, is
+    written down once, so the next session can say "already searched" instead
+    of repeating it. The entry is appended to `notes/research-log.md` - the one
+    search log, the same file hand searches go in - creating the file with a
+    short purpose line when it is absent. That file is the durable record:
+    `fha index` rebuilds `search_log` from it every time, and it lives under
+    notes/ so backups and git keep it.
+
+    When `.cache/index.sqlite` already exists, the row is *also* written
+    straight into its `search_log` table (`person_id` is whatever the caller
+    resolved, None for a capture's stub; `source_id` is null) so `fha report`
+    sees it at once, without waiting for the next rebuild. Returns 'index' or
+    'log' for the caller's status line (favoring 'index' when both succeed),
+    'none' when neither landed; a logging failure is reported but never fails
+    the caller. With `require_log` (a search he files himself), a failed append
+    to the file writes no index row either and returns 'none': an index row
+    alone would say "logged" and then vanish at the next `fha index`.
+    """
+    archive_root = Path(archive_root)
+    db_path = archive_root / '.cache' / 'index.sqlite'
+    log_path = research_log_path(archive_root)
+    log_rel = str(log_path.relative_to(archive_root))   # the index's own path form
+
+    # Was the index up to date with the log BEFORE this write touched it?
+    # Only then may the write mark the log as read afterwards: an entry
+    # typed by hand or synced in from another machine must keep the index
+    # stale until `fha index` replays it (#304 review).
+    log_was_indexed = db_path.exists() and research_log_is_indexed(archive_root, log_path)
+
+    entry = render_research_log_entry(
+        date=date, question=question, repository=repository,
+        collection=collection, terms=terms, result=result, years=years)
+    log_ok = False
+    try:
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        # A file last saved by hand or by a git merge may not end in a
+        # newline; appending straight on would glue this entry onto the last
+        # one and the index would read neither (#304 review). Entries are
+        # kept apart by a blank line.
+        try:
+            size = log_path.stat().st_size
+        except FileNotFoundError:
+            size = None
+        if size is None:
+            prefix = RESEARCH_LOG_HEADER + '\n'
+        elif size == 0:
+            prefix = ''
+        else:
+            with open(log_path, 'rb') as tail:
+                tail.seek(-1, os.SEEK_END)
+                prefix = '\n' if tail.read(1) == b'\n' else '\n\n'
+        with open(log_path, 'a', encoding='utf-8', newline='') as f:
+            f.write(prefix + entry)
+        log_ok = True
+    except OSError as e:
+        print(f'WARNING: could not write {log_rel}: {e}', file=sys.stderr)
+        if require_log:
+            return 'none'
+
+    if db_path.exists():
+        try:
+            conn = sqlite3.connect(str(db_path))
+            try:
+                conn.execute(SEARCH_LOG_DDL)
+                conn.execute(
+                    """INSERT INTO search_log
+                       (date, person_id, question, repository, collection, years,
+                        terms, result, source_id, path)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (date, person_id, question, repository, collection,
+                     (years or None), terms, result, None, log_rel),
+                )
+                if log_ok:
+                    refresh_research_log_text(conn, log_path, log_rel)
+                conn.commit()
+            finally:
+                conn.close()
+            # The research log is a freshness input (an index that has not
+            # read it is missing searches). This write just put its own row
+            # in the index, so record the log as read - otherwise every
+            # logged search would make `fha doctor` call a correct index stale.
+            if log_ok and log_was_indexed:
+                mark_research_log_indexed(archive_root, log_path)
+            return 'index'
+        except Exception as e:  # noqa: BLE001
+            print(f'WARNING: could not write search_log row ({e})'
+                  + (' (still logged in the research log)' if log_ok else ''),
+                  file=sys.stderr)
+
+    return 'log' if log_ok else 'none'
+
+
+def refresh_research_log_text(conn: sqlite3.Connection, log_path: Path, log_rel: str) -> None:
+    """Keep `fha find --text` in step: the research log is a note, and the
+    index holds its text in `notes_fts`. Replaced whole, as a rebuild would.
+    An index without that table (an old or partial one) is left alone."""
+    try:
+        content = log_path.read_text(encoding='utf-8')
+        conn.execute('DELETE FROM notes_fts WHERE path=?', (log_rel,))
+        conn.execute('INSERT INTO notes_fts(path, content) VALUES (?,?)', (log_rel, content))
+    except (sqlite3.Error, OSError, UnicodeDecodeError):
+        pass
+
+
+def _research_log_rel(path: Path, archive_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(Path(archive_root).resolve()).as_posix()
+    except (ValueError, OSError):
+        return path.as_posix()
+
+
+def research_log_is_indexed(archive_root: Path, log_path: Path) -> bool:
+    """True when the index's stored manifest records the research log exactly
+    as it is on disk now (same mtime, or absent on both sides) - i.e. every
+    entry in it is already in `search_log`. A missing or unreadable manifest
+    is False: nothing proves the index read the log."""
+    stored = read_path_manifest(index_manifest_path(archive_root))
+    if stored is None:
+        return False
+    try:
+        current = log_path.stat().st_mtime
+    except OSError:
+        current = None
+    return stored.get(_research_log_rel(log_path, archive_root)) == current
+
+
+def mark_research_log_indexed(archive_root: Path, log_path: Path) -> None:
+    """Patch the index's path manifest for the research log this run just wrote.
+
+    `fha index` lists every notes/ file among the ones it read, so a log
+    changed behind its back reads as stale. A write that also put its row
+    straight into `search_log` has kept the index exactly as current as the
+    file, the same contract `index.upsert_source` keeps for one source.
+    Called only when `research_log_is_indexed` held before the append - so the
+    one new entry is the caller's own, never a hand-typed or synced one the
+    index has not seen. Best effort: a failure here only costs one "run fha
+    index" suggestion.
+    """
+    try:
+        mtime = log_path.stat().st_mtime
+    except OSError:
+        mtime = None
+    try:
+        update_path_manifest(index_manifest_path(archive_root),
+                             {_research_log_rel(log_path, archive_root): mtime})
+    except Exception:  # noqa: BLE001 - never fail a write over cache bookkeeping
+        pass
+
+
 def manifest_diff(
     stored: dict[str, float] | None, current: dict[str, float],
 ) -> dict[str, list[str]]:
@@ -20235,6 +20603,15 @@ def marriage_answer(graph: KinshipGraph, a: str, b: str, *,
 def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
                      life: Callable[[str], Any] | None = None) -> dict | None:
     """`marriage_answer` for a pair already known to share no blood line."""
+    ranked = _marriage_ranked(graph, a, b, life=life)
+    return ranked[4] if ranked else None
+
+
+def _marriage_ranked(graph: KinshipGraph, a: str, b: str, *,
+                     life: Callable[[str], Any] | None = None) -> tuple | None:
+    """The winning tie by marriage with its rank, (cost, rank, gens, via,
+    answer), or None. `kinship_relatives` sorts by the cost, so a spouse's
+    parents come before a spouse's cousins in the reunion list."""
     if a == b:
         return None
     lifeof = _kin_life_reader(life)
@@ -20438,7 +20815,7 @@ def _marriage_answer(graph: KinshipGraph, a: str, b: str, *,
 
     if not cands:
         return None
-    return min(cands, key=lambda c: c[:4])[4]
+    return min(cands, key=lambda c: c[:4])
 
 
 def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
@@ -20449,6 +20826,104 @@ def kinship_answer(graph: KinshipGraph, a: str, b: str, *,
     blood = blood_answer(graph, a, b)
     by_marriage = None if blood else _marriage_answer(graph, a, b, life=life)
     return {'blood': blood, 'by_marriage': by_marriage}
+
+
+def kinship_relatives(graph: KinshipGraph, pid: str, *,
+                      life: Callable[[str], Any] | None = None,
+                      skip: set[str] | frozenset[str] = frozenset()) -> list[dict]:
+    """Everyone the recorded tree ties to `pid`, as a list for a reunion:
+    blood relatives first (nearest first), then everyone related by
+    marriage or a step, adoptive or foster tie. Each row is {pid, name, kind
+    ('blood' or 'by-marriage'), relationship (what the person is to `pid`),
+    half (False, True, None), half_relationship, certain (False for a step
+    tie the dates cannot settle), hedge, gens_a, gens_b (None for a tie by
+    marriage), note, double, routes (`blood_answer`'s own keys, so the list
+    says double, may-be-half and every route as the pair answer does)}.
+
+    Candidates are gathered from the graph and each goes through
+    `blood_answer` / `marriage_answer`, so every word is the one `fha
+    relate` gives for the same pair. `skip` leaves people out of the output
+    only (a merged-away record); the graph is not changed."""
+    def descendants(roots: Iterable[str]) -> set[str]:
+        seen: set[str] = set()
+        stack = list(roots)
+        while stack:
+            cur = stack.pop()
+            if cur in seen:
+                continue
+            seen.add(cur)
+            stack.extend(graph.genetic_children(cur))
+        return seen
+
+    def blood_kin(p: str) -> set[str]:
+        return descendants(graph.ancestors(p)) - {p}
+
+    def name_of(p: str) -> str:
+        return graph.people.get(p, {}).get('name') or p
+
+    blood_rows: list[dict] = []
+    blood_ids: set[str] = set()
+    for x in sorted(blood_kin(pid)):
+        ans = blood_answer(graph, x, pid)
+        if not ans:
+            continue
+        blood_ids.add(x)
+        blood_rows.append({
+            'pid': x, 'name': name_of(x), 'kind': 'blood',
+            'relationship': ans['relationship'], 'half': ans['half'],
+            'half_relationship': ans['half_relationship'], 'certain': True,
+            'hedge': None, 'gens_a': ans['gens_a'], 'gens_b': ans['gens_b'],
+            'note': ans['note'], 'double': ans['double'], 'routes': ans['routes']})
+    blood_rows.sort(key=lambda r: (max(r['gens_a'], r['gens_b']),
+                                   r['gens_a'] + r['gens_b'],
+                                   r['name'].casefold(), r['pid']))
+
+    # Who could be tied by marriage: spouses of his blood relatives, his own
+    # spouses and their blood relatives (and those relatives' spouses), his
+    # parents of any kind and their other children, anyone with a step,
+    # adoptive or foster tie to him or his parents, and step-siblings.
+    cands: set[str] = set()
+    for y in blood_ids | {pid}:
+        cands |= set(graph.spouses.get(y, {}))
+    for s in graph.spouses.get(pid, {}):
+        cands.add(s)
+        kin = blood_kin(s)
+        cands |= kin
+        for y in kin:
+            cands |= set(graph.spouses.get(y, {}))
+    parents = set(graph.genetic_parents.get(pid, ())) | set(graph.other_parents.get(pid, {}))
+    cands |= parents
+    for par in parents:
+        cands |= graph.genetic_children(par)
+    for child, ties_to in graph.other_parents.items():
+        if pid in ties_to or parents & set(ties_to):
+            cands.add(child)
+    for par in graph.genetic_parents.get(pid, ()):
+        for q in graph.spouses.get(par, {}):
+            cands |= graph.genetic_children(q)
+    cands -= blood_ids | {pid}
+
+    # Nearest tie first, by the cost `fha relate` itself ranks ties with (a
+    # spouse or recorded tie 1, a spouse's parent 2, a spouse's first cousin
+    # 5), then a spouse before another tie of that cost, then name and P-id.
+    ties: list[tuple] = []
+    for y in cands:
+        if blood_answer(graph, y, pid):
+            continue
+        ranked = _marriage_ranked(graph, y, pid, life=life)
+        if ranked:
+            ans = ranked[4]
+            ties.append((ranked[0], ans['kind'] != 'spouse',
+                         name_of(y).casefold(), y, ans))
+    ties.sort(key=lambda t: t[:4])
+    marriage_rows = [{
+        'pid': y, 'name': name_of(y), 'kind': 'by-marriage',
+        'relationship': ans['relationship'], 'half': False,
+        'half_relationship': None, 'certain': ans['certain'],
+        'hedge': ans['hedge'], 'gens_a': None, 'gens_b': None,
+        'note': None, 'double': False, 'routes': []}
+        for _, _, _, y, ans in ties]
+    return [r for r in blood_rows + marriage_rows if r['pid'] not in skip]
 
 
 def person_life_dates(conn: sqlite3.Connection, pid: str,
@@ -21239,6 +21714,195 @@ def _provisional_year(edtf: Any) -> int | None:
         return None
     lo, hi = edtf_bounds(str(edtf))
     return _claim_year(lo, hi, edtf)[0]
+
+
+# A guessed birth year for someone born after this could be about a person who
+# is still alive, which the privacy rules keep close (SPEC §19). No suggestion
+# is ever offered for a range that ends later.
+BIRTH_SUGGESTION_LATEST_YEAR = 1935
+# A range wider than this is too vague to help a researcher.
+BIRTH_SUGGESTION_MAX_WIDTH = 35
+
+
+def _relative_birth_window(ctx: dict, pid: str) -> dict | None:
+    """When a relative was born, for working out someone else's birth, as
+    {'lo', 'hi', 'event'}: the span their accepted birth claims allow, so a
+    husband recorded as born `1840/1860` counts as 1840 to 1860, never as an
+    exact 1850. With no dated birth claim, an accepted baptism says only that
+    they were born by then (an adult baptism says little of age), so `lo` is
+    None. Never a suggested claim or a provisional `birth:` estimate, which
+    may be a guess this very report offered yesterday: a guess is never built
+    on another guess."""
+    births = [c for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('birth',))
+              if c['y_lo'] is not None and c['y_hi'] is not None]
+    if births:
+        # "1840~" reads back as "about 1840" and "1840?" as "in 1840
+        # (uncertain)", not "between 1839 and 1841" as if records gave a range.
+        dates = {c['date'] for c in births}
+        m = re.fullmatch(r'(\d{4})([~?%])', next(iter(dates))) if len(dates) == 1 else None
+        about = None
+        if m:
+            about = (f'in {m.group(1)} (uncertain)' if m.group(2) == '?'
+                     else f'about {m.group(1)}')
+        return {'lo': min(c['y_lo'] for c in births),
+                'hi': max(c['y_hi'] for c in births), 'event': 'birth', 'about': about}
+    baptisms = [c['y_hi'] for _cid, c in _own_vital_claims(ctx, pid, ('accepted',), ('baptism',))
+                if c['y_hi'] is not None]
+    if baptisms:
+        return {'lo': None, 'hi': min(baptisms), 'event': 'baptism'}
+    return None
+
+
+def _genetic_kin(conn: sqlite3.Connection, pid: str, rel: str) -> list[str]:
+    """A person's genetic parents (`rel='parent'`) or children (`'child'`) by
+    accepted relationship, read from the person's own rows so the lookup
+    uses the index. Step, adoptive and other social parents are left out: a
+    stepmother's age says nothing about when her stepson was born."""
+    social = sorted(SOCIAL_PARENT_SUBTYPES)
+    marks = ','.join('?' * len(social))
+    out: list[str] = []
+    for r in conn.execute(
+            'SELECT r.other_id FROM relationships r WHERE r.person_id = ? AND r.rel = ? '
+            "AND COALESCE(LOWER((SELECT subtype FROM claims WHERE id = r.claim_id)), '') "
+            f'NOT IN ({marks}) ORDER BY r.other_id', (pid, rel, *social)):
+        other = normalize_id(str(r[0]))
+        if other != pid and other not in out:
+            out.append(other)
+    return out
+
+
+def suggest_birth_range(ctx: dict, conn: sqlite3.Connection, pid: str) -> dict | None:
+    """A range of years a person was probably born, worked out from the births
+    of their parents, children, spouses and brothers and sisters, or None.
+
+    For the person with no birth date at all, the briefing can say "her
+    husband was born in 1840 and her eldest child in 1871, so she was probably
+    born between 1832 and 1848" and hand over the one command that notes it as
+    a starting guess. It is a suggestion, never a source, and nobody who might
+    be alive is ever estimated.
+
+    Offsets are the rules of thumb in genealogy-mcp's `estimate.py` (MIT),
+    widened for fathers. Each basis gives a range for this person's birth year
+    and the answer is their intersection. A relative's birth is a span (see
+    `_relative_birth_window`), and each offset is applied to its ends:
+
+      mother born M         -> M+18 .. M+45     father (or unknown) F -> F+18 .. F+50
+      eldest child C        -> C-45 .. C-18  (a father: C-50 .. C-18)
+      each spouse S         -> S-8 .. S+8
+      full siblings, as one -> earliest-8 .. latest+8
+
+    A sibling with a different recorded father or mother is left out: a
+    half-sister from a second marriage can be twenty years younger. The person's own
+    accepted records cap the range: someone in an 1880 census, or who died in
+    1866, was born by then (kind `record` in the basis when it narrows).
+
+    None when: the person has a dated birth reading (accepted or suggested
+    birth or baptism claim, or a provisional `birth:`), is `living: true`, is
+    merged or unnamed, no relative has an accepted birth, the range has no
+    earliest year, the bases disagree (an empty intersection is a lint
+    matter, not a guess to offer), the range is wider than
+    BIRTH_SUGGESTION_MAX_WIDTH years, or ends after BIRTH_SUGGESTION_LATEST_YEAR.
+
+    Returns {'person', 'lo', 'hi', 'edtf', 'basis': [{'kind', 'relative',
+    'year', 'year_to', 'event'}]} with kind one of mother, father, parent,
+    child, spouse, siblings, record. `year`..`year_to` is the relative's span
+    (`year` None when only a baptism dates them: born by `year_to`);
+    `relative` is a list of p-ids for siblings, None for record.
+    """
+    pid = normalize_id(str(pid))
+    person = ctx['persons'].get(pid)
+    if (person is None or (person.get('living') or '') == 'true'
+            or is_placeholder_name(person.get('name'))):
+        return None
+    if person.get('birth') or any(
+            c['y_lo'] is not None or c['y_hi'] is not None
+            for _cid, c in _own_vital_claims(
+                ctx, pid, ('accepted', 'suggested'), ('birth', 'baptism'))):
+        return None
+
+    def known(ids: list[str]) -> list[str]:
+        return [i for i in ids if i in ctx['persons'] and i != pid]
+
+    parents = known(_genetic_kin(conn, pid, 'parent'))
+    children = known(_genetic_kin(conn, pid, 'child'))
+    spouses = known([normalize_id(str(r[0])) for r in conn.execute(
+        "SELECT DISTINCT other_id FROM relationships WHERE person_id = ? "
+        "AND rel = 'spouse' ORDER BY other_id", (pid,))])
+    # A half-brother or half-sister has a parent the person does not, while
+    # the person has one they do not (Pa's daughter by a second wife). A
+    # parent recorded on one side only (her mother not entered yet) rules
+    # nobody out: that is the commonest stub, not a half-sibling. Sex is not
+    # consulted, so a parent with no recorded sex still counts.
+    siblings: list[str] = []
+    own_parents = set(parents)
+    for parent in parents:
+        for sib in known(_genetic_kin(conn, parent, 'child')):
+            if sib in siblings or sib in own_parents:
+                continue
+            sib_parents = set(_genetic_kin(conn, sib, 'parent'))
+            if own_parents <= sib_parents or sib_parents <= own_parents:
+                siblings.append(sib)
+
+    def sex_of(rid: str) -> str:
+        return str(ctx['persons'][rid].get('sex') or '').upper()
+
+    def basis(kind: str, rid: Any, w: dict) -> dict:
+        return {'kind': kind, 'relative': rid, 'year': w['lo'], 'year_to': w['hi'],
+                'event': w['event'], 'about': w.get('about')}
+
+    def shift(year: int | None, by: int) -> int | None:
+        return None if year is None else year + by
+
+    bases: list[dict] = []
+    ranges: list[tuple[int | None, int]] = []
+    for rid in parents:
+        w = _relative_birth_window(ctx, rid)
+        if w is None:
+            continue
+        mother = sex_of(rid) == 'F'
+        kind = 'mother' if mother else ('father' if sex_of(rid) == 'M' else 'parent')
+        bases.append(basis(kind, rid, w))
+        ranges.append((shift(w['lo'], 18), w['hi'] + (45 if mother else 50)))
+    kids = sorted((w['hi'], rid, w) for rid in children
+                  if (w := _relative_birth_window(ctx, rid)) is not None)
+    if kids:
+        _y, rid, w = kids[0]
+        bases.append(basis('child', rid, w))
+        ranges.append((shift(w['lo'], -(50 if sex_of(pid) == 'M' else 45)), w['hi'] - 18))
+    for rid in spouses:
+        w = _relative_birth_window(ctx, rid)
+        if w is not None:
+            bases.append(basis('spouse', rid, w))
+            ranges.append((shift(w['lo'], -8), w['hi'] + 8))
+    sibs = [(rid, w) for rid in siblings if (w := _relative_birth_window(ctx, rid)) is not None]
+    if sibs:
+        sibs.sort(key=lambda t: (t[1]['hi'], t[0]))
+        los = [w['lo'] for _r, w in sibs]
+        # A baptism-only sibling gives no earliest year of his own; the
+        # others' births still do.
+        known_los = [y for y in los if y is not None]
+        earliest = min(known_los) if known_los else None
+        latest = max(w['hi'] for _r, w in sibs)
+        events = {w['event'] for _r, w in sibs}
+        bases.append({'kind': 'siblings', 'relative': [r for r, _w in sibs],
+                      'year': earliest, 'year_to': latest,
+                      'event': events.pop() if len(events) == 1 else 'mixed'})
+        ranges.append((shift(earliest, -8), latest + 8))
+    lows = [lo for lo, _hi in ranges if lo is not None]
+    if not lows:
+        return None
+    lo = max(lows)
+    hi = min(h for _lo, h in ranges)
+    # Born by the first year any of the person's own accepted records allows.
+    own_years = [c['y_hi'] for _cid, c in _counted_claims(ctx, pid, ('accepted',))
+                 if c['y_hi'] is not None]
+    if own_years and min(own_years) < hi:
+        hi = min(own_years)
+        bases.append({'kind': 'record', 'relative': None, 'year': hi, 'year_to': hi,
+                      'event': 'record'})
+    if lo > hi or hi - lo > BIRTH_SUGGESTION_MAX_WIDTH or hi > BIRTH_SUGGESTION_LATEST_YEAR:
+        return None
+    return {'person': pid, 'lo': lo, 'hi': hi, 'edtf': f'{lo}/{hi}', 'basis': bases}
 
 
 def _check_birth(ctx: dict, pid: str, statuses: tuple[str, ...]) -> dict:
@@ -22339,6 +23003,144 @@ def _duplicate_name_match(fa: list[dict], fb: list[dict], ratio) -> tuple[int, s
     return best
 
 
+def _duplicate_claim_dicts(ctx: dict, statuses: tuple[str, ...]) -> dict[str, dict]:
+    """The index's claims as the raw claim dicts the date rules read
+    (`plausibility_input_from_claims`), keyed by claim id: `persons:` and
+    `roles:` rebuilt from `claim_people`, so the rules decide whose birth or
+    marriage each one is exactly as they do for `fha lint`."""
+    out: dict[str, dict] = {}
+    for cid, c in ctx['claims'].items():
+        if c['status'] not in statuses or c['negated']:
+            continue
+        pairs = ctx['claim_people'].get(cid, [])
+        roles: dict[str, list[str]] = {}
+        for pid, role in pairs:
+            if role:
+                roles.setdefault(role, []).append(pid)
+        out[cid] = {'id': cid, 'type': c['type'], 'subtype': c['subtype'],
+                    'status': c['status'], 'date': c['date'],
+                    'persons': list(dict.fromkeys(p for p, _r in pairs)),
+                    'roles': roles}
+    return out
+
+
+DUPLICATE_DAY_SLACK_DAYS = 90   # how far two registers' days may disagree
+
+
+def _widened_plausibility_input(data: PlausibilityInput, *,
+                                vitals_too: bool = False) -> PlausibilityInput:
+    """The same input with every date known to the day or month widened by
+    DUPLICATE_DAY_SLACK_DAYS each way.
+
+    Two records of one person usually come from two sources, and two sources
+    disagree by days: a civil birth on the 10th and a baptism "on the 8th",
+    a death and a burial typed two days apart. Read at face value those say
+    "cannot be one person" and would hide a real duplicate he then never
+    merges. A date known only to the year is already a whole year wide and
+    is left alone, so a wife dead in 1880 and a husband remarried in 1881
+    (two events, not one typed twice) still cannot be one woman. The known
+    end of an open date ("died by 10 March 1880") is widened too.
+
+    `vitals_too` also widens every birth, baptism, death and burial known
+    only to the year: two copies of one event (a death index giving the
+    year registered, 1881, and a burial register 1880) are read that way.
+    A widened start never passes `0001-01-01`, the archive's floor."""
+    def shift(iso: str, days: int) -> str:
+        try:
+            moved = datetime.date.fromisoformat(iso) + datetime.timedelta(days=days)
+        except (ValueError, OverflowError):
+            return _EDTF_FLOOR if days < 0 else _EDTF_CEILING
+        return moved.isoformat()
+
+    def widen(c: DatedClaim) -> DatedClaim:
+        if c.lo is None or c.hi is None:
+            return dataclasses.replace(
+                c, lo=None if c.lo is None else shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                hi=None if c.hi is None else shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
+        try:
+            span = _iso_day_number(c.hi) - _iso_day_number(c.lo)
+        except ValueError:
+            return c
+        if span >= 300 and not (vitals_too and c.ctype in _PLAUSIBILITY_VITAL_TYPES):
+            return c
+        return dataclasses.replace(c, lo=shift(c.lo, -DUPLICATE_DAY_SLACK_DAYS),
+                                   hi=shift(c.hi, DUPLICATE_DAY_SLACK_DAYS))
+
+    out = PlausibilityInput(sex=dict(data.sex), parent_edges=data.parent_edges)
+    out.facts = {pid: {t: merge_fact_range([widen(c) for c in fr.claims])
+                       for t, fr in by_type.items()}
+                 for pid, by_type in data.facts.items()}
+    out.life_events = {pid: [widen(c) for c in cs] for pid, cs in data.life_events.items()}
+    out.marriages = [(widen(c), couple) for c, couple in data.marriages]
+    return out
+
+
+def _merge_makes_impossible(ctx: dict, claims: dict[str, dict], a: str, b: str,
+                            kin: set[str], statuses: tuple[str, ...],
+                            kin_vitals: dict[str, list[str]]) -> bool:
+    """Would reading records a and b as one person give that person dates
+    that cannot all be true? A widower's two wives of one name: the first
+    died in 1880, the second married him in 1885, so one woman would marry
+    after her own death.
+
+    The question goes to the same rules `fha lint` runs (W163 to W170), over
+    every claim naming the two people plus the births, baptisms, deaths and
+    burials of their parents, children and spouses (`kin`), first as they
+    stand and then with b read as a. Hiding a pair hides a real duplicate if
+    the answer is wrong, so only a clear clash counts:
+
+    - dates known to the day or month are widened by a few months before
+      the joined reading, so two sources a few days apart never count, and
+      a clash only among one person's own birth, baptism, death and burial
+      must also survive their year-only dates widened (one death, two
+      registers);
+    - a problem the records already have apart does not count, and neither
+      does any new one built on a claim already in such a problem: a death
+      typed before the birth on one record is lint's to report there, not
+      a reason the other record cannot be her.
+
+    `kin_vitals` caches each relative's own vital claims across pairs, so a
+    father of hundreds is read once, not once per child pair."""
+    wanted = {a, b} | kin
+    picked = list(dict.fromkeys(
+        cid for pid in (a, b)
+        for cid in ctx['person_claims'].get(pid, ()) if cid in claims))
+    for pid in sorted(kin):
+        if pid not in kin_vitals:
+            kin_vitals[pid] = [cid for cid, _c in _own_vital_claims(
+                ctx, pid, statuses, _PLAUSIBILITY_VITAL_TYPES) if cid in claims]
+        picked.extend(cid for cid in kin_vitals[pid] if cid not in picked)
+    picked_claims = [claims[cid] for cid in picked]
+    persons = {pid: ctx['persons'].get(pid) or {} for pid in wanted}
+
+    def problems(data: PlausibilityInput) -> list[PlausibilityProblem]:
+        return one_person_problems(data) + family_problems(data)
+
+    apart = problems(plausibility_input_from_claims(
+        picked_claims, persons, None, {}, statuses=statuses))
+    before = {(pr.kind, tuple(a if p == b else p for p in pr.pids)) for pr in apart}
+    tainted = {dc.claim_id for pr in apart for side in pr.claims for dc in side}
+    joined_raw = plausibility_input_from_claims(
+        picked_claims, persons, None, {b: a}, statuses=statuses)
+    # A clash among one person's own birth, baptism, death and burial may
+    # be one event written twice (a death index's 1881, a burial register's
+    # 1880), so it must also hold with year-only dates widened. A clash with
+    # a marriage, a census or a child's birth is two events.
+    loose = {(pr.kind, pr.pids) for pr in problems(
+        _widened_plausibility_input(joined_raw, vitals_too=True))}
+
+    def counts(pr: PlausibilityProblem) -> bool:
+        claims_in = [dc for side in pr.claims for dc in side]
+        if (pr.kind, pr.pids) in before or any(dc.claim_id in tainted for dc in claims_in):
+            return False
+        if (len(set(pr.pids)) == 1
+                and all(dc.ctype in _PLAUSIBILITY_VITAL_TYPES for dc in claims_in)):
+            return (pr.kind, pr.pids) in loose
+        return True
+
+    return any(counts(pr) for pr in problems(_widened_plausibility_input(joined_raw)))
+
+
 def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                               not_same: set) -> dict:
     """Pairs of people who look like one person entered twice, best first.
@@ -22349,7 +23151,11 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
     are counted so the report can say how many it is keeping quiet about.
 
     Returns `{'pairs': [{'person_a', 'person_b', 'name_a', 'name_b', 'points',
-    'strength', 'reasons'}], 'dismissed_hidden': int}`, `person_a` the lower id.
+    'strength', 'reasons'}], 'dismissed_hidden': int, 'impossible_hidden': int}`,
+    `person_a` the lower id. A pair whose records, read as one person, would
+    give that person dates that cannot all be true (`_merge_makes_impossible`,
+    the rules `fha lint` runs) is never offered for a merge: it is counted in
+    `impossible_hidden` instead.
 
     Speed on a big imported tree (thousands of people): people are compared
     only within a block that shares the first letters of the given name and
@@ -22491,9 +23297,13 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
             return ('text:' + place_text, label)
         return None
 
+    claim_dicts: dict[str, dict] | None = None   # built when the first pair needs it
+    kin_vitals: dict[str, list[str]] = {}          # each relative's own vitals, read once
+
     seen_pairs: set[tuple[str, str]] = set()
     kept: list[dict] = []
     hidden = 0
+    impossible = 0
     for members in blocks.values():
         for i, pa in enumerate(members):
             for pb in members[i + 1:]:
@@ -22566,6 +23376,19 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 if frozenset(pair) in not_same:
                     hidden += 1
                     continue
+                # Two records that cannot be one person are never offered
+                # for a merge. Last, as the slowest check: only the few
+                # pairs that got this far need it.
+                if claim_dicts is None:
+                    claim_dicts = _duplicate_claim_dicts(ctx, statuses)
+                kin: set[str] = set()
+                for pid in pair:
+                    kin |= parents.get(pid, set()) | children.get(pid, set())
+                    kin |= spouses.get(pid, set())
+                if _merge_makes_impossible(ctx, claim_dicts, a, b, kin - {a, b}, statuses,
+                                           kin_vitals):
+                    impossible += 1
+                    continue
                 kept.append({
                     'person_a': a, 'person_b': b,
                     'name_a': name_of(a), 'name_b': name_of(b),
@@ -22575,7 +23398,7 @@ def possible_duplicate_people(conn: sqlite3.Connection, ctx: dict,
                 })
     kept.sort(key=lambda p: (-p['points'], p['name_a'], p['name_b'],
                              p['person_a'], p['person_b']))
-    return {'pairs': kept, 'dismissed_hidden': hidden}
+    return {'pairs': kept, 'dismissed_hidden': hidden, 'impossible_hidden': impossible}
 
 
 # ── Dates that cannot all be true (fha lint W163+; TOOLING §3) ───────────────
@@ -22773,6 +23596,119 @@ def claim_date_range(claim: dict) -> tuple[str | None, str | None] | None:
         if plain_hi != _EDTF_CEILING:
             hi_known = max(hi_known, f'{min(int(plain_hi[:4]) + 1, 9998):04d}-12-31')
     return (lo_known, hi_known)
+
+
+# Role words that name a sex (lint W171): the six SPEC §8.3 kin synonyms
+# plus the words marriage and death records add. Closed on purpose: `sister`,
+# `grandmother` and the rest would catch more, but it is a list that never
+# ends, and each extra word is another way to fire on a correct record.
+SEX_IMPLYING_ROLES: dict[str, str] = {
+    'mother': 'F', 'wife': 'F', 'daughter': 'F', 'bride': 'F', 'widow': 'F',
+    'father': 'M', 'husband': 'M', 'son': 'M', 'groom': 'M',
+    'bridegroom': 'M', 'widower': 'M',
+}
+
+
+def role_sex_conflicts(
+    claim: dict, sex_by_pid: dict[str, str], alias_map: dict[str, str] | None = None,
+) -> list[tuple[str, str, str]]:
+    """`(pid, role word, implied sex)` for each person a claim calls by a word
+    that implies the other sex than the one recorded for them.
+
+    The role is read as written (lower-cased), never folded through
+    `role_meaning`: `wife` must stay `wife`, not become `spouse`. Only a
+    recorded `M` or `F` is compared; `intersex`, `unknown` and a missing
+    `sex:` never conflict (W120 asks for a missing one)."""
+    found: list[tuple[str, str, str]] = []
+    for pid, role in resolve_claim_persons_with_roles(claim, alias_map):
+        word = clean_role_word(role).lower()
+        implied = SEX_IMPLYING_ROLES.get(word)
+        recorded = sex_by_pid.get(pid, '')
+        if implied and recorded in ('M', 'F') and recorded != implied \
+                and (pid, word, implied) not in found:
+            found.append((pid, word, implied))
+    return found
+
+
+# The days a calendar change skipped (lint W172): (first, last, who and when).
+CALENDAR_GAPS: tuple[tuple[str, str, str], ...] = (
+    ('1582-10-05', '1582-10-14',
+     'Catholic Europe (Spain, Portugal, the Italian states, Poland) moved to '
+     'the new calendar and skipped 5 to 14 October 1582'),
+    ('1752-09-03', '1752-09-13',
+     'Great Britain and its colonies, America included, moved to the new '
+     'calendar and skipped 3 to 13 September 1752'),
+)
+
+
+def calendar_gap_of(date: str | None) -> tuple[str, str, str] | None:
+    """The calendar gap a date lies wholly inside, or None. A year, a month or
+    a range that reaches outside the gap is never inside it."""
+    span = claim_date_range({'date': date})
+    if span is None or span[0] is None or span[1] is None:
+        return None
+    for gap in CALENDAR_GAPS:
+        if gap[0] <= span[0] and span[1] <= gap[1]:
+            return gap
+    return None
+
+
+# What shows a claim's date was converted from the old calendar (lint W172):
+# an Old Style / O.S. / Julian marker, or a double year such as 1751/52.
+# "Julian" counts only as the calendar ("Julian calendar", "(Julian)"), never
+# as a first name.
+_OLD_STYLE_MARKER = re.compile(
+    r'\bold[\s-]?style\b'
+    r'|\bjulian[\s-]*(?:calendar|date|style|reckoning)\b'
+    r'|\(\s*julian\s*\)', re.IGNORECASE)
+# O.S. with its stop: a bare "OS" is as often Ordnance Survey.
+_OLD_STYLE_ABBREV = re.compile(r'\bO\.\s?S\b')
+# 1751/52 or 1751/2, not a reference such as 11/1234/56 or 1752/09/05.
+_DOUBLE_YEAR = re.compile(r'(?<![\d/])(1\d{3})/(\d{1,2})(?![\d/])')
+_WRITTEN_DAY = re.compile(
+    r'\b\d{1,2}(?:st|nd|rd|th)?\s+[A-Za-z]{3,9}\.?,?\s+\d{4}\b'
+    r'|\b[A-Za-z]{3,9}\.?\s+\d{1,2}(?:st|nd|rd|th)?,?\s+\d{4}\b')
+
+
+def _has_double_year(text: str) -> bool:
+    for match in _DOUBLE_YEAR.finditer(text):
+        after = match.group(2)
+        if (int(match.group(1)) + 1) % (10 ** len(after)) == int(after):
+            return True
+    return False
+
+
+def calendar_conversion_shown(claim: dict) -> bool:
+    """True when a claim shows its gap `date:` was converted from the old
+    calendar: its `value` or `notes` carry an Old Style / O.S. / Julian
+    marker or a double year (1751/52), or its `value` writes the old-calendar
+    day that converts to `date:` (25 Aug 1752 beside 1752-09-05; the record's
+    own day beside the converted one, SPEC §11). Structural only: no other
+    wording counts, and another day in `value` (a baptism after a birth, the
+    banns before a marriage) does not."""
+    value = str(claim.get('value') or '')
+    notes = str(claim.get('notes') or '')
+    for text in (value, notes):
+        if (_OLD_STYLE_MARKER.search(text) or _OLD_STYLE_ABBREV.search(text)
+                or _has_double_year(text)):
+            return True
+    date = optional_scalar(claim.get('date')) or ''
+    gap = calendar_gap_of(date)
+    if gap is None or len(date) != 10:
+        return False
+    try:
+        target = datetime.date.fromisoformat(date)
+        shift = (datetime.date.fromisoformat(gap[1])
+                 - datetime.date.fromisoformat(gap[0])).days + 1
+        for match in _WRITTEN_DAY.finditer(value):
+            written = normalize_date(match.group(0).replace(',', ' '))
+            if (written and len(written) == 10
+                    and datetime.date.fromisoformat(written)
+                    + datetime.timedelta(days=shift) == target):
+                return True
+    except ValueError:
+        return False
+    return False
 
 
 def iso_plus_years(iso: str, years: int) -> str:
@@ -24190,6 +25126,37 @@ def family_calendar_week(
             conn, month=day.month, day=day.day, statuses=statuses,
             this_year=day.year))
     return events
+
+
+def family_calendar_year(
+    conn: sqlite3.Connection, year: int, statuses: tuple[str, ...] = ('accepted',),
+) -> list[dict]:
+    """A whole year of family events for a printed wall calendar: twelve
+    `{month, days: {day: [events]}, month_only: [events]}` entries, January
+    first.
+
+    Only dates recorded to the month or day are placed, as `family_calendar_events`
+    says; a year alone never appears. An event known only to its month goes in
+    `month_only`, so the calendar can list it under the grid instead of
+    guessing a day. In a year with no 29 February, a 29 February event moves
+    to the 28th and carries `leap_moved: True`, so the page can say so beside
+    the name. Privacy is the caller's, as for `family_calendar_events`."""
+    months = []
+    for month in range(1, 13):
+        days: dict[int, list[dict]] = {}
+        month_only: list[dict] = []
+        for ev in family_calendar_events(conn, month=month, statuses=statuses,
+                                         this_year=year):
+            if ev['day'] is None:
+                month_only.append(ev)
+                continue
+            day = ev['day']
+            if month == 2 and day == 29 and not calendar.isleap(year):
+                day = 28
+                ev = {**ev, 'leap_moved': True}
+            days.setdefault(day, []).append(ev)
+        months.append({'month': month, 'days': days, 'month_only': month_only})
+    return months
 
 
 def calendar_years_ago_phrase(years_ago: int) -> str:

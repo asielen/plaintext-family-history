@@ -301,6 +301,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     claim_date_order_sql,
+    place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
     COMPLETENESS_STATE_WORDS,
     completeness_context,
@@ -331,6 +332,7 @@ from _lib import (
     is_placeholder_name,
     person_surname,
     research_search_links,
+    research_search_terms,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -346,7 +348,10 @@ from _lib import (
     is_valid_edtf,
     is_valid_id,
     is_working_copy,
+    line_confidence,
     load_fha_yaml,
+    stronger_confidence,
+    weaker_confidence,
     index_merge_survivors,
     merge_chain,
     carried_living_message,
@@ -537,6 +542,10 @@ _PICTURE_QUEUE_PER_WORKER = 4
 # deepest fan the renderer lays out (each ring doubles the cells).
 _FAN_GENERATIONS = 5
 _FAN_GENERATIONS_MAX = 6
+# The angles a fan can span (`site.fan_degrees`): the half fan, a three-quarter
+# fan and a full circle for a poster.
+_FAN_DEGREES = (180, 270, 360)
+_FAN_DEGREES_DEFAULT = 180
 
 # Fan geometry, in SVG user units (`_render_fan_svg`). A ring's labels follow
 # the arc while its mid-radius arc is at least _FAN_ARC_MIN long; arc rings are
@@ -2489,6 +2498,36 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
+def _fan_settings(site_cfg: dict) -> tuple[int, int, list[str]]:
+    """`site.fan_degrees` and `site.fan_generations`: how wide the person
+    page's ancestor fan opens (180, 270 or 360) and how many generations it
+    draws (1-6). A family printing a reunion poster sets 360 and 6. A value
+    that is not allowed warns once, names the setting and the default used,
+    and the build goes on (the `home_pedigree_generations` rule)."""
+    warnings: list[str] = []
+
+    def whole(key: str, default: int, allowed) -> int:
+        raw = site_cfg.get(key)
+        if raw is None:
+            return default
+        value = raw
+        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+            value = int(raw.strip())              # "360" in quotes is still 360
+        elif isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
+            value = int(raw)                      # 360.0 is the whole number 360
+        if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+            shown = ' or '.join(str(a) for a in allowed) if len(allowed) <= 3 \
+                else f'{allowed[0]} to {allowed[-1]}'
+            warnings.append(f'WARNING: fha.yaml site.{key} {raw!r} is not {shown}; '
+                            f'using the default of {default}.')
+            return default
+        return value
+
+    degrees = whole('fan_degrees', _FAN_DEGREES_DEFAULT, _FAN_DEGREES)
+    generations = whole('fan_generations', _FAN_GENERATIONS, range(1, _FAN_GENERATIONS_MAX + 1))
+    return degrees, generations, warnings
+
+
 def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool, str | None]:
     """An on/off setting under fha.yaml `site:` (`completeness_rings`,
     `calendar`, `search`): `default` when the setting is left out (off for
@@ -3232,7 +3271,11 @@ def _fan_rings(n: int, span: float, r0: float = _FAN_R0) -> list[tuple[str, floa
     r = r0
     for g in range(1, n + 1):
         seg = span / (1 << g)
-        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        # A cell that is a whole half circle (the parents of a full-circle fan)
+        # cannot carry curved text upright from end to end, so it is read level.
+        half_circle = seg >= math.pi - 1e-9
+        mode = ('arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN and not half_circle
+                else 'radial')
         t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
         rings.append((mode, r, r + t))
         r += t
@@ -3275,11 +3318,14 @@ def _fan_years_size(fs: float, years: str, room: float) -> float:
 
 
 def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
-                 seg: float) -> dict:
+                 seg: float, lower: bool = False) -> dict:
     """Lay out one curved-ring label: which lines, at what size, at what radii.
 
     Lines stack across the ring, the first at the larger radius so it reads
-    first on the upper half. The whole name stays on one line when it fits at
+    first on the upper half. On the lower half of a poster fan (`lower`) the
+    hub side is the top as read, so the first line takes the smaller radius,
+    and it is measured there: a long name along the bottom of a poster still
+    fits its cell. The whole name stays on one line when it fits at
     the ring's cap; otherwise given names and surname take a line each. Then
     the size is the largest that fits every line along its own arc and the
     stack across the ring, capped per ring and rounded DOWN to the one decimal
@@ -3300,7 +3346,8 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
         count = len(lines) + (1 if with_years else 0)
 
         def radius(i: int, size: float) -> float:
-            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+            step = ((count - 1) / 2 - i) * _FAN_LH * size
+            return rm - step if lower else rm + step
 
         def room(i: int) -> float:
             return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
@@ -3377,8 +3424,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     readable at its ring, with their years. `labels` is an Ahnentafel map
     {number: {'name', 'surname', 'url', 'redacted', 'private', 'dates'}}:
     number 1 is the subject, 2/3 the parents, 4-7 the grandparents, and so on.
-    The fan is a 180° semicircle (`span_deg`; the poster angles come later)
-    with the subject at the hub. Each cell's fill is a branch colour lightened
+    The fan spans `span_deg` (180, 270 or 360; a family poster uses 270 or
+    360), centred on straight up, with the subject at the hub. Each cell's fill is a branch colour lightened
     by generation, set inline as CSS vars and composed by the stylesheet, so
     custom.css can retint the whole chart.
 
@@ -3396,10 +3443,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     13-2) is a neutral cell reading "Private", with no title, link or line
     colour. Any other withheld slot (`redacted`, or no name) gets its cell and
     nothing else."""
-    if span_deg != 180:
-        # TODO: 08-4 adds the 270° and 360° poster layouts (lower-half text,
-        # the full-circle hub); until then only the semicircle is laid out.
-        raise ValueError(f'fan span {span_deg}° is not supported yet; use 180')
+    if span_deg not in _FAN_DEGREES:
+        raise ValueError(f'fan span {span_deg}° is not one of {_FAN_DEGREES}')
     span = math.radians(span_deg)
     a_start = math.pi / 2 + span / 2
     # Size to the depth actually present, not the configured maximum, so a
@@ -3464,11 +3509,32 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             years = _fan_years(info.get('dates'))
 
         if mode == 'arc':
-            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            # On a 270-degree poster a cell can run from the upper half down
+            # past the horizontal (a parent's cell spans 135 degrees). Its
+            # name keeps to the larger side of the horizontal, so no letters
+            # tip past sideways; the cell itself is drawn whole.
+            t_hi, t_lo = a_hi, a_lo
+            for flat in (math.pi, 0.0):
+                if t_lo + 1e-9 < flat < t_hi - 1e-9:
+                    if t_hi - flat >= flat - t_lo:
+                        t_lo = flat
+                    else:
+                        t_hi = flat
+            t_seg = t_hi - t_lo
+            t_large = 1 if t_seg > math.pi else 0
+            lower = math.sin((t_hi + t_lo) / 2) < -1e-9
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, t_seg, lower)
             # Upper half: each line runs from a_hi to a_lo (left to right
             # over the top), which keeps the text upright.
-            paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
-                     for r in fit['radii']]
+            if lower:
+                # Lower half of a poster fan: the first line already sits at
+                # the smaller radius (the hub side, the top as read), and the
+                # text runs counter-clockwise (left to right along the bottom).
+                paths = [f"M{polar(r, t_lo)} A{r:.1f},{r:.1f} 0 {t_large} 0 {polar(r, t_hi)}"
+                         for r in fit['radii']]
+            else:
+                paths = [f"M{polar(r, t_hi)} A{r:.1f},{r:.1f} 0 {t_large} 1 {polar(r, t_lo)}"
+                         for r in fit['radii']]
         else:
             fit = _fan_fit_radial(name, surname, years, g, r_in, r_out - r_in, seg)
             paths = []
@@ -3513,21 +3579,39 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
         body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
                     if url else f'<g>{title}{text}</g>')
 
-    # subject: filled upper half-disk at the hub (left to right, sweep 1 arcs
-    # over the top, so the hub fills the inner fan rather than hanging below)
-    body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
-                f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    # The subject at the hub: a half disk under a half fan, a sector with the
+    # same opening as the fan, or a whole disk under a full circle. A path from
+    # the left end over the top (sweep 1) fills the half disk.
+    if span_deg == 180:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
+                    f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    elif span_deg == 270:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{cx:.1f},{cy:.1f} '
+                    f'L{polar(r0, a_start)} A{r0:.1f},{r0:.1f} 0 1 1 {polar(r0, a_start - span)} Z"/>')
+    else:
+        body.append(f'<circle class="fan-seg fan-seg-subject" cx="{cx:.1f}" cy="{cy:.1f}" '
+                    f'r="{r0:g}"/>')
     subj_full = labels.get(1, {}).get('name', '')
     if subj_full:
         # The hub is small and the page is already titled with the full name, so
-        # the centre shows just the given name (full name in the tooltip).
+        # the centre shows just the given name (full name in the tooltip). On a
+        # poster the hub is a whole disk and holds given name over surname when
+        # both fit at 15px.
         parts = subj_full.split()
         given = parts[0] if parts else subj_full
         if len(given) > 12:
             given = given[:11] + '…'
+        # The 270 hub is open at the bottom, so its name sits a little high.
+        label_y = cy - r0 * {180: 0.42, 270: 0.3}.get(span_deg, 0.0)
+        shown = html.escape(given)
+        if span_deg != 180:
+            two = _fan_name_lines(subj_full, labels[1].get('surname'))
+            if len(two) == 2 and all(len(t) * _FAN_CW * 15 <= 2 * r0 * 0.8 for t in two):
+                shown = (f'<tspan x="{cx:.1f}" dy="-0.6em">{html.escape(two[0])}</tspan>'
+                         f'<tspan x="{cx:.1f}" dy="1.2em">{html.escape(two[1])}</tspan>')
         body.append(f'<g><title>{html.escape(subj_full)}</title>'
-                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
-                    f'{html.escape(given)}</text></g>')
+                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{label_y:.1f}">'
+                    f'{shown}</text></g>')
 
     out = [f'<svg class="fan-chart" viewBox="0 0 {w:.0f} {h:.0f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Ancestor fan chart">']
@@ -4387,6 +4471,11 @@ def _search_data_js(data: dict) -> str:
 
 # ── Builder ─────────────────────────────────────────────────────────────────
 
+
+def _tree_row_subtype(row) -> str | None:
+    """A tree row's claim subtype, lower-cased (None when unset: genetic)."""
+    return (row['subtype'] or '').strip().lower() or None
+
 class _SiteBuilder:
     """Holds the shared state for one site build and renders every page.
 
@@ -4460,6 +4549,9 @@ class _SiteBuilder:
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # The person page's ancestor fan: its angle and how many generations.
+        self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
+        self._switch_warnings += fan_warnings
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -6588,8 +6680,8 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir,
-                                                            private_cards=True)
+        ahnen, missing_parent_of = self._build_ahnentafel(
+            pid, max(self.fan_generations, 2), page_dir, private_cards=True)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
@@ -6605,7 +6697,8 @@ class _SiteBuilder:
         # ancestors-only chart gets the honest 'Ancestors' heading instead of
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
-        fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
+        fan = (self._markup(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees))
+               if len(ahnen) > 1 else None)
         # Descendant explorer (#115): demoted from the home page (which now
         # carries the marriage-aware ancestor pedigree instead) to a
         # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/
@@ -7044,11 +7137,46 @@ class _SiteBuilder:
         subject = self._person_research_subject(pid) if self.workbench else None
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
+        links = research_search_links(subject)
+        last = self._research_last_searches(pid)
+        for link in links:
+            # What "Nothing found" files: the person, the site's own label and
+            # what was typed in (workbench.js reads this off the link).
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
+                            'result': 'nil'}
+            link['searched'] = last.get(link['label'].casefold(), '')
         return {
-            'research_links': research_search_links(subject),
+            'research_links': links,
             'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
             'research_given': subject.get('given') or name,
         }
+
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
+
+    def _research_last_searches(self, pid: str) -> dict[str, str]:
+        """For this person, the latest logged search at each website, as the
+        words shown beside its link ("searched 2026-11-22: nothing found"),
+        keyed by the website's name in lower case. So he sees what he already
+        tried before he clicks."""
+        try:
+            rows = self.conn.execute(
+                "SELECT date, repository, result FROM search_log WHERE person_id = ? "
+                "ORDER BY date, rowid", (pid,)).fetchall()
+        except sqlite3.Error:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:                                # later rows overwrite earlier ones
+            kind = str(r['result'] or '').split(' ', 1)[0].lower()
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
+        return out
 
     def _person_research_subject(self, pid: str) -> dict | None:
         """What a search on another website may say about this person, or None
@@ -9209,6 +9337,45 @@ class _SiteBuilder:
 
     # - place page -
 
+    @staticmethod
+    def _chronology_key(date_edtf, date_min, date_max, kind):
+        """Sort key for the place page's year-by-year list: a family reader
+        reads it top to bottom, so dated rows go first by their known bound,
+        a town's name change before the events of that year, undated last."""
+        if not date_min:
+            return (1, '', kind)
+        bound = date_max if (date_edtf or '').startswith('[..') and date_max else date_min
+        return (0, (bound + '-01-01')[:10] if len(bound) == 4 else bound, kind)
+
+    def _then_name(self, c, lid: str) -> str:
+        """What the town was called when this claim happened, when that differs
+        from today's name; '' when no period wholly covers the claim."""
+        if not c['date_min']:
+            return ''
+        # place_hierarchy_at follows `within:` itself, so a cemetery with no
+        # history of its own takes its town's.
+        then, period = place_hierarchy_at(self.conn, c['place_id'], c['date_min'], c['date_max'])
+        if not then:
+            return ''
+        # A period open to the present ("1861/..") is today's name however it
+        # is spelt against `hierarchy:`, so it is never an old one.
+        if period and edtf_bounds(period)[1] >= '9999':
+            return ''
+        # Compare with today's name of the place whose history answered (the
+        # town, for a cemetery with none of its own), or a town that lists
+        # its present name in `history:` would show that as an old name.
+        owner, seen = c['place_id'], set()
+        while owner and owner not in seen:
+            seen.add(owner)
+            if self.conn.execute('SELECT 1 FROM place_history WHERE place_id = ? LIMIT 1',
+                                 (owner,)).fetchone():
+                break
+            up = self.conn.execute('SELECT within FROM places WHERE id = ?', (owner,)).fetchone()
+            owner = up[0] if up and up[0] else None
+        meta = self.place_meta.get(owner) if owner else None
+        modern = (meta['hierarchy'] if meta is not None else '') or ''
+        return then if then != modern else ''
+
     def build_place_page(self, lid: str) -> None:
         """Render one place page (TOOLING §12): name, coords (an embedded
         OpenStreetMap view plus the plain map link - owner decision, review
@@ -9253,12 +9420,21 @@ class _SiteBuilder:
         # public = accepted only; linked/workbench keeps reviewed-but-open, marked.
         place_status_filter = (_ACCEPTED_OR_PARKED_SQL if self.linked
                                else "c.status = 'accepted'")
+        # Claims at the place and at every place `within:` it (a cemetery or
+        # house inside the town), so the town's page tells the whole story.
+        # SPEC A.9 makes this one hop; the depth cap guards a registry cycle.
+        scope = [r[0] for r in self.conn.execute(
+            'WITH RECURSIVE scope(id, depth) AS (SELECT ?, 0 UNION '
+            'SELECT p.id, scope.depth + 1 FROM places p JOIN scope ON p.within = scope.id '
+            'WHERE scope.depth < 8) SELECT DISTINCT id FROM scope ORDER BY id', (lid,))]
+        marks = ','.join('?' * len(scope))
         claim_rows = self.conn.execute(
-            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.source_id, "
-            "c.status, c.confidence, c.reviewed FROM claims c "
-            f"WHERE c.place_id = ? AND {place_status_filter} {living_filter} "
+            "SELECT c.id, c.type, c.value, c.date_edtf, c.date_min, c.date_max, c.place_id, "
+            "c.source_id, c.status, c.confidence, c.reviewed FROM claims c "
+            f"WHERE c.place_id IN ({marks}) AND COALESCE(c.negated, 0) = 0 "
+            f"AND {place_status_filter} {living_filter} "
             f"ORDER BY {claim_date_order_sql('c')}",
-            (lid,),
+            scope,
         ).fetchall()
         # Standalone: also withhold events whose only source is restricted/living-linked,
         # and a restricted claim regardless of its source.
@@ -9301,7 +9477,28 @@ class _SiteBuilder:
                 'status': c['status'], 'confidence': c['confidence'] or '',
                 'unconfirmed': c['status'] == 'suggested',
                 'parked': c['reviewed'] or '',
+                'kind': 'event',
+                'at_html': (self._markup(self.render_token(fmt_id_display(c['place_id']), page_dir))
+                            if c['place_id'] != lid and c['place_id'] in self.place_meta else ''),
+                'then_name': self._then_name(c, lid),
+                '_sort': self._chronology_key(c['date_edtf'], c['date_min'], c['date_max'], 1),
             })
+
+        # Merge the place's dated names into the same list, name rows first
+        # on a shared date, undated events last (Python's sort is stable, so
+        # the SQL's date-and-source order holds within a date).
+        for h in self.conn.execute(
+                'SELECT period_edtf, date_min, hierarchy FROM place_history WHERE place_id = ? '
+                "AND date_min IS NOT NULL AND date_min != ''", (lid,)):
+            claims.append({
+                'kind': 'name', 'type': 'name', 'value': f"Called {h['hierarchy'] or ''}",
+                'date': h['period_edtf'] or '', 'persons_html': '', 'source_html': '',
+                'unconfirmed': False, 'parked': '', 'confidence': '', 'at_html': '', 'then_name': '',
+                '_sort': self._chronology_key(h['period_edtf'], h['date_min'], None, 0),
+            })
+        claims.sort(key=lambda e: e['_sort'])
+        for e in claims:
+            del e['_sort']
 
         # People-frequency list: links only, redacted persons omitted entirely.
         people = []
@@ -9520,9 +9717,10 @@ class _SiteBuilder:
         - living or unknown and not known to be an adult: 'omit'.
 
         An id the index does not hold is 'omit' too. `--linked` (the local
-        preview and workbench) always answers 'shown'. Person pages, the fan,
-        the explorers, timelines and search keep their own rules; this is a
-        home-tree rule only. The answer depends on the build date (`_today`):
+        preview and workbench) always answers 'shown'. The home tree, the
+        person page's family chart and fan, and the descendant explorer
+        (`_build_tree_data`) all ask it (chart plan 13-2); person pages,
+        timelines and search keep their own rules. The answer depends on the build date (`_today`):
         a child who turns 18 appears on the next rebuild."""
         if self.linked:
             return 'shown'
@@ -9716,7 +9914,8 @@ class _SiteBuilder:
         rows = self._tree_edges_cache.get(key)
         if rows is None:
             rows = self.conn.execute(
-                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype
+                '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype, c.confidence,
+                          c.source_id, c.status
                    FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = ?
                    ORDER BY r.other_id, r.claim_id''',
@@ -9734,11 +9933,38 @@ class _SiteBuilder:
         finding 1) - see `_DESCENDANT_TREE_MAX_HOPS`'s comment. Hitting it
         drops real genealogy data, so callers pass a bound generous enough
         that no real archive should ever reach it, and a hit is warned about
-        below rather than silently accepted."""
+        below rather than silently accepted.
+
+        Version 2 of the JSON (TOOLING §7) says how well each tie is proven,
+        so a chart can show which part of his tree rests on a family story:
+        each edge's `confidence` is the strongest over the claims behind it
+        that the build may show (a sealed certificate must not lift a shared
+        family story, or the shared site would hint that stronger, unshown
+        evidence exists), and each node's `line_confidence` is the weakest
+        tie on their best route to the seed. A tie two records prove is one
+        edge, not one per record, so the person no longer appears twice.
+
+        PRIVATE CARDS (shared build, chart plan 13-2, owner decisions D16 and
+        D20): every person past the seed is sorted by `_tree_card_kind`. A
+        living adult is a node reading "Private" under a placeholder id
+        (`private-1`, `private-2`, in the order reached), with no name,
+        dates, sex, photo or link, and the walk carries on through them, so a
+        dead grandchild still shows. Anyone left out (a possible child, or
+        anyone restricted or by-request) is dropped with everyone reached
+        only through them. A stub (a dead person with no page) is an
+        unlinked name, so the line is not cut at every uncurated ancestor."""
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
         seen = {seed}
-        edges: list[dict] = []
+        # (cur, other) -> the one edge for that tie, plus its claim rows.
+        ties: dict[tuple[str, str], dict] = {}
+        kinds: dict[str, str] = {}
+
+        def card_kind(pid: str) -> str:
+            # Asked once per person: a big family reaches one person by many ties.
+            if pid not in kinds:
+                kinds[pid] = self._tree_card_kind(pid)
+            return kinds[pid]
         truncated = False
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         while queue:
@@ -9749,38 +9975,65 @@ class _SiteBuilder:
             for r in self._tree_relationship_rows(cur, rel):
                 other = r['other_id']
                 if not self.linked:
-                    # Include a deceased person even when they have no page of their
-                    # own (a `stub`): they render as an unlinked name-only node, so
-                    # the lineage isn't severed at every un-curated ancestor. Only a
-                    # living/unknown/restricted person is dropped outright (never a
-                    # standalone tree node), plus a relationship with no public claim.
-                    ometa = self.person_meta.get(other)
-                    if ometa is None or self._person_is_redacted(ometa):
+                    if card_kind(other) == 'omit':
                         continue
-                    if not self._has_public_claim(cur, other):
+                    # Each tie is judged by its own records, never pair-wide:
+                    # a census line naming both must not publish a parent
+                    # tie the owner sealed, or hang the sealed child under a
+                    # Private card (PR #495 review). A tie with no claim row
+                    # behind it is judged as the site's other walks judge one.
+                    if r['status'] is None:
+                        if not self._has_public_claim(cur, other):
+                            continue
+                    elif not self._claim_row_is_publishable(
+                            r['claim_id'], r['source_id'], r['status']):
                         continue
-                # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
-                # (adoptive, step, foster, guardian, …) draws distinctly from the
-                # genetic line. Unset/legacy subtypes default to genetic.
-                subtype = (r['subtype'] or '').strip().lower() or None
-                genetic = is_genetic_parent_subtype(subtype)
-                edges.append({
-                    'type': rel, 'from': fmt_id_display(cur), 'to': fmt_id_display(other),
-                    'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
-                    'subtype': subtype,
-                    'genetic': genetic,
-                    # Edge kind for the renderer (SPEC §12.2): 'genetic', or 'legal'
-                    # for a non-genetic parent/child bond (adoptive/step/foster/
-                    # guardian). Lateral 'other' ties (friend/associate/neighbor)
-                    # are not parent/child edges and never enter the tree. `genetic`
-                    # is kept for back-compat with the neutral-JSON contract.
-                    'kind': 'genetic' if genetic else 'legal',
-                    'dates': {'start': None, 'end': None},
-                })
+                tie = ties.get((cur, other))
+                if tie is None:
+                    tie = ties[(cur, other)] = {'row': r, 'confidence': None}
+                elif (not is_genetic_parent_subtype(_tree_row_subtype(tie['row']))
+                      and is_genetic_parent_subtype(_tree_row_subtype(r))):
+                    # A father with both a birth record and an adoption record
+                    # for his son is drawn as the father, as his pedigree
+                    # seats him; the edge names that birth record.
+                    tie['row'] = r
+                tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
                 if other not in seen:
                     seen.add(other)
                     order.append(other)
                     queue.append((other, hop + 1))
+        # A private card's id never reaches the shared site: a placeholder
+        # stands in for it, numbered in the order the walk reached them.
+        shown_id: dict[str, str] = {}
+        placeholders = 0
+        for pid in order:
+            if pid != seed and not self.linked and card_kind(pid) == 'private':
+                placeholders += 1
+                shown_id[pid] = f'private-{placeholders}'
+            else:
+                shown_id[pid] = fmt_id_display(pid)
+        edges: list[dict] = []
+        for (cur, other), tie in ties.items():
+            r = tie['row']
+            # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
+            # (adoptive, step, foster, guardian, …) draws distinctly from the
+            # genetic line. Unset/legacy subtypes default to genetic.
+            subtype = _tree_row_subtype(r)
+            genetic = is_genetic_parent_subtype(subtype)
+            edges.append({
+                'type': rel, 'from': shown_id[cur], 'to': shown_id[other],
+                'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
+                'subtype': subtype,
+                'genetic': genetic,
+                # Edge kind for the renderer (SPEC §12.2): 'genetic', or 'legal'
+                # for a non-genetic parent/child bond (adoptive/step/foster/
+                # guardian). Lateral 'other' ties (friend/associate/neighbor)
+                # are not parent/child edges and never enter the tree. `genetic`
+                # is kept for back-compat with the neutral-JSON contract.
+                'kind': 'genetic' if genetic else 'legal',
+                'confidence': tie['confidence'],
+                'dates': {'start': None, 'end': None},
+            })
         if truncated:
             # Should not happen in any real archive (see `_DESCENDANT_TREE_
             # MAX_HOPS`'s comment) - surfaced loudly rather than silently
@@ -9789,9 +10042,21 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        lines = line_confidence(shown_id[seed], [
+            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
+        nodes = []
+        for pid in order:
+            if shown_id[pid].startswith('private-'):
+                node = {'p_id': shown_id[pid], 'name': 'Private', 'private': True,
+                        'sex': None, 'vitals': {'birth': None, 'death': None}, 'url': None}
+            else:
+                node = self._tree_node(pid, page_dir)
+            node['line_confidence'] = lines.get(shown_id[pid])
+            nodes.append(node)
         return {
+            'version': 2,
             'seed': fmt_id_display(seed), 'mode': mode,
-            'nodes': [self._tree_node(pid, page_dir) for pid in order],
+            'nodes': nodes,
             'edges': edges,
         }
 
@@ -9947,7 +10212,15 @@ class _SiteBuilder:
         by-request) is skipped exactly like today's redacted parent: the slot
         draws as an unresearched 'Unknown' and nothing behind them is
         reached. A private card's `sex_derived` is False, so its slot never
-        tints a branch paternal or maternal. Off, the walk is unchanged."""
+        tints a branch paternal or maternal. Off, the walk is unchanged.
+
+        CONFIDENCE (chart plan 08-6, drawn by 08-7). Each ancestor's label
+        carries `tie_confidence`, the strongest confidence among the
+        publishable genetic claims that seat them (None when unrated), and
+        `line_confidence`, the weakest rated tie between them and the subject
+        (`_lib.weaker_confidence` along the slot's own chain). So when
+        Grandpa Thomas's parents rest on one family story, everyone above him
+        can be drawn faded. The subject has neither."""
         entry_for = self._tree_card_entry if private_cards else self._chart_entry
         labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
         missing_parent_of: dict[int, str] = {}
@@ -9964,7 +10237,7 @@ class _SiteBuilder:
             parent_rows: dict[str, dict] = {}
             for r in self.conn.execute(
                 '''SELECT DISTINCT r.other_id, p.sex, r.claim_id, c.subtype,
-                          c.source_id, c.status
+                          c.source_id, c.status, c.confidence
                    FROM relationships r JOIN persons p ON r.other_id = p.id
                    LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = 'parent'
@@ -9983,7 +10256,8 @@ class _SiteBuilder:
                     continue
                 subtype = (r['subtype'] or '').strip().lower() or None
                 entry = parent_rows.setdefault(
-                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False})
+                    other, {'sex': (r['sex'] or '').upper(), 'genetic': False,
+                            'confidence': None})
                 # P1 (Codex review, PR #152 round): a pair can carry BOTH a
                 # public non-genetic claim (adoptive) and a restricted genetic
                 # one - the pair-wide `_has_public_claim` check just above lets
@@ -9996,6 +10270,10 @@ class _SiteBuilder:
                         self.linked or self._claim_row_is_publishable(
                             r['claim_id'], r['source_id'], r['status'])):
                     entry['genetic'] = True
+                    # How well the tie is proven: the strongest claim that
+                    # seats this parent (chart plan 08-6).
+                    entry['confidence'] = stronger_confidence(
+                        entry['confidence'], r['confidence'])
             parents: list[tuple[str, str]] = [
                 (other, info['sex']) for other, info in parent_rows.items() if info['genetic']]
             # Workbench only: a parent recorded as a frontmatter hypothesis
@@ -10034,6 +10312,15 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = entry_for(ppid, page_dir)
+                # How well this ancestor is tied to the subject (chart plan
+                # 08-6): the slot tree is a tree, so the weakest tie along
+                # the slot's own chain is exact. A hypothesis parent has no
+                # claim, so the tie is unrated (it is drawn as a guess).
+                tie = (parent_rows[ppid]['confidence']
+                       if ppid in parent_rows and ppid not in hyp_parents else None)
+                labels[slot_num]['tie_confidence'] = tie
+                labels[slot_num]['line_confidence'] = weaker_confidence(
+                    tie, labels[num].get('line_confidence'))
                 # A private card shows no sex, so its slot is no evidence of
                 # which line is paternal (`_render_pedigree_svg`'s tint rule).
                 labels[slot_num]['sex_derived'] = (
