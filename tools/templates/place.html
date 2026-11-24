@@ -86,15 +86,15 @@
   </ul>
   {% endif %}
 
-  <h2>Events here</h2>
+  <h2>Through the years</h2>
   {% if place.claims %}
   <table class="claims">
     <thead><tr><th>Type</th><th>Value</th><th>Date</th><th>People</th><th>Source</th></tr></thead>
     <tbody>
     {% for c in place.claims %}
-      <tr>
+      <tr{% if c.kind == 'name' %} class="place-name-row"{% endif %}>
         <td>{{ c.type }}</td>
-        <td>{{ c.value }}{% if c.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if c.parked %} - parked {{ c.parked }}{% endif %}</span>{% elif c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
+        <td>{% if c.kind == 'name' %}<em>{{ c.value }}</em>{% else %}{{ c.value }}{% endif %}{% if c.at_html %} at {{ c.at_html }}{% endif %}{% if c.then_name %} <span class="note">(then called {{ c.then_name }})</span>{% endif %}{% if c.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if c.parked %} - parked {{ c.parked }}{% endif %}</span>{% elif c.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</td>
         <td>{{ c.date }}</td>
         <td>{{ c.persons_html }}</td>
         <td>{{ c.source_html }}</td>
