@@ -53,6 +53,15 @@
     </div>
 {% endmacro %}
 
+{% macro remembered_row(e, same) %}
+    <li>
+      {% if e.has_page_a %}<a href="{{ root_prefix }}/persons/{{ e.person_a|lower }}.html">{{ e.name_a }}</a>{% else %}{{ e.name_a }}{% endif %} and
+      {% if e.has_page_b %}<a href="{{ root_prefix }}/persons/{{ e.person_b|lower }}.html">{{ e.name_b }}</a>{% else %}{{ e.name_b }}{% endif %}{% if same %}<span class="u-muted"> &middot; {% if e.date %}noted {{ e.date }}{% else %}noted (date unknown){% endif %}</span>{% endif %}
+      <button class="btn btn-sm" data-wb-open="tpl-confirm" data-wb-verb="confirm.undismiss" data-wb-direct
+              data-wb-args='{{ ({"person_a": e.person_a, "person_b": e.person_b, "not_same_person": true} if same else {"person_a": e.person_a, "person_b": e.person_b}) | tojson }}'>Undo</button>
+    </li>
+{% endmacro %}
+
 {% block content %}
 <article class="review">
   <h1>Review</h1>
@@ -115,6 +124,23 @@
   {% else %}
   <p class="empty">Nothing waiting - the queue is clear. New suggestions land here as sources are
     processed and claims drafted.</p>
+  {% endif %}
+
+  {% set rem_nc = (remembered or {}).get('not_connected', []) %}
+  {% set rem_ns = (remembered or {}).get('not_same_person', []) %}
+  {% if rem_nc or rem_ns %}
+  <details class="wb-remembered">
+    <summary>Remembered decisions ({{ rem_nc|length + rem_ns|length }})</summary>
+    <p class="ids">Pairs you told the archive about. Undo puts a pair back so it may be suggested again.</p>
+    {% if rem_nc %}
+    <h3>Not connected</h3>
+    <ul>{% for e in rem_nc %}{{ remembered_row(e, false) }}{% endfor %}</ul>
+    {% endif %}
+    {% if rem_ns %}
+    <h3>Not the same person</h3>
+    <ul>{% for e in rem_ns %}{{ remembered_row(e, true) }}{% endfor %}</ul>
+    {% endif %}
+  </details>
   {% endif %}
 </article>
 {% endblock %}
