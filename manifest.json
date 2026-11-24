@@ -118,7 +118,7 @@
     {
       "path": ".agents/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "6f2862d1d0049a2c60215c513ace606ccc7eb9bb217592634f9b55555deb3f4c",
+      "sha256": "30efd53917538a7bfff5f819f790e53d68f5d9d345f7433f0093aaf2ab64d787",
       "spec_version": "2.28",
       "src": ".claude/skills/setup-interview/SKILL.md"
     },
@@ -277,7 +277,7 @@
     {
       "path": ".claude/skills/setup-interview/SKILL.md",
       "category": "operating",
-      "sha256": "6f2862d1d0049a2c60215c513ace606ccc7eb9bb217592634f9b55555deb3f4c",
+      "sha256": "30efd53917538a7bfff5f819f790e53d68f5d9d345f7433f0093aaf2ab64d787",
       "spec_version": "2.28"
     },
     {
@@ -1400,7 +1400,7 @@
     {
       "path": "START_HERE.md",
       "category": "skeleton",
-      "sha256": "1b7c0c7e72ef2de9ac58b10e8405d8c28c2f8d89a14415bc5dc5780e5f73c4f6",
+      "sha256": "2c6f705176c527116ea4cd4d781b40fa578ffbb6807244a257a6cbea4c072c42",
       "spec_version": "2.28",
       "src": "archive-template/START_HERE.md"
     },
