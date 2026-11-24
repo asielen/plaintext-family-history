@@ -1008,8 +1008,14 @@ def _feast_result(base: dict, kind: str, key: str, row: tuple, year: int, church
     if church == 'western':
         # Western tables hold no fasts: one day, row[1].
         kept = _western_reckonings(row[1], year)
+        if (len(kept) == 2
+                and _feast_day(row[1], year, False)[0] == _feast_day(row[1], year, True)[0]):
+            kept = [False]      # both calendars' Easters fell on the same day
         if len(kept) == 2:
-            return _western_two_readings(data, row[1], year, said)
+            result = _western_two_readings(data, row[1], year, said)
+            if key == 'pentecost':
+                result.data['cautions'].append(_SCOTTISH_WHITSUNDAY)
+            return result
         old = western_old_only = kept == [True]
     days = [row[1]] if kind != 'fast' else [row[1], row[2]]
     readings = []
@@ -1047,7 +1053,7 @@ def _feast_result(base: dict, kind: str, key: str, row: tuple, year: int, church
     data['calendar'] = 'old' if old else 'new'
     if western_old_only:
         data['cautions'].append(_WESTERN_OLD_ONLY)
-    if not old and key == 'pentecost':
+    if church == 'western' and key == 'pentecost':
         data['cautions'].append(_SCOTTISH_WHITSUNDAY)
     return Result(data=data)
 

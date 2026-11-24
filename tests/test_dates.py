@@ -206,6 +206,19 @@ class FeastTests(unittest.TestCase):
         self.assertNotIn('readings', result.data)
         self.assertEqual(dates.run_feast('Michaelmas', 1850).data['cautions'], [])
 
+    def test_same_day_in_both_calendars_is_one_reading(self):
+        # Whitsunday 1700 fell on 30 May (today's calendar) both in Rome and
+        # in England: one date:, not a choice that makes no difference.
+        result = dates.run_feast('Whitsunday', 1700)
+        self.assertEqual(result.data['date'], '1700-05-30')
+        self.assertNotIn('readings', result.data)
+
+    def test_whitsunday_term_day_line_in_every_era(self):
+        for year in (1550, 1700, 1731, 1760):
+            with self.subTest(year=year):
+                cautions = dates.run_feast('Whitsunday', year).data['cautions']
+                self.assertTrue(any('15 May' in c for c in cautions))
+
     def test_two_reading_feast_prints_both(self):
         code, out, _ = _run('feast', 'Easter', '1731')
         self.assertEqual(code, EXIT_CLEAN)
