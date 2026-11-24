@@ -71,6 +71,9 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     SOURCE_FRONTMATTER_KEY_ORDER,
     one_person_problems,              # W163-W165: dates that cannot all be true
+    family_problems,                  # W166-W170: the same, across a family
+    ParentEdge,
+    PARENTAGE_CLAIM_TYPES,
     plausibility_input_from_claims,
     plausibility_message,
     sqlite_readonly_uri,
@@ -307,9 +310,11 @@ configure_utf8_stdout()
 #    _check_inbox_notes          - W157 on the inbox's waiting notes files
 #
 #  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127, W129)
-#    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
+#    _build_parent_edge_claims   - parent → {child → ParentEdge} from the accepted,
 #                                   non-negated relationship/birth claims the indexer
-#                                   derives parent edges from (lint's twin of it)
+#                                   derives parent edges from (lint's twin of it),
+#                                   keeping the claim ids behind each tie
+#    _build_child_edges          - parent → {child → {nature,…}}: its projection
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry;
@@ -368,8 +373,9 @@ configure_utf8_stdout()
 #                                   root file by path that no source owns (#249)
 #    _check_died_but_living      - W136: an accepted death/burial for a person still
 #                                   treated as living (living: unknown or true)
-#    _check_dates_that_cannot_be_true - W163-W165: one person's own dates that
-#                                   cannot all be true (_lib's plausibility engine)
+#    _check_dates_that_cannot_be_true - W163-W170: one person's own dates, and a
+#                                   family's, that cannot all be true (_lib's
+#                                   plausibility engine)
 #    _plausibility_input         - the registry's accepted claims as that engine's
 #                                   input, built once per run and kept on the registry
 #    _claim_ref                  - `c-… (sources/…/file.md)` for a finding's message
@@ -2441,7 +2447,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 # derive one from: `index.py` `_derive_relationships` mints parentage from these
 # two and nothing else. `birth` joined the list in #71 - a birth register is the
 # plainest parentage evidence an archive ever holds.
-_PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
+_PARENTAGE_CLAIM_TYPES = PARENTAGE_CLAIM_TYPES
 
 
 def _check_merge_pointers(registry: Registry, findings: list[Finding],
@@ -2545,6 +2551,9 @@ def _registry_merge_survivors(registry: Registry) -> dict[str, str]:
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     """parent_pid → {child_pid: {nature, …}} from the claims that derive parentage.
 
+    The claims themselves are kept by `_build_parent_edge_claims`, which this
+    projects, so the date checks (W167-W170) read exactly these ties.
+
     This is lint's in-memory twin of the indexer's `relationships` table, and it
     has to read the SAME claims the same way. A twin that reads a narrower set
     tells the human their correctly-written record is broken and names a fix
@@ -2584,8 +2593,17 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     `claim_persons`: a birth filed against the duplicate before the merge
     still puts the survivor's parents in the tree.
     """
+    return {ppid: {cpid: set(edge.natures) for cpid, edge in kids.items()}
+            for ppid, kids in _build_parent_edge_claims(registry).items()}
+
+
+def _build_parent_edge_claims(registry: Registry) -> dict[str, dict[str, ParentEdge]]:
+    """parent_pid → {child_pid: ParentEdge}: `_build_child_edges`'s ties with
+    the ids of the claims that make each one, so "born after her mother died"
+    can name the record that links the mother. The reading rules are the
+    ones `_build_child_edges` documents; this is their one home."""
     survivors = _registry_merge_survivors(registry)
-    edges: dict[str, dict[str, set[str]]] = {}
+    edges: dict[str, dict[str, ParentEdge]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
             if (not isinstance(claim, dict)
@@ -2603,9 +2621,17 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
             child_ids = {survivors.get(p, p) for p in child_ids}
             parent_ids = {survivors.get(p, p) for p in parent_ids}
             subtype = str(claim.get('subtype', '')).strip().lower()
+            cid = normalize_id(str(claim.get('id') or ''))
             for cpid in sorted(child_ids):
                 for ppid in sorted(parent_ids):
-                    edges.setdefault(ppid, {}).setdefault(cpid, set()).add(subtype)
+                    edge = edges.setdefault(ppid, {}).setdefault(
+                        cpid, ParentEdge(natures=set(), claims=[]))
+                    edge.natures.add(subtype)
+                    if cid and cid not in edge.claims:
+                        edge.claims.append(cid)
+    for kids in edges.values():
+        for edge in kids.values():
+            edge.claims.sort()
     return edges
 
 
@@ -4648,7 +4674,7 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     registry.lap('accepted claims (evidence and analysis)')
 
-    # W163-W165: one person's own dates that cannot all be true
+    # W163-W170: one person's own dates, and a family's, that cannot all be true
     _check_dates_that_cannot_be_true(registry, findings)
     registry.lap('dates that cannot all be true')
 
@@ -4825,12 +4851,20 @@ def _check_died_but_living(
 
 
 # The lint code for each kind of date problem `_lib.one_person_problems`
-# reports, written out here so the TOOLING §3 table test sees every code.
+# and `_lib.family_problems` report, written out here so the TOOLING §3
+# table test sees every code.
 _PLAUSIBILITY_CODES = {
     'death-before-birth': 'W163', 'burial-before-death': 'W163',
     'baptism-before-birth': 'W163', 'burial-before-birth': 'W163',
     'long-life': 'W164',
     'life-after-death': 'W165',
+    'married-before-born': 'W166', 'married-after-death': 'W166',
+    'married-young': 'W166',
+    'born-after-mother-died': 'W167', 'born-after-father-died': 'W167',
+    'parent-born-after-child': 'W168', 'parent-too-young': 'W168',
+    'mother-too-old': 'W168', 'father-too-old': 'W168',
+    'siblings-too-close': 'W169',
+    'own-ancestor': 'W170',
 }
 
 
@@ -4839,7 +4873,11 @@ def _plausibility_input(registry: Registry):
 
     Built once per lint run and kept on the registry, because each family of
     date checks reads the same input. Merged records count for their
-    survivor (SPEC §9), through the same map the rest of lint uses."""
+    survivor (SPEC §9), through the same map the rest of lint uses.
+
+    The parent ties are the ones the bracket and numbering checks read
+    (`_build_parent_edge_claims`), so a date warning never doubts a tie the
+    family tree does not have, or misses one it does."""
     cached = getattr(registry, '_plausibility_input', None)
     if cached is not None:
         return cached
@@ -4848,6 +4886,10 @@ def _plausibility_input(registry: Registry):
     data = plausibility_input_from_claims(
         claims, registry.person_meta, registry.alias_map,
         _registry_merge_survivors(registry))
+    data.parent_edges = {
+        (ppid, cpid): edge
+        for ppid, kids in _build_parent_edge_claims(registry).items()
+        for cpid, edge in kids.items() if ppid != cpid}
     registry._plausibility_input = data
     return data
 
@@ -4869,18 +4911,22 @@ def _claim_ref(registry: Registry, claim_id: str) -> str:
 
 
 def _check_dates_that_cannot_be_true(registry: Registry, findings: list[Finding]) -> None:
-    """W163-W165: "Ada Hartley is recorded as dying 1850, before the birth
-    recorded for her, 1871." One person's own accepted dates that cannot all
-    be true, named with both claims and their files so he can open them side
-    by side.
+    """W163-W170: "Ada Hartley is recorded as dying 1850, before the birth
+    recorded for her, 1871", or "Margaret Cole is recorded as born 1871, but
+    her mother Ann Cole died 1869." Accepted dates, one person's own or
+    across a family, that cannot all be true, named with every claim and its
+    file so he can open them side by side.
 
-    The rules are `_lib.one_person_problems` (one engine, so the GEDCOM
-    import plan asks the same question). They fire only when the conflict
+    The rules are `_lib.one_person_problems` and `_lib.family_problems` (one
+    engine, so the GEDCOM import plan asks the same question). A family
+    finding sits on the child's profile (the spouse's, for a marriage; the
+    first person by id, for a loop). They fire only when the conflict
     holds for every date the claims allow, and two readings of one fact are
     merged into one range (that disagreement is `fha xref`'s). Each finding
     sits on the profile of the person it is about. A merged record is
     skipped: its claims already count for the survivor. Report only."""
-    for problem in one_person_problems(_plausibility_input(registry)):
+    data = _plausibility_input(registry)
+    for problem in one_person_problems(data) + family_problems(data):
         pid = problem.pids[0]
         meta = registry.person_meta.get(pid) or {}
         if str(meta.get('status', '')).strip().lower() == 'merged':
