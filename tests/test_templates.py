@@ -603,5 +603,13 @@ class TemplateHygieneTests(unittest.TestCase):
             self.assertNotIn('GENERATED', text, rel)
 
 
+class SetupInterviewPrivacyOfferTests(unittest.TestCase):
+    """A document the owner wants kept private is restricted on its source."""
+
+    def test_withheld_document_is_marked_on_its_source(self):
+        text = (ROOT / '.claude/skills/setup-interview/SKILL.md').read_text(encoding='utf-8')
+        self.assertIn('is marked on its **source**', text)
+
+
 if __name__ == '__main__':
     unittest.main()
