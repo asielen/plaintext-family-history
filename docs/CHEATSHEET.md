@@ -58,6 +58,7 @@ fha person new "Ann Smith" --sex F   # add one new person (refuses a name alread
 fha person new --from-file people.tsv   # add a list at once: name, sex, surname per line, tab-separated
 fha views timeline p-aaaa --format html   # a printable one-page timeline (lands in generated/views/)
 fha views family-sheet p-aaaa --format html   # a family group sheet to print for a relative (lands in generated/views/)
+fha views descendants p-aaaa --format html  # everyone descended from one ancestor, numbered 1, 1.1, 1.1.1 (lands in generated/views/)
 fha photoindex gallery --person p-aaaa    # a clickable page of someone's photos; double-click to open (lands in generated/gallery/)
 ```
 

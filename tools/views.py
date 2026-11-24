@@ -5830,7 +5830,8 @@ def _report_md_to_html(lines: list[str]) -> tuple[str, str]:
     return title, '\n'.join(parts) + '\n'
 
 
-def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fmt: str) -> Path:
+def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fmt: str,
+                   html_builder=None) -> Path:
     """Write one report to generated/views/ as `report_{kind}_{p-id}.{md|html}`:
     the GENERATED marker, then the report. Returns the path."""
     lines = [ln for i, ln in enumerate(lines) if ln or (i and lines[i - 1])]   # one blank at most
@@ -5838,7 +5839,7 @@ def _render_report(archive_root: Path, kind: str, pid: str, lines: list[str], fm
     out_dir.mkdir(parents=True, exist_ok=True)
     out_path = _existing_spelling(out_dir / f'report_{kind}_{fmt_id_display(pid)}.{fmt}')
     if fmt == 'html':
-        title, body = _report_md_to_html(lines)
+        title, body = (html_builder or _report_md_to_html)(lines)
         text = _render_view_html(archive_root, kind, title, body, banner=_REPORT_BANNER)
     else:
         first = next(i for i, ln in enumerate(lines) if ln.startswith('# '))
@@ -5970,6 +5971,299 @@ def _cmd_family_sheet(args: argparse.Namespace) -> int:
     ).exit_code
 
 
+# ── Descendant report ─────────────────────────────────────────────────────────
+#
+# A relative with a paper copy can find any branch: everyone descended from
+# one ancestor, numbered the d'Aboville way (1, 1.1, 1.2, 1.1.1). A living
+# descendant is counted under their parent and never named, dated or placed,
+# and their own descendants are left out altogether: counting grandchildren
+# under an unnamed parent would say more than the report may.
+
+_DESC_DEFAULT_GENERATIONS = 5
+_DESC_MAX_GENERATIONS = 12
+
+
+def _desc_years(rp: _ReportPrivacy, pid: str) -> tuple[str, set[str]]:
+    """` (1810-1881)` for a shown person, worded as the family sheet words a
+    parent's years (`born 1815` when only one year is known), and the records
+    those years rest on."""
+    born = _report_pick_vital(rp, pid, 'birth')
+    died = _report_pick_vital(rp, pid, 'death')
+    by, dy = (_claim_year(born) if born else ''), (_claim_year(died) if died else '')
+    if by.isdigit() and dy.isdigit():
+        years = f' ({by}-{dy})'
+    elif by and dy:
+        years = f' (born {by}, died {dy})'
+    elif by:
+        years = f' (born {by})'
+    elif dy:
+        years = f' (died {dy})'
+    else:
+        years = ''
+    return years, {c['source_id'] for c in (born, died) if c and _claim_year(c)}
+
+
+def _desc_children(rp: _ReportPrivacy, pid: str) -> dict[str, dict]:
+    """The people whose parent tie names `pid`, from either side of the tie:
+    `{child: {subtypes, sources}}`. Ties to a restricted person are already
+    cut by `rp.ties`."""
+    found: dict[str, dict] = {}
+    for c, info in rp.ties(pid, 'child').items():
+        found[c] = {'subtypes': list(info['subtypes']), 'sources': set(info['sources'])}
+    for c in rp.parented_by(pid):
+        info = rp.ties(c, 'parent').get(pid)
+        if info is None:
+            continue
+        mine = found.setdefault(c, {'subtypes': [], 'sources': set()})
+        mine['subtypes'] += info['subtypes']
+        mine['sources'] |= info['sources']
+    return found
+
+
+def _desc_is_birth(info: dict) -> bool:
+    subtypes = info['subtypes']
+    return not subtypes or any(is_genetic_parent_subtype(s) for s in subtypes)
+
+
+def _desc_marriage_lines(rp: _ReportPrivacy, fn: _Footnotes, tally: _SheetTally,
+                         pid: str) -> list[str]:
+    """`Married Ann Price, 1838 [3]` for each spouse, earliest first. A living
+    spouse is the shared label with no date; a restricted one is left out."""
+    ties = rp.ties(pid, 'spouse')
+    lines = []
+    for sp in sorted(ties, key=lambda s: (ties[s]['date'] is None, ties[s]['date'] or '', s)):
+        state = tally.see(sp)
+        if state == _PERSON_RESTRICTED:
+            continue
+        sources = set(ties[sp]['sources'])
+        year = ''
+        if state == _PERSON_SHOWN:
+            marriage = _report_marriage(rp, pid, sp)
+            if marriage is not None:
+                sources.add(marriage['source_id'])
+                year = _claim_year(marriage)
+        lines.append(f"Married {rp.name(sp)}{', ' + year if year else ''}{_cite_all(fn, sources)}")
+    return lines
+
+
+def _descendant_lines(rp: _ReportPrivacy, root: str, generations: int) -> list[str]:
+    """The descendant report as small markdown: a title, a summary, a nested
+    bullet list (two spaces per generation) and the notes."""
+    fn = _Footnotes(rp)
+    tally = _SheetTally(rp)
+    out: list[str] = []
+    seen: dict[str, str] = {}   # person -> the number they were listed under
+
+    def person(pid: str, number: str, depth: int, mark: str, tie_sources) -> None:
+        pad = '  ' * (depth - 1)
+        name = rp.name(pid)
+        tally.see(pid)
+        if pid in seen:
+            # Descended from two people in this report (cousins who married):
+            # listed once, with a pointer, so nothing is counted twice.
+            out.append(f'{pad}- {number} {name}{mark} (see {seen[pid]})')
+            return
+        seen[pid] = number
+        years, year_sources = _desc_years(rp, pid)
+        out.append(f'{pad}- {number} {name}{mark}{years}'
+                   f'{_cite_all(fn, set(tie_sources) | year_sources)}')
+        inner = '  ' * depth
+        for line in _desc_marriage_lines(rp, fn, tally, pid):
+            out.append(f'{inner}- {line}')
+        listed, living_n = [], 0
+        for c, info in _desc_children(rp, pid).items():
+            state = tally.see(c)
+            if state == _PERSON_LIVING:
+                living_n += 1
+            elif state == _PERSON_SHOWN:
+                birth = _report_pick_vital(rp, c, 'birth')
+                listed.append((not _desc_is_birth(info),
+                               birth['date_min'] if birth and birth['date_min'] else '9999',
+                               rp.name(c), c, info))
+        listed.sort(key=lambda t: t[:4])
+        if depth >= generations:
+            if listed or living_n:
+                out.append(f'{inner}- More descendants are not shown in this report.')
+            return
+        for k, (nonbirth, _date, _name, c, info) in enumerate(listed, 1):
+            kind = ''
+            if nonbirth:
+                kind = nonbirth_bracket_label(info['subtypes'][0]) or info['subtypes'][0]
+            person(c, f'{number}.{k}', depth + 1, f' ({kind})' if kind else '', info['sources'])
+        if living_n:
+            phrase = _living_count_phrase(living_n, 'child', 'children')
+            out.append(f"{inner}- {phrase if listed else phrase[len('and '):]}")
+
+    person(root, '1', 1, '', ())
+    k = len(tally.living)
+    summary = (f'This report names {len(tally.named)} people and shows '
+               f"{generations} generation{'' if generations == 1 else 's'}.")
+    if k:
+        summary += (f' {k} living relatives are counted but not named.' if k != 1
+                    else ' 1 living relative is counted but not named.')
+    lines = [f'# Descendants of {rp.name(root)}', '', summary, ''] + out + ['']
+    notes = fn.lines()
+    if notes:
+        lines += ['## Notes', ''] + notes + ['']
+    return lines
+
+
+_DESC_NUM_RE = re.compile(r'^(\d+(?:\.\d+)*) (.*)$')
+
+
+def _descendant_md_to_html(lines: list[str]) -> tuple[str, str]:
+    """`(title, body_html)` for the descendant report's markdown: the nested
+    bullets become nested lists with each number in a `report-num` span."""
+    title = ''
+    parts = ['<section class="report-sheet">']
+    depth = 0       # <ul> elements open
+    in_notes = False
+
+    def close_lists() -> None:
+        nonlocal depth
+        while depth:
+            parts.append('</li></ul>')
+            depth -= 1
+
+    for line in lines:
+        if not line.strip() or line.startswith('>'):
+            if not line.strip():
+                close_lists()
+            continue
+        m = re.match(r'^( *)- (.*)$', line)
+        if m:
+            level = len(m.group(1)) // 2 + 1
+            while depth > level:
+                parts.append('</li></ul>')
+                depth -= 1
+            if depth == level:
+                parts.append('</li>')
+            while depth < level:
+                parts.append('<ul class="report-tree" style="list-style:none;padding-left:1.6em">')
+                depth += 1
+            num = _DESC_NUM_RE.match(m.group(2))
+            if num:
+                parts.append(f'<li><span class="report-num" style="font-weight:bold">'
+                             f'{html_escape(num.group(1))}</span> {_report_inline_html(num.group(2))}')
+            else:
+                parts.append(f'<li>{_report_inline_html(m.group(2))}')
+            continue
+        close_lists()
+        m = re.match(r'^(#{1,6}) (.*)$', line)
+        if m:
+            if in_notes:
+                parts.append('</ol>')
+                in_notes = False
+            if not title and len(m.group(1)) == 1:
+                title = m.group(2)
+                continue
+            level = len(m.group(1))
+            parts.append(f'<h{level}>{html_escape(m.group(2))}</h{level}>')
+            if m.group(2) == 'Notes':
+                parts.append('<ol class="report-notes">')
+                in_notes = True
+            continue
+        m = re.match(r'^(\d+)\. (.*)$', line)
+        if m and in_notes:
+            parts.append(f'<li value="{m.group(1)}">{html_escape(m.group(2))}</li>')
+            continue
+        parts.append(f'<p>{_report_inline_html(line)}</p>')
+    close_lists()
+    if in_notes:
+        parts.append('</ol>')
+    parts.append('</section>')
+    return title, '\n'.join(parts) + '\n'
+
+
+def run_descendants(
+    archive_root: Path,
+    person_id: str | None,
+    generations: int | None = None,
+    fmt: str = 'md',
+) -> Result:
+    """Write the printed descendant report for one deceased person. Exit codes:
+    0 written; 1 person not in the index, or a file left out because it would
+    not read; 2 refused (living, private, or a bad --generations); 3 no usable
+    index."""
+    precheck = _format_precheck(fmt, ('md', 'html'))
+    if precheck is not None:
+        return precheck
+    gens = _DESC_DEFAULT_GENERATIONS if generations is None else generations
+    if not 1 <= gens <= _DESC_MAX_GENERATIONS:
+        print(f'--generations must be between 1 and {_DESC_MAX_GENERATIONS} '
+              f'(you gave {gens}). Nothing was written.', file=sys.stderr)
+        return _views_result(EXIT_ERRORS)
+    conn = _open_index_or_explain(archive_root)
+    if conn is None:
+        return _views_result(EXIT_FAILURE)
+    try:
+        rp = _ReportPrivacy(conn, archive_root)
+        pid = rp.canon(person_id or '')
+        if pid is None:
+            print(f'No person {fmt_id_display(person_id or "")} in the index. '
+                  f'Run fha find "their name" to look them up by name, or fha index '
+                  f'if you just added them.', file=sys.stderr)
+            return _views_result(EXIT_WARNINGS)
+        shown_id = fmt_id_display(pid)
+        state = rp.state(pid)
+        if state == _PERSON_RESTRICTED:
+            unread = sorted(rp.unreadable_paths(pid))
+            if unread:
+                print(f'Could not read {", ".join(unread)} to check whether {shown_id} '
+                      f'asked to be kept private, so no report about them can be printed. '
+                      f'Nothing was written. Repair the file (`fha lint` points at '
+                      f'what is wrong), run `fha index`, then try again.', file=sys.stderr)
+            else:
+                print(f'{shown_id} is marked private (restricted), so it is left out of '
+                      f'printed reports. Nothing was written.', file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+        if state == _PERSON_LIVING:
+            name = rp.lookup(pid)['name']
+            they, them = _pronouns(rp.sex(pid))
+            has = 'have' if they == 'they' else 'has'
+            print(f'{name} is recorded as living, or nobody has recorded yet whether '
+                  f'{they} died, so a printed report about {them} would name a living '
+                  f'person. Choose a deceased ancestor instead. If {they} {has} died, '
+                  f'record it first: fha person set-living {shown_id} false',
+                  file=sys.stderr)
+            return _views_result(EXIT_ERRORS)
+
+        lines = _descendant_lines(rp, pid, gens)
+        out = _render_report(archive_root, 'descendants', pid, lines, fmt,
+                             html_builder=_descendant_md_to_html)
+        warnings = rp.unreadable_warnings()
+        for warning in warnings:
+            print(warning, file=sys.stderr)
+        rel = _rel_display(out, archive_root)
+        if fmt == 'html':
+            print(f'Wrote {rel}. Open it in a browser and print it, or choose Save as PDF '
+                  f'in the print box.')
+        else:
+            print(f'Wrote {rel}.')
+        return _views_result(EXIT_WARNINGS if warnings else EXIT_CLEAN, changed=[str(out)])
+    except GeneratedFileRefused as e:
+        return _views_result(_refused_exit(e))
+    except OSError as e:
+        return _views_result(_write_os_error_exit(e))
+    except RuntimeError as e:
+        return _views_result(_runtime_error_exit(e))
+    finally:
+        conn.close()
+
+
+def _cmd_descendants(args: argparse.Namespace) -> int:
+    """argparse → run_descendants bridge; returns the process exit code."""
+    archive_root = resolve_root_arg(args)
+    if archive_root is None:
+        return EXIT_FAILURE
+    return run_descendants(
+        archive_root,
+        getattr(args, 'person_id', None),
+        getattr(args, 'generations', None),
+        getattr(args, 'format', 'md') or 'md',
+    ).exit_code
+
+
 # ── Parser registration ───────────────────────────────────────────────────────
 
 # User-facing --help text (the module docstring stays developer-facing).
@@ -5985,6 +6279,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views descendants <p-id>     A printable numbered list of a person's descendants
 
 Add --format html (refresh also takes --format both) for a printable
 single-file page under generated/views/ (private and unredacted, with a
@@ -6196,6 +6491,23 @@ def register(subs: argparse._SubParsersAction) -> argparse.ArgumentParser:
     fs.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     fs.set_defaults(func=_cmd_family_sheet)
 
+    # ── descendants ───────────────────────────────────────────────────────────
+    de = vsubs.add_parser(
+        'descendants',
+        help="Print a numbered list of a person's descendants, each fact with its source.",
+        description=(
+            "Write a printed descendant report to generated/views/: the person is\n"
+            "1, their children 1.1, 1.2 (oldest first), their grandchildren 1.1.1,\n"
+            "and so on, with years, marriages and a note for each fact. Living\n"
+            "descendants are counted under their parent, never named, and their own\n"
+            "children are left out; private records are left out.\n"
+            'Requires a fresh .cache/index.sqlite (run `fha index` first).'
+        ),
+    )
+    _add_descendants_args(de)
+    de.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    de.set_defaults(func=_cmd_descendants)
+
     # ── clean ─────────────────────────────────────────────────────────────────
     cl = vsubs.add_parser(
         'clean',
@@ -6317,6 +6629,11 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
     fs.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
     fs.set_defaults(func=_cmd_family_sheet)
 
+    de = subs.add_parser('descendants', help="Print a numbered list of a person's descendants, each fact with its source.")
+    _add_descendants_args(de)
+    de.add_argument('--root', metavar='PATH', help='Archive root (auto-detected if omitted).')
+    de.set_defaults(func=_cmd_descendants)
+
     tr = subs.add_parser('tree', help='Traverse relationships and emit an ancestor/descendant/fan tree.')
     tr.add_argument('person_id', metavar='p-id', help='Seed person for traversal.')
     tr.add_argument('--mode', choices=['ancestors', 'descendants', 'fan'], required=True)
@@ -6330,6 +6647,14 @@ def register_standalone(subs: argparse._SubParsersAction) -> None:
 def _add_family_sheet_args(p: argparse.ArgumentParser) -> None:
     p.add_argument('person_id', metavar='p-id', help='A deceased person; the sheet is for them and a spouse.')
     p.add_argument('--spouse', metavar='p-id', help='Only the sheet for this spouse (default: one sheet per spouse).')
+    p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
+                   help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
+
+
+def _add_descendants_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument('person_id', metavar='p-id', help='A deceased person; everyone descended from them is listed.')
+    p.add_argument('--generations', type=int, metavar='N', default=None,
+                   help=f'How many generations to print, the person being the first (default {_DESC_DEFAULT_GENERATIONS}, most {_DESC_MAX_GENERATIONS}).')
     p.add_argument('--format', choices=['md', 'html'], default='md', dest='format',
                    help='md (default) or html: a page to print or save as PDF. Both go under generated/views/.')
 
