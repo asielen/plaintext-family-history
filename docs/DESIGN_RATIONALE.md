@@ -445,6 +445,7 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 
 - **Fuzzy feast matching.** The nearest name to a typo is a confident wrong day; an unknown name is refused with the list instead.
 - **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
+- **Keeping the record's own day in `date:` and fixing only the year** (`1732-02-11` for "11 Feb 1731/32"). Many genealogists write old-style English dates this way, but it mixes two calendars in one field, so a Russian register's birth would read 12 days early against a Polish one, and every age, order and anniversary check compares `date:` across people. SPEC §11 keeps `date:` in today's calendar and the record's words in `value`.
 - **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.
 
 ---

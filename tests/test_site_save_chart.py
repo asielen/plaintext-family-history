@@ -89,6 +89,13 @@ class ChartTagTests(unittest.TestCase):
         self.assertTrue(out.startswith('<svg class="x" data-fha-chart="a-b">'))
         self.assertEqual(out.count('data-fha-chart'), 1)
 
+    def test_tagging_leaves_a_fan_drawn_at_any_angle_as_it_is(self):
+        labels = {1: {'name': 'A B', 'surname': 'B'}, 2: {'name': 'C D', 'surname': 'D'}}
+        for deg in (180, 270, 360):
+            svg = site._render_fan_svg(labels, 2, span_deg=deg)
+            tagged = site._tag_chart(svg, 'a-b-ancestor-fan')
+            self.assertEqual(tagged.replace(' data-fha-chart="a-b-ancestor-fan"', '', 1), svg)
+
     def test_empty_name_leaves_the_markup_alone(self):
         self.assertEqual(site._tag_chart('<svg></svg>', ''), '<svg></svg>')
 
