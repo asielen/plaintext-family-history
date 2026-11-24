@@ -24,6 +24,7 @@ import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'tools'))
@@ -31,7 +32,8 @@ sys.path.insert(0, str(ROOT / 'tools'))
 import lint
 from _lib import load_fha_yaml
 
-PLAUSIBILITY_CODES = ('W163', 'W164', 'W165')
+PLAUSIBILITY_CODES = ('W163', 'W164', 'W165', 'W166', 'W167', 'W168', 'W169', 'W170',
+                      'W173')
 
 
 class _PlausibilityBase(unittest.TestCase):
@@ -285,6 +287,377 @@ class OnePersonDatesTests(_PlausibilityBase):
                 findings, _reg = lint._run_lint_core(root, load_fha_yaml(root))
                 self.assertEqual([f.message for f in findings
                                   if f.code in PLAUSIBILITY_CODES], [])
+
+
+class FamilyDatesTests(_PlausibilityBase):
+    """W166-W170: dates across a family that cannot all be true."""
+
+    S1, S2, S3 = 'S-1111111111', 'S-2222222222', 'S-3333333333'
+
+    def _tie(self, cid: str, parent: str, child: str, subtype: str | None = None) -> str:
+        return self._claim(cid, 'relationship', [parent, child], subtype=subtype,
+                           roles=f'{{parent: [{parent}], child: [{child}]}}')
+
+    def test_born_after_mother_died_names_the_tie_claim(self) -> None:
+        # The plan's sentence: Margaret born 1871, her mother died 1869.
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W167')
+        message = found.message
+        self.assertTrue(message.startswith(
+            'Margaret Cole (p-bbbbbbbbbb) is recorded as born 1871 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but her mother Ann Cole (p-aaaaaaaaaa) '
+            'died 1869 (c-2222222222 (sources/notes/rec_s-2222222222.md))'), message)
+        self.assertIn('Both cannot be true', message)
+        self.assertIn('The mother tie comes from c-3333333333 '
+                      '(sources/notes/rec_s-3333333333.md)', message)
+        self.assertEqual(Path(found.path).name, 'cole__margaret_P-bbbbbbbbbb.md')
+
+    def test_adoptive_mother_dead_before_birth_is_silent(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1871'))
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1869'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN, subtype='adoptive'))
+        self.assertEqual(self._codes('W167'), [])
+
+    def test_parent_tie_from_a_birth_claims_roles_counts(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Margaret Cole')
+        self._source(self.S1, self._claim(
+            'C-1111111111', 'birth', [self.BEN, self.ADA], date='1871',
+            roles=f'{{child: [{self.BEN}], parent: [{self.ADA}]}}'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1880'))
+        (found,) = self._codes('W168')
+        self.assertIn('before her mother Ann Cole (p-aaaaaaaaaa) was born, 1880', found.message)
+        self.assertIn('The parent tie (c-1111111111 (sources/notes/rec_s-1111111111.md))',
+                      found.message)
+
+    def test_mother_too_old_says_her_age(self) -> None:
+        self._person(self.ADA, 'Ann Cole')
+        self._person(self.BEN, 'Ben Cole', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1870'))
+        self._source(self.S2, self._claim('C-2222222222', 'birth', [self.ADA], date='1800'))
+        self._source(self.S3, self._tie('C-3333333333', self.ADA, self.BEN))
+        (found,) = self._codes('W168')
+        self.assertTrue(found.message.startswith(
+            'Ann Cole (p-aaaaaaaaaa) was at least 69 when her son Ben Cole (p-bbbbbbbbbb) '
+            'was born 1870'), found.message)
+        self.assertIn('older than a mother can be', found.message)
+        self.assertEqual(Path(found.path).name, 'cole__ben_P-bbbbbbbbbb.md')
+
+    def test_marriage_after_spouse_died(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ben Hartley (p-bbbbbbbbbb) died 1860 (c-1111111111 '
+            '(sources/notes/rec_s-1111111111.md)), but is recorded as marrying Ada Hartley '
+            '(p-aaaaaaaaaa) 1865'), found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__ben_P-bbbbbbbbbb.md')
+
+    def test_divorce_after_spouse_died_says_divorcing(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.BEN], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'divorce', [self.ADA, self.BEN],
+                                          date='1865'))
+        (found,) = self._codes('W166')
+        self.assertIn('but is recorded as divorcing Ada Hartley', found.message)
+
+    def test_marriage_parents_named_on_the_licence_are_not_spouses(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Carl Moss', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.CARA], date='1850'))
+        self._source(self.S2, self._claim(
+            'C-2222222222', 'marriage', [self.ADA, self.BEN, self.CARA], date='1865',
+            roles=f'{{spouse: [{self.ADA}, {self.BEN}], parent: [{self.CARA}]}}'))
+        self.assertEqual(self._codes('W166'), [])
+
+    def test_married_young(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA], date='1860'))
+        self._source(self.S2, self._claim('C-2222222222', 'marriage', [self.ADA, self.BEN],
+                                          date='1872'))
+        (found,) = self._codes('W166')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) was at most 12 at the marriage to Ben Hartley'),
+            found.message)
+
+    def test_siblings_too_close(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Cara Hartley')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.BEN], date='1850-01')
+                     + self._claim('C-1111111112', 'birth', [self.CARA], date='1850-06'))
+        self._source(self.S2, self._tie('C-2222222221', self.ADA, self.BEN)
+                     + self._tie('C-2222222222', self.ADA, self.CARA))
+        (found,) = self._codes('W169')
+        self.assertTrue(found.message.startswith(
+            'Cara Hartley (p-cccccccccc) (June 1850'), found.message)
+        self.assertIn('children of Ada Hartley (p-aaaaaaaaaa), born between 121 and 180 '
+                      'days apart', found.message)
+        self.assertEqual(Path(found.path).name, 'hartley__cara_P-cccccccccc.md')
+
+    def test_own_ancestor_loop_is_reported_once(self) -> None:
+        self._person(self.ADA, 'Ada Hartley')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._source(self.S1, self._tie('C-1111111111', self.ADA, self.BEN)
+                     + self._tie('C-1111111112', self.BEN, self.ADA))
+        (found,) = self._codes('W170')
+        self.assertTrue(found.message.startswith(
+            'Ada Hartley (p-aaaaaaaaaa) is recorded as her own ancestor: Ada Hartley '
+            '(p-aaaaaaaaaa) is the parent of Ben Hartley (p-bbbbbbbbbb), Ben Hartley '
+            '(p-bbbbbbbbbb) is the parent of Ada Hartley (p-aaaaaaaaaa).'), found.message)
+        self.assertIn('c-1111111111 (sources/notes/rec_s-1111111111.md)', found.message)
+        self.assertIn('c-1111111112', found.message)
+
+
+
+class ProbablyNotLivingTests(_PlausibilityBase):
+    """W173: someone marked `living: unknown` (so the family site shows
+    "Living Person" in their place) whose own or relatives' records say they
+    would be over 110 today. Lint names them and the one command he runs;
+    nothing flips the flag for him. The year is pinned to 2026."""
+
+    S1, S2, S3, S4 = 'S-1111111111', 'S-2222222222', 'S-3333333333', 'S-4444444444'
+
+    def setUp(self) -> None:
+        super().setUp()
+        patcher = mock.patch.object(lint, '_this_year', return_value=2026)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _parent_of(self, sid: str, cid: str, parent: str, child: str, *,
+                   subtype: str | None = None) -> None:
+        self._source(sid, self._claim(cid, 'relationship', [parent, child],
+                                      roles=f'{{child: [{child}], parent: [{parent}]}}',
+                                      subtype=subtype))
+
+    def _born(self, sid: str, cid: str, pid: str, date: str) -> None:
+        self._source(sid, self._claim(cid, 'birth', [pid], date=date))
+
+    def _father_and_son(self, son_born: str, *, subtype: str | None = None) -> None:
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN, subtype=subtype)
+        self._born(self.S2, 'C-2222222222', self.BEN, son_born)
+
+    def _w173(self) -> list:
+        return self._codes('W173')
+
+    def test_father_of_a_son_born_1871_is_suggested_and_names_the_command(self) -> None:
+        self._father_and_son('1871')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        message = found[0].message
+        self.assertTrue(message.startswith(
+            'Thomas Hartley (p-aaaaaaaaaa) is marked living: unknown, so the family site '
+            'and shared exports treat him as living and show "Living Person" in his place.'),
+            message)
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1871', message)
+        self.assertIn('c-2222222222 (sources/notes/rec_s-2222222222.md)', message)
+        self.assertIn('`fha person set-living p-aaaaaaaaaa false`', message)
+        self.assertIn('`fha person set-living p-aaaaaaaaaa true`', message)
+        self.assertEqual(Path(found[0].path).name, 'hartley__thomas_P-aaaaaaaaaa.md')
+
+    def test_son_born_1920_suggests_father_born_by_1908(self) -> None:
+        self._father_and_son('1920')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('so he was born by 1908 and would be at least 117 today', found[0].message)
+
+    def test_child_born_1925_fires_and_1930_is_silent(self) -> None:
+        for year, fires in (('1925', True), ('1930', False)):
+            with self.subTest(year=year):
+                self._father_and_son(year)
+                self.assertEqual(len(self._w173()), 1 if fires else 0)
+
+    def test_grandchild_chain_is_followed_and_explained(self) -> None:
+        # Thomas -> Ben (undated) -> Cara, born 1900: Ben born by 1888,
+        # Thomas by 1876. Ben is marked false, so only Thomas is asked about.
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._person(self.CARA, 'Cara Hartley', sex='F')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._parent_of(self.S2, 'C-2222222222', self.BEN, self.CARA)
+        self._born(self.S3, 'C-3333333333', self.CARA, '1900')
+        found = self._w173()
+        self.assertEqual(len(found), 1, [f.message for f in found])
+        message = found[0].message
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1888, going by his '
+                      'daughter Cara Hartley (p-cccccccccc), born by 1900', message)
+        self.assertIn('c-3333333333', message)
+        self.assertIn('Nobody is a parent before 12, so he was born by 1876', message)
+
+    def test_own_census_record_counts(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1880'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('A census record names her in 1880', found[0].message)
+
+    def test_two_disagreeing_birth_claims_naming_the_parent_read_as_one_range(self) -> None:
+        # Ben's accepted births say 1900 and 1930. Merged, he is born by 1930
+        # and she by 1918 (108 years): not worth asking. Read separately her
+        # 1900 record would put her born by 1900 and warn on a correct tree.
+        self._person(self.ADA, 'Ada Hartley', sex='F', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        for sid, cid, date in ((self.S1, 'C-1111111111', '1900'),
+                               (self.S2, 'C-2222222222', '1930')):
+            self._source(sid, self._claim(
+                cid, 'birth', [self.BEN, self.ADA], date=date,
+                roles=f'{{child: [{self.BEN}], parent: [{self.ADA}]}}'))
+        self.assertEqual(self._w173(), [])
+
+    def test_a_note_claim_does_not_count(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'note', [self.ADA], date='1880'))
+        self.assertEqual(self._w173(), [])
+
+    def test_mother_died_1890_suggests_her_undated_child(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='false')
+        self._person(self.BEN, 'Ben Hartley', sex='M', living='unknown')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.ADA], date='1890'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('His mother Ada Hartley (p-aaaaaaaaaa) died 1890', found[0].message)
+        self.assertIn('c-2222222222', found[0].message)
+
+    def test_provisional_birth_counts(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown', extra='birth: 1840~\n')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Her record gives a birth estimate of about 1840', found[0].message)
+
+    def test_provisional_death_fires(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown', extra='death: 1990\n')
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('Her record gives a death estimate (1990)', found[0].message)
+
+    def test_living_true_and_false_are_never_questioned(self) -> None:
+        for living in ('true', 'false'):
+            with self.subTest(living=living):
+                self._person(self.ADA, 'Ada Hartley', living=living, extra='death: 1990\n')
+                self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA],
+                                                  date='1880'))
+                self.assertEqual(self._w173(), [])
+
+    def test_person_w136_names_is_not_repeated(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'death', [self.ADA], date='1890')
+                     + self._claim('C-1111111112', 'census', [self.ADA], date='1880'))
+        self.assertEqual(len(self._codes('W136')), 1)
+        self.assertEqual(self._w173(), [])
+
+    def test_adoptive_child_does_not_age_the_parent(self) -> None:
+        self._father_and_son('1871', subtype='adoptive')
+        self.assertEqual(self._w173(), [])
+
+    def test_suggested_claims_do_not_count(self) -> None:
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1880',
+                                          status='suggested'))
+        self.assertEqual(self._w173(), [])
+
+    def test_recent_records_are_silent(self) -> None:
+        # A 1950 census names her: she may well be alive at 76.
+        self._person(self.ADA, 'Ada Hartley', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'census', [self.ADA], date='1950'))
+        self.assertEqual(self._w173(), [])
+
+    def test_a_living_storyteller_is_not_aged_by_the_story(self) -> None:
+        # He interviews his aunt Cara about her grandfather's 1890 death and
+        # her grandfather's 1870 birth: the claims carry the event's date,
+        # not the day she told it, so she is not "born by 1890".
+        self._person(self.ADA, 'Will Hartley', sex='M', living='false')
+        self._person(self.CARA, 'Cara Hartley', living='unknown')
+        for role, ctype, date in (('narrator', 'death', '1890'),
+                                  ('grandchild', 'birth', '1870'),
+                                  ('informant', 'immigration', '1880')):
+            with self.subTest(role=role):
+                subject = {'death': 'deceased', 'birth': 'child'}.get(ctype, 'subject')
+                self._source(self.S1, self._claim(
+                    'C-1111111111', ctype, [self.ADA, self.CARA], date=date,
+                    roles=f'{{{subject}: [{self.ADA}], {role}: [{self.CARA}]}}'))
+                self.assertEqual(self._w173(), [])
+
+    def test_a_witness_on_an_old_record_still_counts(self) -> None:
+        self._person(self.ADA, 'Will Hartley', sex='M', living='false')
+        self._person(self.CARA, 'Cara Hartley', living='unknown')
+        self._source(self.S1, self._claim(
+            'C-1111111111', 'marriage', [self.ADA, self.CARA], date='1890',
+            roles=f'{{spouse: [{self.ADA}], witness: [{self.CARA}]}}'))
+        self.assertEqual(len(self._w173()), 1)
+
+    def test_a_childs_death_ages_the_undated_parent(self) -> None:
+        # Ben's only record is his death in 1900, so he was born by 1900 and
+        # his father Thomas by 1888.
+        self._person(self.ADA, 'Thomas Hartley', sex='M', living='unknown')
+        self._person(self.BEN, 'Ben Hartley', sex='M')
+        self._parent_of(self.S1, 'C-1111111111', self.ADA, self.BEN)
+        self._source(self.S2, self._claim('C-2222222222', 'death', [self.BEN], date='1900'))
+        found = self._w173()
+        self.assertEqual(len(found), 1)
+        self.assertIn('His son Ben Hartley (p-bbbbbbbbbb) was born by 1900', found[0].message)
+        self.assertIn('c-2222222222', found[0].message)
+
+    def test_an_accepted_birth_is_not_outvoted_by_an_earlier_record(self) -> None:
+        # Born 1950 by his birth record; a misfiled 1900 census names him.
+        # Asking to mark a possibly living 76-year-old dead would put him on
+        # the family site.
+        self._person(self.ADA, 'Ben Hartley', sex='M', living='unknown')
+        self._source(self.S1, self._claim('C-1111111111', 'birth', [self.ADA], date='1950'))
+        self._source(self.S2, self._claim('C-2222222222', 'census', [self.ADA], date='1900'))
+        self.assertEqual(self._w173(), [])
+
+    def test_an_accepted_birth_is_not_outvoted_by_a_relatives_record(self) -> None:
+        # Born 1950 by his birth record; a child misfiled as born 1900, or a
+        # mother recorded as dying in 1890, is a conflict, not his age.
+        for case in ('child', 'mother'):
+            with self.subTest(case=case):
+                self._person(self.BEN, 'Ben Hartley', sex='M', living='unknown')
+                self._born(self.S1, 'C-1111111111', self.BEN, '1950')
+                if case == 'child':
+                    self._person(self.CARA, 'Cara Hartley')
+                    self._parent_of(self.S2, 'C-2222222222', self.BEN, self.CARA)
+                    self._born(self.S3, 'C-3333333333', self.CARA, '1900')
+                else:
+                    self._person(self.ADA, 'Ada Hartley')
+                    self._parent_of(self.S2, 'C-2222222222', self.ADA, self.BEN)
+                    self._source(self.S3, self._claim('C-3333333333', 'death', [self.ADA],
+                                                      date='1890'))
+                self.assertEqual(self._w173(), [])
+
+    def test_a_provisional_death_that_is_not_a_date_is_silent(self) -> None:
+        for value in ('unknown', '"?"', 'false'):
+            with self.subTest(value=value):
+                self._person(self.ADA, 'Ada Hartley', living='unknown',
+                             extra=f'death: {value}\n')
+                self.assertEqual(self._w173(), [])
+
+    def test_lint_never_writes_living(self) -> None:
+        self._father_and_son('1871')
+        before = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            try:
+                lint._standalone_main(['--root', str(self.root)])
+            except SystemExit:
+                pass
+        self.assertIn('W173', out.getvalue())
+        after = {p: p.read_bytes() for p in self.root.rglob('*') if p.is_file()}
+        self.assertEqual(before, after)
 
 
 _GIT = shutil.which('git')

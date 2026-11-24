@@ -69,8 +69,17 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    source_dates_agree,               # W162 date rule, shared with fha compare
     SOURCE_FRONTMATTER_KEY_ORDER,
     one_person_problems,              # W163-W165: dates that cannot all be true
+    family_problems,                  # W166-W170: the same, across a family
+    ParentEdge,
+    PARENTAGE_CLAIM_TYPES,
+    LIVING_CUTOFF_YEARS,              # W173: probably not living
+    PLAUSIBLE_MIN_PARENT_AGE,
+    born_by_estimate,
+    claim_date_range,
+    lived_claims_from_claims,
     plausibility_input_from_claims,
     plausibility_message,
     sqlite_readonly_uri,
@@ -307,9 +316,11 @@ configure_utf8_stdout()
 #    _check_inbox_notes          - W157 on the inbox's waiting notes files
 #
 #  Bracket / Ahnentafel checks (W103, W110, W119, W120, W127, W129)
-#    _build_child_edges          - parent → {child → {nature,…}} from the accepted,
+#    _build_parent_edge_claims   - parent → {child → ParentEdge} from the accepted,
 #                                   non-negated relationship/birth claims the indexer
-#                                   derives parent edges from (lint's twin of it)
+#                                   derives parent edges from (lint's twin of it),
+#                                   keeping the claim ids behind each tie
+#    _build_child_edges          - parent → {child → {nature,…}}: its projection
 #    _build_children_of          - parent → {children}; genetic_only filters numbering
 #    _check_bracket_lists        - W103: stale bracket lists + missing `+ spouse` half
 #    _build_ahnentafel_lint      - BFS from root_person using in-memory registry;
@@ -368,8 +379,9 @@ configure_utf8_stdout()
 #                                   root file by path that no source owns (#249)
 #    _check_died_but_living      - W136: an accepted death/burial for a person still
 #                                   treated as living (living: unknown or true)
-#    _check_dates_that_cannot_be_true - W163-W165: one person's own dates that
-#                                   cannot all be true (_lib's plausibility engine)
+#    _check_dates_that_cannot_be_true - W163-W170: one person's own dates, and a
+#                                   family's, that cannot all be true (_lib's
+#                                   plausibility engine)
 #    _plausibility_input         - the registry's accepted claims as that engine's
 #                                   input, built once per run and kept on the registry
 #    _claim_ref                  - `c-… (sources/…/file.md)` for a finding's message
@@ -2441,7 +2453,7 @@ def _process_source_file(path: Path, registry: Registry, findings: list[Finding]
 # derive one from: `index.py` `_derive_relationships` mints parentage from these
 # two and nothing else. `birth` joined the list in #71 - a birth register is the
 # plainest parentage evidence an archive ever holds.
-_PARENTAGE_CLAIM_TYPES = ('relationship', 'birth')
+_PARENTAGE_CLAIM_TYPES = PARENTAGE_CLAIM_TYPES
 
 
 def _check_merge_pointers(registry: Registry, findings: list[Finding],
@@ -2545,6 +2557,9 @@ def _registry_merge_survivors(registry: Registry) -> dict[str, str]:
 def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     """parent_pid → {child_pid: {nature, …}} from the claims that derive parentage.
 
+    The claims themselves are kept by `_build_parent_edge_claims`, which this
+    projects, so the date checks (W167-W170) read exactly these ties.
+
     This is lint's in-memory twin of the indexer's `relationships` table, and it
     has to read the SAME claims the same way. A twin that reads a narrower set
     tells the human their correctly-written record is broken and names a fix
@@ -2584,8 +2599,17 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
     `claim_persons`: a birth filed against the duplicate before the merge
     still puts the survivor's parents in the tree.
     """
+    return {ppid: {cpid: set(edge.natures) for cpid, edge in kids.items()}
+            for ppid, kids in _build_parent_edge_claims(registry).items()}
+
+
+def _build_parent_edge_claims(registry: Registry) -> dict[str, dict[str, ParentEdge]]:
+    """parent_pid → {child_pid: ParentEdge}: `_build_child_edges`'s ties with
+    the ids of the claims that make each one, so "born after her mother died"
+    can name the record that links the mother. The reading rules are the
+    ones `_build_child_edges` documents; this is their one home."""
     survivors = _registry_merge_survivors(registry)
-    edges: dict[str, dict[str, set[str]]] = {}
+    edges: dict[str, dict[str, ParentEdge]] = {}
     for claims in registry.source_claims.values():
         for claim in claims:
             if (not isinstance(claim, dict)
@@ -2603,9 +2627,17 @@ def _build_child_edges(registry: Registry) -> dict[str, dict[str, set[str]]]:
             child_ids = {survivors.get(p, p) for p in child_ids}
             parent_ids = {survivors.get(p, p) for p in parent_ids}
             subtype = str(claim.get('subtype', '')).strip().lower()
+            cid = normalize_id(str(claim.get('id') or ''))
             for cpid in sorted(child_ids):
                 for ppid in sorted(parent_ids):
-                    edges.setdefault(ppid, {}).setdefault(cpid, set()).add(subtype)
+                    edge = edges.setdefault(ppid, {}).setdefault(
+                        cpid, ParentEdge(natures=set(), claims=[]))
+                    edge.natures.add(subtype)
+                    if cid and cid not in edge.claims:
+                        edge.claims.append(cid)
+    for kids in edges.values():
+        for edge in kids.values():
+            edge.claims.sort()
     return edges
 
 
@@ -4648,8 +4680,10 @@ def _cross_file_checks(registry: Registry, findings: list[Finding], with_exif: b
 
     registry.lap('accepted claims (evidence and analysis)')
 
-    # W163-W165: one person's own dates that cannot all be true
+    # W163-W170: one person's own dates, and a family's, that cannot all be true
     _check_dates_that_cannot_be_true(registry, findings)
+    # W173: marked living: unknown, but the family's dates say over 110
+    _check_probably_not_living(registry, findings, alias_map)
     registry.lap('dates that cannot all be true')
 
     # W107 (claims): a claim still naming a merged person. Once an error
@@ -4770,28 +4804,7 @@ def _check_died_but_living(
     A merged record is skipped - W107 already asks for the claim to name the
     survivor. One finding per person, naming the first such claim.
     """
-    first_claim: dict[str, tuple[str, str, bool]] = {}
-    for sid in sorted(registry.source_claims):
-        for claim in registry.source_claims[sid]:
-            if not isinstance(claim, dict):
-                continue
-            ctype = str(claim.get('type', '')).strip().lower()
-            if ctype not in DEATH_CLAIM_TYPES:
-                continue
-            if str(claim.get('status', '')).strip() != 'accepted':
-                continue
-            if str(claim.get('negated')).strip().lower() == 'true':
-                continue
-            # `unsure` (a roles: entry for someone missing from persons:,
-            # or a name nobody resolves) names nobody: read without that
-            # entry, the widow on a husband's death record looks like the
-            # only person on it, and this would tell the owner to mark her
-            # as dead (#250 review). W133 reports the orphaned role itself.
-            reading = claim_death_reading(claim, alias_map)
-            cid = str(claim.get('id') or '?')
-            for pid, named in ([(p, True) for p in reading.named]
-                               + [(p, False) for p in reading.by_elimination]):
-                first_claim.setdefault(pid, (cid, ctype, named))
+    first_claim = _accepted_death_names(registry, alias_map)
 
     for pid in sorted(first_claim):
         meta = registry.person_meta.get(pid)
@@ -4824,13 +4837,53 @@ def _check_died_but_living(
         findings.append(Finding('W', 'W136', paths[0], message))
 
 
+def _accepted_death_names(
+    registry: Registry, alias_map: dict[str, str],
+) -> dict[str, tuple[str, str, bool]]:
+    """{pid: (first claim id, its type, named as `deceased:`?)} for everyone
+    an accepted, non-negated death or burial claim says died, read as
+    `_lib.claim_death_reading` reads it. W136 reports from it, and W173
+    skips everyone in it, so the two never ask about one person twice."""
+    first_claim: dict[str, tuple[str, str, bool]] = {}
+    for sid in sorted(registry.source_claims):
+        for claim in registry.source_claims[sid]:
+            if not isinstance(claim, dict):
+                continue
+            ctype = str(claim.get('type', '')).strip().lower()
+            if ctype not in DEATH_CLAIM_TYPES:
+                continue
+            if str(claim.get('status', '')).strip() != 'accepted':
+                continue
+            if str(claim.get('negated')).strip().lower() == 'true':
+                continue
+            # `unsure` (a roles: entry for someone missing from persons:,
+            # or a name nobody resolves) names nobody: read without that
+            # entry, the widow on a husband's death record looks like the
+            # only person on it, and this would tell the owner to mark her
+            # as dead (#250 review). W133 reports the orphaned role itself.
+            reading = claim_death_reading(claim, alias_map)
+            cid = str(claim.get('id') or '?')
+            for pid, named in ([(p, True) for p in reading.named]
+                               + [(p, False) for p in reading.by_elimination]):
+                first_claim.setdefault(pid, (cid, ctype, named))
+    return first_claim
+
+
 # The lint code for each kind of date problem `_lib.one_person_problems`
-# reports, written out here so the TOOLING §3 table test sees every code.
+# and `_lib.family_problems` report, written out here so the TOOLING §3
+# table test sees every code.
 _PLAUSIBILITY_CODES = {
     'death-before-birth': 'W163', 'burial-before-death': 'W163',
     'baptism-before-birth': 'W163', 'burial-before-birth': 'W163',
     'long-life': 'W164',
     'life-after-death': 'W165',
+    'married-before-born': 'W166', 'married-after-death': 'W166',
+    'married-young': 'W166',
+    'born-after-mother-died': 'W167', 'born-after-father-died': 'W167',
+    'parent-born-after-child': 'W168', 'parent-too-young': 'W168',
+    'mother-too-old': 'W168', 'father-too-old': 'W168',
+    'siblings-too-close': 'W169',
+    'own-ancestor': 'W170',
 }
 
 
@@ -4839,7 +4892,11 @@ def _plausibility_input(registry: Registry):
 
     Built once per lint run and kept on the registry, because each family of
     date checks reads the same input. Merged records count for their
-    survivor (SPEC §9), through the same map the rest of lint uses."""
+    survivor (SPEC §9), through the same map the rest of lint uses.
+
+    The parent ties are the ones the bracket and numbering checks read
+    (`_build_parent_edge_claims`), so a date warning never doubts a tie the
+    family tree does not have, or misses one it does."""
     cached = getattr(registry, '_plausibility_input', None)
     if cached is not None:
         return cached
@@ -4848,6 +4905,10 @@ def _plausibility_input(registry: Registry):
     data = plausibility_input_from_claims(
         claims, registry.person_meta, registry.alias_map,
         _registry_merge_survivors(registry))
+    data.parent_edges = {
+        (ppid, cpid): edge
+        for ppid, kids in _build_parent_edge_claims(registry).items()
+        for cpid, edge in kids.items() if ppid != cpid}
     registry._plausibility_input = data
     return data
 
@@ -4869,18 +4930,22 @@ def _claim_ref(registry: Registry, claim_id: str) -> str:
 
 
 def _check_dates_that_cannot_be_true(registry: Registry, findings: list[Finding]) -> None:
-    """W163-W165: "Ada Hartley is recorded as dying 1850, before the birth
-    recorded for her, 1871." One person's own accepted dates that cannot all
-    be true, named with both claims and their files so he can open them side
-    by side.
+    """W163-W170: "Ada Hartley is recorded as dying 1850, before the birth
+    recorded for her, 1871", or "Margaret Cole is recorded as born 1871, but
+    her mother Ann Cole died 1869." Accepted dates, one person's own or
+    across a family, that cannot all be true, named with every claim and its
+    file so he can open them side by side.
 
-    The rules are `_lib.one_person_problems` (one engine, so the GEDCOM
-    import plan asks the same question). They fire only when the conflict
+    The rules are `_lib.one_person_problems` and `_lib.family_problems` (one
+    engine, so the GEDCOM import plan asks the same question). A family
+    finding sits on the child's profile (the spouse's, for a marriage; the
+    first person by id, for a loop). They fire only when the conflict
     holds for every date the claims allow, and two readings of one fact are
     merged into one range (that disagreement is `fha xref`'s). Each finding
     sits on the profile of the person it is about. A merged record is
     skipped: its claims already count for the survivor. Report only."""
-    for problem in one_person_problems(_plausibility_input(registry)):
+    data = _plausibility_input(registry)
+    for problem in one_person_problems(data) + family_problems(data):
         pid = problem.pids[0]
         meta = registry.person_meta.get(pid) or {}
         if str(meta.get('status', '')).strip().lower() == 'merged':
@@ -4890,6 +4955,162 @@ def _check_dates_that_cannot_be_true(registry: Registry, findings: list[Finding]
             problem, lambda p: _person_label(registry, p),
             lambda cid: _claim_ref(registry, cid))
         findings.append(Finding('W', code, _profile_path_for(registry, pid), message))
+
+
+def _this_year() -> int:
+    """Today's year, for W173's "would be over 110 today" (tests pin it)."""
+    return datetime.date.today().year
+
+
+# Pronouns by `sex:`: (he, him, his, His); anything but M or F is "they".
+_W173_PRONOUNS = {'M': ('he', 'him', 'his', 'His'), 'F': ('she', 'her', 'her', 'Her')}
+_W173_THEY = ('they', 'them', 'their', 'Their')
+_W173_CHILD_WORDS = {'M': 'son', 'F': 'daughter'}
+_W173_PARENT_WORDS = {'M': 'father', 'F': 'mother'}
+_W173_CHAIN_LINKS = 3     # child links named before "records of later generations"
+
+
+def _check_probably_not_living(
+    registry: Registry, findings: list[Finding], alias_map: dict[str, str],
+) -> None:
+    """W173: "Thomas Hartley shows as Living Person on the family site, but
+    his son was born in 1871." Someone marked `living: unknown` is treated as
+    living (SPEC §19), so the site and every shared export hide them; when
+    their own or their family's accepted records put their birth more than
+    LIVING_CUTOFF_YEARS ago, lint names them, the record that says so, and
+    the command he runs himself. A provisional `death:` on the record fires
+    it too: he already wrote down that they died.
+
+    The latest possible birth year is `_lib.born_by_estimate`: their own
+    dated records (any type but `note`), their birth or baptism, a
+    provisional `birth:`, a genetic child's estimate less 12 (through
+    grandchildren), a genetic mother's death or a genetic father's plus a
+    year. Genetic edges only: an adopted child can be older than the parent.
+    `living: true` is his own statement and is never questioned; `false` has
+    nothing to fix; a missing flag is E010's. Anyone W136 already names is
+    skipped. Report only: nothing writes the flag."""
+    meta_by_pid = registry.person_meta
+    candidates = [pid for pid in sorted(meta_by_pid)
+                  if str(meta_by_pid[pid].get('status', '')).strip().lower() != 'merged'
+                  and normalize_living(meta_by_pid[pid].get('living')) == 'unknown']
+    if not candidates:
+        return
+    survivors = _registry_merge_survivors(registry)
+    w136 = {survivors.get(p, p) for p in _accepted_death_names(registry, alias_map)}
+    parents_of: dict[str, set[str]] = {}
+    children_of: dict[str, set[str]] = {}
+    for parent, kids in _build_child_edges(registry).items():
+        for child, natures in kids.items():
+            if any(is_genetic_parent_subtype(n) for n in natures):
+                children_of.setdefault(parent, set()).add(child)
+                parents_of.setdefault(child, set()).add(parent)
+    claims = [claim for sid in sorted(registry.source_claims)
+              for claim in registry.source_claims[sid]]
+    lived = lived_claims_from_claims(claims, registry.alias_map, survivors)
+    data = _plausibility_input(registry)
+    born_by = born_by_estimate(data, meta_by_pid, parents_of, children_of, lived)
+    this_year = _this_year()
+
+    def ref(claim) -> str:
+        return _claim_ref(registry, claim.claim_id)
+
+    for pid in candidates:
+        if pid in w136:
+            continue
+        meta = meta_by_pid[pid]
+        he, him, his, His = _W173_PRONOUNS.get(data.sex.get(pid, ''), _W173_THEY)
+        has = 'have' if he == 'they' else 'has'
+        is_ = 'are' if he == 'they' else 'is'
+        death = optional_scalar(meta.get('death'))
+        # Only a date counts: `death: unknown` or `death: "?"` says nothing.
+        span = claim_date_range({'date': death}) if death else None
+        if span is None or span[1] is None:
+            death = None
+        estimate = born_by.get(pid)
+        if death:
+            middle = f'{His} record gives a death estimate ({humanize_edtf(death)}).'
+        elif estimate is not None and this_year - estimate.year > LIVING_CUTOFF_YEARS:
+            # Born on 31 December of that year at the latest, so this is the
+            # youngest age the records allow.
+            age = this_year - estimate.year - 1
+            was = 'were' if he == 'they' else 'was'
+            evidence = _w173_evidence(registry, estimate, (his, His), ref)
+            kind = estimate.evidence[0]
+            if kind == 'child':
+                middle = (f'{evidence}. Nobody is a parent before {PLAUSIBLE_MIN_PARENT_AGE}, '
+                          f'so {he} {was} born by {estimate.year} and would be at least '
+                          f'{age} today.')
+            elif kind in ('own', 'parent-died'):
+                middle = (f'{evidence}, so {he} {was} born by {estimate.year} and would be '
+                          f'at least {age} today.')
+            else:
+                middle = f'{evidence}, so {he} would be at least {age} today.'
+        else:
+            continue
+        shown = fmt_id_display(pid)
+        message = (
+            f'{_person_label(registry, pid)} is marked living: unknown, so the family site '
+            f'and shared exports treat {him} as living and show "Living Person" in {his} '
+            f'place. {middle} If {he} {has} died, run `fha person set-living {shown} false`; '
+            f'if {he} {is_} alive, run `fha person set-living {shown} true` and this stops.')
+        findings.append(Finding('W', 'W173', _profile_path_for(registry, pid), message))
+
+
+def _w173_evidence(registry: Registry, estimate, pronouns: tuple[str, str], ref) -> str:
+    """The sentence saying why someone was born by a year: the record, or
+    the chain of children down to the record that settles it."""
+    his, His = pronouns
+    kind = estimate.evidence[0]
+    if kind == 'own':
+        claim = estimate.evidence[1]
+        word = 'school' if claim.ctype == 'education' else claim.ctype
+        article = 'An' if word[:1] in 'aeiou' else 'A'
+        sex_word = {'his': 'him', 'her': 'her'}.get(his, 'them')
+        return f'{article} {word} record names {sex_word} in {estimate.year} ({ref(claim)})'
+    if kind in ('birth', 'baptism', 'death', 'burial'):
+        claim = estimate.evidence[1]
+        return f'{His} {kind} is recorded {humanize_edtf(claim.date)} ({ref(claim)})'
+    if kind == 'provisional':
+        return f'{His} record gives a birth estimate of {humanize_edtf(estimate.evidence[1])}'
+    if kind == 'parent-died':
+        _kind, parent, claim = estimate.evidence
+        sex = (registry.person_meta.get(parent) or {}).get('sex')
+        word = _W173_PARENT_WORDS.get(str(sex or '').strip(), 'parent')
+        verb = 'was buried' if claim.ctype == 'burial' else 'died'
+        return (f'{His} {word} {_person_label(registry, parent)} {verb} '
+                f'{humanize_edtf(claim.date)} ({ref(claim)})')
+    # A chain of children: "His son Ben was born by 1888, going by his
+    # daughter Cara, born by 1900 (c-…)".
+    parts: list[str] = []
+    owner_his, owner_His = his, His
+    link = estimate
+    shown = 0
+    while link.evidence[0] == 'child':
+        _kind, child, child_est = link.evidence
+        if shown == _W173_CHAIN_LINKS:
+            parts.append(', going by records of later generations')
+            while link.evidence[0] == 'child':
+                link = link.evidence[2]
+            break
+        sex = str((registry.person_meta.get(child) or {}).get('sex') or '').strip()
+        word = _W173_CHILD_WORDS.get(sex, 'child')
+        name = _person_label(registry, child)
+        if shown == 0:
+            parts.append(f'{owner_His} {word} {name} was born by {child_est.year}')
+        else:
+            parts.append(f', going by {owner_his} {word} {name}, born by {child_est.year}')
+        owner_his = _W173_PRONOUNS.get(sex, _W173_THEY)[2]
+        owner_His = _W173_PRONOUNS.get(sex, _W173_THEY)[3]
+        link = child_est
+        shown += 1
+    final = link.evidence
+    if final[0] == 'provisional':
+        tail = f' (the birth estimate {humanize_edtf(final[1])} on that record)'
+    elif final[0] == 'parent-died':
+        tail = f' ({ref(final[2])})'
+    else:
+        tail = f' ({ref(final[1])})'
+    return ''.join(parts) + tail
 
 
 def _check_file_name_surnames(registry: Registry, findings: list[Finding]) -> None:
@@ -5015,20 +5236,6 @@ def _fix_aliases(
 _SITE_NAMES = {'ancestry': 'Ancestry', 'fs': 'FamilySearch'}
 
 
-def _dates_agree(a: str, b: str, year) -> bool:
-    """Two sources' dates name one event: the same year (the collection's
-    own year, for a census, when a source gives none), and the same day when
-    both give a full date. A source with no date and no collection year to
-    stand in is never matched: nothing says it is the same event."""
-    ya, yb = (str(d)[:4] if str(d)[:4].isdigit() else None for d in (a, b))
-    ya = ya or (str(year) if year else None)
-    yb = yb or (str(year) if year else None)
-    if not ya or ya != yb:
-        return False
-    full = re.compile(r'^\d{4}-\d{2}-\d{2}$')
-    return not (full.match(str(a)) and full.match(str(b)) and str(a) != str(b))
-
-
 def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) -> None:
     """W162: two sources that are one record saved from two sites.
 
@@ -5078,7 +5285,7 @@ def _check_same_record_two_sites(registry: Registry, findings: list[Finding]) ->
                 if a[1] == b[1] or not same_record_subject(a[6], b[6]) or not (a[3] & b[3]):
                     continue
                 _gid, title, year = a[5]
-                if not _dates_agree(a[4], b[4], year):
+                if not source_dates_agree(a[4], b[4], year):
                     continue
                 first, second = sorted((a, b), key=lambda m: m[0])
                 path = registry.source_paths.get(second[0], registry.archive_root / str(second[0]))
