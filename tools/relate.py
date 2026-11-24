@@ -164,7 +164,9 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str | None,
     pid_a, pid_b = normalize_id(a_raw), normalize_id(b_raw)
     for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
         if is_valid_id(pid) and id_type_of(pid) != 'P':
-            msg = (f'{raw!r} is not a person ID. Give two P-ids or full names, '
+            msg = (f'{raw!r} is not a person ID. Give one P-id or full name, '
+                   f'e.g. `{_EXAMPLE_ONE}`.' if everyone else
+                   f'{raw!r} is not a person ID. Give two P-ids or full names, '
                    f'e.g. `{_EXAMPLE_TWO}`.')
             r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-id'})
             r.add('error', msg, path=archive_root)

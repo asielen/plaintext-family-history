@@ -932,7 +932,7 @@
     {
       "path": ".fha/tools/relate.py",
       "category": "operating",
-      "sha256": "440656fb72066dbcd0dff2d6a5d59b68c33a601f043bf190c146ed2c56abc093",
+      "sha256": "f1e5851cb99518f15fd24c7a8f078f14d2fef90bd35dbb63f3cd0a40bd506c4d",
       "spec_version": "2.31",
       "src": "tools/relate.py"
     },

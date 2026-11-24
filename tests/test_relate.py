@@ -922,6 +922,13 @@ class EveryoneTests(unittest.TestCase):
         self.assertEqual(r.exit_code, EXIT_ERRORS)
         self.assertIn('lists everyone related to one person', r.messages[0].text)
 
+    def test_all_with_a_source_id_shows_the_all_example(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'S-0000000000', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+        self.assertNotIn('Give two', r.messages[0].text)
+        self.assertIn('--all', r.messages[0].text)
+
     def test_all_with_cm_refused(self):
         r = relate.run_relate(self.root, load_fha_yaml(self.root), A, None, '450',
                               everyone=True)
