@@ -281,6 +281,7 @@ fha find --sounds-like "NAME"   people whose names sound like NAME in any spelli
 fha find --spelling-groups   surnames that sound alike (Hartley, Hartly), advisory, changes nothing
                             (Daitch-Mokotoff; Jan also finds John); a hint, never a merge
 fha relate <p-A> <p-B>       how two people are related: blood, tie by marriage (in-law, step), path
+fha relate <p-A> --all       everyone related to one person: blood relatives nearest first, then by marriage
 fha metrics [<p-id>]         how well documented each person is: birth record, censuses,
                             parents, marriage records, death, plus archive totals
                             (computed fresh; never written down; --include-suggested

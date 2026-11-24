@@ -478,14 +478,17 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A --all        Everyone related to one person: blood relatives
+                              nearest first, then those related by marriage
 
 A read-only view over accepted relationship claims: nothing is written.
 ```
 
 | Argument | What it does |
 |---|---|
-| `P-A` | First person: ID or full name |
-| `P-B` | Second person: ID or full name |
+| `[P-A]` | First person: ID or full name |
+| `[P-B]` | Second person: ID or full name |
+| `--all` | List everyone related to one person, by blood or by marriage |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
 

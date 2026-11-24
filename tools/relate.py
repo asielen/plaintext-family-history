@@ -51,6 +51,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sqlite3
 import sys
 from pathlib import Path
 
@@ -59,6 +60,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from _lib import (
     configure_utf8_stdout,
     EXIT_CLEAN,
+    EXIT_ERRORS,
     EXIT_FAILURE,
     FhaConfigError,
     Result,
@@ -67,6 +69,7 @@ from _lib import (
     id_type_of,
     is_valid_id,
     kin_graph,
+    kinship_relatives,
     kinship_answer,
     kinship_path,
     link_writer,
@@ -100,16 +103,42 @@ _REQUIRED_TABLES = ('persons', 'relationships', 'claims', 'claim_persons', 'alia
 
 # ── Engine / interface ────────────────────────────────────────────────────────
 
-def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: str) -> Result:
+_EXAMPLE_ONE = 'fha relate P-de957bcda1 --all'
+_EXAMPLE_TWO = 'fha relate P-de957bcda1 P-83e768cacb'
+
+
+def _refusal(archive_root: Path, text: str) -> Result:
+    """A wrong mix of names and flags, said plainly with the fix (exit 2)."""
+    r = Result(ok=False, exit_code=EXIT_ERRORS, data={'error': 'usage'})
+    r.add('error', text, path=archive_root)
+    return r
+
+
+def run_relate(archive_root: Path, fha_config: dict, person_a: str | None,
+               person_b: str | None = None, *, everyone: bool = False) -> Result:
     """Compute the blood relationship, the tie by marriage and the shortest path between two
-    people and return a structured Result. A pure read over the index; never
+    people and return a structured Result; with `everyone`, list everyone
+    related to one person instead. A pure read over the index; never
     writes. The text formatter and `--json` both render this one Result."""
-    a_raw, b_raw = person_a, person_b
-    pid_a, pid_b = normalize_id(person_a), normalize_id(person_b)
+    if everyone and person_b:
+        return _refusal(archive_root,
+                        '`--all` lists everyone related to one person. Give one name or ID, '
+                        f'for example `{_EXAMPLE_ONE}`.')
+    if not person_a:
+        return _refusal(archive_root,
+                        f'Give two people to see how they are related, for example `{_EXAMPLE_TWO}`, '
+                        f'or one person and `--all` to list everyone related to them, '
+                        f'for example `{_EXAMPLE_ONE}`.')
+    if not everyone and not person_b:
+        return _refusal(archive_root,
+                        f'Give two people to see how they are related, for example `{_EXAMPLE_TWO}`, '
+                        'or add --all to list everyone related to this one.')
+    a_raw, b_raw = person_a, person_b or person_a
+    pid_a, pid_b = normalize_id(a_raw), normalize_id(b_raw)
     for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
         if is_valid_id(pid) and id_type_of(pid) != 'P':
             msg = (f'{raw!r} is not a person ID. Give two P-ids or full names, '
-                   f'e.g. `fha relate P-de957bcda1 P-83e768cacb`.')
+                   f'e.g. `{_EXAMPLE_TWO}`.')
             r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-id'})
             r.add('error', msg, path=archive_root)
             return r
@@ -126,7 +155,7 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
             # A name: one person carrying it is the person meant; two or
             # more, or nobody, is refused with the choices and the next step.
             resolved = []
-            for raw, pid in ((a_raw, pid_a), (b_raw, pid_b)):
+            for raw, pid in (((a_raw, pid_a),) if everyone else ((a_raw, pid_a), (b_raw, pid_b))):
                 if not is_valid_id(pid):
                     matches = persons_named(conn, raw)
                     if len(matches) != 1:
@@ -138,7 +167,8 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
                         return r
                     pid = normalize_id(matches[0]['id'])
                 resolved.append(pid)
-            pid_a, pid_b = resolved
+            pid_a = resolved[0]
+            pid_b = pid_a if everyone else resolved[1]
             graph = kin_graph(conn)
         except Exception:
             r = Result(ok=False, exit_code=EXIT_FAILURE, data={'error': 'bad-schema'})
@@ -158,6 +188,8 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
                 return r
 
         vital_cache: dict = {}
+        if everyone:
+            return _everyone_result(archive_root, fha_config, conn, graph, pid_a, vital_cache)
         answers = kinship_answer(graph, pid_a, pid_b,
                                  life=lambda p: person_life_dates(conn, p, vital_cache))
         path = kinship_path(graph, pid_a, pid_b)
@@ -191,6 +223,72 @@ def run_relate(archive_root: Path, fha_config: dict, person_a: str, person_b: st
     return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
 
 
+def _everyone_result(archive_root: Path, fha_config: dict, conn, graph, pid: str,
+                     vital_cache: dict) -> Result:
+    """The list behind `fha relate P --all`: everyone related to `pid`, blood
+    first, then by marriage. A record merged into another is left out, since
+    the survivor already stands for him."""
+    try:
+        merged = {row[0] for row in conn.execute(
+            'SELECT id FROM persons WHERE merged_into IS NOT NULL')}
+    except sqlite3.Error:
+        merged = set()
+    rows = kinship_relatives(graph, pid, skip=merged,
+                             life=lambda p: person_life_dates(conn, p, vital_cache))
+    keys = ('pid', 'name', 'kind', 'relationship', 'half', 'certain', 'gens_a', 'gens_b')
+    data = {
+        'person': pid, 'person_name': graph.people[pid]['name'],
+        'relatives': [{k: r[k] for k in keys} for r in rows],
+        'counts': {'blood': sum(1 for r in rows if r['kind'] == 'blood'),
+                   'by_marriage': sum(1 for r in rows if r['kind'] != 'blood')},
+        # What each line says, hedge included ("sister (possibly half-sister)").
+        'words': {r['pid']: _row_words(r) for r in rows},
+    }
+    links = link_writer(archive_root, fha_config)
+    if links.obsidian:
+        names = {pid: data['person_name']}
+        names.update({r['pid']: r['name'] for r in rows})
+        data['links'] = {p: links.link(p, n) for p, n in names.items()}
+    return Result(ok=True, exit_code=EXIT_CLEAN, data=data)
+
+
+def _row_words(row: dict) -> str:
+    """One row's relationship, with a short hedge where the records leave the
+    tie open: a parent missing may mean a half-sibling, step dates unsettled."""
+    words = row['relationship']
+    if row['half'] is None and row.get('half_relationship'):
+        return f"{words} (possibly {row['half_relationship']})"
+    if not row['certain']:
+        return f'{words} (dates not all recorded)'
+    return words
+
+
+def _cmd_relate_all(result: Result) -> int:
+    """Render the reunion list: blood relatives nearest first, then those
+    related by marriage."""
+    data = result.data
+    links = data.get('links')
+    relatives = data['relatives']
+    if not relatives:
+        print(f"Nobody in the recorded tree is related to {data['person_name']} yet. "
+              'Record a parent, child or spouse (a relationship claim, or `fha person relate` '
+              'for a guess), then run `fha index`.')
+        return result.exit_code
+    who = _id_name(data['person'], data['person_name'], links)
+    print(f'Everyone related to {who} in the recorded tree: {len(relatives)} people')
+    for title, kind, tail in (('Blood relatives', 'blood', ', nearest first'),
+                              ('Related by marriage', 'by-marriage', '')):
+        group = [r for r in relatives if r['kind'] == kind]
+        if not group:
+            continue
+        print(f'\n{title} ({len(group)}){tail}')
+        label = [_id_name(r['pid'], r['name'], links) for r in group]
+        width = max(len(x) for x in label) + 2
+        for text, r in zip(label, group):
+            print(f'  {text:<{width}}{data["words"][r["pid"]]}')
+    return result.exit_code
+
+
 # Every answer line starts its words in this column ("By marriage:" and two
 # spaces), so Blood, By marriage and Path read down one edge.
 _LABEL = 14
@@ -216,6 +314,8 @@ def _cmd_relate(result: Result, use_json: bool = False) -> int:
         return result.exit_code
 
     data = result.data
+    if 'relatives' in data:
+        return _cmd_relate_all(result)
     links = data.get('links')
     a_label = _id_name(data['a'], data['a_name'], links)
     b_label = _id_name(data['b'], data['b_name'], links)
@@ -272,6 +372,8 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A --all        Everyone related to one person: blood relatives
+                              nearest first, then those related by marriage
 
 A read-only view over accepted relationship claims: nothing is written."""
 
@@ -283,8 +385,10 @@ def register(subparsers: argparse._SubParsersAction) -> None:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument('person_a', metavar='P-A', help='First person: ID or full name')
-    p.add_argument('person_b', metavar='P-B', help='Second person: ID or full name')
+    p.add_argument('person_a', metavar='P-A', nargs='?', help='First person: ID or full name')
+    p.add_argument('person_b', metavar='P-B', nargs='?', help='Second person: ID or full name')
+    p.add_argument('--all', action='store_true', dest='everyone',
+                   help='List everyone related to one person, by blood or by marriage')
     p.add_argument('--root', metavar='PATH', help='Archive root (overrides auto-detection)')
     p.add_argument('--json', action='store_true', dest='use_json',
                    help='Machine-readable JSON output')
@@ -300,7 +404,8 @@ def _run_relate(args: argparse.Namespace) -> int:
     except FhaConfigError as e:
         print(f'ERROR: {e}', file=sys.stderr)
         return EXIT_FAILURE
-    result = run_relate(archive_root, fha_config, args.person_a, args.person_b)
+    result = run_relate(archive_root, fha_config, args.person_a, args.person_b,
+                          everyone=getattr(args, 'everyone', False))
     return _cmd_relate(result, use_json=getattr(args, 'use_json', False))
 
 
@@ -310,8 +415,9 @@ def _standalone_main(argv: list[str] | None = None) -> int:
         description=_CLI_DESCRIPTION,
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    parser.add_argument('person_a', metavar='P-A')
-    parser.add_argument('person_b', metavar='P-B')
+    parser.add_argument('person_a', metavar='P-A', nargs='?')
+    parser.add_argument('person_b', metavar='P-B', nargs='?')
+    parser.add_argument('--all', action='store_true', dest='everyone')
     parser.add_argument('--root', metavar='PATH')
     parser.add_argument('--json', action='store_true', dest='use_json')
     args = parser.parse_args(argv)

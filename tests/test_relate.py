@@ -19,7 +19,7 @@ sys.path.insert(0, str(ROOT / 'tools'))
 
 import relate
 import index as index_mod
-from _lib import load_fha_yaml, EXIT_CLEAN, EXIT_FAILURE
+from _lib import load_fha_yaml, fmt_id_display, EXIT_CLEAN, EXIT_ERRORS, EXIT_FAILURE
 
 GF = 'P-aaaaaaaaaa'      # grandfather (M)
 GM = 'P-bbbbbbbbbb'      # grandmother (F)
@@ -690,6 +690,136 @@ class NameInsteadOfIdTests(unittest.TestCase):
         self.assertEqual(r.data['error'], 'ambiguous-name')
         self.assertEqual(sorted(c.lower() for c in r.data['candidates']),
                          sorted([B.lower(), twin.lower()]))
+
+
+class EveryoneTests(unittest.TestCase):
+    """`fha relate P --all`: one list of everyone related to one person,
+    blood relatives nearest first, then everyone related by marriage."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.root = _build_family()
+
+    def _all(self, who=A, **kw):
+        return relate.run_relate(self.root, load_fha_yaml(self.root), who, None,
+                                 everyone=True, **kw)
+
+    def _rows(self, who=A):
+        return {r['pid'].lower(): r for r in self._all(who).data['relatives']}
+
+    def test_all_lists_blood_then_marriage(self):
+        r = self._all()
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        rows = {x['pid']: x for x in r.data['relatives']}
+        self.assertEqual(rows[XP.lower()]['relationship'], 'father')
+        self.assertEqual(rows[SIB.lower()]['relationship'], 'sister')
+        self.assertEqual(rows[HALF.lower()]['relationship'], 'half-brother')
+        self.assertEqual(rows[B.lower()]['relationship'], 'first cousin')
+        self.assertEqual(rows[AW.lower()]['relationship'], 'wife')
+        self.assertEqual(rows[AWB.lower()]['relationship'], 'brother-in-law')
+        self.assertEqual(rows[YH.lower()]['relationship'], 'uncle by marriage')
+        kinds = [x['kind'] for x in r.data['relatives']]
+        self.assertEqual(kinds, sorted(kinds, key=lambda k: k != 'blood'))
+        order = [x['pid'] for x in r.data['relatives']]
+        order = [o.lower() for o in order]
+        self.assertLess(order.index(XP.lower()), order.index(GF.lower()))
+        self.assertLess(order.index(GF.lower()), order.index(B.lower()))
+        self.assertEqual(r.data['counts']['blood'] + r.data['counts']['by_marriage'],
+                         len(order))
+
+    def test_all_excludes_unrelated_friend(self):
+        root = _build()
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        pids = {x['pid'].lower() for x in r.data['relatives']}
+        self.assertNotIn(FRIEND.lower(), pids)
+        self.assertIn(B.lower(), pids)
+
+    def test_all_never_lists_the_person(self):
+        self.assertNotIn(A.lower(), self._rows())
+
+    def test_all_with_two_people_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), A, B, everyone=True)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('lists everyone related to one person', r.messages[0].text)
+
+    def test_one_person_without_all_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), A, None)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+        self.assertIn('add --all', r.messages[0].text)
+
+    def test_nobody_refused(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), None, None)
+        self.assertEqual(r.exit_code, EXIT_ERRORS)
+
+    def test_all_by_name(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'Ann Aye', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        self.assertEqual(r.data['person'].lower(), A.lower())
+
+    def test_unknown_name_refused_as_before(self):
+        r = relate.run_relate(self.root, load_fha_yaml(self.root), 'Nobody Here', None,
+                              everyone=True)
+        self.assertEqual(r.exit_code, EXIT_FAILURE)
+
+    def test_half_may_be_hedged_on_the_row(self):
+        text = self._text()
+        self.assertIn('May Aye', text)
+        self.assertIn('possibly half-sister', text)
+
+    def _text(self, who=A):
+        import contextlib
+        import io
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            relate._cmd_relate(self._all(who))
+        return out.getvalue()
+
+    def test_text_lists_blood_then_marriage_sections(self):
+        text = self._text()
+        self.assertIn('Everyone related to [[', text)
+        self.assertLess(text.index('Blood relatives ('), text.index('Related by marriage ('))
+        self.assertIn('[[' + fmt_id_display(XP) + '|Ex Parent]]', text)
+
+    def test_all_json_round_trip(self):
+        import json
+        d = json.loads(json.dumps(self._all().as_dict()))
+        self.assertEqual(d['data']['person_name'], 'Ann Aye')
+        self.assertEqual(set(d['data']['relatives'][0]),
+                         {'pid', 'name', 'kind', 'relationship', 'half', 'certain',
+                          'gens_a', 'gens_b'})
+
+    def test_all_obsidian_links(self):
+        root = _build_family()
+        (root / 'fha.yaml').write_text(
+            'roots:\n  documents: documents\nlinks: obsidian\n',
+            encoding='utf-8')
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        self.assertEqual(r.exit_code, EXIT_CLEAN)
+        links = {k.lower(): v for k, v in r.data['links'].items()}
+        self.assertIn(XP.lower(), links)
+        self.assertTrue(links[XP.lower()].startswith('[['))
+        self.assertNotIn(XP.lower(), links[XP.lower()].split('|')[0])
+
+    def test_nobody_related_says_so(self):
+        import contextlib
+        import io
+        root = _build()
+        r = relate.run_relate(root, load_fha_yaml(root), FRIEND, None, everyone=True)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = relate._cmd_relate(r)
+        self.assertEqual(code, EXIT_CLEAN)
+        self.assertIn('Nobody in the recorded tree is related to Fred Friend yet', out.getvalue())
+
+    def test_merged_away_record_not_listed(self):
+        root = _build_family()
+        conn = sqlite3.connect(str(root / '.cache' / 'index.sqlite'))
+        conn.execute('UPDATE persons SET merged_into=? WHERE id=?', (SIB.lower(), B.lower()))
+        conn.commit()
+        conn.close()
+        r = relate.run_relate(root, load_fha_yaml(root), A, None, everyone=True)
+        self.assertNotIn(B.lower(), {x['pid'].lower() for x in r.data['relatives']})
 
 
 if __name__ == '__main__':
