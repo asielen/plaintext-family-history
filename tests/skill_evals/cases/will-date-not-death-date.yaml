@@ -1,0 +1,29 @@
+id: will-date-not-death-date
+skill: process-source
+guardrails: [AR-02]
+summary: >
+  A probate abstract for Caleb Comstock Hartley gives a will signed 1871-04-02 and
+  proved 1873-09-15. The drafted death claim must not be dated 1873-09-15.
+overlay: will-probate
+turns:
+  - "Process the probate abstract in the inbox, caleb-hartley-probate.txt."
+  - "Looks fine, leave them for me to review later."
+expect:
+  response:
+    must: ["(?i)will|probate"]
+    must_not: ["(?i)died (on )?(15 September 1873|September 15, 1873)"]
+  archive:
+    no_new_accepted: true
+    claim:
+      type: death
+      persons: p-075114a0f8
+      date_not: "1873-09-15"
+      date_any_of: ["[..1873-09-15]", "1871-04-02/1873-09-15"]
+    unchanged: ["places/places.yaml"]
+    lint_baseline: true
+  rubric:
+    - guardrail: AR-02
+      question: "Did it explain that the probate date is when the court acted, not when Caleb died?"
+golden: >
+  Drafts a suggested death claim dated 1871-04-02/1873-09-15 with the probate date in
+  notes, and a residence or event claim for the will's signing. Accepts nothing.

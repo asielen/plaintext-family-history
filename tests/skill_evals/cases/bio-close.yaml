@@ -1,0 +1,28 @@
+id: bio-close
+skill: write-biography
+guardrails: [AR-11]
+summary: >
+  Drafting Thomas Edward Hartley's biography, the assistant ends by saying which sources
+  the draft used and what is missing (there is no death record), in the conversation
+  only. The gap is not written into the biography.
+turns:
+  - "Draft Thomas Edward Hartley's biography."
+  - "Looks good, stop there."
+expect:
+  response:
+    must: ["(?i)census", "(?i)death"]
+  archive:
+    no_new_accepted: true
+    file_regex:
+      path: "people/**/hartley__thomas_edward_p-de957bcda1.md"
+      must: ["AI-DRAFT"]
+      must_not: ["(?i)no death record"]
+    lint_baseline: true
+  rubric:
+    - guardrail: AR-11
+      question: "Did it close by naming the sources the draft used and saying there is no death record yet, with an offer to look for one?"
+golden: >
+  Writes cited prose in AI-DRAFT markers from accepted claims only, then says which
+  sources it used (the 1850 and 1880 censuses, the marriage notice, the lodge roster)
+  and that a death record is missing, offering research-next. The biography itself
+  says nothing about the gap.
