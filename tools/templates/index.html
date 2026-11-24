@@ -108,6 +108,9 @@
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
+  {% if group.names %}
+  <p class="surname-links">Family names: {% for n in group.names %}<a href="{{ n.href }}">{{ n.name }}</a> ({{ n.count }}){{ ', ' if not loop.last }}{% endfor %}</p>
+  {% endif %}
   <ul class="index-list">
     {% for p in group.people %}<li>
       {%- if p.recordless -%}

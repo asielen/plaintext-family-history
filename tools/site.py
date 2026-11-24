@@ -263,6 +263,8 @@ CODE MAP
           burial place with map and directions links
       ._whats_new / .build_whats_new_page: whats-new.html (site.whats_new),
           what was accepted each month, shown facts only
+      ._surname_groups / .build_surname_pages: surnames/*.html, one page per
+          family name the build shows a person for
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -302,6 +304,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
     COMPLETENESS_CHECK_LABELS,
@@ -328,7 +331,9 @@ from _lib import (
     edtf_bounds,
     is_placeholder_name,
     person_surname,
+    place_note_slug,
     research_search_links,
+    research_search_terms,
     vital_pick_key,
     configure_utf8_stdout,
     EXIT_CLEAN,
@@ -336,6 +341,7 @@ from _lib import (
     EXIT_WARNINGS,
     extract_bare_ids,
     FhaConfigError,
+    place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
     humanize_edtf as _humanize_edtf,
     id_type_of,
@@ -538,6 +544,10 @@ _PICTURE_QUEUE_PER_WORKER = 4
 # deepest fan the renderer lays out (each ring doubles the cells).
 _FAN_GENERATIONS = 5
 _FAN_GENERATIONS_MAX = 6
+# The angles a fan can span (`site.fan_degrees`): the half fan, a three-quarter
+# fan and a full circle for a poster.
+_FAN_DEGREES = (180, 270, 360)
+_FAN_DEGREES_DEFAULT = 180
 
 # Fan geometry, in SVG user units (`_render_fan_svg`). A ring's labels follow
 # the arc while its mid-radius arc is at least _FAN_ARC_MIN long; arc rings are
@@ -640,6 +650,37 @@ _REPUBLISHABLE_SOURCE_TYPES = SOURCE_TYPES - {'photo', 'artifact', 'dna'}
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
 # rebuild must first prove the target dir is ours - see _unowned_output_reason.
 _SITE_MARKER_NAME = '.fha-site'
+
+# A Polish or Czech feminine surname joins the masculine page (Kowalska with
+# Kowalski), longest ending first, applied to the accent-folded lowercase name
+# (`Nováková` folds to `novakova`). `_surname_groups` only joins them when the
+# masculine form is also among the people listed.
+_SURNAME_FEMININE_ENDINGS = (('dzka', 'dzki'), ('ska', 'ski'), ('cka', 'cki'), ('ova', ''))
+
+# File names Windows keeps for devices: a page called `con.html` is never
+# written there, so a family named Con would get a broken link.
+_WINDOWS_DEVICE_NAMES = frozenset({'con', 'prn', 'aux', 'nul'}
+                                  | {f'{d}{n}' for d in ('com', 'lpt') for n in range(10)})
+
+
+def _surname_slug(display: str) -> str:
+    """The file name (without `.html` or `.md`) of a family name's page and
+    note: the name folded to plain lowercase letters, digits and hyphens, the
+    way place notes are (`Kowalski` -> `kowalski`, `Müller` -> `muller`).
+
+    A name written in another alphabet (Иванов, 李) has no letters left after
+    folding. It gets `name-` and eight characters worked out from the name
+    itself, accents folded first (Королёв and Королев share one), so its page and the note he writes for it keep one file name
+    however many other such families are added. A name Windows keeps for a
+    device (Con, Nul) gets `-family` after it, or its page would never be
+    written there."""
+    slug = re.sub(r'[^a-z0-9]+', '-', fold_accents(display).lower()).strip('-')
+    if not slug:
+        written = unicodedata.normalize('NFC', fold_accents(display)).casefold()
+        return 'name-' + hashlib.sha1(written.encode('utf-8')).hexdigest()[:8]
+    if slug in _WINDOWS_DEVICE_NAMES:
+        return f'{slug}-family'
+    return slug
 
 # Month names for the family calendar, written out here rather than read from
 # the locale so a site built on any machine reads the same.
@@ -2490,6 +2531,36 @@ def _picture_workers_setting(site_cfg: dict) -> tuple[int, str | None]:
         'Set it to 1 to make them one at a time.')
 
 
+def _fan_settings(site_cfg: dict) -> tuple[int, int, list[str]]:
+    """`site.fan_degrees` and `site.fan_generations`: how wide the person
+    page's ancestor fan opens (180, 270 or 360) and how many generations it
+    draws (1-6). A family printing a reunion poster sets 360 and 6. A value
+    that is not allowed warns once, names the setting and the default used,
+    and the build goes on (the `home_pedigree_generations` rule)."""
+    warnings: list[str] = []
+
+    def whole(key: str, default: int, allowed) -> int:
+        raw = site_cfg.get(key)
+        if raw is None:
+            return default
+        value = raw
+        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+            value = int(raw.strip())              # "360" in quotes is still 360
+        elif isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
+            value = int(raw)                      # 360.0 is the whole number 360
+        if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
+            shown = ' or '.join(str(a) for a in allowed) if len(allowed) <= 3 \
+                else f'{allowed[0]} to {allowed[-1]}'
+            warnings.append(f'WARNING: fha.yaml site.{key} {raw!r} is not {shown}; '
+                            f'using the default of {default}.')
+            return default
+        return value
+
+    degrees = whole('fan_degrees', _FAN_DEGREES_DEFAULT, _FAN_DEGREES)
+    generations = whole('fan_generations', _FAN_GENERATIONS, range(1, _FAN_GENERATIONS_MAX + 1))
+    return degrees, generations, warnings
+
+
 def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool, str | None]:
     """An on/off setting under fha.yaml `site:` (`completeness_rings`,
     `calendar`, `search`): `default` when the setting is left out (off for
@@ -3151,51 +3222,6 @@ def _real_path(path: str | Path) -> Path:
 
 # ── Ancestor fan chart (static SVG) ─────────────────────────────────────────
 
-def _chart_year(edtf) -> str:
-    """The year a chart prints for a date, keeping what the date means: a
-    death recorded "before 1920" must not read as a death in 1920. Charts show
-    years only; the person's page carries the full date. Owner decision
-    (2026-11-22) on the short forms:
-
-    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
-      '1840?' are both '1840');
-    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
-    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
-    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
-    - an interval `1918/1920`: '1918–1920', or the one year when both ends
-      fall in it.
-
-    Anything else falls back to the first four-digit run, or '' when there is
-    none. Used by the fan and the family chart alike."""
-    if not edtf:
-        return ''
-    s = str(edtf).strip()
-    if '/' in s:
-        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
-        if ends[0] and ends[1]:
-            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
-        return ends[0] or ends[1]
-    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
-    if m:
-        return f'bef. {m.group(1)}'
-    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
-    if m:
-        return f'aft. {m.group(1)}'
-    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
-    if m:
-        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
-    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
-    if m:
-        return f'abt. {m.group(1) or m.group(2)}'
-    return _chart_bare_year(s)
-
-
-def _chart_bare_year(s: str) -> str:
-    """The first four-digit run of a date's text, or ''."""
-    m = re.search(r'\d{4}', s)
-    return m.group(0) if m else ''
-
-
 def _pedigree_years(dates: dict | None) -> str:
     """The years under a family-chart name: 'b–d', 'b. b', 'd. d' or ''."""
     return _chart_lifespan(dates, '–')
@@ -3233,7 +3259,11 @@ def _fan_rings(n: int, span: float, r0: float = _FAN_R0) -> list[tuple[str, floa
     r = r0
     for g in range(1, n + 1):
         seg = span / (1 << g)
-        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        # A cell that is a whole half circle (the parents of a full-circle fan)
+        # cannot carry curved text upright from end to end, so it is read level.
+        half_circle = seg >= math.pi - 1e-9
+        mode = ('arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN and not half_circle
+                else 'radial')
         t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
         rings.append((mode, r, r + t))
         r += t
@@ -3276,11 +3306,14 @@ def _fan_years_size(fs: float, years: str, room: float) -> float:
 
 
 def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
-                 seg: float) -> dict:
+                 seg: float, lower: bool = False) -> dict:
     """Lay out one curved-ring label: which lines, at what size, at what radii.
 
     Lines stack across the ring, the first at the larger radius so it reads
-    first on the upper half. The whole name stays on one line when it fits at
+    first on the upper half. On the lower half of a poster fan (`lower`) the
+    hub side is the top as read, so the first line takes the smaller radius,
+    and it is measured there: a long name along the bottom of a poster still
+    fits its cell. The whole name stays on one line when it fits at
     the ring's cap; otherwise given names and surname take a line each. Then
     the size is the largest that fits every line along its own arc and the
     stack across the ring, capped per ring and rounded DOWN to the one decimal
@@ -3301,7 +3334,8 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
         count = len(lines) + (1 if with_years else 0)
 
         def radius(i: int, size: float) -> float:
-            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+            step = ((count - 1) / 2 - i) * _FAN_LH * size
+            return rm - step if lower else rm + step
 
         def room(i: int) -> float:
             return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
@@ -3370,6 +3404,29 @@ def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: fl
     return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
+# A person is drawn faded when the only parent ties linking them to the chart's
+# subject are rated "low" (SPEC §8.5, chart plan 08-7). The same plain sentence
+# sits under every chart that fades someone, so a reader is never left guessing.
+_WEAK_LINE_TITLE = 'Linked to the subject only through a low-confidence record.'
+_WEAK_LINE_KEY = ('Faded names and dashed outlines are people linked to the subject '
+                  'only through a low-confidence record, often a family story; '
+                  'open a person to see the sources.')
+
+
+def _weak_slot(info: dict | None) -> bool:
+    """Whether a chart cell is drawn faded: its line to the subject is low.
+    A Private or redacted card is never faded, so a faded card could not
+    tell a visitor anything about a living person's records."""
+    return (bool(info) and not info.get('private') and not info.get('redacted')
+            and info.get('line_confidence') == 'low')
+
+
+def _any_weak_slot(labels: dict, generations: int) -> bool:
+    """Whether any cell within `generations` of the subject is drawn faded."""
+    return any(_weak_slot(info) for num, info in labels.items()
+               if 1 <= num.bit_length() - 1 <= generations)
+
+
 def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                     span_deg: int = 180) -> str:
     """Render an ancestor fan as a self-contained, print-friendly SVG string.
@@ -3378,8 +3435,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     readable at its ring, with their years. `labels` is an Ahnentafel map
     {number: {'name', 'surname', 'url', 'redacted', 'private', 'dates'}}:
     number 1 is the subject, 2/3 the parents, 4-7 the grandparents, and so on.
-    The fan is a 180° semicircle (`span_deg`; the poster angles come later)
-    with the subject at the hub. Each cell's fill is a branch colour lightened
+    The fan spans `span_deg` (180, 270 or 360; a family poster uses 270 or
+    360), centred on straight up, with the subject at the hub. Each cell's fill is a branch colour lightened
     by generation, set inline as CSS vars and composed by the stylesheet, so
     custom.css can retint the whole chart.
 
@@ -3397,10 +3454,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     13-2) is a neutral cell reading "Private", with no title, link or line
     colour. Any other withheld slot (`redacted`, or no name) gets its cell and
     nothing else."""
-    if span_deg != 180:
-        # TODO: 08-4 adds the 270° and 360° poster layouts (lower-half text,
-        # the full-circle hub); until then only the semicircle is laid out.
-        raise ValueError(f'fan span {span_deg}° is not supported yet; use 180')
+    if span_deg not in _FAN_DEGREES:
+        raise ValueError(f'fan span {span_deg}° is not one of {_FAN_DEGREES}')
     span = math.radians(span_deg)
     a_start = math.pi / 2 + span / 2
     # Size to the depth actually present, not the configured maximum, so a
@@ -3454,7 +3509,8 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                          f'--gen-fade:{min((g - 2) * 15, 55)}%')
             else:
                 style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-            body.append(f'<path class="fan-seg" style="{style}" d="{d}"/>')
+            seg_cls = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
+            body.append(f'<path class="{seg_cls}" style="{style}" d="{d}"/>')
 
         if private:
             name, surname, years = 'Private', None, ''
@@ -3465,11 +3521,32 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             years = _fan_years(info.get('dates'))
 
         if mode == 'arc':
-            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            # On a 270-degree poster a cell can run from the upper half down
+            # past the horizontal (a parent's cell spans 135 degrees). Its
+            # name keeps to the larger side of the horizontal, so no letters
+            # tip past sideways; the cell itself is drawn whole.
+            t_hi, t_lo = a_hi, a_lo
+            for flat in (math.pi, 0.0):
+                if t_lo + 1e-9 < flat < t_hi - 1e-9:
+                    if t_hi - flat >= flat - t_lo:
+                        t_lo = flat
+                    else:
+                        t_hi = flat
+            t_seg = t_hi - t_lo
+            t_large = 1 if t_seg > math.pi else 0
+            lower = math.sin((t_hi + t_lo) / 2) < -1e-9
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, t_seg, lower)
             # Upper half: each line runs from a_hi to a_lo (left to right
             # over the top), which keeps the text upright.
-            paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
-                     for r in fit['radii']]
+            if lower:
+                # Lower half of a poster fan: the first line already sits at
+                # the smaller radius (the hub side, the top as read), and the
+                # text runs counter-clockwise (left to right along the bottom).
+                paths = [f"M{polar(r, t_lo)} A{r:.1f},{r:.1f} 0 {t_large} 0 {polar(r, t_hi)}"
+                         for r in fit['radii']]
+            else:
+                paths = [f"M{polar(r, t_hi)} A{r:.1f},{r:.1f} 0 {t_large} 1 {polar(r, t_lo)}"
+                         for r in fit['radii']]
         else:
             fit = _fan_fit_radial(name, surname, years, g, r_in, r_out - r_in, seg)
             paths = []
@@ -3509,26 +3586,46 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                 body.append(f'<g class="fan-private">{text}</g>')
             continue
         full = name + (f', {years}' if years else '')
+        if _weak_slot(info):
+            full += f'. {_WEAK_LINE_TITLE}'
         title = f'<title>{html.escape(full)}</title>'
         url = info.get('url')
         body.append(f'<a class="fan-link" href="{html.escape(url, quote=True)}">{title}{text}</a>'
                     if url else f'<g>{title}{text}</g>')
 
-    # subject: filled upper half-disk at the hub (left to right, sweep 1 arcs
-    # over the top, so the hub fills the inner fan rather than hanging below)
-    body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
-                f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    # The subject at the hub: a half disk under a half fan, a sector with the
+    # same opening as the fan, or a whole disk under a full circle. A path from
+    # the left end over the top (sweep 1) fills the half disk.
+    if span_deg == 180:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{polar(r0, math.pi)} '
+                    f'A{r0:.1f},{r0:.1f} 0 0 1 {polar(r0, 0.0)} Z"/>')
+    elif span_deg == 270:
+        body.append(f'<path class="fan-seg fan-seg-subject" d="M{cx:.1f},{cy:.1f} '
+                    f'L{polar(r0, a_start)} A{r0:.1f},{r0:.1f} 0 1 1 {polar(r0, a_start - span)} Z"/>')
+    else:
+        body.append(f'<circle class="fan-seg fan-seg-subject" cx="{cx:.1f}" cy="{cy:.1f}" '
+                    f'r="{r0:g}"/>')
     subj_full = labels.get(1, {}).get('name', '')
     if subj_full:
         # The hub is small and the page is already titled with the full name, so
-        # the centre shows just the given name (full name in the tooltip).
+        # the centre shows just the given name (full name in the tooltip). On a
+        # poster the hub is a whole disk and holds given name over surname when
+        # both fit at 15px.
         parts = subj_full.split()
         given = parts[0] if parts else subj_full
         if len(given) > 12:
             given = given[:11] + '…'
+        # The 270 hub is open at the bottom, so its name sits a little high.
+        label_y = cy - r0 * {180: 0.42, 270: 0.3}.get(span_deg, 0.0)
+        shown = html.escape(given)
+        if span_deg != 180:
+            two = _fan_name_lines(subj_full, labels[1].get('surname'))
+            if len(two) == 2 and all(len(t) * _FAN_CW * 15 <= 2 * r0 * 0.8 for t in two):
+                shown = (f'<tspan x="{cx:.1f}" dy="-0.6em">{html.escape(two[0])}</tspan>'
+                         f'<tspan x="{cx:.1f}" dy="1.2em">{html.escape(two[1])}</tspan>')
         body.append(f'<g><title>{html.escape(subj_full)}</title>'
-                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{cy - r0 * 0.42:.1f}">'
-                    f'{html.escape(given)}</text></g>')
+                    f'<text class="fan-label-subject" x="{cx:.1f}" y="{label_y:.1f}">'
+                    f'{shown}</text></g>')
 
     out = [f'<svg class="fan-chart" viewBox="0 0 {w:.0f} {h:.0f}" '
            f'preserveAspectRatio="xMidYMid meet" role="img" aria-label="Ancestor fan chart">']
@@ -3953,6 +4050,9 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
                 # the subject's own '.ped-self' styling already carries a fixed
                 # accent, and an 'Unknown' placeholder has no line to name).
                 cls += f' ped-branch-{branch}'
+            if _weak_slot(lab):
+                cls += ' ped-weak'
+                div_attrs = f' title="{html.escape(_WEAK_LINE_TITLE)}"'
             if lab.get('hypothesis'):
                 # Workbench-only (the builder only sets the flag there): an
                 # unsourced frontmatter tie fills the slot but is visibly not
@@ -4215,6 +4315,185 @@ def _render_pedigree_svg(labels: dict, spouses: list[dict] | None = None,
             f'role="img" aria-label="{label}">' + ''.join(links) + ''.join(cards) + ''.join(extra) + '</svg>')
 
 
+# ── Lifespan chart (static SVG) ─────────────────────────────────────────────
+# A relative opens "Who overlapped" and sees that a grandmother lived to meet
+# her great-grandson, or that a father died before his daughter was born: one
+# bar per person on a shared year axis. (The idea follows WikiTree's timeline
+# tree view; nothing is copied.)
+
+_LIFESPAN_LABEL_W = 210.0       # name column, left of the axis
+_LIFESPAN_PLOT_W = 480.0
+_LIFESPAN_NOTE_W = 130.0        # room to the right for "death not recorded"
+_LIFESPAN_ROW_H = 34.0
+_LIFESPAN_BAR_H = 12.0
+_LIFESPAN_TOP = 6.0
+_LIFESPAN_TAIL = 10             # faded years past the last dated record, or before the first
+_LIFESPAN_OPEN = 30             # faded years for a "before 1900" or "after 1900" date
+_LIFESPAN_NAME_MAX = 26
+_LIFESPAN_ROLE_MAX = 36
+
+
+def _lifespan_years(edtf) -> tuple[int, int] | None:
+    """The earliest and latest year a date could mean, for a bar's faded end.
+
+    A relative reads "about 1840" as a bar that fades in over 1839 to 1841,
+    never as a sharp line at 1840. Works from `_lib.edtf_bounds`; a date with
+    no start ("before 1900") or no end ("after 1900") gets a faded stretch of
+    `_LIFESPAN_OPEN` years on the open side. A date that cannot be read is
+    None, so its person is drawn from other records or left out."""
+    if not edtf:
+        return None
+    try:
+        lo_s, hi_s = edtf_bounds(str(edtf))
+        lo, hi = int(lo_s[:4]), int(hi_s[:4])
+    except (ValueError, TypeError):
+        return None
+    if lo < 100 and hi >= 9999:
+        return None
+    if lo < 100:
+        lo = hi - _LIFESPAN_OPEN
+    elif hi >= 9999:
+        hi = lo + _LIFESPAN_OPEN
+    return (lo, hi)
+
+
+def _lifespan_summary(spans: list) -> str:
+    """The chart in words for a screen reader, who cannot reach the bars: each
+    person's name, role, years and any "not recorded" note, in row order."""
+    parts = []
+    for r, _sl, _sh, s_open, _el, _eh, e_open in spans:
+        bits = [r.get('name') or '', r.get('role') or '', r.get('years') or '']
+        if s_open or e_open:
+            bits.append('dates not recorded' if (s_open and e_open) else
+                        'birth not recorded' if s_open else 'death not recorded')
+        parts.append(', '.join(b for b in bits if b))
+    return f'Lifespans of {len(spans)} people on one time line. ' + '; '.join(parts)
+
+
+def _render_lifespan_svg(rows: list[dict]) -> str:
+    """Render the "Who overlapped" chart as a static, print-friendly SVG.
+
+    He sees every person on the page's family as a bar from birth to death on
+    one year axis. `rows` run top to bottom as given; each is {'name', 'role',
+    'birth': (earliest, latest year) or None, 'death': likewise, 'first': the
+    year of the earliest dated record, 'last': the latest, 'living': bool,
+    'years': the words printed under the name, such as 'abt. 1840-1920'}.
+
+    The solid bar runs from the latest possible birth to the earliest
+    possible death. Wherever a date is uncertain the bar ends in a hatched,
+    dashed cap over the whole range it could be, so an approximate date never
+    looks exact, and the hatching means the same in black and white. No death
+    recorded draws a hatched tail past the last dated record, labelled; no
+    birth recorded starts at the first dated record, hatched and labelled.
+    Names are plain `<text>`, so the chart prints and saves cleanly."""
+    spans = []
+    for r in rows:
+        birth, death = r.get('birth'), r.get('death')
+        first, last = r.get('first'), r.get('last')
+        if birth:
+            s_lo, s_hi, s_open = birth[0], birth[1], False
+        else:
+            anchor = first if first is not None else (death[0] if death else last)
+            if anchor is None:
+                continue
+            s_lo, s_hi, s_open = anchor - _LIFESPAN_TAIL, anchor, True
+        if death:
+            e_lo, e_hi, e_open = death[0], death[1], False
+        elif r.get('living'):
+            yr = last if last is not None else s_hi
+            e_lo = e_hi = yr
+            e_open = False
+        else:
+            yr = last if last is not None else s_hi
+            e_lo, e_hi, e_open = yr, yr + _LIFESPAN_TAIL, True
+        e_lo = max(e_lo, s_hi)
+        e_hi = max(e_hi, e_lo)
+        spans.append((r, s_lo, s_hi, s_open, e_lo, e_hi, e_open))
+    if not spans:
+        return ''
+    ymin = math.floor(min(s[1] for s in spans) / 10) * 10
+    ymax = math.ceil(max(s[5] for s in spans) / 10) * 10
+    if ymax <= ymin:
+        ymax = ymin + 10
+    step = 20 if ymax - ymin > 150 else 10
+    lw, pw = _LIFESPAN_LABEL_W, _LIFESPAN_PLOT_W
+    width = lw + pw + _LIFESPAN_NOTE_W
+    rh, bh, top = _LIFESPAN_ROW_H, _LIFESPAN_BAR_H, _LIFESPAN_TOP
+    y_axis = top + rh * len(spans)
+    height = y_axis + 26
+
+    def x_of(year: float) -> float:
+        return lw + (year - ymin) / (ymax - ymin) * pw
+
+    def short(text: str, limit: int) -> str:
+        return text if len(text) <= limit else text[:limit - 1] + '…'
+
+    esc = html.escape
+    out = [f'<svg class="lifespan-chart" viewBox="0 0 {width:.1f} {height:.1f}" '
+           f'preserveAspectRatio="xMidYMid meet" role="img" '
+           f'aria-label="{esc(_lifespan_summary(spans))}">',
+           '<defs><pattern id="fha-lifespan-hatch" width="4" height="4" '
+           'patternUnits="userSpaceOnUse" patternTransform="rotate(45)">'
+           '<line class="lifespan-hatch" x1="0" y1="0" x2="0" y2="4"/></pattern></defs>']
+    for year in range(ymin, ymax + 1, step):
+        x = x_of(year)
+        out.append(f'<line class="lifespan-grid" x1="{x:.1f}" y1="{top:.1f}" '
+                   f'x2="{x:.1f}" y2="{y_axis:.1f}"/>')
+        out.append(f'<text class="lifespan-tick" x="{x:.1f}" y="{y_axis + 16:.1f}" '
+                   f'text-anchor="middle">{year}</text>')
+    out.append(f'<line class="lifespan-axis" x1="{lw:.1f}" y1="{y_axis:.1f}" '
+               f'x2="{lw + pw:.1f}" y2="{y_axis:.1f}"/>')
+    for i, (r, s_lo, s_hi, s_open, e_lo, e_hi, e_open) in enumerate(spans):
+        y0 = top + i * rh
+        by = y0 + (rh - bh) / 2
+        name, role = r.get('name') or '', r.get('role') or ''
+        notes = []
+        if s_open:
+            notes.append('birth not recorded')
+        if e_open:
+            notes.append('death not recorded')
+        note = ('dates not recorded' if len(notes) == 2 else notes[0]) if notes else ''
+        years = r.get('years') or ''
+        title = f'{name}, {role}' + (f': {years}' if years else '')
+        if note:
+            title += f' ({note})'
+        out.append(f'<g class="lifespan-row" data-role="{esc(role)}">')
+        out.append(f'<title>{esc(title)}</title>')
+        out.append(f'<text class="lifespan-name" x="{lw - 10:.1f}" y="{y0 + 15:.1f}" '
+                   f'text-anchor="end">{esc(short(name, _LIFESPAN_NAME_MAX))}</text>')
+        detail = ', '.join(p for p in (role, years) if p)
+        out.append(f'<text class="lifespan-role" x="{lw - 10:.1f}" y="{y0 + 28:.1f}" '
+                   f'text-anchor="end">{esc(short(detail, _LIFESPAN_ROLE_MAX))}</text>')
+        xs, xe = x_of(s_hi), x_of(e_lo)
+        out.append(f'<rect class="lifespan-bar" x="{xs:.1f}" y="{by:.1f}" '
+                   f'width="{max(xe - xs, 2.0):.1f}" height="{bh:.1f}" rx="2"/>')
+        if s_hi > s_lo:
+            out.append(f'<rect class="lifespan-cap" x="{x_of(s_lo):.1f}" y="{by:.1f}" '
+                       f'width="{x_of(s_hi) - x_of(s_lo):.1f}" height="{bh:.1f}" '
+                       f'fill="url(#fha-lifespan-hatch)"/>')
+        if e_hi > e_lo:
+            out.append(f'<rect class="lifespan-cap" x="{x_of(e_lo):.1f}" y="{by:.1f}" '
+                       f'width="{x_of(e_hi) - x_of(e_lo):.1f}" height="{bh:.1f}" '
+                       f'fill="url(#fha-lifespan-hatch)"/>')
+        if note:
+            out.append(f'<text class="lifespan-note" x="{x_of(e_hi) + 5:.1f}" '
+                       f'y="{by + bh - 2:.1f}">{note}</text>')
+        out.append('</g>')
+        if role == 'subject':
+            # A guide line is a sharp year, so it is drawn only for a date
+            # known to the year; a range would read as a confident point.
+            for part, spot in (('born', s_lo if not s_open and s_hi == s_lo else None),
+                               ('died', e_lo if not e_open and r.get('death')
+                                and e_hi == e_lo else None)):
+                if spot is not None:
+                    x = x_of(spot)
+                    out.append(f'<line class="lifespan-mark" x1="{x:.1f}" y1="{top:.1f}" '
+                               f'x2="{x:.1f}" y2="{y_axis:.1f}"><title>{esc(name)} '
+                               f'{part}</title></line>')
+    out.append('</svg>')
+    return ''.join(out)
+
+
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
 
 def _rel_href(target: Path, page_dir: Path) -> str:
@@ -4286,6 +4565,29 @@ def _with_role_note(message: str, role_note: str | None) -> str:
 def _page_filename(record_id: str) -> str:
     """Normalized id → page filename, e.g. 'P-de957bcda1' → 'p-de957bcda1.html'."""
     return f'{normalize_id(record_id)}.html'
+
+
+def _chart_name(who: str, kind: str) -> str:
+    """The name a saved chart file gets, e.g. `margaret-cole-ancestor-fan`.
+
+    A relative who saves a chart finds a file named for the person and the
+    chart. It is built only from the name the page already shows, as a plain
+    ASCII slug (never an id), so the file name tells nobody more than the
+    page does. `who` empty gives just `kind`."""
+    folded = unicodedata.normalize('NFKD', who or '').encode('ascii', 'ignore').decode('ascii')   # Józef -> Jozef
+    slug = re.sub(r'[^a-z0-9]+', '-', folded.lower()).strip('-')
+    return f'{slug}-{kind}' if slug else kind
+
+
+def _tag_chart(svg: str, name: str) -> str:
+    """Mark a chart's root <svg> as one a reader can save (fha-save-chart.js).
+
+    Only the attribute is added; the chart's drawing is not touched, so a
+    change to a chart's shape (the fan's angle, say) is saved as it is shown."""
+    if not name or not svg.startswith('<svg'):
+        return svg
+    end = svg.index('>')   # the opening tag only; the chart's own attributes keep their order
+    return svg[:end] + f' data-fha-chart="{html.escape(name, quote=True)}"' + svg[end:]
 
 
 def _json_for_script(obj) -> str:
@@ -4467,9 +4769,16 @@ class _SiteBuilder:
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
         # The "What's new" page: off unless fha.yaml says `whats_new: true`.
         self.show_whats_new, whats_new_warning = _site_switch(site_cfg, 'whats_new')
-        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
-                                             whats_new_warning) if w]
         self._whats_new_cache: tuple[list[dict], bool] | None = None
+        # A page for each family name: on unless fha.yaml says
+        # `surname_pages: false` (TOOLING §12, "Surname pages").
+        self.show_surnames, surname_warning = _site_switch(site_cfg, 'surname_pages', default=True)
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
+                                             surname_warning, whats_new_warning) if w]
+        self._surname_cache: list[dict] | None = None
+        # The person page's ancestor fan: its angle and how many generations.
+        self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
+        self._switch_warnings += fan_warnings
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -4498,6 +4807,7 @@ class _SiteBuilder:
         self.persons_dir = out_dir / 'persons'
         self.sources_dir = out_dir / 'sources'
         self.places_dir = out_dir / 'places'
+        self.surnames_dir = out_dir / 'surnames'
         self.media_dir = out_dir / 'media'
         self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts
         self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter
@@ -6589,6 +6899,8 @@ class _SiteBuilder:
             or any(e['unconfirmed'] or e['confidence'] == 'low'
                    for group in timeline for e in group['entries'])
         )
+        has_place_history = any(e.get('kind') == 'context'
+                                for group in timeline for e in group['entries'])
         sources = self._person_sources(pid, page_dir)
         family = self._person_family(pid, page_dir)
         photos = self._person_photos(pid, page_dir)
@@ -6599,15 +6911,16 @@ class _SiteBuilder:
         # is then widened into a family chart with the subject's spouse(s) and
         # children (win 1) - the fan stays ancestors-only (a fan has no natural
         # place to hang a descendant wing).
-        ahnen, missing_parent_of = self._build_ahnentafel(pid, _FAN_GENERATIONS, page_dir,
-                                                            private_cards=True)
+        ahnen, missing_parent_of = self._build_ahnentafel(
+            pid, max(self.fan_generations, 2), page_dir, private_cards=True)
         ped_labels = {n: e for n, e in ahnen.items() if n < 8}
         ped_missing = {n: c for n, c in missing_parent_of.items() if n < 8}
         wings = self._build_family_wings(pid, page_dir)
         has_pedigree = len(ped_labels) > 1 or wings['spouses'] or wings['children']
-        pedigree = (self._markup(_render_pedigree_svg(
+        pedigree = (self._markup(_tag_chart(_render_pedigree_svg(
                         ped_labels, wings['spouses'], wings['children'],
-                        missing_parent_of=ped_missing, workbench=self.workbench))
+                        missing_parent_of=ped_missing, workbench=self.workbench),
+                        _chart_name(name, 'family-chart')))
                    if has_pedigree else None)
         # Same condition _render_pedigree_svg uses for its SVG aria-label (a
         # sighted reader on the page and a screen-reader user on the SVG must
@@ -6616,7 +6929,22 @@ class _SiteBuilder:
         # ancestors-only chart gets the honest 'Ancestors' heading instead of
         # the old unconditional 'Family'.
         chart_title = 'Family' if (wings['spouses'] or wings['children']) else 'Ancestors'
-        fan = self._markup(_render_fan_svg(ahnen, _FAN_GENERATIONS)) if len(ahnen) > 1 else None
+        fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees),
+                                       _chart_name(name, 'ancestor-fan')))
+               if len(ahnen) > 1 else None)
+        # "Who overlapped": a bar per relative on one time line, drawn only
+        # when at least two people have dates to compare.
+        lifespan_rows, lifespan_omitted = self._build_lifespan_rows(pid, wings, page_dir)
+        lifespan = None
+        if len(lifespan_rows) >= 2:
+            lifespan = {'svg': self._markup(_tag_chart(_render_lifespan_svg(lifespan_rows),
+                                                         _chart_name(name, 'who-overlapped'))),
+                        'omitted': lifespan_omitted,
+                        'chart': _chart_name(name, 'who-overlapped')}
+        # The plain-words key goes under a chart only when that chart fades someone.
+        chart_weak_key = (_WEAK_LINE_KEY if has_pedigree and _any_weak_slot(ped_labels, 2) else None)
+        fan_weak_key = (_WEAK_LINE_KEY if fan and _any_weak_slot(ahnen, self.fan_generations)
+                        else None)
         # Descendant explorer (#115): demoted from the home page (which now
         # carries the marriage-aware ancestor pedigree instead) to a
         # per-person opt-in link - the same `_build_tree_data`/fha-tree.js/
@@ -6631,7 +6959,8 @@ class _SiteBuilder:
         # below is what actually bounds the client's initial paint.
         descendants_tree = self._make_tree_ctx(
             pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
-            f'Descendants of {name}', initial_depth=4)
+            f'Descendants of {name}', initial_depth=4,
+            chart_name=_chart_name(name, 'descendants'))
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -6639,8 +6968,13 @@ class _SiteBuilder:
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'pedigree': pedigree,
+            'pedigree_chart': _chart_name(name, 'family-chart') if pedigree else None,
             'chart_title': chart_title,
+            'chart_weak_key': chart_weak_key,
             'fan': fan,
+            'lifespan': lifespan,
+            'fan_weak_key': fan_weak_key,
+            'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
             'descendants_tree': descendants_tree,
             'summary': summary,
             'burial_visit': self._burial_visit(pid, page_dir),
@@ -6673,6 +7007,7 @@ class _SiteBuilder:
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'has_qa_badges': has_qa_badges,
+            'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
             # no fha.yaml switch; the switch is for the shared site.
             'completeness': (self._person_completeness(pid)
@@ -7053,11 +7388,46 @@ class _SiteBuilder:
         subject = self._person_research_subject(pid) if self.workbench else None
         if not subject:
             return {'research_links': [], 'research_living': False, 'research_given': ''}
+        links = research_search_links(subject)
+        last = self._research_last_searches(pid)
+        for link in links:
+            # What "Nothing found" files: the person, the site's own label and
+            # what was typed in (workbench.js reads this off the link).
+            link['args'] = {'person_id': pid, 'repository': link['label'],
+                            'terms': research_search_terms(subject, link['key']),
+                            'result': 'nil'}
+            link['searched'] = last.get(link['label'].casefold(), '')
         return {
-            'research_links': research_search_links(subject),
+            'research_links': links,
             'research_living': (self.person_meta[pid]['living'] or 'unknown') != 'false',
             'research_given': subject.get('given') or name,
         }
+
+    _SEARCH_OUTCOME = {'nil': 'searched {date}: nothing found',
+                       'found': 'searched {date}: found a record',
+                       'partial': 'searched {date}: partly searched',
+                       'staged': 'searched {date}: saved a record to the inbox',
+                       # SPEC §17c: these two are still to do, never "already searched".
+                       'unavailable': 'tried {date}: could not be searched, still to do',
+                       'requested': 'asked for the records {date}, still to do'}
+
+    def _research_last_searches(self, pid: str) -> dict[str, str]:
+        """For this person, the latest logged search at each website, as the
+        words shown beside its link ("searched 2026-11-22: nothing found"),
+        keyed by the website's name in lower case. So he sees what he already
+        tried before he clicks."""
+        try:
+            rows = self.conn.execute(
+                "SELECT date, repository, result FROM search_log WHERE person_id = ? "
+                "ORDER BY date, rowid", (pid,)).fetchall()
+        except sqlite3.Error:
+            return {}
+        out: dict[str, str] = {}
+        for r in rows:                                # later rows overwrite earlier ones
+            kind = str(r['result'] or '').split(' ', 1)[0].lower()
+            out[str(r['repository'] or '').strip().casefold()] = self._SEARCH_OUTCOME.get(
+                kind, 'logged {date}').format(date=r['date'])
+        return out
 
     def _person_research_subject(self, pid: str) -> dict | None:
         """What a search on another website may say about this person, or None
@@ -7781,7 +8151,7 @@ class _SiteBuilder:
                          else "c.status = 'accepted'")
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
-            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.type, c.value, c.place_id, c.place_text, c.source_id, "
+            "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value, c.place_id, c.place_text, c.source_id, "
             "c.status, c.confidence, c.reviewed "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
@@ -7801,7 +8171,18 @@ class _SiteBuilder:
                 return (1, 0)   # undated sorts after every dated decade
             return (0, int(decade[:-1]))   # '1930s' -> 1930
 
-        rows_with_decade = [(r, _decade_header(r['date_edtf'])) for r in rows]
+        # Place-history context rows: when a place the person was recorded at
+        # changed government between their first and last record there, the
+        # timeline says so, marked as background about the place. A shared
+        # (standalone) page names only places that have a page.
+        keep = None if self.linked else (lambda p: p in self.place_pages)
+        context = place_history_context(self.conn, place_visits_from_rows(rows, keep))
+        if keep:
+            context = [c for c in context if keep(c['place_id'])]
+        rows = insert_context_rows(list(rows), context)
+
+        rows_with_decade = [(r, _decade_header(r['date_iso'] if isinstance(r, dict) else r['date_edtf']))
+                            for r in rows]
         rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
 
         groups: list[dict] = []
@@ -7813,6 +8194,19 @@ class _SiteBuilder:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            if isinstance(r, dict):
+                # Background about the place, not a record of the family:
+                # no citation, no age, no confidence flag.
+                name = _escape(r['name'])
+                sentence = _escape(place_history_phrase(r))
+                if name and r['place_id'] in self.place_pages:
+                    href = html.escape(_rel_href(self.places_dir / _page_filename(r['place_id']), page_dir), quote=True)
+                    sentence = sentence.replace(name, f'<a href="{href}">{name}</a>', 1)
+                entries.append({'kind': 'context', 'date': r['date_iso'], 'type': 'place history',
+                                'sentence': self._markup(sentence), 'value': '', 'place': '',
+                                'place_redundant': True, 'source_html': '', 'status': '',
+                                'confidence': '', 'unconfirmed': False, 'parked': ''})
+                continue
             # Scrubbed the same as value_text below (adversarial review,
             # round 4 audit): place_label feeds `_place_trailing_remainder`,
             # whose OWN output is spliced straight into the rendered sentence
@@ -9922,6 +10316,14 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        # A Private card carries no detail about itself, and that includes how
+        # well its ties are proven. Those ties are claims naming a living
+        # person, so they count as unrated before the line is worked out: a
+        # dead grandchild faded only because Pat's own parentage is a family
+        # story would tell every visitor that about Pat.
+        for e in edges:
+            if e['from'].startswith('private-') or e['to'].startswith('private-'):
+                e['confidence'] = None
         lines = line_confidence(shown_id[seed], [
             (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
         nodes = []
@@ -9931,7 +10333,8 @@ class _SiteBuilder:
                         'sex': None, 'vitals': {'birth': None, 'death': None}, 'url': None}
             else:
                 node = self._tree_node(pid, page_dir)
-            node['line_confidence'] = lines.get(shown_id[pid])
+            node['line_confidence'] = (None if node.get('private')
+                                       else lines.get(shown_id[pid]))
             nodes.append(node)
         return {
             'version': 2,
@@ -9939,6 +10342,122 @@ class _SiteBuilder:
             'nodes': nodes,
             'edges': edges,
         }
+
+    def _dated_record_years(self, pid: str) -> tuple[int | None, int | None]:
+        """The years of this person's earliest and latest dated accepted
+        record, for a lifespan bar whose birth or death is not recorded.
+
+        A relative sees a bar run to the last year the archive can show he or
+        she was alive. Same filters as `_person_vitals`: a birth or death
+        record about somebody else (a child's birth) is not this person's, and
+        a shared site skips a restricted claim, a hard-restricted source or a
+        record shared with a living twin. Another person's record cannot
+        stretch a bar, so only the person's own vitals and the records that
+        name them count."""
+        years: list[tuple[int, int]] = []
+        for r in self.conn.execute(
+                "SELECT c.id, c.type, c.date_edtf, c.source_id FROM claims c "
+                "JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = ? AND c.status = 'accepted' "
+                "AND COALESCE(c.negated, 0) = 0 AND c.date_edtf IS NOT NULL "
+                "ORDER BY c.id", (pid,)):
+            if r['type'] in ('birth', 'death') and not self._claim_is_own_vital(
+                    pid, r['id'], r['type']):
+                continue
+            if not self.linked and (
+                    normalize_id(str(r['id'])) in self.restricted_claims
+                    or self._source_hard_restricted(r['source_id'])
+                    or self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD):
+                continue
+            span = _lifespan_years(r['date_edtf'])
+            if span:
+                years.append(span)
+        if not years:
+            return None, None
+        return min(y[0] for y in years), max(y[1] for y in years)
+
+    def _build_lifespan_rows(self, pid: str, wings: dict, page_dir: Path) -> tuple[list, int]:
+        """The rows of the person page's "Who overlapped" chart, and how many
+        shown people had no date to draw.
+
+        A relative sees the person's parents (father first), the person,
+        each spouse in marriage order, then the children by birth year. Anyone
+        the page does not name in a shared site is absent, never a "Living
+        Person" bar: a living person's bar would give away a birth year. So
+        the rows reuse the family chart's own gates (`_chart_entry` for the
+        parents, `_build_family_wings` for spouses and children), and the
+        count of people without dates counts only people the page shows."""
+        people: list[tuple[str, dict]] = []
+        subject = self._chart_entry(pid, page_dir)
+        if subject['redacted']:
+            return [], 0
+        subject['id'] = pid
+        parents = []
+        seen = {pid}
+        for r in self.conn.execute(
+                "SELECT r.other_id, p.sex FROM relationships r "
+                "LEFT JOIN persons p ON p.id = r.other_id "
+                "WHERE r.person_id = ? AND r.rel = 'parent' "
+                "GROUP BY r.other_id ORDER BY r.other_id", (pid,)):
+            other = r['other_id']
+            if not self.linked:
+                ometa = self.person_meta.get(other)
+                if (ometa is None or self._person_is_redacted(ometa)
+                        or not self._has_public_claim(pid, other)):
+                    continue
+            entry = self._chart_entry(other, page_dir)
+            if entry['redacted'] or other in seen:
+                continue
+            seen.add(other)
+            entry['id'] = other
+            role = {'M': 'father', 'F': 'mother'}.get(r['sex'] or '', 'parent')
+            parents.append(({'father': 0, 'mother': 1}.get(role, 2), other, role, entry))
+        parents.sort(key=lambda t: t[:2])
+        people.extend((role, entry) for _, _, role, entry in parents)
+        people.append(('subject', subject))
+        for entry in wings['spouses']:
+            if entry['id'] not in seen:
+                seen.add(entry['id'])
+                people.append(('spouse', entry))
+        kids = [e for e in wings['children'] if e['id'] not in seen]
+        kids.sort(key=lambda e: (
+            (_lifespan_years(e['dates']['birth']) or (9999, 9999))[0], e['id']))
+        people.extend(('child', e) for e in kids)
+
+        today_year = int(_today()[:4])
+        rows, omitted = [], 0
+        for role, entry in people:
+            other = entry['id']
+            birth = _lifespan_years(entry['dates']['birth'])
+            death = _lifespan_years(entry['dates']['death'])
+            first, last = self._dated_record_years(other)
+            if birth is None and death is None and first is None:
+                omitted += 1
+                continue
+            meta = self.person_meta.get(other)
+            living = bool(meta is not None and (meta['living'] or '') == 'true'
+                          and death is None)
+            if living:
+                last = today_year
+            rows.append({'name': entry['name'], 'role': role, 'birth': birth,
+                         'death': death, 'first': first, 'last': last,
+                         'living': living,
+                         'years': self._lifespan_years_text(entry['dates'], living)})
+        return rows, omitted
+
+    @staticmethod
+    def _lifespan_years_text(dates: dict, living: bool) -> str:
+        """The years printed under a name on the lifespan chart: '1810-1880',
+        'abt. 1840-1920', 'b. 1868', 'd. 1890', or 'b. 1990, living'. A range
+        or a qualified date on either side spells out both ends instead, so a
+        range never reads as a birth and a death."""
+        b = _chart_year(dates['birth']).replace('–', ' to ')
+        d = _chart_year(dates['death']).replace('–', ' to ')
+        if b and d:
+            return f'b. {b}, d. {d}' if (' to ' in b or ' to ' in d) else f'{b}-{d}'
+        if b:
+            return f'b. {b}, living' if living else f'b. {b}'
+        return f'd. {d}' if d else ''
 
     def _chart_entry(self, pid: str, page_dir: Path) -> dict:
         """One redacted display node {'name','url','redacted','dates'} for any
@@ -10198,6 +10717,11 @@ class _SiteBuilder:
                 # claim, so the tie is unrated (it is drawn as a guess).
                 tie = (parent_rows[ppid]['confidence']
                        if ppid in parent_rows and ppid not in hyp_parents else None)
+                # A tie to or from a Private card is a claim naming a living
+                # person, so it never fades anyone: a grandparent faded behind
+                # a Private parent would tell visitors her parentage is weak.
+                if labels[num].get('private') or labels[slot_num].get('private'):
+                    tie = None
                 labels[slot_num]['tie_confidence'] = tie
                 labels[slot_num]['line_confidence'] = weaker_confidence(
                     tie, labels[num].get('line_confidence'))
@@ -10500,7 +11024,7 @@ class _SiteBuilder:
 
     def _make_tree_ctx(self, seed: str, mode: str, max_hops: int | None,
                        page_dir: Path, caption: str, *, initial_depth: int | None = None,
-                       home_id: str | None = None) -> dict | None:
+                       home_id: str | None = None, chart_name: str = '') -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
         None when the tree has no edges (a lone node is not worth rendering), so
@@ -10518,7 +11042,10 @@ class _SiteBuilder:
             self.messages.append(f'WARNING: could not write tree data for {fmt_id_display(seed)} ({e}).')
         return {'data_json': self._markup(_json_for_script(tree)), 'caption': caption,
                 'initial_depth': initial_depth,
-                'home_id': fmt_id_display(home_id) if home_id else None}
+                'has_weak': any(n.get('line_confidence') == 'low' for n in tree['nodes']),
+                'weak_key': _WEAK_LINE_KEY,
+                'home_id': fmt_id_display(home_id) if home_id else None,
+                'chart_name': chart_name}
 
     def _copy_vendor(self) -> None:
         """Copy the vendored tree renderer + adapter into the site so it stays
@@ -10735,7 +11262,15 @@ class _SiteBuilder:
             ahnen, wings['spouses'], wings['children'], missing_parent_of=missing_parent_of,
             workbench=self.workbench, siblings=wings.get('siblings'),
             ancestor_generations=depth, branch_color=bool(depth), axis_label=axis_label, home=True)
-        return {'svg': self._markup(svg), 'caption': caption, 'note': note}
+        # The saved file is named for the family's surname, shown on the page;
+        # a private or unnamed hub gives just "family-tree".
+        hub_surname = ''
+        if hub_meta and not hub_private and hub_name != _LIVING_LABEL:
+            hub_surname = person_surname(hub_name, self._shown_row(hub_meta)['surname']) or ''
+        chart_name = _chart_name(hub_surname, 'family-tree')
+        return {'svg': self._markup(_tag_chart(svg, chart_name)), 'caption': caption,
+                'note': note, 'chart_name': chart_name,
+                'weak_key': _WEAK_LINE_KEY if _any_weak_slot(ahnen, depth) else None}
 
     # - index / home page -
 
@@ -10785,9 +11320,18 @@ class _SiteBuilder:
                 by_letter.setdefault('#', []).append(
                     {'name': fmt_id_display(pid), 'href': None, 'stub': True,
                      'recordless': True, 'person_id': fmt_id_display(pid)})
+        # Each family name that has a page, under the letter it starts with.
+        name_links: dict[str, list[dict]] = {}
+        for grp in self._surname_groups():
+            first = grp['display'][:1].upper()
+            name_links.setdefault(first if first.isalpha() else '#', []).append(
+                {'name': grp['display'], 'count': len(grp['pids']),
+                 'href': f'surnames/{grp["slug"]}.html'})
         surnames = [
             {'letter': letter,
-             'people': sorted(by_letter[letter], key=lambda p: (p['name'].lower(), p['href'] or ''))}
+             'people': sorted(by_letter[letter], key=lambda p: (p['name'].lower(), p['href'] or '')),
+             'names': sorted(name_links.get(letter, []),
+                             key=lambda n: (fold_accents(n['name']).lower(), n['href']))}
             for letter in sorted(by_letter)
         ]
 
@@ -11252,6 +11796,312 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'search.html', 'search.html',
                          {'root_prefix': '.', 'linked': self.linked})
 
+    # - surname pages (site.surname_pages) -
+
+    def _surname_people(self) -> list[tuple[str, str]]:
+        """The people a surname page may list, as `(person id, surname as
+        written)`, sorted by id.
+
+        A relative reading the shared site must not learn that a name is
+        carried by someone living, so the list is exactly the people the site
+        gives a page, held to the same two gates the search file uses: the
+        site's own (`_person_is_redacted`) and the shared export reader
+        (`person_withheld`). A surname only withheld people carry is absent
+        from this list, which is why it gets no page, no index line and no
+        link anywhere. The linked preview and the workbench list everyone with
+        a page."""
+        shared = not self.linked
+        privacy = export_privacy(self.conn, self.archive_root) if shared else None
+        carried = living_carried_to_survivors(self.conn) if shared else {}
+        found: list[tuple[str, str]] = []
+        for pid in sorted(self.person_pages):
+            row = self.person_meta[pid]
+            if row['merged_into']:
+                continue
+            if shared and (self._person_is_redacted(row)
+                           or person_withheld(self.conn, row, privacy, self.person_meta.get,
+                                              carried=carried)):
+                continue
+            surname = (row['surname'] or '').strip()
+            if not surname or surname.lower() == 'unknown':
+                continue
+            if surname.startswith('{'):
+                # `surname: {value: ..., restricted: true}` is not a form the
+                # SPEC gives `surname:`; the index holds it as text, and
+                # printing that would show the hidden name. Leave it off.
+                continue
+            if shared and surname.lower() in self.restricted_names.get(pid, ()):
+                continue   # he marked this name private in another name field
+            found.append((pid, surname))
+        return found
+
+    def _surname_groups(self) -> list[dict]:
+        """One group per family name (TOOLING §12, "Surname pages"), worked
+        out once per build: `{'slug', 'display', 'pids', 'spellings', 'also',
+        'note'}`, sorted by folded name.
+
+        Spellings that differ only by accent or case share a group (Müller,
+        Muller). A Polish feminine form (Kowalska) or a Czech one (Nováková)
+        joins the masculine form only when that form is also among the people
+        listed, so a family with only Kowalskas is not renamed Kowalski.
+        `notes/surnames/{slug}.md` with `also: [Kowalsky]` folds more spellings
+        in. Empty when the switch is off."""
+        if self._surname_cache is not None:
+            return self._surname_cache
+        groups: list[dict] = []
+        if self.show_surnames:
+            groups = self._build_surname_groups()
+        self._surname_cache = groups
+        return groups
+
+    def _build_surname_groups(self) -> list[dict]:
+        people = self._surname_people()
+        keys = {fold_accents(s).lower() for _pid, s in people}
+
+        def home_key(key: str) -> str:
+            for fem, masc in _SURNAME_FEMININE_ENDINGS:
+                if key.endswith(fem) and len(key) > len(fem):
+                    target = key[:-len(fem)] + masc
+                    if target in keys and target != key:
+                        return target
+            return key
+
+        by_key: dict[str, dict] = {}
+        for pid, surname in people:
+            key = fold_accents(surname).lower()
+            home = home_key(key)
+            grp = by_key.setdefault(home, {'home': home, 'keys': set(), 'pids': [],
+                                           'spellings': {}, 'own': {}, 'by_key': {}})
+            grp['keys'].add(key)
+            grp['pids'].append(pid)
+            grp['by_key'].setdefault(key, []).append((pid, surname))
+            grp['spellings'][surname] = grp['spellings'].get(surname, 0) + 1
+            if key == home_key(key):
+                grp['own'][surname] = grp['own'].get(surname, 0) + 1
+
+        def display_of(grp: dict) -> str:
+            pool = grp['own'] or grp['spellings']
+            return sorted(pool, key=lambda sp: (-pool[sp], sp))[0]
+
+        def assign_slugs(groups: list[dict]) -> None:
+            used: dict[str, int] = {}
+            for grp in groups:
+                slug = _surname_slug(grp['display'])
+                used[slug] = used.get(slug, 0) + 1
+                grp['slug'] = slug if used[slug] == 1 else f'{slug}-{used[slug]}'
+
+        ordered = [by_key[k] for k in sorted(by_key)]
+        for grp in ordered:
+            grp['display'] = display_of(grp)
+        assign_slugs(ordered)
+        by_slug = {grp['slug']: grp for grp in ordered}
+
+        # `also:` lists in the human's notes fold more spellings into a page.
+        # Each listed spelling moves on its own (its people, not the whole
+        # page it sat on), and only onto a page still there under its own
+        # name, so two notes never chain one family into another.
+        owner = {k: grp for grp in ordered for k in grp['keys']}
+        claimed: dict[str, str] = {}
+        notes_dir = self.archive_root / 'notes' / 'surnames'
+        note_files = sorted(notes_dir.glob('*.md')) if notes_dir.is_dir() else []
+        for path in note_files:
+            target = by_slug.get(path.stem.lower())
+            if target is None or target['home'] in claimed:
+                continue   # no page of its own (any more) for this note to gather onto
+            try:
+                meta = read_record(path, on_decode_error=_ignore_decode_error)['meta'] or {}
+            except Exception:   # noqa: BLE001 (an unreadable note adds no spellings)
+                continue
+            also = meta.get('also')
+            for spelling in ([also] if isinstance(also, str) else also if isinstance(also, list) else []):
+                key = fold_accents(str(spelling)).lower().strip()
+                other = owner.get(key)
+                if other is None or other is target:
+                    continue
+                if key in claimed and claimed[key] != path.name:
+                    self.messages.append(
+                        f'WARNING: {path.name} and {claimed[key]} both list {spelling!r} under '
+                        f'also:; it stays on the page of {claimed[key]}.')
+                    continue
+                # The page's own spelling takes the feminine forms joined to
+                # it along (Kowalski brings Kowalska); a joined form moves alone.
+                moving_keys = sorted(other['keys']) if key == other['home'] else [key]
+                moving = []
+                for k in moving_keys:
+                    claimed.setdefault(k, path.name)
+                    owner[k] = target
+                    other['keys'].discard(k)
+                    target['keys'].add(k)
+                    batch = other['by_key'].pop(k, [])
+                    target['by_key'].setdefault(k, []).extend(batch)
+                    moving += batch
+                for pid, surname in moving:
+                    other['pids'].remove(pid)
+                    target['pids'].append(pid)
+                    for pool in ('spellings', 'own'):
+                        if surname in other[pool]:
+                            other[pool][surname] -= 1
+                            if not other[pool][surname]:
+                                del other[pool][surname]
+                    target['spellings'][surname] = target['spellings'].get(surname, 0) + 1
+        ordered = [g for g in ordered if g['pids']]
+
+        for grp in ordered:
+            grp['display'] = display_of(grp)
+        assign_slugs(ordered)
+        for grp in ordered:
+            grp['pids'] = sorted(set(grp['pids']))
+            others = sorted((sp for sp in grp['spellings'] if sp != grp['display']),
+                            key=lambda sp: (fold_accents(sp).lower(), sp))
+            grp['also'] = others
+        return ordered
+
+    def _surname_places(self, pids: list[str]) -> list[tuple[str, int]]:
+        """The registered places the group's people are most often found in
+        (up to five), each person counted once per place, from accepted claims
+        the site may show whose place has a page."""
+        seen: dict[str, set[str]] = {}
+        for pid in pids:
+            for r in self.conn.execute(
+                    'SELECT c.id, c.source_id, c.status, c.place_id FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    "WHERE cp.person_id = ? AND c.status = 'accepted' "
+                    "AND COALESCE(c.negated, 0) = 0 AND c.place_id IS NOT NULL "
+                    "AND c.place_id != '' ORDER BY c.id", (pid,)):
+                lid = normalize_id(str(r['place_id']))
+                if lid not in self.place_pages:
+                    continue
+                if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                    continue
+                if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
+                    continue
+                seen.setdefault(lid, set()).add(pid)
+        ranked = sorted(seen, key=lambda lid: (-len(seen[lid]),
+                                               (self.place_names.get(lid) or '').lower(), lid))
+        return [(lid, len(seen[lid])) for lid in ranked[:5]]
+
+    def _surname_birthplace(self, pid: str) -> str:
+        """Where a person was born, as the site shows it, or ''."""
+        for r in sorted(self.conn.execute(
+                'SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence, '
+                'c.source_id, c.status, c.place_id, c.place_text FROM claims c '
+                'JOIN claim_persons cp ON cp.claim_id = c.id '
+                "WHERE cp.person_id = ? AND c.type = 'birth' AND c.status = 'accepted' "
+                'AND COALESCE(c.negated, 0) = 0 ORDER BY c.id', (pid,)).fetchall(),
+                key=vital_pick_key):
+            if not self._claim_is_own_vital(pid, r['id'], r['type']):
+                continue
+            if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                continue
+            if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
+                continue
+            lid = normalize_id(str(r['place_id'] or ''))
+            label = self._place_label(r['place_text'], lid if lid in self.place_pages else None)
+            if label:
+                return label
+        return ''
+
+    def _surname_records(self, pids: list[str], page_dir: Path) -> tuple[list[dict], int]:
+        """The records that mention the group's people: published sources
+        cited by an accepted claim the site may show, grouped by kind, the
+        ones naming most of the family first. At most 30; the second number
+        is how many more there were."""
+        counts: dict[str, set[str]] = {}
+        for pid in pids:
+            for r in self.conn.execute(
+                    'SELECT c.id, c.source_id, c.status FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    "WHERE cp.person_id = ? AND c.status = 'accepted' ORDER BY c.id", (pid,)):
+                sid = normalize_id(str(r['source_id'] or ''))
+                if sid not in self.source_pages:
+                    continue
+                if not self.linked and sid in self._sources_naming_living:
+                    continue
+                if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                    continue
+                counts.setdefault(sid, set()).add(pid)
+        ranked = sorted(counts, key=lambda sid: (-len(counts[sid]),
+                                                 (self.source_meta[sid]['title'] or '').lower(), sid))
+        shown, extra = ranked[:30], max(0, len(ranked) - 30)
+        by_type: dict[str, list[str]] = {}
+        for sid in shown:
+            label = str(self.source_meta[sid]['source_type'] or 'other').replace('-', ' ')
+            by_type.setdefault(label.capitalize(), []).append(sid)
+        rows = [{'label': label, 'entries': [self._markup(self._source_link(sid, page_dir))
+                                           for sid in by_type[label]]}
+                for label in sorted(by_type)]
+        return rows, extra
+
+    def _surname_note(self, slug: str, page_dir: Path):
+        """The human's own words about the name (`notes/surnames/{slug}.md`),
+        read the way `notes/home.md` is: the private fence and unaccepted AI
+        drafts come out of a shared build, and a damaged draft marker
+        withholds the whole note."""
+        path = self.archive_root / 'notes' / 'surnames' / f'{slug}.md'
+        if not path.is_file():
+            return None
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        try:
+            body = (read_record(path, on_decode_error=_raise_friendly_decode_error)
+                    .get('body') or '').strip()
+            body, problem = withhold_private_and_drafts(body, drop_private=not self.linked)
+            if problem is not None:
+                self.messages.append(
+                    f'WARNING: a draft marker in notes/surnames/{slug}.md is damaged ({problem}); '
+                    'the notes on that surname page are withheld until it is fixed.')
+                return None
+            if body.strip():
+                return self._markup(_prose_to_html(body, render, embed,
+                                                   drop_private=not self.linked))
+        except Exception as e:  # noqa: BLE001 - a bad note must not stop the page
+            self.messages.append(
+                f'WARNING: notes/surnames/{slug}.md could not be read ({e}); its page has no notes.')
+        return None
+
+    def build_surname_pages(self) -> None:
+        """Write `surnames/{slug}.html` for every family name the build shows
+        a person for, plus `surnames/index.html` (TOOLING §12). Nothing is
+        written when no name qualifies: an empty page would reveal that a name
+        exists only because someone hidden carries it. `_reset_targets`
+        clears the folder on every rebuild."""
+        groups = self._surname_groups()
+        if not groups:
+            return
+        page_dir = self.surnames_dir
+        self._footnotes = None
+        for grp in groups:
+            pids = grp['pids']
+            vitals = {pid: self._vitals_cached(pid) for pid in pids}
+            born = [y for y in (_search_year(v.get('birth')) for v in vitals.values()) if y]
+            died = [y for y in (_search_year(v.get('death')) for v in vitals.values()) if y]
+            first = min(born) if born else (min(died) if died else '')
+            last = max(died) if died else (max(born) if born else '')
+            rows = []
+            for pid in pids:
+                b = _search_year(vitals[pid].get('birth'))
+                d = _search_year(vitals[pid].get('death'))
+                years = f'{b}-{d}' if b and d else f'b. {b}' if b else f'd. {d}' if d else ''
+                name = self.person_meta[pid]['name'] or fmt_id_display(pid)
+                rows.append({'sort': (b or '9999', name.lower(), pid), 'years': years,
+                             'html': self._markup(self._person_link(pid, page_dir)),
+                             'place': self._surname_birthplace(pid)})
+            rows.sort(key=lambda r: r['sort'])
+            places = [{'html': self._markup(self.render_token(fmt_id_display(lid), page_dir)),
+                       'count': n} for lid, n in self._surname_places(pids)]
+            records, more_records = self._surname_records(pids, page_dir)
+            self._write_page(page_dir / f'{grp["slug"]}.html', 'surname.html', {
+                'root_prefix': '..', 'linked': self.linked, 'display': grp['display'],
+                'also': grp['also'], 'count': len(pids), 'first': first, 'last': last,
+                'places': places, 'prose': self._surname_note(grp['slug'], page_dir),
+                'people': rows, 'records': records, 'more_records': more_records})
+        self._write_page(page_dir / 'index.html', 'surnames.html', {
+            'root_prefix': '..', 'linked': self.linked,
+            'groups': [{'display': g['display'], 'count': len(g['pids']),
+                        'href': f'{g["slug"]}.html'} for g in
+                       sorted(groups, key=lambda g: (fold_accents(g['display']).lower(),
+                                                     g['slug']))]})
+
     def _page_count(self) -> int:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
@@ -11259,7 +12109,8 @@ class _SiteBuilder:
         `run()` and `--dry-run` both report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
-                + (1 if self.show_whats_new else 0))
+                + (1 if self.show_whats_new else 0)
+                + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -11280,6 +12131,8 @@ class _SiteBuilder:
                 ),
                 # The search box in every page's header (base.html).
                 'show_search': self.show_search,
+                # The "Surnames" link in the header: only when a page exists.
+                'show_surnames': bool(self._surname_groups()),
             }
             # Workbench chrome (serve only). base.html gates the serve bar, the
             # CSRF meta tag, the workbench assets, and the modal templates on
@@ -11327,6 +12180,7 @@ class _SiteBuilder:
         self.build_discoveries_page()
         if self.show_whats_new:
             self.build_whats_new_page()
+        self.build_surname_pages()
         self.build_index_page()
         if self.show_search:
             self.build_search_page()
@@ -11350,6 +12204,10 @@ class _SiteBuilder:
                 # Listed whether "What's new" is on or off, so switching it off
                 # removes the old page.
                 self.out_dir / 'whats-new.html',
+                # Listed whether surname pages are on or off, so switching
+                # them off, or the last person carrying a name becoming
+                # private, never leaves an old page naming that family.
+                self.surnames_dir,
                 # Listed whether search is on or off, so switching it off
                 # removes the old page (the search data lives in data/).
                 self.out_dir / 'search.html']

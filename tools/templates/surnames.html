@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}Family names - {{ site_title }}{% endblock %}
+{% block content %}
+{#- Every family name with a page, A to Z (TOOLING §12, "Surname pages"). -#}
+<article class="surnames">
+  <h1>Family names</h1>
+  <ul class="index-list">
+    {% for g in groups %}<li><a href="{{ g.href }}">{{ g.display }}</a> ({{ g.count }})</li>
+    {% endfor %}
+  </ul>
+</article>
+{% endblock %}

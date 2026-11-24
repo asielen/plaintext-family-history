@@ -4373,6 +4373,68 @@ class FileOpeningLinkTargetTests(_Base):
         self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
+class TimelinePlaceHistoryTests(_Base):
+    """A reader sees, in grey, when the place a person lived at changed
+    government while they lived there: background, not a family record."""
+
+    def _seed(self, years, *, history=None):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census')
+        self.conn.execute(
+            'INSERT INTO places(id, name, hierarchy) VALUES (?,?,?)',
+            ('l-1111111111', 'Fairview', 'Fairview, Breton Co., Kansas, USA'))
+        for dmin, dmax, hier in history or (
+                ('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),
+                ('1861-01-29', '1889-12-31', 'Fairview, Breton Co., Kansas, USA'),
+                ('1890-01-01', '1899-12-31', 'Fairview, Kansas')):
+            self.conn.execute(
+                'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) '
+                'VALUES (?,?,?,?,?)', ('l-1111111111', f'{dmin}/{dmax}', dmin, dmax, hier))
+        for n, y in enumerate(years):
+            cid = f'c-{n + 1:010d}'
+            self.conn.execute(
+                'INSERT INTO claims(id, source_id, type, value, status, place_id, date_edtf, '
+                'date_min, date_max) VALUES (?,?,?,?,?,?,?,?,?)',
+                (cid, 's-1111111111', 'residence', f'Lived in Fairview {y}', 'accepted',
+                 'l-1111111111', str(y), f'{y}-01-01', f'{y}-12-31'))
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,0)',
+                (cid, 'p-aaaaaaaaaa'))
+
+    def test_changes_inside_the_stay_appear_labelled(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="tl-context"', page)
+        self.assertEqual(page.count('class="tl-context"'), 2)   # 1858 and 1861, not 1890
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', page.replace(
+            '<a href="../places/l-1111111111.html">Fairview</a>', 'Fairview'))
+        self.assertIn('From 1861, ', page)
+        self.assertIn('Place history', page)
+        self.assertIn('background about the places', page)
+
+    def test_a_single_visit_after_the_changes_gets_none(self):
+        self._seed((1871,), history=(('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),))
+        self._run(linked=True)
+        self.assertNotIn('tl-context', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_context_rows_sit_between_own_rows(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertLess(page.index('1856 - residence'), page.index('From 1858'))
+        self.assertLess(page.index('From 1861'), page.index('1875 - residence'))
+
+    def test_shared_site_shows_them_too_and_stays_the_same_build_to_build(self):
+        # Place history names no people, so a shared page may carry it.
+        self._seed((1856, 1875))
+        self._run()
+        first = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(first.count('class="tl-context"'), 2)
+        self._run()
+        self.assertEqual(first, self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,
                     alt_names=(), history=()):
@@ -5502,6 +5564,117 @@ class TreeJsonConfidenceTests(_Base):
         names = {n['name'] for n in self._tree('p-cccccccccc')['nodes']}
         self.assertEqual(names, {'Grandparent Gus', 'Parent Pat', 'Child Carl',
                                  'Minor Mina', 'Uncle Umberto'})
+
+
+    def test_a_private_card_and_its_ties_say_nothing_about_their_evidence(self):
+        # Every parent tie is a family story. Umberto, dead, is Gus's son on
+        # his own story and fades. Carl, dead, sits under Private Pat: the
+        # only ties linking him to Gus name Pat, a living woman, so they
+        # count as unrated and he is not faded. A faded Carl would tell a
+        # visitor that Pat's own parentage rests on a family story.
+        self._seed_living_family()
+        self.conn.execute("UPDATE claims SET confidence = 'low' WHERE id LIKE 'c-p%'")
+        self._run(linked=False)
+        tree = self._tree('p-cccccccccc')
+        nodes = {n['p_id']: n for n in tree['nodes']}
+        self.assertIsNone(nodes['private-1']['line_confidence'])
+        for e in tree['edges']:
+            if 'private-1' in (e['from'], e['to']):
+                self.assertIsNone(e['confidence'], e)
+        self.assertIsNone(nodes['p-aaaaaaaaaa']['line_confidence'])
+        self.assertEqual(nodes['p-dddddddddd']['line_confidence'], 'low')
+
+    def test_nobody_behind_a_private_card_fades_for_her_ties(self):
+        # Only Pat's tie to her father Gus is a family story. On dead Carl's
+        # page, Gus sits behind Private Pat on the family chart and the fan;
+        # on Gus's page, Carl sits under her in the explorer. Fading either,
+        # or printing the key, would say Pat's parentage is weak.
+        self._seed_living_family()
+        self.conn.execute(
+            "UPDATE claims SET confidence = 'low' WHERE id IN (SELECT claim_id FROM relationships"
+            " WHERE person_id = 'p-bbbbbbbbbb' AND other_id = 'p-cccccccccc')")
+        self._run(linked=False)
+        for pid in ('p-aaaaaaaaaa', 'p-cccccccccc'):
+            page = (self.out_dir / 'persons' / f'{pid}.html').read_text(encoding='utf-8')
+            self.assertIn('Private', page, pid)
+            for word in ('ped-weak', 'fan-seg-weak', 'low-confidence record'):
+                self.assertNotIn(word, page, f'{word!r} on {pid}')
+
+    def test_the_explorer_page_says_what_fading_means_only_when_someone_is_faded(self):
+        self._gus_and_pat()
+        self._parent('p-bbbbbbbbbb', 'p-cccccccccc', 'low')
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertIn('low-confidence record', page)
+        self.conn.execute("UPDATE claims SET confidence = 'high'")
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertNotIn('low-confidence record', page)
+
+
+class WeakLineDrawingTests(unittest.TestCase):
+    """Chart plan 08-7: a person linked to the subject only through a low
+    tie is drawn faded, with a broken outline so it does not rest on colour
+    alone, and a plain sentence says what that means."""
+
+    @staticmethod
+    def _labels(weak=(2, 4, 5), private_weak=()):
+        # Chart case C18: the father tie is a family story, so his whole
+        # side (slots 2, 4, 5) rests on it; the mother's side (3, 6, 7) does not.
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num in range(2, 8):
+            labels[num] = {'name': f'Person {num}', 'url': None,
+                           'line_confidence': 'low' if num in weak else 'high'}
+        for num in private_weak:
+            labels[num] = {'private': True, 'line_confidence': 'low'}
+        return labels
+
+    def test_fan_fades_the_weak_side_only(self):
+        svg = site._render_fan_svg(self._labels(), 3)
+        self.assertEqual(svg.count('fan-seg-weak'), 3)
+        for num in (2, 4, 5):
+            self.assertIn(f'Person {num}. {site._WEAK_LINE_TITLE}', svg)
+        for num in (3, 6, 7):
+            self.assertNotIn(f'Person {num}. ', svg)
+
+    def test_fan_never_fades_a_private_card(self):
+        svg = site._render_fan_svg(self._labels(weak=(), private_weak=(3,)), 3)
+        self.assertNotIn('fan-seg-weak', svg)
+
+    def test_pedigree_fades_the_weak_side_only(self):
+        svg = site._render_pedigree_svg(self._labels())
+        self.assertEqual(svg.count('ped-weak'), 3)
+        self.assertIn(site._WEAK_LINE_TITLE, svg)
+
+    def test_pedigree_never_fades_a_private_card(self):
+        svg = site._render_pedigree_svg(self._labels(weak=(), private_weak=(3,)))
+        self.assertNotIn('ped-weak', svg)
+
+    def test_the_key_is_wanted_only_when_a_drawn_cell_is_faded(self):
+        self.assertTrue(site._any_weak_slot(self._labels(), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=()), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(4,)), 1), 'slot 4 is not drawn')
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(), private_weak=(3,)), 3))
+
+    def test_the_key_sentence_explains_the_fade_in_plain_words(self):
+        self.assertIn('Faded', site._WEAK_LINE_KEY)
+        self.assertIn('low-confidence record', site._WEAK_LINE_KEY)
+        self.assertIn('dashed', site._WEAK_LINE_KEY)
+
+    def test_the_explorer_files_draw_faded_cards_and_thin_broken_edges(self):
+        vendor = ROOT / 'tools' / 'templates' / 'vendor'
+        js = (vendor / 'fha-tree.js').read_text(encoding='utf-8')
+        adapter = (vendor / 'tree-adapter.js').read_text(encoding='utf-8')
+        self.assertIn('fha-node-weak', js)
+        self.assertIn('fha-tree-edge-weak', js)
+        self.assertIn("line_confidence === 'low'", adapter)
+        self.assertIn("confidence === 'low'", adapter)
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rule in ('.fha-tree-edge-weak', '.fha-node.fha-node-weak',
+                     '.ped-node.ped-weak', '.fan-seg-weak'):
+            self.assertIn(rule, css)
+        self.assertRegex(css, r'\.fha-tree-edge-weak[^}]*stroke-dasharray')
+        self.assertRegex(css, r'\.fan-seg-weak[^}]*stroke-dasharray')
 
 
 class PedigreeGeometryGuardTests(unittest.TestCase):
@@ -9778,6 +9951,76 @@ class WorkbenchSearchLinksTests(unittest.TestCase):
         self.assertIn('referrerpolicy="no-referrer"', page)
         self.assertNotIn('<details class="wb-research"', page)   # he is not living
 
+    def test_each_link_carries_what_nothing_found_files_and_shows_the_last_search(self):
+        import confirm
+        r = confirm.run_confirm_search(
+            self.root, self.THOMAS, repository='Ancestry', result='nil', date='2026-11-22')
+        self.assertEqual(r.exit_code, 0)
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args), {
+            'person_id': self.THOMAS, 'repository': 'Ancestry', 'result': 'nil',
+            'terms': 'Thomas Hartley, born about 1840, New York; father Caleb Hartley; '
+                     'mother Chastina Reed; spouse Margaret Cole, married about 1871, Fairview'})
+        self.assertRegex(page, r'Ancestry</a>.*?searched 2026-11-22: nothing found')
+        self.assertEqual(page.count('searched 2026-11-22'), 1)   # only the site he logged
+
+    def test_a_search_that_could_not_be_run_shows_as_still_to_do(self):
+        # SPEC §17c: an unavailable or requested entry is still to do, never
+        # "already searched".
+        log = self.root / 'notes' / 'research-log.md'
+        with open(log, 'a', encoding='utf-8', newline='') as f:
+            f.write(f'\n- date: 2026-11-20\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Find a Grave\n  result: unavailable (the site was down)\n'
+                    f'\n- date: 2026-11-21\n  question: "[[{self.THOMAS}|Thomas Edward Hartley]]"\n'
+                    '  repository: Ancestry\n  result: requested (letter to the county)\n')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        self.assertNotIn('searched 2026-11-20', page)
+        self.assertNotIn('searched 2026-11-21', page)
+        self.assertRegex(page, r'Find a Grave</a>.*?tried 2026-11-20: could not be searched, still to do')
+        self.assertRegex(page, r'Ancestry</a>.*?asked for the records 2026-11-21, still to do')
+
+    def test_a_grave_site_logs_the_married_surname_it_searched(self):
+        subject = {'given': 'Mary', 'surname': 'Cole', 'married_surname': 'Hartley',
+                   'birth_year': 1840}
+        self.assertEqual(_lib.research_search_terms(subject, 'findagrave'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'billiongraves'),
+                         'Mary Hartley, born about 1840')
+        self.assertEqual(_lib.research_search_terms(subject, 'familysearch'),
+                         'Mary Cole, born about 1840')
+
+    def test_each_site_logs_what_its_own_link_searched(self):
+        # A nil is only worth what was really searched: a newspaper link sends
+        # only the name and a span of years, so its log must not claim a birth
+        # year and place, and FamilySearch's must name the parents it sent.
+        s = {'given': 'Thomas', 'surname': 'Hartley', 'birth_year': 1840,
+             'birth_place': 'New York', 'death_year': 1910, 'father_given': 'Caleb',
+             'father_surname': 'Hartley', 'places': ['New York']}
+        t = _lib.research_search_terms
+        self.assertEqual(t(s, 'familysearch'), 'Thomas Hartley, born about 1840, New York; '
+                                               'died about 1910; father Caleb Hartley')
+        self.assertEqual(t(s, 'newspapers'), 'Thomas Hartley, newspapers 1835 to 1915')
+        self.assertEqual(t(s, 'chroniclingamerica'), 'Thomas Hartley, newspapers 1840 to 1910')
+        self.assertEqual(t(s, 'findmypast'), 'Thomas Hartley, born about 1840, died about 1910')
+        self.assertEqual(t(s, 'ukdiscovery'), 'Thomas Hartley')
+        # A place with no year still says which event it was.
+        self.assertEqual(t({'given': 'Thomas', 'surname': 'Hartley', 'birth_place': 'Ohio',
+                            'death_place': 'Boston'}, 'familysearch'),
+                         'Thomas Hartley, born in Ohio; died in Boston')
+        self.assertEqual(t({**s, 'places': ['Suwalki, podlaskie']}, 'geneteka'),
+                         'Thomas Hartley, baptisms 1840 to 1841, province podlaskie')
+
+    def test_a_living_subject_logs_the_name_alone(self):
+        self._edit(self.THOMAS, 'living: false', 'living: true')
+        page = self._thomas_page(self._build(linked=True, workbench=True))
+        import html as html_mod
+        [args] = [html_mod.unescape(a) for a in re.findall(
+            r"data-wb-search=\"ancestry\" data-wb-search-args='([^']*)'", page)]
+        self.assertEqual(json.loads(args)['terms'], 'Thomas Hartley')
+
     def test_a_living_relative_is_left_out_of_every_url(self):
         self._edit('p-cd795c61e0', 'living: false', 'living: true')
         hrefs = self._research_hrefs(self._thomas_page(self._build(linked=True, workbench=True)))
@@ -11063,7 +11306,9 @@ def _fan_rings_by_formula(n, span=math.pi):
     rings, r = [], _FAN_R0
     for g in range(1, n + 1):
         seg = span / 2 ** g
-        mode = 'arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN else 'radial'
+        # A cell that is a whole half circle is read level, never along its arc.
+        mode = ('arc' if (r + _FAN_T_ARC / 2) * seg >= _FAN_ARC_MIN and seg < math.pi - 1e-9
+                else 'radial')
         t = _FAN_T_ARC if mode == 'arc' else _FAN_T_RADIAL
         rings.append((mode, r, r + t))
         r += t
@@ -11251,19 +11496,25 @@ class FanChartGeometryTests(unittest.TestCase):
         for dates in ({'birth': '1840', 'death': '1941'},
                       {'birth': '[..1840]', 'death': '[1941-01-02..]'},
                       {'birth': '1838/1841', 'death': '194X'}):
-            self._every_line_fits(dates)
+            for span_deg in (180, 270, 360):
+                self._every_line_fits(dates, span_deg)
 
-    def _every_line_fits(self, dates):
+    def _every_line_fits(self, dates, span_deg=180):
+        # Measured on the path each line is actually drawn on, so a poster's
+        # lower half (where the lines stack the other way) is held to it too.
+        span = math.radians(span_deg)
         for depth in (5, 6):
-            rings = _fan_rings_by_formula(depth)
+            rings = _fan_rings_by_formula(depth, span)
             for name in (lambda n: f'Anc{n} Hartley',
-                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley'):
-                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth)
+                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley',
+                         lambda n: f'Anc{n} Wilhelmina Augusta Brandenburg'):
+                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth,
+                                           span_deg=span_deg)
                 paths = dict(_FAN_PATH_RE.findall(svg))
                 for title, item in _fan_items(svg).items():
                     g = _fan_slot_of(title).bit_length() - 1
                     mode, r_in, r_out = rings[g - 1]
-                    seg = math.pi / 2 ** g
+                    seg = span / 2 ** g
                     lines = [(item['fs'], pid, t) for pid, t in item['lines']]
                     lines += [(item['fy'], pid, t) for pid, t in item['years']]
                     for fs, pid, text in lines:
@@ -11274,7 +11525,7 @@ class FanChartGeometryTests(unittest.TestCase):
                             avail = r * seg - 2 * _FAN_PAD
                         else:
                             avail = min(_fan_line_length(paths[pid]), r_out - r_in - 2 * _FAN_PAD)
-                        with self.subTest(depth=depth, title=title, line=text):
+                        with self.subTest(span=span_deg, depth=depth, title=title, line=text):
                             self.assertLessEqual(len(text) * _FAN_CW * fs, avail + 0.5)
                     if mode == 'radial':
                         # Stacked lines fit across the narrow end of the cell.
@@ -11351,6 +11602,273 @@ class FanChartDepthTests(_Base):
         self.assertIn('id="fha-fan"', page)
         self.assertEqual(page.count('vendor/fha-tree.js"'), 1)
         self.assertIn('wrapStatic', page)
+
+
+# The poster angles (08-4). Path coordinates are read back out of the SVG and
+# checked against the geometry written down here, not against the renderer.
+_FAN_POINT_RE = re.compile(r'(-?[0-9]+\.?[0-9]*),(-?[0-9]+\.?[0-9]*)')
+
+
+def _fan_viewbox(svg):
+    return tuple(float(v) for v in re.search(r'viewBox="([^"]+)"', svg).group(1).split())
+
+
+class FanPosterGeometryTests(unittest.TestCase):
+    """A fan can be set to 270 degrees or a full circle so a family can print
+    a poster with every name readable and upright."""
+
+    def _svg(self, depth, span_deg, **kw):
+        return site._render_fan_svg(_fan_full_labels(depth, **kw), depth, span_deg=span_deg)
+
+    def _segs(self, svg):
+        return re.findall(r'<path class="fan-seg" style="[^"]*" d="([^"]+)"/>', svg)
+
+    def test_a_fan_of_any_other_angle_is_refused(self):
+        with self.assertRaises(ValueError):
+            site._render_fan_svg(_fan_full_labels(2), 2, span_deg=200)
+
+    def test_poster_angles_cover_the_whole_span(self):
+        # Each generation's cells run end to end around the hub, the first
+        # starting at the fan's left edge, and together they cover the span.
+        for span_deg in (270, 360):
+            span = math.radians(span_deg)
+            rings = _fan_rings_by_formula(4, span)
+            svg = self._svg(4, span_deg)
+            centre = rings[-1][2] + 14
+            segs = self._segs(svg)
+            for g in range(1, 5):
+                widths, his = [], []
+                for d in segs[(1 << g) - 2:(1 << (g + 1)) - 2]:
+                    pts = [tuple(map(float, m)) for m in
+                           _FAN_POINT_RE.findall(re.sub(r'A[0-9.,]+ [01] [01] [01] ', '', d))]
+                    lo, hi = pts[0], pts[1]      # M outer-low, arc to outer-high
+                    a_lo = math.atan2(centre - lo[1], lo[0] - centre)
+                    a_hi = math.atan2(centre - hi[1], hi[0] - centre)
+                    widths.append((a_hi - a_lo) % (2 * math.pi) or 2 * math.pi)
+                    his.append(a_hi)
+                self.assertAlmostEqual(sum(widths), span, places=1)
+                want = math.pi / 2 + span / 2
+                self.assertAlmostEqual(math.cos(his[0]), math.cos(want), places=1)
+                self.assertAlmostEqual(math.sin(his[0]), math.sin(want), places=1)
+
+    def test_every_cell_sits_inside_the_canvas(self):
+        for span_deg in (180, 270, 360):
+            svg = self._svg(6, span_deg)
+            _x, _y, w, h = _fan_viewbox(svg)
+            hub = re.findall(r'<path class="fan-seg fan-seg-subject" d="([^"]+)"', svg)
+            for d in self._segs(svg) + hub:
+                for x, y in _FAN_POINT_RE.findall(re.sub(r'A[0-9.,]+ [01] [01] [01] ', '', d)):
+                    self.assertTrue(-0.5 <= float(x) <= w + 0.5, (span_deg, x, w))
+                    self.assertTrue(-0.5 <= float(y) <= h + 0.5, (span_deg, y, h))
+        # The full circle is as tall as it is wide.
+        _x, _y, w, h = _fan_viewbox(self._svg(6, 360))
+        self.assertEqual(w, h)
+
+    def test_lower_half_arc_text_reads_upright(self):
+        # Below the horizontal a curved name runs counter-clockwise (left to
+        # right along the bottom), so it is not upside down; above it, clockwise.
+        svg = self._svg(3, 360)
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        rings = _fan_rings_by_formula(3, 2 * math.pi)
+        checked = {'lower': 0, 'upper': 0}
+        for title, item in _fan_items(svg).items():
+            num = _fan_slot_of(title)
+            g = num.bit_length() - 1
+            if rings[g - 1][0] != 'arc':
+                continue
+            seg = 2 * math.pi / 2 ** g
+            mid = 3 * math.pi / 2 - (num - 2 ** g) * seg - seg / 2
+            m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) A[0-9.]+,[0-9.]+ 0 [01] ([01]) ([-0-9.]+),([-0-9.]+)',
+                             paths[item['lines'][0][0]])
+            self.assertIsNotNone(m, title)
+            if math.sin(mid) < -1e-9:
+                self.assertEqual(m.group(3), '0', title)
+                checked['lower'] += 1
+            else:
+                self.assertEqual(m.group(3), '1', title)
+                checked['upper'] += 1
+        self.assertGreater(checked['lower'], 2)
+        self.assertGreater(checked['upper'], 2)
+
+    def test_lower_half_name_lines_stack_with_the_name_nearest_the_hub(self):
+        # On the lower half the hub side is the top as read, so the name sits
+        # at the smaller radius and the years under it at the larger.
+        dates = {'birth': '1840', 'death': '1901'}
+        svg = self._svg(3, 360, dates=dates, name=lambda n: 'Calvin George Hartley')
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        rings = _fan_rings_by_formula(3, 2 * math.pi)
+        seen = 0
+        # every name here is the same, so number the cells by document order
+        cells = re.findall(r'<(?:a|g)[^>]*>(<title>[^<]*</title><text class="fan-label".*?)</(?:a|g)>', svg, re.S)
+        slots = [n for n in range(2, 2 ** 4)]
+        self.assertEqual(len(cells), len(slots))
+        for num, cell in zip(slots, cells):
+            g = num.bit_length() - 1
+            seg = 2 * math.pi / 2 ** g
+            mid = 3 * math.pi / 2 - (num - 2 ** g) * seg - seg / 2
+            if rings[g - 1][0] != 'arc' or math.sin(mid) >= -1e-9:
+                continue
+            ids = re.findall(r'href="#([^"]+)"', cell)
+            if len(ids) < 2:
+                continue
+            radii = [float(re.match(r'M[-0-9.]+,[-0-9.]+ A([0-9.]+),', paths[i]).group(1)) for i in ids]
+            self.assertEqual(radii, sorted(radii), num)
+            seen += 1
+        self.assertGreater(seen, 0)
+
+    def test_full_circle_parents_use_horizontal_text(self):
+        # At 360 degrees each parent is a half circle: the name runs straight
+        # across, level, on whichever side the parent is.
+        svg = self._svg(3, 360)
+        self.assertEqual(_fan_rings_by_formula(3, 2 * math.pi)[0][0], 'radial')
+        paths = dict(_FAN_PATH_RE.findall(svg))
+        items = _fan_items(svg)
+        for num in (2, 3):
+            item = next(i for t, i in items.items() if _fan_slot_of(t) == num)
+            for pid, _t in item['lines']:
+                m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) L([-0-9.]+),([-0-9.]+)', paths[pid])
+                self.assertIsNotNone(m, paths[pid])
+                self.assertAlmostEqual(float(m.group(2)), float(m.group(4)), places=1)
+            # and it reads left to right
+            sx, ex = (float(paths[item['lines'][0][0]].split()[0].split(',')[0][1:]),
+                      float(paths[item['lines'][0][0]].split()[1].split(',')[0][1:]))
+            self.assertLess(sx, ex)
+
+    def test_the_hub_matches_the_angle(self):
+        half = self._svg(2, 180)
+        sector = self._svg(2, 270)
+        circle = self._svg(2, 360)
+        self.assertRegex(half, r'<path class="fan-seg fan-seg-subject" d="M[^"]* A54\.0,54\.0 0 0 1 ')
+        self.assertRegex(sector, r'<path class="fan-seg fan-seg-subject" d="M[-0-9.,]+ L[-0-9.,]+ '
+                                 r'A54\.0,54\.0 0 1 1 [-0-9.,]+ Z"')
+        self.assertRegex(circle, r'<circle class="fan-seg fan-seg-subject" cx="[0-9.]+" '
+                                 r'cy="[0-9.]+" r="54"')
+
+    def test_the_hub_names_the_subject_on_two_lines_when_it_fits(self):
+        labels = _fan_full_labels(2)
+        labels[1].update(name='Ada Hartley', surname='Hartley')
+        hub = re.search(r'<text class="fan-label-subject".*?</text>',
+                        site._render_fan_svg(labels, 2, span_deg=360), re.S).group(0)
+        self.assertEqual(re.findall(r'<tspan[^>]*>([^<]*)</tspan>', hub), ['Ada', 'Hartley'])
+        labels[1].update(name='Alexandrina Montgomery-Hartley', surname='Montgomery-Hartley')
+        hub = re.search(r'<text class="fan-label-subject".*?</text>',
+                        site._render_fan_svg(labels, 2, span_deg=360), re.S).group(0)
+        self.assertNotIn('<tspan', hub)
+        self.assertIn('Alexandrina', hub)
+
+    def test_no_curved_name_runs_past_the_horizontal(self):
+        # At 270 degrees a parent's cell runs from the upper half down past
+        # the horizontal. Its name keeps to one side, so its last letters do
+        # not tip past sideways; a lower-half name still runs left to right.
+        for depth in (3, 5):
+            svg = self._svg(depth, 270, name=lambda n: f'Anc{n} Montgomery-Fitzwilliam Hartley')
+            centre = _fan_rings_by_formula(depth, math.radians(270))[-1][2] + 14
+            checked = 0
+            for d in dict(_FAN_PATH_RE.findall(svg)).values():
+                m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) A[0-9.]+,[0-9.]+ 0 [01] ([01]) '
+                                 r'([-0-9.]+),([-0-9.]+)', d)
+                if m is None:
+                    continue                      # a straight (radial) line
+                ys = (float(m.group(2)), float(m.group(5)))
+                below = [y > centre + 0.15 for y in ys]
+                above = [y < centre - 0.15 for y in ys]
+                self.assertFalse(any(below) and any(above), d)
+                if any(below):
+                    self.assertEqual(m.group(3), '0', d)
+                checked += 1
+            self.assertGreater(checked, 4)
+
+    def test_the_270_hub_keeps_its_name_off_the_open_notch(self):
+        # The 270-degree hub is open at the bottom; two lines of 15px text
+        # centred on the hub's middle put the surname in that gap.
+        labels = _fan_full_labels(2)
+        labels[1].update(name='Margaret Hartley', surname='Hartley')
+        svg = site._render_fan_svg(labels, 2, span_deg=270)
+        hub = re.search(r'<text class="fan-label-subject" x="([0-9.]+)" y="([0-9.]+)"', svg)
+        centre = float(hub.group(1))                     # the canvas is square
+        self.assertEqual(re.findall(r'<tspan[^>]*>([^<]*)</tspan>', svg), ['Margaret', 'Hartley'])
+        last_line_foot = float(hub.group(2)) + 0.6 * 15 + 15 / 2
+        self.assertLessEqual(last_line_foot, centre + 3, svg)
+
+    def test_the_half_fan_is_unchanged(self):
+        # The default is what the fan drew before the poster angles existed.
+        labels = _fan_full_labels(5, dates={'birth': '1840', 'death': '1941'})
+        svg = site._render_fan_svg(labels, 5)
+        self.assertEqual(svg, site._render_fan_svg(labels, 5, span_deg=180))
+        self.assertIn('<text class="fan-label-subject" x="', svg)
+        self.assertNotIn('<circle', svg)
+
+
+class FanPosterSettingsTests(_Base):
+    """`site.fan_degrees` and `site.fan_generations` in fha.yaml."""
+
+    def _config(self, extra):
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\nsite:\n{extra}', encoding='utf-8')
+
+    def _seed_full_tree(self, depth):
+        self._seed_person('p-0000000001', 'Subject Hartley', surname='Hartley')
+        for num in range(2, 2 ** (depth + 1)):
+            self._seed_person(f'p-{num:010d}', f'Anc{num} Hartley', surname='Hartley',
+                              sex='M' if num % 2 == 0 else 'F')
+            self._seed_rel(f'p-{num // 2:010d}', 'parent', f'p-{num:010d}')
+
+    def _fan(self):
+        page = self._read('persons/p-0000000001.html')
+        return re.search(r'<svg class="fan-chart.*?</svg>', page, re.S).group(0)
+
+    def _fan_warnings(self, res):
+        return [m for m in res['messages'] if 'fan_' in m]
+
+    def test_the_settings_shape_the_fan(self):
+        self._seed_full_tree(6)
+        self._config('  fan_degrees: 360\n  fan_generations: 6\n')
+        res = self._run()
+        self.assertEqual(self._fan_warnings(res), [])
+        fan = self._fan()
+        self.assertIn('<circle class="fan-seg fan-seg-subject"', fan)
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 7 - 2)
+
+    def test_270_degrees_with_fewer_generations(self):
+        self._seed_full_tree(6)
+        self._config('  fan_degrees: 270\n  fan_generations: 3\n')
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 4 - 2)
+        self.assertNotIn('<circle', fan)
+
+    def test_the_default_is_a_half_fan_of_five_generations(self):
+        self._seed_full_tree(6)
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertNotIn('<circle', fan)
+
+    def test_a_quoted_number_is_read_as_that_number(self):
+        # `fan_degrees: "360"` is what he meant; the sister setting
+        # home_pedigree_generations reads "6" the same way.
+        for cfg, want in (({'fan_degrees': '360'}, (360, 5)),
+                          ({'fan_generations': ' 6 '}, (180, 6))):
+            with self.subTest(cfg=cfg):
+                degrees, generations, warnings = site._fan_settings(cfg)
+                self.assertEqual((degrees, generations), want)
+                self.assertEqual(warnings, [])
+
+    def test_bad_fan_settings_warn_and_use_the_default(self):
+        self._seed_full_tree(6)
+        for extra, key in (('  fan_degrees: 200\n', 'fan_degrees'),
+                           ('  fan_generations: 9\n', 'fan_generations'),
+                           ('  fan_generations: "five"\n', 'fan_generations'),
+                           ('  fan_generations: 0\n', 'fan_generations'),
+                           ('  fan_degrees: abc\n', 'fan_degrees')):
+            with self.subTest(extra=extra):
+                self._config(extra)
+                res = self._run()
+                warned = self._fan_warnings(res)
+                self.assertEqual(len(warned), 1, warned)
+                self.assertIn(key, warned[0])
+                self.assertIn('default', warned[0])
+                self.assertEqual(self._fan().count('class="fan-seg"'), 2 ** 6 - 2)
 
 
 class FanPrivateCardTests(_Base):
@@ -11635,7 +12153,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-save-chart.js', 'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,
@@ -12985,6 +13503,226 @@ class GravesTests(_Base):
         graves = self._read('graves.html')
         self.assertIn('Ada Hartley was buried beside her husband', graves)
         self.assertNotIn('buried Ada Hartley', graves)
+
+
+def _lifespan_row(name, role, birth=None, death=None, *, first=None, last=None,
+                  living=False, years=''):
+    return {'name': name, 'role': role, 'birth': birth, 'death': death,
+            'first': first, 'last': last, 'living': living, 'years': years}
+
+
+class LifespanChartRenderTests(unittest.TestCase):
+    """The "Who overlapped" chart: a bar per person from birth to death on one
+    shared year axis, so a relative can see who lived at the same time. An
+    uncertain end is drawn faded and hatched, never as a confident bar."""
+
+    ROWS = [
+        _lifespan_row('Thomas Hartley', 'father', (1810, 1810), (1880, 1880), years='1810-1880'),
+        _lifespan_row('Calvin Hartley', 'subject', (1839, 1841), (1920, 1920),
+                      years='abt. 1840-1920'),
+        _lifespan_row('Walter Hartley', 'son', (1868, 1868), None, last=1900,
+                      years='b. 1868'),
+    ]
+
+    def _svg(self, rows=None):
+        return site._render_lifespan_svg(self.ROWS if rows is None else rows)
+
+    @staticmethod
+    def _row(svg, role):
+        return re.search(r'<g class="lifespan-row" data-role="%s">.*?</g>' % role,
+                         svg, re.S).group(0)
+
+    def _px_per_year(self, svg):
+        ticks = [(float(x), int(y)) for x, y in
+                 re.findall(r'<text class="lifespan-tick" x="([\d.]+)"[^>]*>(\d+)</text>', svg)]
+        (x0, y0), (x1, y1) = ticks[0], ticks[1]
+        return (x1 - x0) / (y1 - y0)
+
+    def test_rows_draw_in_the_order_given_top_to_bottom(self):
+        svg = self._svg()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', svg)
+        self.assertEqual(names, ['Thomas Hartley', 'Calvin Hartley', 'Walter Hartley'])
+
+    def test_an_approximate_birth_draws_a_faded_cap_over_its_whole_range(self):
+        svg = self._svg()
+        calvin = self._row(svg, 'subject')
+        caps = re.findall(r'<rect class="lifespan-cap"[^>]*>', calvin)
+        self.assertEqual(len(caps), 1)          # birth end only: the death is exact
+        width = float(re.search(r' width="([\d.]+)"', caps[0]).group(1))
+        # Two years of uncertainty is two years of the axis, no more.
+        self.assertAlmostEqual(width, 2 * self._px_per_year(svg), places=1)
+
+    def test_an_unrecorded_death_is_a_faded_tail_labelled_not_recorded(self):
+        walter = self._row(self._svg(), 'son')
+        self.assertIn('lifespan-cap', walter)
+        self.assertIn('death not recorded', walter)
+        self.assertRegex(walter, r'<title>[^<]*death not recorded')
+
+    def test_the_axis_covers_every_bar_and_ticks_every_ten_years(self):
+        svg = self._svg()
+        ticks = [int(t) for t in re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', svg)]
+        self.assertEqual(ticks[0], 1810)
+        self.assertGreaterEqual(ticks[-1], 1920)
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {10})
+        width = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+        for x, w in re.findall(
+                r'<rect class="lifespan-(?:bar|cap)" x="([\d.]+)"[^>]*? width="([\d.]+)"', svg):
+            self.assertLessEqual(float(x) + float(w), width)
+
+    def test_a_long_span_ticks_every_twenty_years(self):
+        rows = [_lifespan_row('Old One', 'father', (1650, 1650), (1700, 1700)),
+                _lifespan_row('Young One', 'son', (1990, 1990), (2010, 2010))]
+        ticks = [int(t) for t in
+                 re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', self._svg(rows))]
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {20})
+
+    def test_the_subject_birth_and_death_get_a_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 2)
+
+    def test_an_approximate_birth_gets_no_sharp_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1830, 1850), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 1)
+
+    def test_a_screen_reader_label_names_every_person(self):
+        label = re.search(r'aria-label="([^"]*)"', self._svg()).group(1)
+        self.assertIn('Calvin Hartley', label)
+        self.assertIn('subject', label)
+
+    def test_a_person_with_no_birth_starts_at_the_first_dated_record_faded(self):
+        rows = [_lifespan_row('Ada Hartley', 'mother', None, (1890, 1890), first=1860),
+                _lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920))]
+        ada = self._row(self._svg(rows), 'mother')
+        self.assertIn('lifespan-cap', ada)
+        self.assertIn('birth not recorded', ada)
+
+    def test_the_chart_is_deterministic_and_has_no_dashes(self):
+        a, b = self._svg(), self._svg()
+        self.assertEqual(a, b)
+        self.assertNotIn('–', a)
+        self.assertNotIn('—', a)
+
+    def test_vague_dates_read_as_a_range_of_years_never_a_point(self):
+        years = site._lifespan_years
+        self.assertEqual(years('1840'), (1840, 1840))
+        self.assertEqual(years('1840-05-03'), (1840, 1840))
+        self.assertEqual(years('1840~'), (1839, 1841))
+        self.assertEqual(years('1840/1845'), (1840, 1845))
+        self.assertEqual(years('185X'), (1850, 1859))
+        lo, hi = years('[..1900]')
+        self.assertEqual(hi, 1900)
+        self.assertLess(lo, 1900)           # open start: a faded stretch before
+        lo, hi = years('[1900..]')
+        self.assertEqual(lo, 1900)
+        self.assertGreater(hi, 1900)        # open end: a faded stretch after
+        self.assertIsNone(years('not a date'))
+        self.assertIsNone(years(None))
+
+    def test_the_chart_is_not_colour_only(self):
+        svg = self._svg()
+        self.assertIn('<pattern id="fha-lifespan-hatch"', svg)
+        self.assertIn('role="img"', svg)
+
+
+class LifespanChartPageTests(_Base):
+    """On a person's page: who lived at the same time as the person. A shared
+    site draws no bar, name or count for anyone it does not show."""
+
+    def setUp(self):
+        super().setUp()
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+
+    def _claim(self, pid, ctype, date):
+        self._n += 1
+        self._seed_claim(f'c-l{self._n:09d}', 's-1111111111', ctype, ctype,
+                         date_edtf=date, persons=(pid,))
+
+    def _life(self, pid, birth, death=None):
+        if birth:
+            self._claim(pid, 'birth', birth)
+        if death:
+            self._claim(pid, 'death', death)
+
+    def _seed_family(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._seed_person('p-thom000000', 'Thomas Hartley', surname='Hartley')
+        self._seed_person('p-adah000000', 'Ada Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-ethe000000', 'Ethel Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-fran000000', 'Frances Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-walt000000', 'Walter Hartley', surname='Hartley')
+        self._seed_person('p-nobo000000', 'Nora Hartley', surname='Hartley', sex='F')
+        self._life('p-calv000000', '1840~', '1920')
+        self._life('p-thom000000', '1810', '1880')
+        self._life('p-adah000000', '1815', '1890')
+        self._life('p-ethe000000', '1845', '1930')
+        self._life('p-fran000000', '1872', '1950')
+        self._life('p-walt000000', '1868')
+        self._claim('p-walt000000', 'residence', '1900')
+        for parent in ('p-thom000000', 'p-adah000000'):
+            self._seed_rel('p-calv000000', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-calv000000')
+        self._seed_rel('p-calv000000', 'spouse', 'p-ethe000000')
+        self._seed_rel('p-ethe000000', 'spouse', 'p-calv000000')
+        for child in ('p-fran000000', 'p-walt000000', 'p-nobo000000'):
+            self._seed_rel('p-calv000000', 'child', child)
+            self._seed_rel(child, 'parent', 'p-calv000000')
+
+    def _chart(self, **kw):
+        self._run(**kw)
+        page = self._read('persons/p-calv000000.html')
+        m = re.search(r'<details class="chart lifespan">.*?</details>', page, re.S)
+        return m.group(0) if m else ''
+
+    def test_rows_run_parents_then_person_then_spouse_then_children(self):
+        self._seed_family()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', self._chart())
+        self.assertEqual(names, ['Thomas Hartley', 'Ada Hartley', 'Calvin Hartley',
+                                 'Ethel Hartley', 'Walter Hartley', 'Frances Hartley'])
+
+    def test_a_person_with_no_dates_is_counted_in_a_note_not_drawn(self):
+        self._seed_family()
+        chart = self._chart()
+        self.assertNotIn('Nora Hartley', chart.split('</svg>')[0])
+        self.assertIn('1 person without dates is not shown.', chart)
+
+    def test_a_shared_site_draws_nothing_for_a_living_or_unknown_relative(self):
+        self._seed_family()
+        self._seed_person('p-pip0000000', 'Pip Hartley', surname='Hartley', living='true')
+        self._life('p-pip0000000', '1990-03-04')
+        self._seed_person('p-unkn000000', 'Una Hartley', surname='Hartley', living='unknown')
+        self._life('p-unkn000000', '1985')
+        for kid in ('p-pip0000000', 'p-unkn000000'):
+            self._seed_rel('p-calv000000', 'child', kid)
+            self._seed_rel(kid, 'parent', 'p-calv000000')
+        chart = self._chart()
+        for text in ('Pip', 'Una', '1990', '1985', 'Living'):
+            self.assertNotIn(text, chart)
+        # The note counts only people the page shows, so it hints at nobody.
+        self.assertIn('1 person without dates is not shown.', chart)
+        # The preview on his own machine draws everyone.
+        self.assertIn('Pip Hartley', self._chart(linked=True))
+
+    def test_a_restricted_spouse_is_left_off_the_chart(self):
+        self._seed_family()
+        with unittest.mock.patch.object(
+                site._SiteBuilder, '_person_is_redacted',
+                lambda s, row: row['id'] == 'p-ethe000000'):
+            chart = self._chart()
+        self.assertNotIn('Ethel', chart)
+
+    def test_a_person_with_nobody_dated_beside_them_gets_no_chart(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._life('p-calv000000', '1840', '1920')
+        self.assertEqual(self._chart(), '')
+
+    def test_the_page_builds_the_same_chart_twice(self):
+        self._seed_family()
+        first = self._chart()
+        self.assertEqual(first, self._chart())
+        self.assertIn('lifespan-chart', first)
 
 
 if __name__ == '__main__':
