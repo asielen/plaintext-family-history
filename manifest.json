@@ -104,7 +104,7 @@
     {
       "path": ".agents/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "5d31438d9c21c2240642fc6a6d2b52a49d64e550ad9cc814e74371195605bea5",
+      "sha256": "e62229e75aca88a5178021d7db05a392758a022b2d8850a2ea56876dc2c93d29",
       "spec_version": "2.29",
       "src": ".claude/skills/research-next/SKILL.md"
     },
@@ -132,7 +132,7 @@
     {
       "path": ".agents/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
+      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
       "spec_version": "2.29",
       "src": ".claude/skills/today/SKILL.md"
     },
@@ -265,7 +265,7 @@
     {
       "path": ".claude/skills/research-next/SKILL.md",
       "category": "operating",
-      "sha256": "5d31438d9c21c2240642fc6a6d2b52a49d64e550ad9cc814e74371195605bea5",
+      "sha256": "e62229e75aca88a5178021d7db05a392758a022b2d8850a2ea56876dc2c93d29",
       "spec_version": "2.29"
     },
     {
@@ -289,7 +289,7 @@
     {
       "path": ".claude/skills/today/SKILL.md",
       "category": "operating",
-      "sha256": "b5f5b7c63f93564b27d1baa27c911d64cd53999124fc2ac629be49cd0c9117a3",
+      "sha256": "4f38690126976166b25d7fb45e01e50b6fd700658095f5bb89fca09d59723c90",
       "spec_version": "2.29"
     },
     {
@@ -366,7 +366,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "390c29a33f13f3f9d25be586535644cf2ecc3d59d58929ce7473db21392d1350",
+      "sha256": "ceeed71bf13f2b06109e8c13a257bcd2f4d471286ad258d71a678783334716d9",
       "spec_version": "2.29",
       "src": "browser-companion/manifest.json"
     },
@@ -387,7 +387,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "9785ec749ee9e9423127596a2c983c5a4952d9d1e2a09884f6a6570117b6875d",
+      "sha256": "3893df0fc7cfb95a96c6c86d691450b8b1ef0dda793178bd3932bfed1f61a452",
       "spec_version": "2.29",
       "src": "browser-companion/src/content.js"
     },
@@ -457,7 +457,7 @@
     {
       "path": ".fha/browser-companion/src/lib/familysearch-record.js",
       "category": "operating",
-      "sha256": "87941bf211f117074acce44211225e122176381bbcf44ea91e82ecf627b61fef",
+      "sha256": "c82ce5269865cb0d36bc6e4c2086388a2a0602c4c99841a45f7400b48899f32f",
       "spec_version": "2.29",
       "src": "browser-companion/src/lib/familysearch-record.js"
     },
@@ -548,7 +548,7 @@
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "2499de4af07258da135655df16d7ebb1801468dfdef195b9a3b79b10824e9211",
+      "sha256": "5532bf7ea7e2b85fcf78516d445470a3222a2ee8a3f9c7bca5fdd93169112126",
       "spec_version": "2.29",
       "src": "browser-companion/src/panel.js"
     },
@@ -667,7 +667,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "7862bd6d85e60ab9764c0c6db1861090f84fe3b842f703b0aa14554948e23165",
+      "sha256": "314c8e5e8c813ccc7ad0a972fdeee05a4eb792911ad3f525ede75d59402b16bc",
       "spec_version": "2.29",
       "src": "tools/_lib.py"
     },
@@ -919,7 +919,7 @@
     {
       "path": ".fha/tools/report.py",
       "category": "operating",
-      "sha256": "364d77057f25d438eea56b0e1c67ec5d977b2da45da0273695d617ffd96a71ee",
+      "sha256": "7eb0fb4053a4f5429c36ea64075818662817c81df2a35558ad2c7fe0c0373e96",
       "spec_version": "2.29",
       "src": "tools/report.py"
     },
@@ -1487,7 +1487,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "cd80667ba1c236c2a841fcafb09379a11050f47874fa5453901b9b6b9c7f738c",
+      "sha256": "5619eef1f996d3452da6bf2aaf34a99f34ee4d262b96bb47ae9524cf620f045b",
       "spec_version": "2.29",
       "src": "TOOLING.md"
     },
