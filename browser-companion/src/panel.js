@@ -351,7 +351,11 @@
       [cls, ico, text] = ['none', '…', 'Reading your clippings on this page…'];
     } else if ((state.fsRecord || state.fsImage) && fc && fc.ok && !fc.available) {
       // FamilySearch said no before Capture: say what WILL be saved.
-      if (state.fsRecord && !fc.imageId) {
+      if (state.fsRecord && !fc.imageId && fc.partner) {
+        // The image is at a partner archive ("View on wvculture.org"): Capture follows the badge.
+        [cls, ico, text] = ['ready', '⚡', 'Saved automatically when you press Capture: the record’s data and ' +
+          'citation (FamilySearch), and its image from ' + fc.partner + '.'];
+      } else if (state.fsRecord && !fc.imageId) {
         [cls, ico, text] = ['ready', '⚡', 'Saved automatically when you press Capture: the record’s data and ' +
           'citation (FamilySearch). It has no image: ' + fc.reason + '.'];
       } else if (state.fsRecord) {
@@ -2018,6 +2022,7 @@
         return { text: 'Record files: the record’s FamilySearch data and citation + its image, if FamilySearch hands it over (the check did not answer: ' + fc.error + ')' };
       }
       if (fc.available) return { text: 'Record files: the record’s FamilySearch data and citation + its image ' + fc.imageId + ' (FamilySearch, auto)' };
+      if (!fc.imageId && fc.partner) return { text: 'Record files: the record’s FamilySearch data and citation + its image from ' + fc.partner + ' (auto)' };
       if (!fc.imageId) return { text: 'Record files: the record’s FamilySearch data and citation (FamilySearch, auto) - no image: ' + fc.reason };
       return {
         text: 'Record files: the record’s data only (FamilySearch). Its image ' + fc.imageId +
@@ -2060,6 +2065,34 @@
       role: 'transcript', mode: 'familysearch-fulltext' };
   }
 
+  // A record whose image is at a partner archive, not on FamilySearch (its
+  // "View on wvculture.org" badge): the panel follows the badge and saves the
+  // certificate or register page beside FamilySearch's index, so an
+  // index-only source becomes one he can check. One downloader per archive
+  // the content script can name (lib/familysearch-record.js FS_PARTNER_PAGES);
+  // another state archive is a second entry here. The panel fetches, not the
+  // page: the archive's hosts refuse a fetch made from familysearch.org.
+  const PARTNER_IMAGE = {
+    wvculture: (p) => FHA.wvculture.badgeImage(p.pageUrl, (u, init) => window.fetch(u, init),
+      (html) => new window.DOMParser().parseFromString(html, 'text/html')),
+  };
+  async function partnerImage(partner) {
+    const fetchIt = PARTNER_IMAGE[partner.site];
+    if (!fetchIt) return { ok: false, error: 'the panel cannot read that archive' };
+    try {
+      return await fetchIt(partner);
+    } catch (e) {
+      return { ok: false, error: 'the image could not be read (' + ((e && e.message) || 'no reason given') + ')' };
+    }
+  }
+  // FamilySearch's citation with the place the original image is kept added
+  // as a second part: "…, 1921; image at West Virginia Archives and History,
+  // film 1984148, image 2530."
+  function withPartnerCite(citation, part) {
+    const c = String(citation || '').trim().replace(/[.\s]+$/, '');
+    return c ? c + '; ' + part + '.' : part.charAt(0).toUpperCase() + part.slice(1) + '.';
+  }
+
   async function captureFamilySearchRecord(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
     const info = await autoFetch('FamilySearch record details', {
       action: 'familysearchRecordInfo',
@@ -2083,11 +2116,14 @@
     const imageKey = rec.imageId || null;
     let sameImageAs = !dropped && imageKey ? state.fsImages[imageKey] || null : null;
     if (!dropped && imageKey && !sameImageAs) sameImageAs = await seenItImage('fsimg:' + imageKey);
+    // No image on FamilySearch, but one at a partner archive the panel reads.
+    const partner = !dropped && !imageKey && rec.partnerImage ? rec.partnerImage : null;
     // The page copy, from the tab before the long image download, when it is
     // sure to be kept (recordPageCopy).
-    const willHaveImage = !!dropped || (!sameImageAs && !!imageKey);
+    const willHaveImage = !!dropped || (!sameImageAs && !!imageKey) || !!partner;
     let pageCopy = await recordPageCopy('early', wantPageCopy || !willHaveImage, recordUrl, ['1:1:' + rec.fsId]);
     let imageWarning = null;
+    let partnerWarning = null;
     let imageFlags = { transient: false, slowDown: false };
     if (dropped) {
       assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
@@ -2109,11 +2145,25 @@
           '. The record’s data and citation are saved. To add the image, use FamilySearch’s ' +
           'Download button, drop the file into the panel and press Capture again: that capture holds both.';
       }
+    } else if (partner) {
+      // Two requests, both to the archive: its view page, then the picture
+      // that page shows. A failure here never loses FamilySearch's index.
+      setStageResult('Fetching the record’s image from ' + partner.archive + '…', '');
+      const got = await partnerImage(partner);
+      if (got.ok) {
+        assets.push({ filename: 'record.' + got.ext, blob: got.blob, role: 'record', mode: partner.site });
+        rec.partnerImage = Object.assign({}, partner, { imageUrl: got.imageUrl });
+      } else {
+        partnerWarning = 'the ' + partner.archive + ' image could not be fetched: ' + got.error;
+      }
     }
+    const partnerSaved = !!partner && assets.some((a) => a.role === 'record' && a.mode === partner.site);
     // Whether THIS bundle holds the image - not a link to it, not a screen
     // capture standing in for it. Seen It counts the image as saved only on
-    // this; `imageId` is only the image the record links to.
-    const imageSaved = !!imageKey && !provisional && assets.some((a) => a.role === 'record');
+    // this; `imageId` is only the image the record links to. A record whose
+    // image is at a partner archive holds it too when that picture (or one
+    // dropped in) is saved.
+    const imageSaved = (!!imageKey || !!rec.partnerImage) && !provisional && assets.some((a) => a.role === 'record');
     rec.imageSaved = imageSaved;
     // Asked even when the image is already saved: that image's capture may
     // have been made before its Full-Text panel was open (or before this
@@ -2136,7 +2186,9 @@
       note: 'Captured from FamilySearch by the archive capture extension. "gedcomx" is FamilySearch’s own ' +
         'data for this record (its index of the record, as the site holds it): an index, not a transcript of ' +
         'the image. "imageSaved" says whether this capture holds the record’s image; "imageId" is the image ' +
-        'the record links to.',
+        'the record links to. "partnerImageUrl" is where FamilySearch says the image is when another archive ' +
+        'holds it; "partnerImage" names that archive’s film and image, and its "imageUrl" is the picture saved ' +
+        'here as the record.',
       record: rec,
       citation: info.citation,
       title: info.title,
@@ -2162,14 +2214,19 @@
       sameImageAs ? 'Same image (' + imageKey + ') as ' + describeSameImage(sameImageAs) + '; the image was not downloaded again.' : '',
       imageWarning && !saidAlready ? fsNoteMark(imageKey) + '(' + imageArk + ') could not be downloaded - ' +
         imageWarning.split('. The record')[0] + '. Checked ' + captureJson.accessedDate() + '.' : '',
+      // The index is saved without its image: where the image is, and why it
+      // did not come, so the next step is plain.
+      partnerWarning ? 'Image not saved: ' + partnerWarning + '. The image is at ' + partner.pageUrl +
+        ' (' + partner.cite + '). Checked ' + captureJson.accessedDate() + '.' : '',
     ].filter((t) => t && t.trim()).join('\n\n');
     const fields = {
       url: rec.url,
       title,
       accessed: captureJson.accessedDate(),
       // FamilySearch's own citation, so the source file cites the record the
-      // way FamilySearch does rather than a generic guess from the page.
-      citation: info.citation || '',
+      // way FamilySearch does rather than a generic guess from the page. With
+      // a partner archive's image saved, it also says where the original is.
+      citation: partnerSaved ? withPartnerCite(info.citation, partner.cite) : info.citation || '',
       // What she typed wins; else what the record says about itself.
       sourceDate: form.date || hints.sourceDate || '',
       sourceType: form.type || hints.sourceType || '',
@@ -2191,17 +2248,22 @@
     const copyNote = forcedCopy
       ? 'A copy of the web page was kept too: with no image, it is what this record’s data is filed with.'
       : null;
-    reportStaged(st.where, st.viaHost, imageWarning,
+    const partnerSay = partnerWarning ? partnerWarning + '. FamilySearch’s index of the record and its citation ' +
+      'are saved. To add the image, open the record’s “View on” badge, save the picture there, drop it into the ' +
+      'panel and press Capture again: that capture holds both.' : null;
+    reportStaged(st.where, st.viaHost, imageWarning || partnerSay,
       [st.hostWarning, pageNote, copyNote].filter(Boolean).join('\n') || null);
     return {
       key: 'fsrec:' + String(rec.fsId).toUpperCase(),
       record: { fsId: rec.fsId, name: rec.name || null },
       bundle: st.bundle, where: st.where,
       imageKey: imageKey ? 'fsimg:' + String(imageKey).toUpperCase() : null,
-      partial: !!imageWarning && missingPasses(imageWarning, imageFlags.transient),
+      partial: (!!imageWarning && missingPasses(imageWarning, imageFlags.transient)) ||
+        (!!partnerWarning && missingPasses(partnerWarning)),
       slowDown: imageFlags.slowDown || SLOW_DOWN_RE.test(imageWarning || ''),
       note: imageWarning ? 'image not saved: ' + imageWarning.split('. The record')[0]
-        : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
+        : partnerWarning ? 'image not saved: ' + partnerWarning
+          : sameImageAs ? 'image already saved in ' + describeSameImage(sameImageAs) : null,
     };
   }
 

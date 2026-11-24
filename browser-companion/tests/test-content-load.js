@@ -216,6 +216,30 @@ test('the record is read with the signed-in session, and the session is in nothi
   assert.ok(!JSON.stringify([check, img]).includes(TOKEN));
 });
 
+test('a West Virginia index entry: the badge\'s page is named from the record\'s own data, and nothing more is asked', async () => {
+  // The West Virginia readers sit in a block further down content.js than
+  // FamilySearch's: this is where a block reading one not yet defined fails.
+  const PARTNER = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures', 'capture-samples',
+    'familysearch-gedcomx-partner.json'), 'utf8'));
+  const url = 'https://www.familysearch.org/ark:/61903/1:1:HRT1-WVD1';
+  const calls = [];
+  const fetch = async (u) => {
+    calls.push(u);
+    return u.endsWith('1:1:HRT1-WVD1')
+      ? { ok: true, status: 200, text: async () => JSON.stringify(PARTNER.records['HRT1-WVD1']) }
+      : { ok: false, status: 404, text: async () => '' };
+  };
+  const page = loadPage({ url, cookie: 'fssessionid=' + TOKEN, fetch });
+  const info = await page.ask({ action: 'familysearchRecordInfo' });
+  assert.strictEqual(info.ok, true);
+  assert.strictEqual(info.record.partnerImage.pageUrl,
+    'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530');
+  const check = await page.ask({ action: 'familysearchImageCheck' });
+  assert.strictEqual(check.partner, 'West Virginia Archives and History');
+  assert.strictEqual(check.imageId, null);
+  assert.ok(calls.every((u) => u === url), 'only the record itself, from FamilySearch');
+});
+
 test('an image FamilySearch points elsewhere is fetched without the session', async () => {
   const page = loadPage({ url: REC, cookie: 'fssessionid=' + TOKEN, fetch: familysearch() });
   await page.ask({ action: 'familysearchImage', imageId: 'HRT1-EVIL' });

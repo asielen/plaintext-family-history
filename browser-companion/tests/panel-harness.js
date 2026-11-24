@@ -15,6 +15,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { webcrypto } = require('node:crypto');
+const miniDom = require('./mini-dom.js');
 
 const SRC = path.join(__dirname, '..', 'src');
 const read = (rel) => fs.readFileSync(path.join(SRC, rel), 'utf8');
@@ -459,6 +460,27 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   const fetched = [];
   const window = {
     FHA: {},
+    // The browser's HTML parser, as far as the panel uses it (a page another
+    // site sent, read for its <img> tags): tag-name selectors only.
+    DOMParser: class {
+      parseFromString(html) {
+        const root = miniDom.parse(html);
+        return {
+          querySelectorAll(sel) {
+            const out = [];
+            const walk = (n) => {
+              for (const c of n.childNodes || []) {
+                if (c.nodeType !== 1) continue;
+                if (c.tagName === String(sel).toUpperCase()) out.push(c);
+                walk(c);
+              }
+            };
+            walk(root);
+            return out;
+          },
+        };
+      }
+    },
     fetch: async (u, init) => {
       fetched.push({ url: u, init });
       if (!fetch) throw new TypeError('Failed to fetch');

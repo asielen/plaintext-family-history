@@ -27,6 +27,8 @@ Contents:
 17. Sounds-alike search
 18. Site search: a script, not a data file
 19. Calendar conversion is a tool
+20. The tree fades a weak line, from the tie outward
+21. Importing a newer download of the same tree
 
 ---
 
@@ -442,3 +444,37 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Fuzzy feast matching.** The nearest name to a typo is a confident wrong day; an unknown name is refused with the list instead.
 - **Guessing the old-style year.** Before 1752 an English January to March date may belong to the next year. The command says so once and asks for the record's double year (1731/32) rather than choosing.
 - **The French Republican and other calendars.** No branch of the archive needs them yet; each is one more table when one does.
+
+---
+
+## 20. The tree fades a weak line, from the tie outward
+
+**The rule.** The tree data rates every parent and child tie by the best confidence among the claims behind it (SPEC §8.5), and gives each person a `line_confidence`: the weakest rated tie on their strongest route back to the person the chart is drawn around. A spouse tie is never rated. On the shared site only claims a visitor could see count.
+
+**Why.** When the only thing linking Grandpa Thomas to his parents is a family story, everyone above Thomas rests on that story, however good their own records are. A chart that shows only each tie's own strength draws his great-grandparents as solid. Taking the strongest route means a person reached two ways, as in a cousin marriage, is as well tied as the better way allows. A doubtful marriage says the couple may not have married, not that the wife belongs to another family, so an in-law takes the line of the person they married. A sealed certificate cannot lift a shared family story: the shared site would then tell visitors that stronger evidence exists and is being kept from them.
+
+**Rejected.**
+
+- **Each tie's own confidence only.** It fades the one weak tie and leaves everyone beyond it looking proven.
+- **The weakest tie on any route.** A person reached through both a story and a certificate would fade although the certificate settles them.
+- **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
+- **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
+
+---
+
+## 21. Importing a newer download of the same tree
+
+**The rule.** `fha gedcom import` on a newer download of a tree already imported adds only what changed. People are matched to the records the first import made. A statement the newer file words as the earlier file did is never added again, whatever has since been done to its claim. A statement the tree changed is compared with the archive as it reads now: it is added as a new suggested claim, and when it cannot be true together with an earlier claim it `contradicts:` that claim and gets an open question. No existing record is edited. The one file added to is `notes/questions.md`.
+
+**Why.** A tree on Ancestry keeps growing, and the owner will download it again. Importing the newer file from scratch would make every person a second time. Overwriting the earlier claims would undo his review. Keeping both versions and asking is the only choice that loses nothing.
+
+**Matching is strict, and he can overrule it.** A wrong match attaches one person's facts to another, and that is hard to see later. So a person is matched only on a record number with the name behind it, or the program's own id. Everyone else is listed with the reason and gets nothing written. Where the plan names exactly one likely person, `--confirm-matches` shows the list and takes one yes. That covers a program that renumbers everyone on export.
+
+**The record-number list lives in `notes/gedcom-imports/`.** A person with a name and nothing else has no claim that says which record they became, so that fact cannot be read back from the records. Kept only in `.cache`, it was lost with the cache or on a new computer. The list is plain CSV, one per import, written once.
+
+**Rejected.**
+
+- **Editing the earlier claim to the newer value.** It would overwrite dates he corrected by hand and hide that the tree ever said otherwise.
+- **Matching by name and birth year alone.** Two cousins of one name are common in a family tree; the result would be a silent wrong merge.
+- **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
+- **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
