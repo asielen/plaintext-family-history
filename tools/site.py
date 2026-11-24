@@ -2499,7 +2499,9 @@ def _fan_settings(site_cfg: dict) -> tuple[int, int, list[str]]:
         if raw is None:
             return default
         value = raw
-        if isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
+        if isinstance(raw, str) and raw.strip().isascii() and raw.strip().isdigit():
+            value = int(raw.strip())              # "360" in quotes is still 360
+        elif isinstance(raw, float) and math.isfinite(raw) and raw == int(raw):
             value = int(raw)                      # 360.0 is the whole number 360
         if isinstance(value, bool) or not isinstance(value, int) or value not in allowed:
             shown = ' or '.join(str(a) for a in allowed) if len(allowed) <= 3 \
@@ -3304,11 +3306,14 @@ def _fan_years_size(fs: float, years: str, room: float) -> float:
 
 
 def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
-                 seg: float) -> dict:
+                 seg: float, lower: bool = False) -> dict:
     """Lay out one curved-ring label: which lines, at what size, at what radii.
 
     Lines stack across the ring, the first at the larger radius so it reads
-    first on the upper half. The whole name stays on one line when it fits at
+    first on the upper half. On the lower half of a poster fan (`lower`) the
+    hub side is the top as read, so the first line takes the smaller radius,
+    and it is measured there: a long name along the bottom of a poster still
+    fits its cell. The whole name stays on one line when it fits at
     the ring's cap; otherwise given names and surname take a line each. Then
     the size is the largest that fits every line along its own arc and the
     stack across the ring, capped per ring and rounded DOWN to the one decimal
@@ -3329,7 +3334,8 @@ def _fan_fit_arc(name: str, surname: str | None, years: str, g: int, rm: float,
         count = len(lines) + (1 if with_years else 0)
 
         def radius(i: int, size: float) -> float:
-            return rm + ((count - 1) / 2 - i) * _FAN_LH * size
+            step = ((count - 1) / 2 - i) * _FAN_LH * size
+            return rm - step if lower else rm + step
 
         def room(i: int) -> float:
             return min(radius(i, cap), radius(i, _FAN_FS_MIN)) * seg - 2 * _FAN_PAD
@@ -3491,15 +3497,16 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
             years = _fan_years(info.get('dates'))
 
         if mode == 'arc':
-            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg)
+            lower = math.sin(mid) < -1e-9
+            fit = _fan_fit_arc(name, surname, years, g, (r_in + r_out) / 2, seg, lower)
             # Upper half: each line runs from a_hi to a_lo (left to right
             # over the top), which keeps the text upright.
-            if math.sin(mid) < -1e-9:
-                # Lower half of a poster fan: the hub side is the top as read,
-                # so the first line takes the smaller radius, and the text runs
-                # counter-clockwise (left to right along the bottom).
+            if lower:
+                # Lower half of a poster fan: the first line already sits at
+                # the smaller radius (the hub side, the top as read), and the
+                # text runs counter-clockwise (left to right along the bottom).
                 paths = [f"M{polar(r, a_lo)} A{r:.1f},{r:.1f} 0 {large} 0 {polar(r, a_hi)}"
-                         for r in reversed(fit['radii'])]
+                         for r in fit['radii']]
             else:
                 paths = [f"M{polar(r, a_hi)} A{r:.1f},{r:.1f} 0 {large} 1 {polar(r, a_lo)}"
                          for r in fit['radii']]

@@ -10918,19 +10918,25 @@ class FanChartGeometryTests(unittest.TestCase):
         for dates in ({'birth': '1840', 'death': '1941'},
                       {'birth': '[..1840]', 'death': '[1941-01-02..]'},
                       {'birth': '1838/1841', 'death': '194X'}):
-            self._every_line_fits(dates)
+            for span_deg in (180, 270, 360):
+                self._every_line_fits(dates, span_deg)
 
-    def _every_line_fits(self, dates):
+    def _every_line_fits(self, dates, span_deg=180):
+        # Measured on the path each line is actually drawn on, so a poster's
+        # lower half (where the lines stack the other way) is held to it too.
+        span = math.radians(span_deg)
         for depth in (5, 6):
-            rings = _fan_rings_by_formula(depth)
+            rings = _fan_rings_by_formula(depth, span)
             for name in (lambda n: f'Anc{n} Hartley',
-                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley'):
-                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth)
+                         lambda n: f'Anc{n} Wilhelmina Bartholomew Cartwright-Hartley',
+                         lambda n: f'Anc{n} Wilhelmina Augusta Brandenburg'):
+                svg = site._render_fan_svg(_fan_full_labels(depth, dates=dates, name=name), depth,
+                                           span_deg=span_deg)
                 paths = dict(_FAN_PATH_RE.findall(svg))
                 for title, item in _fan_items(svg).items():
                     g = _fan_slot_of(title).bit_length() - 1
                     mode, r_in, r_out = rings[g - 1]
-                    seg = math.pi / 2 ** g
+                    seg = span / 2 ** g
                     lines = [(item['fs'], pid, t) for pid, t in item['lines']]
                     lines += [(item['fy'], pid, t) for pid, t in item['years']]
                     for fs, pid, text in lines:
@@ -10941,7 +10947,7 @@ class FanChartGeometryTests(unittest.TestCase):
                             avail = r * seg - 2 * _FAN_PAD
                         else:
                             avail = min(_fan_line_length(paths[pid]), r_out - r_in - 2 * _FAN_PAD)
-                        with self.subTest(depth=depth, title=title, line=text):
+                        with self.subTest(span=span_deg, depth=depth, title=title, line=text):
                             self.assertLessEqual(len(text) * _FAN_CW * fs, avail + 0.5)
                     if mode == 'radial':
                         # Stacked lines fit across the narrow end of the cell.
@@ -11225,6 +11231,16 @@ class FanPosterSettingsTests(_Base):
         fan = self._fan()
         self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
         self.assertNotIn('<circle', fan)
+
+    def test_a_quoted_number_is_read_as_that_number(self):
+        # `fan_degrees: "360"` is what he meant; the sister setting
+        # home_pedigree_generations reads "6" the same way.
+        for cfg, want in (({'fan_degrees': '360'}, (360, 5)),
+                          ({'fan_generations': ' 6 '}, (180, 6))):
+            with self.subTest(cfg=cfg):
+                degrees, generations, warnings = site._fan_settings(cfg)
+                self.assertEqual((degrees, generations), want)
+                self.assertEqual(warnings, [])
 
     def test_bad_fan_settings_warn_and_use_the_default(self):
         self._seed_full_tree(6)
