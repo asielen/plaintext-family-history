@@ -261,6 +261,8 @@ CODE MAP
       .build_search_page: data/search-data.js and search.html
       ._graves / .build_graves_page: graves.html, every family grave by
           burial place with map and directions links
+      ._surname_groups / .build_surname_pages: surnames/*.html, one page per
+          family name the build shows a person for
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -326,6 +328,7 @@ from _lib import (
     edtf_bounds,
     is_placeholder_name,
     person_surname,
+    place_note_slug,
     research_search_links,
     vital_pick_key,
     configure_utf8_stdout,
@@ -638,6 +641,12 @@ _REPUBLISHABLE_SOURCE_TYPES = SOURCE_TYPES - {'photo', 'artifact', 'dna'}
 # `_reset_output` clears generic-named subtrees (sources/, media/, ...), so a
 # rebuild must first prove the target dir is ours - see _unowned_output_reason.
 _SITE_MARKER_NAME = '.fha-site'
+
+# A Polish or Czech feminine surname joins the masculine page (Kowalska with
+# Kowalski), longest ending first, applied to the accent-folded lowercase name
+# (`Nováková` folds to `novakova`). `_surname_groups` only joins them when the
+# masculine form is also among the people listed.
+_SURNAME_FEMININE_ENDINGS = (('dzka', 'dzki'), ('ska', 'ski'), ('cka', 'cki'), ('ova', ''))
 
 # Month names for the family calendar, written out here rather than read from
 # the locale so a site built on any machine reads the same.
@@ -4463,7 +4472,12 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
-        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning) if w]
+        # A page for each family name: on unless fha.yaml says
+        # `surname_pages: false` (TOOLING §12, "Surname pages").
+        self.show_surnames, surname_warning = _site_switch(site_cfg, 'surname_pages', default=True)
+        self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
+                                             surname_warning) if w]
+        self._surname_cache: list[dict] | None = None
         # Search's memos (`_vitals_cached`, `_public_other_names`).
         self._vitals_cache: dict[str, dict] = {}
         self._other_names_cache: dict[str, list[str]] = {}
@@ -4492,6 +4506,7 @@ class _SiteBuilder:
         self.persons_dir = out_dir / 'persons'
         self.sources_dir = out_dir / 'sources'
         self.places_dir = out_dir / 'places'
+        self.surnames_dir = out_dir / 'surnames'
         self.media_dir = out_dir / 'media'
         self.data_dir = out_dir / 'data'       # neutral tree JSON artifacts
         self.vendor_dir = out_dir / 'vendor'    # vendored tree renderer + adapter
@@ -10611,9 +10626,18 @@ class _SiteBuilder:
                 by_letter.setdefault('#', []).append(
                     {'name': fmt_id_display(pid), 'href': None, 'stub': True,
                      'recordless': True, 'person_id': fmt_id_display(pid)})
+        # Each family name that has a page, under the letter it starts with.
+        name_links: dict[str, list[dict]] = {}
+        for grp in self._surname_groups():
+            first = grp['display'][:1].upper()
+            name_links.setdefault(first if first.isalpha() else '#', []).append(
+                {'name': grp['display'], 'count': len(grp['pids']),
+                 'href': f'surnames/{grp["slug"]}.html'})
         surnames = [
             {'letter': letter,
-             'people': sorted(by_letter[letter], key=lambda p: (p['name'].lower(), p['href'] or ''))}
+             'people': sorted(by_letter[letter], key=lambda p: (p['name'].lower(), p['href'] or '')),
+             'names': sorted(name_links.get(letter, []),
+                             key=lambda n: (fold_accents(n['name']).lower(), n['href']))}
             for letter in sorted(by_letter)
         ]
 
@@ -11077,13 +11101,290 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'search.html', 'search.html',
                          {'root_prefix': '.', 'linked': self.linked})
 
+    # - surname pages (site.surname_pages) -
+
+    def _surname_people(self) -> list[tuple[str, str]]:
+        """The people a surname page may list, as `(person id, surname as
+        written)`, sorted by id.
+
+        A relative reading the shared site must not learn that a name is
+        carried by someone living, so the list is exactly the people the site
+        gives a page, held to the same two gates the search file uses: the
+        site's own (`_person_is_redacted`) and the shared export reader
+        (`person_withheld`). A surname only withheld people carry is absent
+        from this list, which is why it gets no page, no index line and no
+        link anywhere. The linked preview and the workbench list everyone with
+        a page."""
+        shared = not self.linked
+        privacy = export_privacy(self.conn, self.archive_root) if shared else None
+        carried = living_carried_to_survivors(self.conn) if shared else {}
+        found: list[tuple[str, str]] = []
+        for pid in sorted(self.person_pages):
+            row = self.person_meta[pid]
+            if row['merged_into']:
+                continue
+            if shared and (self._person_is_redacted(row)
+                           or person_withheld(self.conn, row, privacy, self.person_meta.get,
+                                              carried=carried)):
+                continue
+            surname = (row['surname'] or '').strip()
+            if not surname or surname.lower() == 'unknown':
+                continue
+            found.append((pid, surname))
+        return found
+
+    def _surname_groups(self) -> list[dict]:
+        """One group per family name (TOOLING §12, "Surname pages"), worked
+        out once per build: `{'slug', 'display', 'pids', 'spellings', 'also',
+        'note'}`, sorted by folded name.
+
+        Spellings that differ only by accent or case share a group (Müller,
+        Muller). A Polish feminine form (Kowalska) or a Czech one (Nováková)
+        joins the masculine form only when that form is also among the people
+        listed, so a family with only Kowalskas is not renamed Kowalski.
+        `notes/surnames/{slug}.md` with `also: [Kowalsky]` folds more spellings
+        in. Empty when the switch is off."""
+        if self._surname_cache is not None:
+            return self._surname_cache
+        groups: list[dict] = []
+        if self.show_surnames:
+            groups = self._build_surname_groups()
+        self._surname_cache = groups
+        return groups
+
+    def _build_surname_groups(self) -> list[dict]:
+        people = self._surname_people()
+        keys = {fold_accents(s).lower() for _pid, s in people}
+
+        def home_key(key: str) -> str:
+            for fem, masc in _SURNAME_FEMININE_ENDINGS:
+                if key.endswith(fem) and len(key) > len(fem):
+                    target = key[:-len(fem)] + masc
+                    if target in keys and target != key:
+                        return target
+            return key
+
+        by_key: dict[str, dict] = {}
+        for pid, surname in people:
+            key = fold_accents(surname).lower()
+            grp = by_key.setdefault(home_key(key), {'keys': set(), 'pids': [], 'spellings': {},
+                                                   'own': {}})
+            grp['keys'].add(key)
+            grp['pids'].append(pid)
+            grp['spellings'][surname] = grp['spellings'].get(surname, 0) + 1
+            if key == home_key(key):
+                grp['own'][surname] = grp['own'].get(surname, 0) + 1
+
+        def display_of(grp: dict) -> str:
+            pool = grp['own'] or grp['spellings']
+            return sorted(pool, key=lambda sp: (-pool[sp], sp))[0]
+
+        ordered = [by_key[k] for k in sorted(by_key)]
+        for grp in ordered:
+            grp['display'] = display_of(grp)
+        by_slug: dict[str, dict] = {}
+        for grp in ordered:
+            by_slug.setdefault(place_note_slug(grp['display']), grp)
+
+        # `also:` lists in the human's notes fold more spellings into a page.
+        owner = {k: grp for grp in ordered for k in grp['keys']}
+        claimed: dict[str, str] = {}
+        notes_dir = self.archive_root / 'notes' / 'surnames'
+        note_files = sorted(notes_dir.glob('*.md')) if notes_dir.is_dir() else []
+        for path in note_files:
+            target = by_slug.get(path.stem.lower())
+            if target is None:
+                continue   # a note for a name nobody shown carries: nothing to say
+            try:
+                meta = read_record(path, on_decode_error=_ignore_decode_error)['meta'] or {}
+            except Exception:   # noqa: BLE001 (an unreadable note adds no spellings)
+                continue
+            also = meta.get('also')
+            for spelling in ([also] if isinstance(also, str) else also if isinstance(also, list) else []):
+                key = fold_accents(str(spelling)).lower().strip()
+                other = owner.get(key)
+                if other is None or other is target:
+                    continue
+                if key in claimed and claimed[key] != path.name:
+                    self.messages.append(
+                        f'WARNING: {path.name} and {claimed[key]} both list {spelling!r} under '
+                        f'also:; it stays on the page of {claimed[key]}.')
+                    continue
+                claimed[key] = path.name
+                for k in other['keys']:
+                    owner[k] = target
+                target['keys'] |= other['keys']
+                target['pids'] += other['pids']
+                for sp, n in other['spellings'].items():
+                    target['spellings'][sp] = target['spellings'].get(sp, 0) + n
+                other['pids'] = []
+        ordered = [g for g in ordered if g['pids']]
+
+        used: dict[str, int] = {}
+        for grp in ordered:
+            slug = place_note_slug(grp['display'])
+            used[slug] = used.get(slug, 0) + 1
+            grp['slug'] = slug if used[slug] == 1 else f'{slug}-{used[slug]}'
+            grp['pids'] = sorted(set(grp['pids']))
+            others = sorted((sp for sp in grp['spellings'] if sp != grp['display']),
+                            key=lambda sp: (fold_accents(sp).lower(), sp))
+            grp['also'] = others
+        return ordered
+
+    def _surname_places(self, pids: list[str]) -> list[tuple[str, int]]:
+        """The registered places the group's people are most often found in
+        (up to five), each person counted once per place, from accepted claims
+        the site may show whose place has a page."""
+        seen: dict[str, set[str]] = {}
+        for pid in pids:
+            for r in self.conn.execute(
+                    'SELECT c.id, c.source_id, c.status, c.place_id FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    "WHERE cp.person_id = ? AND c.status = 'accepted' "
+                    "AND COALESCE(c.negated, 0) = 0 AND c.place_id IS NOT NULL "
+                    "AND c.place_id != '' ORDER BY c.id", (pid,)):
+                lid = normalize_id(str(r['place_id']))
+                if lid not in self.place_pages:
+                    continue
+                if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                    continue
+                if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
+                    continue
+                seen.setdefault(lid, set()).add(pid)
+        ranked = sorted(seen, key=lambda lid: (-len(seen[lid]),
+                                               (self.place_names.get(lid) or '').lower(), lid))
+        return [(lid, len(seen[lid])) for lid in ranked[:5]]
+
+    def _surname_birthplace(self, pid: str) -> str:
+        """Where a person was born, as the site shows it, or ''."""
+        for r in sorted(self.conn.execute(
+                'SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence, '
+                'c.source_id, c.status, c.place_id, c.place_text FROM claims c '
+                'JOIN claim_persons cp ON cp.claim_id = c.id '
+                "WHERE cp.person_id = ? AND c.type = 'birth' AND c.status = 'accepted' "
+                'AND COALESCE(c.negated, 0) = 0 ORDER BY c.id', (pid,)).fetchall(),
+                key=vital_pick_key):
+            if not self._claim_is_own_vital(pid, r['id'], r['type']):
+                continue
+            if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                continue
+            if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
+                continue
+            lid = normalize_id(str(r['place_id'] or ''))
+            label = self._place_label(r['place_text'], lid if lid in self.place_pages else None)
+            if label:
+                return label
+        return ''
+
+    def _surname_records(self, pids: list[str], page_dir: Path) -> tuple[list[dict], int]:
+        """The records that mention the group's people: published sources
+        cited by an accepted claim the site may show, grouped by kind, the
+        ones naming most of the family first. At most 30; the second number
+        is how many more there were."""
+        counts: dict[str, set[str]] = {}
+        for pid in pids:
+            for r in self.conn.execute(
+                    'SELECT c.id, c.source_id, c.status FROM claims c '
+                    'JOIN claim_persons cp ON cp.claim_id = c.id '
+                    "WHERE cp.person_id = ? AND c.status = 'accepted' ORDER BY c.id", (pid,)):
+                sid = normalize_id(str(r['source_id'] or ''))
+                if sid not in self.source_pages:
+                    continue
+                if not self.linked and sid in self._sources_naming_living:
+                    continue
+                if not self._claim_row_is_publishable(r['id'], r['source_id'], r['status']):
+                    continue
+                counts.setdefault(sid, set()).add(pid)
+        ranked = sorted(counts, key=lambda sid: (-len(counts[sid]),
+                                                 (self.source_meta[sid]['title'] or '').lower(), sid))
+        shown, extra = ranked[:30], max(0, len(ranked) - 30)
+        by_type: dict[str, list[str]] = {}
+        for sid in shown:
+            label = str(self.source_meta[sid]['source_type'] or 'other').replace('-', ' ')
+            by_type.setdefault(label.capitalize(), []).append(sid)
+        rows = [{'label': label, 'entries': [self._markup(self._source_link(sid, page_dir))
+                                           for sid in by_type[label]]}
+                for label in sorted(by_type)]
+        return rows, extra
+
+    def _surname_note(self, slug: str, page_dir: Path):
+        """The human's own words about the name (`notes/surnames/{slug}.md`),
+        read the way `notes/home.md` is: the private fence and unaccepted AI
+        drafts come out of a shared build, and a damaged draft marker
+        withholds the whole note."""
+        path = self.archive_root / 'notes' / 'surnames' / f'{slug}.md'
+        if not path.is_file():
+            return None
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        try:
+            body = (read_record(path, on_decode_error=_raise_friendly_decode_error)
+                    .get('body') or '').strip()
+            body, problem = withhold_private_and_drafts(body, drop_private=not self.linked)
+            if problem is not None:
+                self.messages.append(
+                    f'WARNING: a draft marker in notes/surnames/{slug}.md is damaged ({problem}); '
+                    'the notes on that surname page are withheld until it is fixed.')
+                return None
+            if body.strip():
+                return self._markup(_prose_to_html(body, render, embed,
+                                                   drop_private=not self.linked))
+        except Exception as e:  # noqa: BLE001 - a bad note must not stop the page
+            self.messages.append(
+                f'WARNING: notes/surnames/{slug}.md could not be read ({e}); its page has no notes.')
+        return None
+
+    def build_surname_pages(self) -> None:
+        """Write `surnames/{slug}.html` for every family name the build shows
+        a person for, plus `surnames/index.html` (TOOLING §12). Nothing is
+        written when no name qualifies: an empty page would reveal that a name
+        exists only because someone hidden carries it. `_reset_targets`
+        clears the folder on every rebuild."""
+        groups = self._surname_groups()
+        if not groups:
+            return
+        page_dir = self.surnames_dir
+        self._footnotes = None
+        for grp in groups:
+            pids = grp['pids']
+            vitals = {pid: self._vitals_cached(pid) for pid in pids}
+            born = [y for y in (_search_year(v.get('birth')) for v in vitals.values()) if y]
+            died = [y for y in (_search_year(v.get('death')) for v in vitals.values()) if y]
+            first = min(born) if born else (min(died) if died else '')
+            last = max(died) if died else (max(born) if born else '')
+            rows = []
+            for pid in pids:
+                b = _search_year(vitals[pid].get('birth'))
+                d = _search_year(vitals[pid].get('death'))
+                years = f'{b}-{d}' if b and d else f'b. {b}' if b else f'd. {d}' if d else ''
+                name = self.person_meta[pid]['name'] or fmt_id_display(pid)
+                rows.append({'sort': (b or '9999', name.lower(), pid), 'years': years,
+                             'html': self._markup(self._person_link(pid, page_dir)),
+                             'place': self._surname_birthplace(pid)})
+            rows.sort(key=lambda r: r['sort'])
+            places = [{'html': self._markup(self.render_token(fmt_id_display(lid), page_dir)),
+                       'count': n} for lid, n in self._surname_places(pids)]
+            records, more_records = self._surname_records(pids, page_dir)
+            self._write_page(page_dir / f'{grp["slug"]}.html', 'surname.html', {
+                'root_prefix': '..', 'linked': self.linked, 'display': grp['display'],
+                'also': grp['also'], 'count': len(pids), 'first': first, 'last': last,
+                'places': places, 'prose': self._surname_note(grp['slug'], page_dir),
+                'people': rows, 'records': records, 'more_records': more_records})
+        self._write_page(page_dir / 'index.html', 'surnames.html', {
+            'root_prefix': '..', 'linked': self.linked,
+            'groups': [{'display': g['display'], 'count': len(g['pids']),
+                        'href': f'{g["slug"]}.html'} for g in
+                       sorted(groups, key=lambda g: (fold_accents(g['display']).lower(),
+                                                     g['slug']))]})
+
     def _page_count(self) -> int:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
         search is on, plus graves.html when anyone has a grave to list.
         `run()` and `--dry-run` both report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
-                + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0))
+                + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
+                + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -11104,6 +11405,8 @@ class _SiteBuilder:
                 ),
                 # The search box in every page's header (base.html).
                 'show_search': self.show_search,
+                # The "Surnames" link in the header: only when a page exists.
+                'show_surnames': bool(self._surname_groups()),
             }
             # Workbench chrome (serve only). base.html gates the serve bar, the
             # CSRF meta tag, the workbench assets, and the modal templates on
@@ -11149,6 +11452,7 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_graves_page()
         self.build_discoveries_page()
+        self.build_surname_pages()
         self.build_index_page()
         if self.show_search:
             self.build_search_page()
@@ -11169,6 +11473,10 @@ class _SiteBuilder:
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
                 self.out_dir / 'graves.html',
+                # Listed whether surname pages are on or off, so switching
+                # them off, or the last person carrying a name becoming
+                # private, never leaves an old page naming that family.
+                self.surnames_dir,
                 # Listed whether search is on or off, so switching it off
                 # removes the old page (the search data lives in data/).
                 self.out_dir / 'search.html']

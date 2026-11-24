@@ -22,6 +22,9 @@
     <a href="{{ root_prefix }}/index.html#people">People</a>
     <a href="{{ root_prefix }}/index.html#places">Places</a>
     <a href="{{ root_prefix }}/index.html#sources">Sources</a>
+    {%- if show_surnames %}
+    <a href="{{ root_prefix }}/surnames/index.html">Surnames</a>
+    {%- endif %}
     {#- Issue #121: discoveries.html always builds (build_discoveries_page runs
         unconditionally), but with zero entries the home teaser that used to be
         its only inbound link renders nothing at all - so this persistent nav
