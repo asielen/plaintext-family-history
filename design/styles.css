@@ -656,6 +656,15 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
                    pointer-events: none; }
 .map-follow { font-size: var(--text-xs); margin-left: var(--space-1); }
 .map-journey-picker select { max-width: 100%; }
+/* The year slider under the map: what is later than its year is not drawn
+   (so the keyboard skips it too); its year is always written beside it. */
+.map-pin.is-later, .map-journey.is-later { display: none; }
+.map-years { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2) var(--space-3);
+             margin: var(--space-3) 0; }
+.map-years label { flex-basis: 100%; }
+.map-years input[type="range"] { flex: 1 1 14rem; min-width: 0; accent-color: var(--accent); }
+.map-year-text { font-variant-numeric: tabular-nums; font-weight: 600; min-width: 10rem; }
+.map-years .note { flex-basis: 100%; margin: 0; }
 
 
 /* 9. UTILITIES */
@@ -684,7 +693,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, noscript,
-  .map-panel, .map-reset, .map-journey-picker,
+  .map-panel, .map-reset, .map-journey-picker, .map-years,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
   .wb-add-hint { display: none !important; }
