@@ -11947,7 +11947,12 @@ class MergedDuplicateClaimTests(_Base):
         everything = self._all_output()
         for text in (self.SECRET, self.WEDDING, self.PLACE_FACT, 'Quist', 'Larry', 'Lars'):
             self.assertNotIn(text, everything, (text, res['messages']))
-        self.assertFalse((self.out_dir / 'sources' / 's-1111111111.html').exists())
+        # The census residence is about Grandpa too, so it stays, without
+        # its wording, and its source keeps its page (SPEC §21, 2026-11-23);
+        # the page never lists or labels the living survivor.
+        census = self._read('sources/s-1111111111.html')
+        self.assertNotIn(site._LIVING_LABEL, census)
+        self.assertNotIn(self.LARRY, census)
 
     def test_a_claim_naming_the_old_id_of_a_living_person_stays_out(self):
         res = self._run(linked=False)
