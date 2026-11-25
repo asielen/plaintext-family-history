@@ -447,6 +447,10 @@ table.claims thead th { background: none; border-bottom: 1.5px solid var(--ink-s
 .ped-node.ped-weak { opacity: .55; border-style: dotted; }
 .fan-seg-weak { fill-opacity: .45; stroke: var(--rule-strong); stroke-dasharray: 3 3; }
 .fha-weak-key, .fan-key { color: var(--muted); font-size: var(--text-sm); }
+/* A husband and wife are joined by a short line between their cards; a later
+   marriage by a dotted one (the family chart's ped-link-later). */
+.fha-tree-couple       { fill: none; stroke: var(--rule-strong); stroke-width: 1.5; }
+.fha-tree-couple-later { stroke-dasharray: 2 3; stroke-linecap: round; }
 
 .fha-node { box-sizing: border-box; width: 200px; min-height: 64px;
             display: flex; align-items: center; gap: var(--space-2);
@@ -482,6 +486,18 @@ a.fha-name:hover { color: var(--accent); }
               cursor: pointer; font-size: var(--text-sm); line-height: 1; padding: 0; }
 .fha-toggle:hover { color: var(--accent); }
 .fha-tree-note { color: var(--muted); font-size: var(--text-sm); }
+/* A living relative on the shared site: the word "Private", nothing else,
+   styled like the family chart's private card. */
+.fha-node-private .fha-name { font-family: var(--font-sans); font-size: var(--text-xs);
+                              text-transform: uppercase; letter-spacing: var(--tracking-caps);
+                              color: var(--muted); border-bottom-color: var(--rule); }
+/* A person met a second time: a smaller card whose button jumps to the first. */
+.fha-node-repeat { width: 150px; border-bottom-style: dashed; }
+.fha-repeat-link, .fha-also-shown { border: none; background: none; padding: 0; margin: 0;
+                                    font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.fha-repeat-link .fha-name { border-bottom-style: dashed; }
+.fha-also-shown { display: block; color: var(--accent); font-size: var(--text-xs); }
+.fha-repeat-link:hover .fha-name, .fha-also-shown:hover { color: var(--accent); }
 
 
 /* 8. REGISTER PATTERNS — the genealogy-native details */
