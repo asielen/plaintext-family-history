@@ -374,6 +374,10 @@
   {% else %}
   <p class="empty">No sources cite this person yet.</p>
   {% endif %}
+
+  {%- if person.contribute_href %}
+  <aside class="contribute"><p>Do you have a story, a photo or a correction for {{ person.name }}? <a href="{{ person.contribute_href }}">Tell me what you know</a>.</p></aside>
+  {%- endif %}
 </article>{% if person.has_play %}
 {% include "_recording_script.html" %}{% endif %}
 {% endblock %}

@@ -90,7 +90,7 @@
     {
       "path": ".agents/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "82ce96d8e81cfc3b3ed0b6b452d33d578e90c0f64261c08404d88a1f96d28094",
+      "sha256": "4cf6cb2e69b2eeb007704840f4b1eaabfb01247e6708632f2d221082a3577525",
       "spec_version": "2.44",
       "src": ".claude/skills/process-source/SKILL.md"
     },
@@ -125,7 +125,7 @@
     {
       "path": ".agents/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "f7216aead00b1bd5b63fd992c13e4498c29efe5809bd8d668de6b16352b984e9",
+      "sha256": "e1f2183c9432ce83dc2f208f4705134739812e01308520f2d135a2d97c5e0e4d",
       "spec_version": "2.44",
       "src": ".claude/skills/share-and-export/SKILL.md"
     },
@@ -267,7 +267,7 @@
     {
       "path": ".claude/skills/process-source/SKILL.md",
       "category": "operating",
-      "sha256": "82ce96d8e81cfc3b3ed0b6b452d33d578e90c0f64261c08404d88a1f96d28094",
+      "sha256": "4cf6cb2e69b2eeb007704840f4b1eaabfb01247e6708632f2d221082a3577525",
       "spec_version": "2.44"
     },
     {
@@ -297,7 +297,7 @@
     {
       "path": ".claude/skills/share-and-export/SKILL.md",
       "category": "operating",
-      "sha256": "f7216aead00b1bd5b63fd992c13e4498c29efe5809bd8d668de6b16352b984e9",
+      "sha256": "e1f2183c9432ce83dc2f208f4705134739812e01308520f2d135a2d97c5e0e4d",
       "spec_version": "2.44"
     },
     {
@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "fab304d361c48757d1cbace7350e4e280ca2c54ec412c2d7c873f9bd6bbd60ef",
+      "sha256": "c94064c7534853e367236fc702a37830b839c00f3697992c7f457fddb03296a9",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -700,7 +700,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "ffe66e6cb0c3011d9a3d48d1e2b1a3367fc8aeac302a6e23b608046427ba9af2",
+      "sha256": "3015b4928a3ba3ce30a61851cc7c268b6b65841119728504577b6d0ae7f3fd66",
       "spec_version": "2.44",
       "src": "tools/_lib.py"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "9893de69aac3b622b4653e3cda4fc4e6e84d9b729f1e42fdc32280982ee5c600",
+      "sha256": "10fafd18dc69e09a17c2c3b14472ecf2dea5f2da89a812110b19668b904fde27",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1309,7 +1309,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "148fc291fdf6062bcf2732f8167e9266630fe317e78242d011df1d895eb60d92",
+      "sha256": "66d9df82e09cd2cf6f1ea49e0a0263fb5aafd33b9aebcb5fc2f05ecc8df868a6",
       "spec_version": "2.44",
       "src": "tools/templates/person.html"
     },
@@ -1550,13 +1550,13 @@
     {
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
-      "sha256": "9278028f192891e5326c995c7dd121655e2c16ba6d0860c467763c7ee4390501",
+      "sha256": "1afe5e6f9c29be31bf6c0aabde20dbd4931f79e00e512d4996cbf15cb2211f23",
       "spec_version": "2.44"
     },
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "58f0f80e122482561341470a55dcb5697877cec2444e891bb8835759d61c50ee",
+      "sha256": "4265c6867910ddaecd1474de7e38e4c2ee608b16010d3a4de4d65970e232c699",
       "spec_version": "2.44"
     },
     {
@@ -1611,7 +1611,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "eccd5e3b9ac39bb6c5f0423f480aa54d2a2de59df94d97259dfbfd207b86cc65",
+      "sha256": "0f295f519290460a36b240f17384725db1809af8ab99d030e91a00a1865f3288",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
@@ -1655,7 +1655,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "3960a6e79a82eadd41bcd9a2d4f16019b743d6c00ef20a1cfdbe9d3c8a01cae6",
+      "sha256": "371b63029ab9ba63859c40ca7604480a8fb22c0d51d968742d7a08bdc531b639",
       "spec_version": "2.44",
       "src": "archive-template/fha.yaml"
     },

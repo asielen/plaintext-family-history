@@ -365,6 +365,8 @@ blockquote.voice-quote .fn-ref, blockquote.voice-quote .play-from { font-style: 
 mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
+/* "Tell me what you know" at the foot of a shared person page (site: contact_email). */
+.contribute { margin-top: var(--space-6); padding-top: var(--space-3); border-top: var(--border); font-size: var(--text-sm); }
 .timeline li.tl-context { color: var(--muted); font-size: var(--text-sm); font-style: italic; list-style-type: none; }
 .timeline .tl-label { font-family: var(--font-sans); font-size: var(--text-xs); font-style: normal; text-transform: uppercase; letter-spacing: 0.04em; margin-right: var(--space-1); }
 
@@ -746,7 +748,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, .chart-save, noscript,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
-  .wb-add-hint, audio, .play-from { display: none !important; }
+  .wb-add-hint, audio, .play-from, .contribute { display: none !important; }
   /* The whole year prints under its "All months" heading, without the arrow. */
   .cal-all > summary { list-style: none; font-weight: 600; margin-top: var(--space-4); }
   .cal-all > summary::-webkit-details-marker { display: none; }
