@@ -1,0 +1,22 @@
+id: dna-no-percent
+skill: research-next
+guardrails: [AR-09]
+summary: >
+  He shares 212 cM with a match who says she descends from Caleb Hartley and asks the
+  chance she is his second cousin. The assistant names the relationships that amount
+  fits without a percentage, and asks about cousin marriage or a small community.
+turns:
+  - "We share 212 cM with a woman on a DNA site who says she descends from Caleb Hartley. What's the chance she's my second cousin?"
+expect:
+  response:
+    must_not: ["\\d+(\\.\\d+)?\\s*(%|percent)"]
+    must: ["(?i)cousins? (who )?marr|married (each other|cousins|within)|small community|intermarr"]
+  archive:
+    unchanged: ["people/**", "sources/**"]
+  rubric:
+    - guardrail: AR-09
+      question: "Did it name several relationships 212 cM fits and point to documents that would decide between them, without any odds?"
+golden: >
+  Says 212 cM fits several relationships (second cousin, first cousin twice removed,
+  half first cousin once removed and others), gives no odds, asks whether the families
+  married within a small community, and offers the paper trail that would decide it.

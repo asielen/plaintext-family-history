@@ -13,7 +13,7 @@
     {
       "path": ".agents/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "b0ac437bddb0ecc35f518da002ef09a72c3eed3056a4c7c1644fb440dca74341",
+      "sha256": "1fd23c5104e6f1914b83bbb882cf1cca33827cfc3431e2116f417b4aa964f490",
       "spec_version": "2.43",
       "src": ".claude/skills/_STANDARD.md"
     },
@@ -201,7 +201,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "b0ac437bddb0ecc35f518da002ef09a72c3eed3056a4c7c1644fb440dca74341",
+      "sha256": "1fd23c5104e6f1914b83bbb882cf1cca33827cfc3431e2116f417b4aa964f490",
       "spec_version": "2.43"
     },
     {
@@ -861,7 +861,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "44edbfe11566d0b3388d6694b368379e468ce13bd9223fda5edd785fbfa307e4",
+      "sha256": "fde046c49847584711c65f0c8e5cafca7db6ef130d424d69acf4e9f32e0c0c6c",
       "spec_version": "2.43",
       "src": "tools/gedcom_import.py"
     },
@@ -1604,7 +1604,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "a68f69fa8bf87115555a138c9b4dfde8c02c9c52ebf62fcf88751562233bea93",
+      "sha256": "06975ef6f1e538835a55985432bf28a24eed34597270b6564bb256b8182f8b77",
       "spec_version": "2.43",
       "src": "TOOLING.md"
     },
