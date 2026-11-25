@@ -135,6 +135,8 @@
 <div class="fha-tree" id="fha-tree"></div>
 <p class="fha-tree-note">Descendants of Carol Anne Simmons - click a name to open that person; use −/+ to collapse or expand.</p>
 <script type="application/json" id="fha-tree-data">{"version": 2, "seed": "p-3c4d5e6f7g", "mode": "descendants", "nodes": [{"p_id": "p-3c4d5e6f7g", "name": "Carol Anne Simmons", "sex": "F", "vitals": {"birth": null, "death": null}, "url": "p-3c4d5e6f7g.html", "photo": null, "line_confidence": null}, {"p_id": "p-0a1b2c3d4e", "name": "Alex James Bradford", "sex": "unknown", "vitals": {"birth": null, "death": null}, "url": "p-0a1b2c3d4e.html", "photo": null, "line_confidence": "high"}], "edges": [{"type": "child", "from": "p-3c4d5e6f7g", "to": "p-0a1b2c3d4e", "claim_id": "c-fc0000003c", "subtype": "biological", "genetic": true, "kind": "genetic", "confidence": "high", "dates": {"start": null, "end": null}}]}</script>
+<script src="../vendor/d3.min.js"></script>
+<script src="../vendor/d3-flextree.js"></script>
 <script src="../vendor/fha-tree.js"></script>
 <script src="../vendor/tree-adapter.js"></script>
 <script>
@@ -145,10 +147,10 @@
   function renderTree() {
     try {
       var data = JSON.parse(holder.textContent);
-      var root = window.FhaTreeAdapter.fromNeutral(data);
+      var model = window.FhaTreeAdapter.fromNeutral(data);
       var opts = { initialDepth: 4,
                    homeId: null };
-      window.FhaTree.render(mount, root, opts);
+      window.FhaTree.render(mount, model, opts);
     } catch (e) { /* a bad tree must never blank the page */ }
   }
   var host = mount.closest ? mount.closest('details') : null;

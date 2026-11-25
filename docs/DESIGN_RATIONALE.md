@@ -34,6 +34,7 @@ Contents:
 24. The family map draws its own outline
 25. A journey stop sits at the middle of its date
 26. A family in the tree data is its parent pair
+27. The explorer keeps its own renderer on a flextree layout
 
 ---
 
@@ -563,3 +564,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Keying on the marriage claim.** It loses every unmarried couple and every wedding not yet found, and splits one couple into two families when two marriage records disagree.
 - **Guessing a pairing when three birth parents are recorded.** That is a conflict still under review; each parent stands alone until it is settled.
 - **A placeholder for a withheld co-parent** ("unknown partner 1"). It tells a visitor there is a partner the site is keeping back, which is the thing being withheld.
+
+---
+
+## 27. The explorer keeps its own renderer on a flextree layout
+
+**The rule.** The family explorer is drawn by the archive's own `fha-tree.js`, fed by `tree-adapter.js`. It lays out couples with D3's `hierarchy` and d3-flextree (a tidy-tree layout whose nodes each have their own width), both vendored. A couple is one unit, later marriages sit beside the first, and a person met twice is a pointer card, never a second copy of their branch.
+
+**Why.** The explorer has to draw two parents per child, a second wife beside the first, a step-child under both families, and genetic, legal and other ties with different lines. Our own renderer already draws our cards (portrait, line colours, Private cards), pan and zoom, Home and Fit; what it needs from outside is a layout that gives a couple the room of two cards. d3-flextree is that layout, about 11 KB of source, and it needs nothing from D3 beyond `hierarchy`. Its published build bundles its own old copy of d3-hierarchy, so the source file is wrapped by hand instead, pinned by sha256 like D3. A withheld partner gets no placeholder card: the children hang from the parent shown, as on the family chart, so the explorer never hints that someone is missing.
+
+**Rejected.**
+
+- **family-chart.** It needs every person's sex (ours is often unknown, and a Private card has none), allows only two parents per child (a birth father and an adoptive father cannot both show), carries no kind or rating on a tie, and is an editing tool at heart, with add and remove forms we would ship switched off.
+- **topola.** The best family layouts, built on the same d3-flextree, but published only as CommonJS, so using it means owning a bundling step forever, and its renderers expect GEDCOM-shaped data.
+- **A placeholder "unknown partner" card.** On the shared site it tells a visitor there is a partner being kept back.
