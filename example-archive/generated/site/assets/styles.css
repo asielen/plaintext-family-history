@@ -733,7 +733,20 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 .map-pin.is-active .map-label { display: inline; }
 .map-panel { border-left: 3px solid var(--rule); padding-left: var(--space-4); }
 .map-panel h2 { margin-top: 0; }
-.map-people { padding-left: var(--space-5); }
+.map-people, .map-stops { padding-left: var(--space-5); }
+/* Journey lines: everyone's faint, the followed one in the accent colour
+   with numbered stops and an arrow halfway along each move. The script sets
+   each line's width so it stays the same on screen as the map zooms. */
+.map-journey { fill: none; stroke: var(--muted); stroke-opacity: 0.45; stroke-linecap: round; }
+.map-journey.is-followed { stroke: var(--accent); stroke-opacity: 1; }
+.map-following .map-journeys { opacity: 0.35; }
+.map-arrow { fill: var(--accent); }
+.map-stop-number { font-family: var(--font-sans); font-size: 18px; font-weight: 700;
+                   fill: var(--ink); text-anchor: middle; paint-order: stroke;
+                   stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round;
+                   pointer-events: none; }
+.map-follow { font-size: var(--text-xs); margin-left: var(--space-1); }
+.map-journey-picker select { max-width: 100%; }
 
 
 /* 9. UTILITIES */
@@ -776,7 +789,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, .chart-save, noscript,
-  .map-panel, .map-reset,
+  .map-panel, .map-reset, .map-journey-picker,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
   .wb-add-hint, audio, .play-from, .contribute { display: none !important; }

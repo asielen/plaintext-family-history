@@ -2,12 +2,17 @@
 {% block title %}Family map: {{ site_title }}{% endblock %}
 {% block content %}
 {#- The family map (TOOLING 12, "Family map"). vendor/fha-map.js draws the
-    pins in the inline JSON below over the vendored world outline, with no
-    internet. The lists under the map are the same places as plain links:
+    pins and journey lines in the inline JSON below over the vendored world
+    outline, with no internet; the picker and the panel give each journey as
+    text. The lists under the map are the same places as plain links:
     what a reader without script, or a printer, gets. #}
 <article class="family-map">
   <h1>Family map</h1>
-  <p class="note">A pin marks each place where the family's records put someone, at the position recorded for that place. Click a pin to see who.</p>
+  <p class="note">A pin marks each place where the family's records put someone, at the position recorded for that place. Click a pin to see who.{% if map.has_journeys %} The lines follow each person's moves through their life, from one record's place to the next in date order.{% endif %}</p>
+  {%- if map.has_journeys %}
+  <p class="map-journey-picker" hidden><label for="fha-map-journey">Show one person's moves:</label>
+    <select id="fha-map-journey"><option value="">Everyone (faint lines)</option></select></p>
+  {%- endif %}
   <div class="map-layout">
     <div id="fha-map" class="map-canvas" role="region" aria-label="Map of the family's places" hidden></div>
     <div id="fha-map-panel" class="map-panel" aria-live="polite" hidden>
@@ -15,6 +20,9 @@
     </div>
   </div>
   <p><button type="button" id="fha-map-reset" class="map-reset" hidden>Reset the view</button></p>
+  {%- if map.journey_note %}
+  <p class="note">{{ map.journey_note }}</p>
+  {%- endif %}
 
   <h2>Places on the map</h2>
   {% for g in map.groups %}
