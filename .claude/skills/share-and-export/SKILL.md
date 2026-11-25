@@ -64,6 +64,25 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
 
 5. **Report where it landed and what's in and out.** Give the exact path (`out/packet_…zip`, `out/family.ged`, `generated/site/`, the backup zip's folder), a one-breath contents summary (how many people, sources, photos), and restate the exclusions as reassurance rather than as an error: *"Your uncle is in there as 'Living' with no dates. That's the privacy setting doing its job."* End with one concrete next step: how to hand it over (email, USB, upload), or "Want a backup too, since a copy is about to leave the house?"
 
+6. **After a `fha site` build for the family, offer the invite note once.** Ask: "Would you like a short note to send with it, asking for photos and stories?" On a yes, fill in and show this note, and let him edit it before he sends it himself (this skill sends nothing):
+
+   ```
+   Hello everyone,
+
+   I've been putting our family history together, and I've made a small website of it that you can open on your own computer: [how you're sharing it: the attached folder, a USB stick, or a link].
+
+   If you have old photos, letters or papers, or you remember a story about someone in it, I would love to hear about it. Each person's page has a "Tell me what you know" link that starts an email to me with that person's name already filled in. You can also just reply to this email.
+
+   If someone in the family tells a good story, record it on your phone and send me the recording. Their voice is worth keeping too.
+
+   Nothing you send changes anything by itself. I look at everything first.
+
+   Thank you,
+   [your name]
+   ```
+
+   The middle paragraph about the link is kept only when `site: contact_email` is set in `fha.yaml`; otherwise it reads "You can reply to this email with anything you know." When it is not set, mention once that `contact_email` would add the link to every page (`docs/CUSTOMIZING_SITE.md`). A reply that comes back is saved into `inbox/` as a `.notes.md` file and goes to `process-source`.
+
 ## Guardrails
 
 - **Never pass `--include-restricted`, `--include-dna`, `--include-living`, or `--linked` without the human's explicit, informed ask in this session.** Don't offer them proactively, and don't reach for one just because an export came back smaller than expected.
@@ -81,4 +100,5 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
 - A dry-run or stdout preview precedes every write; the final report names the artifact's path and restates what was excluded and why.
 - No override flag (`--include-restricted`, `--include-dna`, `--include-living`, `--linked`) appears in any transcript unless the human asked for it by name or clear intent; `restricted: by-request` is never overridden.
 - An "import my tree" request is met with a hand-off, not an export.
+- The invite note is offered once after a site build for the family, and never sent by the skill.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9). Export artifacts land under `out/` or `generated/`, outside the record trees, so nothing new is flagged.
