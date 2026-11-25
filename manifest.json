@@ -34,7 +34,7 @@
     {
       "path": ".agents/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "230a7a3baa35d2e7c2ca95fb5102ef32ee5cb8d5e9c7c516d28481b3b74ddb1f",
+      "sha256": "9797425204055109e61ee8ff406e43be4714debb4d6284c124f1aeb313a5f632",
       "spec_version": "2.44",
       "src": ".claude/skills/import-recordings/SKILL.md"
     },
@@ -219,7 +219,7 @@
     {
       "path": ".claude/skills/import-recordings/SKILL.md",
       "category": "operating",
-      "sha256": "230a7a3baa35d2e7c2ca95fb5102ef32ee5cb8d5e9c7c516d28481b3b74ddb1f",
+      "sha256": "9797425204055109e61ee8ff406e43be4714debb4d6284c124f1aeb313a5f632",
       "spec_version": "2.44"
     },
     {
@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "ba181c92b4a855cd7ae3422e8076d179b223e53e48c55020e3a2dc4f25a589c4",
+      "sha256": "9b6845b4f3b1faa8004c12a3aaea8302b596f78d522e0a70fcf7de54bf436aac",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -700,7 +700,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "988cacbe1ee0bd2e04f68d7842ea5a19e0e6fab6d98a0f31564e1a87ec886322",
+      "sha256": "ffe66e6cb0c3011d9a3d48d1e2b1a3367fc8aeac302a6e23b608046427ba9af2",
       "spec_version": "2.44",
       "src": "tools/_lib.py"
     },
@@ -833,7 +833,7 @@
     {
       "path": ".fha/tools/doctor.py",
       "category": "operating",
-      "sha256": "bd44dbccdc9c0eb06a0011775a9f06ccd76d468a24fb24f4990c3e5718f92d05",
+      "sha256": "7ae5187dcbff43dee2d0f7242bb229a85992f4b5bc7b9267a2b4f22837ae6da0",
       "spec_version": "2.44",
       "src": "tools/doctor.py"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "d77a0fed1c9ae3a3c7bba7c860c2ed91d6f695b7a522ce2bb0ae5039ebec0be0",
+      "sha256": "3503159d46941c95a5b63d8fd0c229fd08fa6d806142c505fcb787c0c41f6c2a",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1221,6 +1221,13 @@
       "sha256": "eee250bdfb4b1dac829b64a369a5abc4416e37cdd0fbab37dd157ecc4f33009f",
       "spec_version": "2.44",
       "src": "tools/templates/_pedigree_home.html"
+    },
+    {
+      "path": ".fha/tools/templates/_recording_script.html",
+      "category": "operating",
+      "sha256": "3a12ffd31b7beb04d187ab727ebacd55c4c57d9e80caaa44c9095f0c59b419de",
+      "spec_version": "2.44",
+      "src": "tools/templates/_recording_script.html"
     },
     {
       "path": ".fha/tools/templates/_tree.html",
@@ -1337,7 +1344,7 @@
     {
       "path": ".fha/tools/templates/source.html",
       "category": "operating",
-      "sha256": "855de43840adb995f62ac15dae758409841bd5d7f24c5024bb5f8f178b89dc45",
+      "sha256": "a9667b42224fbb28bf1f17d2d7bfdca3eb9e81a0dd8cb44cd769199788757e3e",
       "spec_version": "2.44",
       "src": "tools/templates/source.html"
     },
@@ -1549,13 +1556,13 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "5ba178bebf66847b7648f2e8fb271e3fe20006813fd27520d4fff229da716121",
+      "sha256": "a95496345049b8d96206e0b0de69ca8f42590c77e0e9731cc8bffe5723967ac8",
       "spec_version": "2.44"
     },
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "d7eb30eea608635db45aea3d1967070af526b353d15e1505ff78db9c1f13fced",
+      "sha256": "b1c7752a9f5de82a7dfc1243c6fdac44d48f79ef27bda0e9c544a65b86a40f06",
       "spec_version": "2.44"
     },
     {
@@ -1604,7 +1611,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "ec794bd3d1b3fe48328ebcd17d9ea27773877beb686d74c2e10eaf801d60202b",
+      "sha256": "8996414ddc6e088b0f594a18dd3f8846d7d1c916db37710703e1014507ad344f",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
