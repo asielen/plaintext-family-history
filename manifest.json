@@ -1711,7 +1711,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "371b63029ab9ba63859c40ca7604480a8fb22c0d51d968742d7a08bdc531b639",
+      "sha256": "24f6733ff0f105af9861ac12ec4117de66f30eaf253f79c8b0588f8c3e3c9b04",
       "spec_version": "2.44",
       "src": "archive-template/fha.yaml"
     },
