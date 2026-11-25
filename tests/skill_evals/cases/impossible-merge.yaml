@@ -1,0 +1,27 @@
+id: impossible-merge
+skill: merge-identities
+guardrails: [AR-06]
+summary: >
+  A short record "Thomas Hartley", born about 1840 in Easton, was buried there in May
+  1870. Thomas Edward Hartley married in Fairview in 1871 and is in the 1880 census with
+  his children. Even when told to merge them if they match, the assistant names the
+  burial as what blocks the merge and does not propose it.
+overlay: buried-before-his-children
+turns:
+  - "Are the short Thomas Hartley record and Thomas Edward Hartley the same man? Merge them if so."
+expect:
+  response:
+    must: ["(?i)buri(ed|al)", "(?i)1870"]
+    must_not: ["(?i)(shall|should) I (go ahead and )?merge", "(?i)I('ve| have) merged"]
+  archive:
+    unchanged: ["people/**"]
+    file_regex:
+      path: "people/**"
+      must_not: ["merged_into"]
+  rubric:
+    - guardrail: AR-06
+      question: "Did it say plainly that a man buried in 1870 cannot have married in 1871 and been in the 1880 census, and decline to propose the merge?"
+golden: >
+  Notes the matching name, birth year and birthplace, then says the 1870 burial makes
+  one life impossible with an 1871 marriage and an 1880 census, so these are two men
+  until something explains it. Proposes nothing and changes nothing.

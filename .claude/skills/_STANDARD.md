@@ -1,6 +1,6 @@
 # Skill-authoring standard
 
-**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so nineteen skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) (the reference skill) and follow the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15, and the operating rules in [`AGENTS.md`](../../AGENTS.md).
+**This is the shared contract every `SKILL.md` in this folder conforms to.** It exists so twenty skills written by different sessions and models don't drift in shape, in how they gate `accepted`, in how they record their work, or in voice. When you write a new skill, copy [`today/SKILL.md`](today/SKILL.md) (the reference skill) and follow the rules below. Design lives in [`TOOLING_INTERFACE.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING_INTERFACE.md), the build order in [`TOOLING.md`](https://github.com/asielen/plaintext-family-history/blob/master/TOOLING.md) §15, and the operating rules in [`AGENTS.md`](../../AGENTS.md).
 
 ---
 
@@ -100,6 +100,8 @@ A SKILL.md is prose, so there is no `python -m unittest` for it. A skill is veri
 Capture the session transcript proving each "Done when" in the skill's PR description; that transcript *is* the test evidence.
 
 One mechanical check comes before the behavioral one: **every `fha` command the SKILL.md documents was run against `example-archive/` before the skill was merged, and any filename or path the prose predicts is the actual result of running it.** For example, a `--more` rename names the file for its source and appends the role, and `--more` refuses a file outside every root and the inbox. Agents read a skill as the record of how the tools behave, so a documented command that does not run as written misleads every later reader (AGENTS_TOOLING §"Porting from an archive"). Scripts under a skill's `scripts/` are reviewed as tools, not prose: defaults equal the documented gates, outputs are atomic, gates fail closed, and nothing they emit into an attachable artifact carries an absolute path. Their tests may also pin the parts of the SKILL.md that a machine can check: every flag the prose names exists in the script's parser, and a worked example really produces the filename it shows (`tests/test_transcribe_audio.py` is the pattern).
+
+The rules every skill must keep are also pinned in `tests/skill_evals/guardrails.yaml`: each entry names a short phrase and the files that must carry it, and the suite fails if an edit drops one. Changing a pinned rule means changing the registry in the same change, so the edit is visible in review. `tests/skill_evals/cases/` holds at least one behavioural case per rule; `tests/skill_evals/run_skill_evals.py` runs them against a fresh install of the example archive with a real agent (by hand, or the manual skill-evals workflow), and its report is the evidence a skill change keeps behaving.
 
 ## 10. The copyable skeleton
 

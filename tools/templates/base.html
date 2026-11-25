@@ -22,11 +22,17 @@
     <a href="{{ root_prefix }}/index.html#people">People</a>
     <a href="{{ root_prefix }}/index.html#places">Places</a>
     <a href="{{ root_prefix }}/index.html#sources">Sources</a>
+    {%- if show_surnames %}
+    <a href="{{ root_prefix }}/surnames/index.html">Surnames</a>
+    {%- endif %}
     {#- Issue #121: discoveries.html always builds (build_discoveries_page runs
         unconditionally), but with zero entries the home teaser that used to be
         its only inbound link renders nothing at all - so this persistent nav
         link is the page's sole route in on a fresh or quiet archive. #}
     <a href="{{ root_prefix }}/discoveries.html">Discoveries</a>
+    {%- if questions_page_built %}
+    <a href="{{ root_prefix }}/questions.html">Questions</a>
+    {%- endif %}
   </nav>
   {%- if show_search %}
   {#- One box on every page (fha.yaml `site: search`, on unless false). It
@@ -73,5 +79,6 @@
 <script src="{{ root_prefix }}/assets/workbench.js"></script>
 {% endif %}
 <script src="{{ root_prefix }}/vendor/fha-site.js" defer></script>
+<script src="{{ root_prefix }}/vendor/fha-save-chart.js" defer></script>
 </body>
 </html>

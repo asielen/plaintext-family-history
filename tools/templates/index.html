@@ -99,12 +99,19 @@
   </div>
   <p><a href="discoveries.html">All discoveries →</a></p>
   {% endif %}
+  {%- if has_whats_new %}
+  <p><a href="whats-new.html">What's new on this site</a></p>
+  {%- endif %}
 
   <h2 id="people">People{% if workbench %}
-    <a class="wb-add" href="#" data-wb-open="tpl-mint">Add a person&hellip;</a>{% endif %}</h2>
+    <a class="wb-add" href="#" data-wb-open="tpl-mint">Add a person&hellip;</a>{% endif %}</h2>{% if statistics %}
+  <p><a href="statistics.html">Family statistics</a></p>{% endif %}
   {% if surnames %}
   {% for group in surnames %}
   <h3>{{ group.letter }}</h3>
+  {% if group.names %}
+  <p class="surname-links">Family names: {% for n in group.names %}<a href="{{ n.href }}">{{ n.name }}</a> ({{ n.count }}){{ ', ' if not loop.last }}{% endfor %}</p>
+  {% endif %}
   <ul class="index-list">
     {% for p in group.people %}<li>
       {%- if p.recordless -%}
