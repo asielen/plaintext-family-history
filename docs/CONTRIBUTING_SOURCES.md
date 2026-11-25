@@ -46,6 +46,12 @@ grandma-rose-portrait/
 
 ---
 
+### Method C: email
+
+On the family website, each person's page has a "Tell me what you know" link. It starts an email with the right name already in it. Answer the questions in your own words, attach any photos, and send it. You don't need the inbox folder for this.
+
+---
+
 ## Send it back
 
 Zip the `inbox` folder back up (Windows: right-click, then "Send to", then "Compressed folder"; Mac: right-click, then "Compress") and email it to me.

@@ -1,0 +1,15 @@
+{#- So a "play from 14:32" link starts the player on this page at that minute
+    instead of opening the file. Works from a file opened on disk. Without it
+    the plain link still opens the recording at that time (#t=). The
+    #play-rec-1-872 form lets another page link to a minute here. -#}
+<script id="fha-recording-script">
+document.addEventListener('click', function (ev) {
+  var a = ev.target.closest && ev.target.closest('a.play-from[data-audio]'); if (!a) return;
+  var el = document.getElementById(a.dataset.audio); if (!el) return;
+  ev.preventDefault(); el.currentTime = Number(a.dataset.t); el.play();
+});
+(function () {
+  var m = location.hash.match(/^#play-(rec-\d+)-(\d+)$/); if (!m) return;
+  var el = document.getElementById(m[1]); if (el) { el.currentTime = Number(m[2]); }
+})();
+</script>

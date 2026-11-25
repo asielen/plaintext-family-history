@@ -99,6 +99,137 @@ class IngestTestCase(unittest.TestCase):
         self.assertIn('grave-1', primary[0]['file'])
         self.assertEqual(primary[0]['role'], 'grave-1')
 
+    def test_a_wikitree_capture_files_its_held_sources_as_source_n_and_keeps_the_id_line(self) -> None:
+        # #423: a WikiTree profile's capture files the page text, the scan and
+        # the transcription WikiTree holds for its cited sources (`source-N`,
+        # never a family photo), the profile's photo (`photo-1`), and its
+        # "Cited sources" list into the source's Notes. The WikiTree id line
+        # the process-source skill reads is still written.
+        import argparse
+        import process
+        notes = ('WikiTree citation: WikiTree, "Calvin Hartley (Hartley-6084)," '
+                 '(https://www.wikitree.com/wiki/Hartley-6084 : last edited 2023-05-26; accessed 2026-11-24).\n\n'
+                 '### Cited sources\n\nLinked (open each and check it):\n'
+                 '- [ ] Marriage record: image - https://www.wikitree.com/photo/jpg/Hartley-6084-2; saved in this '
+                 'source as source-1.jpg ("Hartley-Cole marriage record"), from '
+                 'https://www.wikitree.com/photo/jpg/Hartley-6084-2\n\nTo find:\n- [ ] Family letters')
+        bundle = _make_bundle(
+            self.staging, 'calvin-wikitree', page_html=_sample('wikitree-profile'),
+            capture_json={
+                'schema': 2, 'url': 'https://www.wikitree.com/wiki/Hartley-6084',
+                'title': 'Calvin Hartley (Hartley-6084) - WikiTree profile', 'source_type': 'website',
+                'source_class': 'derivative', 'repository': 'WikiTree', 'recipe_hint': 'wikitree',
+                'people': ['Calvin Hartley'], 'notes': notes,
+                'citation': 'WikiTree, "Calvin Hartley (Hartley-6084)," (https://www.wikitree.com/wiki/Hartley-6084 '
+                            ': last edited 2023-05-26; accessed 2026-11-24).',
+                'assets': [{'file': 'page.md', 'role': 'transcript', 'is_primary': True},
+                           {'file': 'source-1.jpg', 'role': 'source-1'},
+                           {'file': 'source-2.md', 'role': 'source-2'},
+                           {'file': 'photo-1.jpg', 'role': 'photo-1'},
+                           {'file': 'record-data.json', 'role': 'site-data'}],
+            })
+        (bundle / 'page.md').write_text('# Calvin Hartley (WikiTree Hartley-6084)\n\nBorn 1842.\n', encoding='utf-8')
+        (bundle / 'source-1.jpg').write_bytes(b'\xff\xd8\xff\xe0 marriage record scan')
+        (bundle / 'source-2.md').write_text('# Hartley Family Bible\n\nCalvin Hartley born 12 March 1842\n',
+                                            encoding='utf-8')
+        (bundle / 'photo-1.jpg').write_bytes(b'\xff\xd8\xff\xe0 portrait')
+        (bundle / 'record-data.json').write_text('{}', encoding='utf-8')
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+        args = argparse.Namespace(root=str(self.archive), file=str(folder), source_type=None, title=None,
+                                  slug=None, source_date=None, more=None, people=None, dry_run=False)
+        with mock.patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(process.run_process(args).exit_code, EXIT_CLEAN)
+        record_path = next((self.archive / 'sources').rglob('*_s-*.md'))
+        record = read_record(record_path)
+        files = {f['role']: f for f in record['meta']['files']}
+        self.assertEqual(set(files), {'transcript', 'source-1', 'source-2', 'photo-1', 'site-data'})
+        self.assertTrue(files['transcript'].get('is_primary'))
+        self.assertTrue(files['source-1']['file'].endswith('.jpg'))
+        self.assertTrue(files['source-2']['file'].endswith('.md'))
+        for entry in files.values():
+            self.assertTrue((self.archive / entry['file']).is_file(), entry['file'])
+        self.assertEqual(record['meta']['source_class'], 'derivative')
+        text = record_path.read_text(encoding='utf-8')
+        self.assertIn('### Cited sources', text)
+        self.assertIn('saved in this source as source-1.jpg', text)
+        self.assertIn('Site id of the person this page is about (Calvin Hartley): wikitree: Hartley-6084', text)
+
+    # ── a neighbouring film image added to the source he already has ────────
+
+    def _film_bundle(self, name: str, number: int, *, attach_to=None) -> Path:
+        """A bare FamilySearch film image capture, as the add-on stages it."""
+        ark = f'https://www.familysearch.org/ark:/61903/3:1:HRT1-FLM{number}'
+        cap = {'schema': 2, 'url': ark, 'title': f'Deeds, 1785-1851, image {number}',
+               'source_type': 'land-record', 'repository': 'FamilySearch',
+               'citation': f'"Deeds, 1785-1851," images, FamilySearch ({ark}); image {number} of 689.',
+               'notes': f'FamilySearch citation: image {number} of the deed film.',
+               'assets': [{'file': 'record.jpg', 'role': 'record'},
+                          {'file': 'record-data.json', 'role': 'site-data'}]}
+        if attach_to is not None:
+            cap['attach_to'] = attach_to
+        bundle = _make_bundle(self.staging, name, page_html=_sample('familysearch-film-image'),
+                              capture_json=cap)
+        (bundle / 'record.jpg').write_bytes(b'jpg %d' % number)
+        (bundle / 'record-data.json').write_text(json.dumps(
+            {'image': {'imageId': f'HRT1-FLM{number}', 'dgs': '8000011', 'imageNumber': number}}),
+            encoding='utf-8')
+        return bundle
+
+    def _process_inbox_folder(self) -> None:
+        import argparse
+        import process
+        folder = next(p for p in (self.archive / 'inbox').iterdir()
+                      if p.is_dir() and (p / 'notes.md').is_file())
+        args = argparse.Namespace(root=str(self.archive), file=str(folder), source_type=None, title=None,
+                                  slug=None, source_date=None, more=None, people=None, dry_run=False)
+        with mock.patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(process.run_process(args).exit_code, EXIT_CLEAN)
+
+    def test_a_neighbouring_film_image_he_said_yes_to_joins_the_source_he_has(self) -> None:
+        # He captured image 11 of a deed film and filed it; the deed runs onto
+        # image 12, and when he captured that the panel asked "add this image
+        # to it?" and he said yes. Ingest and processing put image 12 into the
+        # same source: one deed, one source.
+        self._film_bundle('deed-image-11', 11)
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        self._process_inbox_folder()
+        first = next((self.archive / 'sources').rglob('*_s-*.md'))
+        sid = read_record(first)['meta']['id']
+
+        self._film_bundle('deed-image-12', 12, attach_to=sid.upper())
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if (p / 'notes.md').is_file())
+        self.assertIn(f'attach_to: {sid}', (folder / 'notes.md').read_text(encoding='utf-8'))
+        self._process_inbox_folder()
+
+        self.assertEqual(list((self.archive / 'sources').rglob('*_s-*.md')), [first], 'no second source')
+        files = read_record(first)['meta']['files']
+        self.assertEqual(len(files), 4)
+        self.assertEqual(len([f for f in files if f.get('is_primary')]), 1)
+        self.assertIn('image-11', next(f for f in files if f.get('is_primary'))['file'])
+        added = [f for f in files if 'image-12' in f['file']]
+        self.assertEqual(sorted(f['role'] for f in added), ['record', 'site-data'])
+        for f in added:
+            self.assertTrue(f['file'].endswith(f'_{sid}' + Path(f['file']).suffix), f)
+        self.assertIn('image 12 of the deed film', first.read_text(encoding='utf-8'))
+
+    def test_no_answer_files_the_neighbouring_image_as_a_new_source_as_before(self) -> None:
+        self._film_bundle('deed-image-12', 12)
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+        self.assertNotIn('attach_to', (folder / 'notes.md').read_text(encoding='utf-8'))
+
+    def test_an_attach_to_that_is_not_a_source_id_is_dropped_with_a_warning(self) -> None:
+        # Whatever the add-on sent, filing it as a new source is the safe answer.
+        self._film_bundle('deed-image-12', 12, attach_to='the deed before')
+        err = io.StringIO()
+        with mock.patch('sys.stderr', err):
+            self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+        self.assertNotIn('attach_to', (folder / 'notes.md').read_text(encoding='utf-8'))
+        self.assertIn('new source', err.getvalue())
+
     def test_an_older_primary_role_is_written_as_the_main_file_mark(self) -> None:
         # SPEC §14: `is_primary: true` alone marks the main file; a capture
         # whose asset came in as role `primary` never writes `role: primary`.

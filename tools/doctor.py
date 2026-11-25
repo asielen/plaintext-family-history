@@ -13,6 +13,7 @@ Checks (in order):
   2. Mapped roots (photos/, documents/, …) reachable
   3. exiftool on PATH; ffprobe on PATH (`fha media probe`'s primary backend, #44)
      pdftotext on PATH (optional third reader for `fha source extract`, #281)
+     ffmpeg on PATH (optional: `fha site` shares recordings only as its stripped copy)
   4. Python deps (PyYAML; Jinja2/Pillow for `fha site`; pypdf for `fha source extract`;
                   PyAV as ffprobe's fallback for `fha media probe`)
   5. Index freshness    (.cache/index.sqlite vs newest record mtime)
@@ -2131,6 +2132,20 @@ def run_doctor(archive_root: Path, fha_config: dict) -> Result:
         checks.append({'id': 'ffprobe', 'status': 'warn', 'detail': 'not found on PATH',
                        'next_step': doctor_cmd})
         worst = max(worst, EXIT_WARNINGS)
+    # So he knows why a family recording does not play on the shared site:
+    # `fha site` shares only a tag-stripped copy that ffmpeg makes (TOOLING
+    # §12 Recordings). Optional like Pillow, so its absence is information.
+    ffmpeg_path = shutil.which('ffmpeg')
+    if ffmpeg_path:
+        lines.append(f'ffmpeg (fha site recordings): {_OK} {ffmpeg_path}  next: no action needed')
+        checks.append({'id': 'ffmpeg', 'status': 'ok', 'detail': ffmpeg_path, 'next_step': None})
+    else:
+        lines.append(
+            'ffmpeg (fha site recordings): not found on PATH (optional)  '
+            'next: install ffmpeg to share family recordings on the site'
+        )
+        checks.append({'id': 'ffmpeg', 'status': 'info', 'detail': 'not found on PATH (optional)',
+                       'next_step': 'install ffmpeg'})
 
     lines.append(f'python deps (PyYAML): {_OK}  next: no action needed')
     checks.append({'id': 'pyyaml', 'status': 'ok', 'detail': 'installed', 'next_step': None})
