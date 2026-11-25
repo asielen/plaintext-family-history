@@ -14,14 +14,11 @@ that rewrites `<!-- AI-DRAFT {date} {model} - … -->` to `<!-- AI-ACCEPTED {dat
 
 **Why it matters:** the marker contract in `SKILL.md` gives a consumer four states (*unreviewed*, *verified*, *unmarked*, *damaged*), and only three of them are reachable. `fha find --text` marking a hit as coming from an unchecked machine reading is useful only if the human has a way to say "I have checked it". Without the flip, every AI transcript in the archive stays *unreviewed* for good, and a flag that never changes carries no information.
 
-**Why the existing verb does not cover it:** `fha confirm draft` takes a `<p-id>` and resolves it through `find_person_record_path` (confirm.py `run_accept_draft`). It edits a **person profile** and nothing else. No argument shape reaches a source's companion file:
+**Why the existing verb does not cover it:** `fha confirm draft` takes a `<p-id>` or an `<s-id>` (confirm.py `run_accept_draft`). With a source id it flips the markers in the source record's own body, which is what a proof argument needs (#487). A transcript is a separate companion file beside that record, and no argument reaches it: `--file <the companion>` was planned with #487 and left for its own change.
 
 ```
-$ python tools/confirm.py draft --help
-usage: fha confirm draft [-h] [--dry-run] [--root PATH] P-id
-
-positional arguments:
-  P-id         The person whose profile to accept drafts in.
+$ fha confirm draft --help
+usage: fha confirm draft [-h] [--dry-run] [--root PATH] p-id|s-id
 ```
 
 **Interim behaviour (blocking, not enacting).** The skill writes the `AI-DRAFT` marker at creation (authoring a marker is ordinary skill work, the same as `write-biography` writing one) and then **never touches it again**. `_STANDARD.md` §3.4 says a skill never hand-edits a marker, and that rule is what keeps a machine from signing off its own reading. So:
