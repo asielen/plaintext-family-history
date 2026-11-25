@@ -672,11 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-<<<<<<< HEAD
-      "sha256": "762e8545558df5be55dce73aa955936719ba12632e35a9a280845f527bc20ed5",
-=======
-      "sha256": "32d4a0ae678626ebbe80245142930a7612c8b630ba246c163374855931941116",
->>>>>>> plaintext-family-history/master
+      "sha256": "2d9ac115e528dba1642c59c66c38fc2c8677c5c0a5f797a634e2ac16b3edc9dc",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -1622,11 +1618,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-<<<<<<< HEAD
-      "sha256": "e3e777789777be8c8584d6b3dc7d23f6d65ea3751741ed5e872ca396dce722a1",
-=======
-      "sha256": "aa5f1eaf15059c04f0172f7963c6e967976f30ff6053a851137f4a531e95705c",
->>>>>>> plaintext-family-history/master
+      "sha256": "31c1f3609d3ac274b988c99e155a4fd6e40f386e0a3fc48a9cade7bf782f17c7",
       "spec_version": "2.44"
     },
     {
@@ -1675,11 +1667,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-<<<<<<< HEAD
-      "sha256": "ff2686a6682ac6ba13bd9569ebee5bc7c38eac52fd4fc269b62f871024d154e9",
-=======
-      "sha256": "cb406ccc60a2937e6ee9fc2749da7300f65f8ae0249c7be6e1d6f6a83fe49cdb",
->>>>>>> plaintext-family-history/master
+      "sha256": "2666e77c2f66a6e384e46e3c0dcfbdc490e7b687006e996b3f39f4fbb6113688",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
