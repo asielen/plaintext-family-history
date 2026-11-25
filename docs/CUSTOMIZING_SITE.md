@@ -106,6 +106,15 @@ Private paragraphs and unaccepted drafts stay off the shared site, as everywhere
 
 For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
+## What the site builds with no setting
+
+Some pages and charts need no switch. They appear once your records hold what they draw, and they follow the same privacy rules as the rest of the site.
+
+- **The family map** (`map.html`, "Map" in the menu) puts a pin at each place an accepted record puts someone, draws each person's moves from record to record, and has a year slider that shows where the family had got to by a given year. A place is on the map only once it has a map position: ask the assistant to fill in the places' coordinates, or see `fha places geocode` and `fha places set` in [COMMANDS.md](COMMANDS.md). Places with records but no position are listed under the map. It needs no internet.
+- **Graves to visit** (`graves.html`, linked from the homepage) lists the family's graves by burial place, from accepted burial records, and each of those people's pages says where they are buried.
+- **The charts on a person's page**: the family chart, the Ancestor fan, "Where the family came from" (one bar per generation), "Who overlapped" (a bar per relative on one time line) and the family explorer (ancestors above, descendants below, husband and wife side by side). A parent tie with weak proof is drawn as a faded line. Under each chart are "Save as a picture (PNG)" and "Save as a drawing (SVG)", for printing or sending; the saved copy leaves out photos, and a "Private" card stays private.
+- **A place's page** has a "Through the years" list: the town's names over time and every accepted event there, burials in its cemeteries included, each saying what the town was called then.
+
 ## Putting a photo in your writing
 
 In `notes/home.md` (and other writing), you can place a specific photo using the same double-bracket style the archive uses everywhere, with a `!` in front to mean "show the picture here":
