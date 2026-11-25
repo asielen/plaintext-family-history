@@ -13,7 +13,7 @@
     {
       "path": ".agents/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "b0ac437bddb0ecc35f518da002ef09a72c3eed3056a4c7c1644fb440dca74341",
+      "sha256": "1fd23c5104e6f1914b83bbb882cf1cca33827cfc3431e2116f417b4aa964f490",
       "spec_version": "2.43",
       "src": ".claude/skills/_STANDARD.md"
     },
@@ -201,7 +201,7 @@
     {
       "path": ".claude/skills/_STANDARD.md",
       "category": "operating",
-      "sha256": "b0ac437bddb0ecc35f518da002ef09a72c3eed3056a4c7c1644fb440dca74341",
+      "sha256": "1fd23c5104e6f1914b83bbb882cf1cca33827cfc3431e2116f417b4aa964f490",
       "spec_version": "2.43"
     },
     {
@@ -1597,7 +1597,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "7ce416ed419c9b81f8807035f10b4946982a5310832e7903f5bb5f65aa580ba2",
+      "sha256": "70c79338f5cdefec9a238494ee5458858b18ee1a263f959d5d0e731d2e348b15",
       "spec_version": "2.43",
       "src": "TOOLING.md"
     },
