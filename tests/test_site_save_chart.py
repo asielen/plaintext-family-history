@@ -147,12 +147,12 @@ class SaveChartSiteTests(unittest.TestCase):
             names = re.findall(r'<svg[^>]*\bdata-fha-chart="([^"]+)"', html)
             spots = re.findall(r'<div class="chart-save" data-for="([^"]+)"></div>', html)
             seen += len(names)
-            # The descendant explorer draws its svg in the browser, so only
+            # The family explorer draws its svg in the browser, so only
             # its save spot is in the file.
             for n in names:
                 self.assertIn(n, spots, page.name)
             for sp in spots:
-                self.assertTrue(sp in names or sp.endswith('-descendants'), (page.name, sp))
+                self.assertTrue(sp in names or sp.endswith('-family'), (page.name, sp))
             self.assertEqual(len(spots), len(set(spots)), page.name)
         self.assertGreater(seen, 2)
 
@@ -160,7 +160,7 @@ class SaveChartSiteTests(unittest.TestCase):
         html = '\n'.join(p.read_text(encoding='utf-8') for p in (self.out1 / 'persons').glob('*.html'))
         self.assertRegex(html, r'<svg [^>]*data-fha-chart="[a-z0-9-]+-family-chart"')
         self.assertRegex(html, r'<svg [^>]*data-fha-chart="[a-z0-9-]+-ancestor-fan"')
-        self.assertRegex(html, r'data-for="[a-z0-9-]+-descendants"')
+        self.assertRegex(html, r'data-for="[a-z0-9-]+-family"')
 
     def test_home_tree_is_named_for_the_family(self):
         html = (self.out1 / 'index.html').read_text(encoding='utf-8')

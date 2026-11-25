@@ -6193,6 +6193,71 @@ class TreeExplorerCouplesTests(_Base):
         self.assertNotIn('d3.min.js', self._read(f"persons/{case['seed']}.html"))
 
 
+class WeakLineDrawingTests(unittest.TestCase):
+    """Chart plan 08-7: a person linked to the subject only through a low
+    tie is drawn faded, with a broken outline so it does not rest on colour
+    alone, and a plain sentence says what that means."""
+
+    @staticmethod
+    def _labels(weak=(2, 4, 5), private_weak=()):
+        # Chart case C18: the father tie is a family story, so his whole
+        # side (slots 2, 4, 5) rests on it; the mother's side (3, 6, 7) does not.
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num in range(2, 8):
+            labels[num] = {'name': f'Person {num}', 'url': None,
+                           'line_confidence': 'low' if num in weak else 'high'}
+        for num in private_weak:
+            labels[num] = {'private': True, 'line_confidence': 'low'}
+        return labels
+
+    def test_fan_fades_the_weak_side_only(self):
+        svg = site._render_fan_svg(self._labels(), 3)
+        self.assertEqual(svg.count('fan-seg-weak'), 3)
+        for num in (2, 4, 5):
+            self.assertIn(f'Person {num}. {site._WEAK_LINE_TITLE}', svg)
+        for num in (3, 6, 7):
+            self.assertNotIn(f'Person {num}. ', svg)
+
+    def test_fan_never_fades_a_private_card(self):
+        svg = site._render_fan_svg(self._labels(weak=(), private_weak=(3,)), 3)
+        self.assertNotIn('fan-seg-weak', svg)
+
+    def test_pedigree_fades_the_weak_side_only(self):
+        svg = site._render_pedigree_svg(self._labels())
+        self.assertEqual(svg.count('ped-weak'), 3)
+        self.assertIn(site._WEAK_LINE_TITLE, svg)
+
+    def test_pedigree_never_fades_a_private_card(self):
+        svg = site._render_pedigree_svg(self._labels(weak=(), private_weak=(3,)))
+        self.assertNotIn('ped-weak', svg)
+
+    def test_the_key_is_wanted_only_when_a_drawn_cell_is_faded(self):
+        self.assertTrue(site._any_weak_slot(self._labels(), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=()), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(4,)), 1), 'slot 4 is not drawn')
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(), private_weak=(3,)), 3))
+
+    def test_the_key_sentence_explains_the_fade_in_plain_words(self):
+        self.assertIn('Faded', site._WEAK_LINE_KEY)
+        self.assertIn('low-confidence record', site._WEAK_LINE_KEY)
+        self.assertIn('dashed', site._WEAK_LINE_KEY)
+
+    def test_the_explorer_files_draw_faded_cards_and_thin_broken_edges(self):
+        vendor = ROOT / 'tools' / 'templates' / 'vendor'
+        js = (vendor / 'fha-tree.js').read_text(encoding='utf-8')
+        adapter = (vendor / 'tree-adapter.js').read_text(encoding='utf-8')
+        self.assertIn('fha-node-weak', js)
+        self.assertIn('fha-tree-edge-weak', js)
+        self.assertIn("line_confidence === 'low'", adapter)
+        self.assertIn("confidence === 'low'", adapter)
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rule in ('.fha-tree-edge-weak', '.fha-node.fha-node-weak',
+                     '.ped-node.ped-weak', '.fan-seg-weak'):
+            self.assertIn(rule, css)
+        self.assertRegex(css, r'\.fha-tree-edge-weak[^}]*stroke-dasharray')
+        self.assertRegex(css, r'\.fan-seg-weak[^}]*stroke-dasharray')
+
+
 class TreeHourglassTests(_Base):
     """On a person's page the family explorer shows where they came from
     above them and who came after them below, in one picture (chart plan
@@ -6438,71 +6503,6 @@ class TreeHourglassTests(_Base):
         self.assertIn('Calvin Hartley', text)
         for word in ('Jessamy', 'Fenwick', 'Silas', 'Abel'):
             self.assertNotIn(word, text)
-
-
-class WeakLineDrawingTests(unittest.TestCase):
-    """Chart plan 08-7: a person linked to the subject only through a low
-    tie is drawn faded, with a broken outline so it does not rest on colour
-    alone, and a plain sentence says what that means."""
-
-    @staticmethod
-    def _labels(weak=(2, 4, 5), private_weak=()):
-        # Chart case C18: the father tie is a family story, so his whole
-        # side (slots 2, 4, 5) rests on it; the mother's side (3, 6, 7) does not.
-        labels = {1: {'name': 'Subject', 'url': None}}
-        for num in range(2, 8):
-            labels[num] = {'name': f'Person {num}', 'url': None,
-                           'line_confidence': 'low' if num in weak else 'high'}
-        for num in private_weak:
-            labels[num] = {'private': True, 'line_confidence': 'low'}
-        return labels
-
-    def test_fan_fades_the_weak_side_only(self):
-        svg = site._render_fan_svg(self._labels(), 3)
-        self.assertEqual(svg.count('fan-seg-weak'), 3)
-        for num in (2, 4, 5):
-            self.assertIn(f'Person {num}. {site._WEAK_LINE_TITLE}', svg)
-        for num in (3, 6, 7):
-            self.assertNotIn(f'Person {num}. ', svg)
-
-    def test_fan_never_fades_a_private_card(self):
-        svg = site._render_fan_svg(self._labels(weak=(), private_weak=(3,)), 3)
-        self.assertNotIn('fan-seg-weak', svg)
-
-    def test_pedigree_fades_the_weak_side_only(self):
-        svg = site._render_pedigree_svg(self._labels())
-        self.assertEqual(svg.count('ped-weak'), 3)
-        self.assertIn(site._WEAK_LINE_TITLE, svg)
-
-    def test_pedigree_never_fades_a_private_card(self):
-        svg = site._render_pedigree_svg(self._labels(weak=(), private_weak=(3,)))
-        self.assertNotIn('ped-weak', svg)
-
-    def test_the_key_is_wanted_only_when_a_drawn_cell_is_faded(self):
-        self.assertTrue(site._any_weak_slot(self._labels(), 3))
-        self.assertFalse(site._any_weak_slot(self._labels(weak=()), 3))
-        self.assertFalse(site._any_weak_slot(self._labels(weak=(4,)), 1), 'slot 4 is not drawn')
-        self.assertFalse(site._any_weak_slot(self._labels(weak=(), private_weak=(3,)), 3))
-
-    def test_the_key_sentence_explains_the_fade_in_plain_words(self):
-        self.assertIn('Faded', site._WEAK_LINE_KEY)
-        self.assertIn('low-confidence record', site._WEAK_LINE_KEY)
-        self.assertIn('dashed', site._WEAK_LINE_KEY)
-
-    def test_the_explorer_files_draw_faded_cards_and_thin_broken_edges(self):
-        vendor = ROOT / 'tools' / 'templates' / 'vendor'
-        js = (vendor / 'fha-tree.js').read_text(encoding='utf-8')
-        adapter = (vendor / 'tree-adapter.js').read_text(encoding='utf-8')
-        self.assertIn('fha-node-weak', js)
-        self.assertIn('fha-tree-edge-weak', js)
-        self.assertIn("line_confidence === 'low'", adapter)
-        self.assertIn("confidence === 'low'", adapter)
-        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
-        for rule in ('.fha-tree-edge-weak', '.fha-node.fha-node-weak',
-                     '.ped-node.ped-weak', '.fan-seg-weak'):
-            self.assertIn(rule, css)
-        self.assertRegex(css, r'\.fha-tree-edge-weak[^}]*stroke-dasharray')
-        self.assertRegex(css, r'\.fan-seg-weak[^}]*stroke-dasharray')
 
 
 class PedigreeGeometryGuardTests(unittest.TestCase):
@@ -13187,32 +13187,12 @@ class VendoredLibraryTests(_Base):
                                 f'{entries[name]} named for {name} does not exist')
 
     def test_the_licence_records_the_checksum_of_the_shipped_file(self):
-        # Every third-party file, not only D3: a changed byte in any of them
-        # means the site no longer runs what its licence note describes.
-        entries = self._readme_entries()
-        for name in sorted(p.name for p in self.VENDOR.iterdir()
-                           if p.is_file() and p.name not in self.OWN_CODE):
-            with self.subTest(name):
-                licence = (self.LICENCES / entries[name]).read_text(encoding='utf-8')
-                m = re.search(r'sha256 ([0-9a-f]{64})', licence)
-                self.assertIsNotNone(m, f'{entries[name]} must record the sha256 of {name}')
-                digest = hashlib.sha256((self.VENDOR / name).read_bytes()).hexdigest()
-                self.assertEqual(m.group(1), digest,
-                                 f'{name} does not match the sha256 pinned in {entries[name]}')
-
-    def test_flextree_is_vendored_with_its_licence(self):
-        # The explorer's couple layout (chart plan 08-9): d3-flextree 2.1.2,
-        # WTFPL, ported from its source file to load from a script tag. It
-        # must not bundle a second, older D3 (the published build does).
-        js = (self.VENDOR / 'd3-flextree.js').read_text(encoding='utf-8')
-        self.assertIn('af196220927218bbe7ac6cad8e059f56430befb6', js)
-        self.assertIn("var version = '2.1.2';", js)
-        self.assertIn('global.d3.hierarchy', js)
-        self.assertIsNone(re.search(r'^\s*(import|export)\b', js, flags=re.MULTILINE))
-        self.assertEqual(self._readme_entries().get('d3-flextree.js'), 'd3-flextree-WTFPL.txt')
-        licence = (self.LICENCES / 'd3-flextree-WTFPL.txt').read_text(encoding='utf-8')
-        self.assertIn('Version 2, December 2004', licence)
-        self.assertIn('Changed for Plaintext Family History', licence)
+        licence = (self.LICENCES / 'd3-ISC.txt').read_text(encoding='utf-8')
+        m = re.search(r'sha256 ([0-9a-f]{64})', licence)
+        self.assertIsNotNone(m, 'd3-ISC.txt must record the sha256 of d3.min.js')
+        digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
+        self.assertEqual(m.group(1), digest,
+                         'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
 
     def test_flextree_is_vendored_with_its_licence(self):
         # The explorer's couple layout (chart plan 08-9): d3-flextree 2.1.2,

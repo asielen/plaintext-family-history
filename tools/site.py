@@ -11936,7 +11936,6 @@ class _SiteBuilder:
             keys = family_keys({shown_id[p]: g for p, g in of.items()}, married)
             families[child] = {p: keys[shown_id[p]] for p in of}
         return families
-
     def _dated_record_years(self, pid: str) -> tuple[int | None, int | None]:
         """The years of this person's earliest and latest dated accepted
         record, for a lifespan bar whose birth or death is not recorded.
