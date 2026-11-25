@@ -756,6 +756,87 @@ class TreeCaseTests(_ChartCaseIndex):
         self.assertIn(case['people']['grandchild'], ids)
 
 
+class TreeDotTests(_ChartCaseIndex):
+    """`fha views tree --format dot` draws each family the way a family chart
+    does: two parents meet at a point, one line drops to a bar, the children
+    hang from the bar (chart plan 08-11). The tests read the DOT text, so
+    they need no Graphviz installed."""
+
+    def _dot(self, name: str, mode: str, seed: str | None = None) -> tuple[str, dict]:
+        case = self._index_case(name)
+        with contextlib.redirect_stdout(io.StringIO()):
+            res = views.run_tree(self.root, seed or case['seed'], mode, None, 'dot', None)
+        self.assertEqual(res.exit_code, 0)
+        return res['output'], case
+
+    @staticmethod
+    def _edges(dot: str) -> list[tuple[str, str, str]]:
+        import re
+        return [(m.group(1), m.group(2), m.group(3) or '') for m in re.finditer(
+            r'^  "([^"]+)" -> "([^"]+)"(?: \[([^\]]*)\])?;', dot, re.M)]
+
+    @staticmethod
+    def _nodes(dot: str, prefix: str) -> list[str]:
+        import re
+        return re.findall(r'^  "(' + prefix + r'[^"]*)" \[', dot, re.M)
+
+    def test_a_man_with_five_wives_has_five_unions_in_c1(self) -> None:
+        dot, _ = self._dot('C1', 'descendants')
+        self.assertEqual(len(self._nodes(dot, 'u_')), 5)
+        # Three of the marriages had children, so three sibling bars.
+        self.assertEqual(len(self._nodes(dot, 'k_')), 3)
+
+    def test_a_single_parent_family_is_a_union_with_one_parent_in_c6(self) -> None:
+        dot, case = self._dot('C6', 'ancestors')
+        mother = case['people']['mother']
+        union = f'u_fam:{mother}'
+        self.assertIn(union, self._nodes(dot, 'u_'))
+        into = [e for e in self._edges(dot) if e[1] == union]
+        self.assertEqual([e[0] for e in into], [mother])
+
+    def test_an_adopted_child_hangs_from_a_dashed_line_in_c7(self) -> None:
+        dot, case = self._dot('C7', 'ancestors')
+        child = case['people']['child']
+        into = [e for e in self._edges(dot) if e[1] == child]
+        self.assertEqual(sorted('dashed' in e[2] for e in into), [False, True])
+        # Two couples: the birth parents and the adoptive parents.
+        self.assertEqual(len(self._nodes(dot, 'u_')), 2)
+
+    def test_brothers_and_sisters_keep_their_birth_order_in_c8(self) -> None:
+        dot, case = self._dot('C8', 'descendants')
+        people = case['people']
+        chain = [(a, b) for a, b, attrs in self._edges(dot) if 'style=invis' in attrs]
+        want = [people[f'kid{n:02d}'] for n in (9, 8, 7, 6, 5, 4, 3, 2, 1, 10, 11, 12)]
+        self.assertEqual(chain, list(zip(want, want[1:])))
+
+    def test_a_marriage_with_no_children_has_a_union_and_no_bar_in_c14(self) -> None:
+        dot, case = self._dot('C14', 'descendants')
+        people = case['people']
+        union = f'u_fam:{"+".join(sorted((people["husband"], people["wife"])))}'
+        self.assertIn(union, self._nodes(dot, 'u_'))
+        self.assertFalse([e for e in self._edges(dot) if e[0] == union])
+
+    def test_a_weak_tie_is_drawn_thin_and_says_why_in_c18(self) -> None:
+        dot, _ = self._dot('C18', 'ancestors')
+        self.assertIn('penwidth=0.5', dot)
+        self.assertIn('tooltip="low confidence"', dot)
+
+    def test_names_with_quotes_and_backslashes_stay_valid(self) -> None:
+        nodes = {'p-1': {'p_id': 'p-1', 'sex': 'M',
+                         'name': 'Ann "Bud" O\\Neil\nSmith',
+                         'vitals': {'birth': '1840-03-02', 'death': '1918/1920'}}}
+        dot = views._tree_to_dot(nodes, {})
+        self.assertIn(r'label="Ann \"Bud\" O\\Neil Smith\n1840-1918-1920"', dot)
+        self.assertNotIn('\u2013', dot)
+
+    def test_the_file_says_it_is_private_and_is_the_same_every_time(self) -> None:
+        dot, case = self._dot('C3', 'ancestors')
+        self.assertTrue(dot.startswith('digraph'))
+        self.assertIn('Private research companion', dot)
+        again = views.run_tree(self.root, case['seed'], 'ancestors', None, 'dot', None)
+        self.assertEqual(dot, again['output'])
+
+
 class ChartCaseShapeTests(_ChartCaseIndex):
     """The shared cases really are the families they claim to be. A case that
     quietly holds an easier family (a third parent, two "brothers" with no

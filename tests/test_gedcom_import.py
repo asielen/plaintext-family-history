@@ -4081,5 +4081,165 @@ class OwnerDecisionsTestCase(_ArchiveCase):
         self.assertEqual(rel('Springfield, Illinois', 'Illinois, Springfield'), 'conflict')
 
 
+# ── Dates that cannot all be true, listed in the plan (TOOLING §13a2) ─────────
+
+def _family_ged(pairs: list[tuple[str, str]]) -> str:
+    """A tree of mothers and one child each: (mother's death, child's birth)."""
+    lines = ['0 HEAD', '1 SOUR AncestryTree', '1 GEDC', '2 VERS 5.5.1', '1 CHAR UTF-8']
+    for n, (died, born) in enumerate(pairs, start=1):
+        lines += [f'0 @M{n}@ INDI', f'1 NAME Ann{n} /Cole/', '1 SEX F',
+                  '1 BIRT', '2 DATE 1840', '1 DEAT', f'2 DATE {died}', f'1 FAMS @F{n}@',
+                  f'0 @C{n}@ INDI', f'1 NAME Margaret{n} /Cole/', '1 SEX F',
+                  '1 BIRT', f'2 DATE {born}', f'1 FAMC @F{n}@',
+                  f'0 @F{n}@ FAM', f'1 WIFE @M{n}@', f'1 CHIL @C{n}@']
+    return '\n'.join(lines + ['0 TRLR']) + '\n'
+
+
+class PlausibilityPlanTestCase(_ArchiveCase):
+    """He reads the plan before anything is written. A tree where Margaret
+    Cole is born two years after her mother died should say so there, in
+    plain words with the file's line numbers, and change nothing else: the
+    claims are imported as they are, for him to judge when he reviews."""
+
+    def _ged(self, name: str, pairs: list[tuple[str, str]]) -> Path:
+        path = Path(self._tmp.name) / name
+        path.write_text(_family_ged(pairs), encoding='utf-8')
+        return path
+
+    def test_plan_lists_a_child_born_after_mother_died(self) -> None:
+        ged = self._ged('cole.ged', [('1869', '1871')])
+        before = _tree_digest(self.archive)
+        result, out, _err = self._run(ged)
+        self.assertEqual(_tree_digest(self.archive), before)       # writes nothing
+        self.assertEqual(result.exit_code, EXIT_CLEAN)             # not a warning
+        self.assertIn('Dates that cannot all be true (1)', out)
+        [message] = result.data['plausibility']
+        self.assertIn('Margaret1 Cole (@C1@)', message)
+        self.assertIn('mother Ann1 Cole (@M1@)', message)
+        # Each date and the mother tie point at the line in the file
+        # (GEDCOM lines count from 1; the event is the line above its DATE).
+        text = ged.read_text(encoding='utf-8').splitlines()
+        birth_line = text.index('2 DATE 1871')
+        death_line = text.index('2 DATE 1869')
+        fam_line = text.index('0 @F1@ FAM') + 1
+        self.assertIn(f'1871 (line {birth_line})', message)
+        self.assertIn(f'1869 (line {death_line})', message)
+        self.assertIn(f'comes from line {fam_line}', message)
+        self.assertIn(message, out)
+
+    def test_no_conflict_no_section(self) -> None:
+        result, out, _err = self._run(self._ged('cole.ged', [('1869', '1866')]))
+        self.assertEqual(result.data['plausibility'], [])
+        self.assertNotIn('cannot all be true', out)
+
+    def test_small_tree_plan_has_no_section(self) -> None:
+        # The shipped fixture has no impossible dates: its plan is unchanged.
+        result, out, _err = self._run(SMALL)
+        self.assertEqual(result.data['plausibility'], [])
+        self.assertNotIn('cannot all be true', out)
+
+    def test_imported_claims_are_judged_though_still_suggested(self) -> None:
+        # Every claim an import writes is `suggested`, which lint does not
+        # read as a fact yet; the plan must judge them anyway.
+        seen = []
+        real = gedcom_import.plausibility_input_from_claims
+
+        def spy(*args, **kwargs):
+            seen.append(kwargs.get('statuses'))
+            return real(*args, **kwargs)
+
+        with mock.patch.object(gedcom_import, 'plausibility_input_from_claims', spy):
+            result, _out, _err = self._run(self._ged('cole.ged', [('1869', '1871')]))
+        self.assertEqual(seen, [('suggested',)])
+        self.assertEqual(len(result.data['plausibility']), 1)
+
+    def test_plan_out_lists_every_problem(self) -> None:
+        n = gedcom_import._PLAN_DETAIL_CAP + 5
+        ged = self._ged('many.ged', [('1869', '1871')] * n)
+        out_file = Path(self._tmp.name) / 'plan.txt'
+        result, out, _err = self._run(ged, plan_out=str(out_file))
+        self.assertEqual(len(result.data['plausibility']), n)
+        self.assertIn(f'Dates that cannot all be true ({n})', out)
+        self.assertIn('... and 5 more', out)
+        self.assertNotIn(f'Margaret{n} Cole', out)
+        full = out_file.read_text(encoding='utf-8')
+        for i in range(1, n + 1):
+            self.assertIn(f'Margaret{i} Cole (@C{i}@) is recorded as born', full)
+
+    def test_plan_problems_do_not_change_what_is_written(self) -> None:
+        # The same file applied with and without the check writes the same
+        # bytes: the plan only reports. Ids are minted in order so the two
+        # archives can be compared file for file.
+        def deterministic(prefix, count, _root):
+            return [f'{prefix}-{i:010d}' for i in range(1, count + 1)]
+
+        digests = []
+        for with_check in (True, False):
+            self.tearDown()
+            self.setUp()
+            ged = self._ged('cole.ged', [('1869', '1871')])
+            patches = [mock.patch.object(gedcom_import, 'mint_ids', deterministic),
+                       mock.patch.object(gedcom_import, '_today', return_value='2026-11-24')]
+            if not with_check:
+                patches.append(mock.patch.object(
+                    gedcom_import, '_plan_plausibility', return_value=[]))
+            with contextlib.ExitStack() as stack:
+                for patch in patches:
+                    stack.enter_context(patch)
+                result, _out, _err = self._run(ged, apply=True)
+            self.assertTrue(result.data['applied'])
+            self.assertEqual(len(result.data['plausibility']), 1 if with_check else 0)
+            digests.append(_tree_digest(self.archive))
+        self.assertEqual(digests[0], digests[1])
+
+
+class PlausibilityReimportPlanTestCase(_ReimportCase):
+    """A newer download is judged as a whole tree: a new child of a mother
+    already in the archive is read against the death the newer file gives
+    her, so the plan says so before anything is added."""
+
+    def test_new_child_born_after_matched_mother_died(self) -> None:
+        ged = self._edited('small-v2-late.ged', SMALL_V2, ('2 DATE 1899\n', '2 DATE 1955\n'))
+        before = _tree_digest(self.archive)
+        result, out, _err = self._run(ged)
+        self.assertEqual(_tree_digest(self.archive), before)
+        self.assertEqual(result.data['mode'], 'update')
+        born_after = [m for m in result.data['plausibility'] if 'but his mother' in m]
+        self.assertEqual(len(born_after), 1, result.data['plausibility'])
+        self.assertIn('Walter Hartley (@I11@)', born_after[0])
+        self.assertIn('mother Rose Hartley', born_after[0])
+        self.assertIn('Dates that cannot all be true', out)
+
+    def test_a_death_he_rejected_is_not_listed_again(self) -> None:
+        # He rejected Rose's 1950 death last year. The newer download still
+        # says it, beside a son born after it; the plan imports nothing of
+        # that death, so it must not list it as a conflict to review.
+        self._settled_death_is_not_listed('rejected')
+
+    def test_a_death_he_disputed_is_not_listed_again(self) -> None:
+        # Disputing is what the plan's own message suggests; once he has, the
+        # next download must not raise the same conflict again (fha lint
+        # stops naming a disputed claim too).
+        self._settled_death_is_not_listed('disputed')
+
+    def _settled_death_is_not_listed(self, status: str) -> None:
+        import claim as claim_mod
+        cid = self._v1_claim('death', 'Rose Hartley')['id']
+        with contextlib.redirect_stdout(io.StringIO()), \
+                contextlib.redirect_stderr(io.StringIO()):
+            rr = claim_mod.run_claim(self.archive, claim_id=cid, status=status,
+                                     notes='the 1950 death is another Rose')
+        self.assertEqual(rr.exit_code, EXIT_CLEAN)
+        ged = self._edited('small-v2-late.ged', SMALL_V2, ('2 DATE 1899\n', '2 DATE 1955\n'))
+        result, _out, _err = self._run(ged)
+        self.assertEqual(result.data['mode'], 'update')
+        self.assertEqual([m for m in result.data['plausibility'] if 'but his mother' in m], [])
+
+    def test_newer_download_without_conflicts_has_no_section(self) -> None:
+        result, out, _err = self._run(SMALL_V2)
+        self.assertEqual(result.data['plausibility'], [])
+        self.assertNotIn('cannot all be true', out)
+
+
 if __name__ == '__main__':
     unittest.main()
