@@ -350,6 +350,8 @@ from _lib import (
     age_between,
     age_phrase,
     family_life_events,
+    own_line_age_text,
+    repeats_family_event,
     kin_graph,
     edtf_bounds,
     is_placeholder_name,
@@ -9422,17 +9424,7 @@ class _SiteBuilder:
         happens once), or a marriage to the same spouse. The other record
         still sits in her Sources list. A record he accepted is never hidden
         behind a family row that is still unconfirmed (preview only)."""
-        for ev in events:
-            if r['status'] == 'accepted' and ev['status'] != 'accepted':
-                continue
-            if ev['type'] != r['type'] or not claim_is_own_vital(
-                    self.conn, ev['relative_id'], r['id'], r['type'], self._vital_subjects):
-                continue
-            if r['type'] == 'marriage' and (ev['other_id'] is None or not claim_is_own_vital(
-                    self.conn, ev['other_id'], r['id'], 'marriage', self._vital_subjects)):
-                continue
-            return True
-        return False
+        return repeats_family_event(self.conn, r, events, self._vital_subjects)
 
     def _own_age_text(self, pid: str, r, own_birth: dict | None,
                       own_death: dict | None) -> str:
@@ -9442,25 +9434,8 @@ class _SiteBuilder:
         too loose to say within a year (`_lib.age_between`), and on a record
         dated after their death (a will proved years later is not something
         they did at 60)."""
-        if own_birth is None or not r['date_edtf']:
-            return ''
-        if r['type'] == 'birth' and claim_is_own_vital(
-                self.conn, pid, r['id'], 'birth', self._vital_subjects):
-            return ''
-        # Her grandfather's death, where she was only the informant, is not
-        # her event: "Josiah died, aged 82 ... aged 18 or 19" reads as his
-        # age twice. Only her own birth, death or marriage carries her age.
-        if r['type'] in VITAL_SUBJECT_ROLES and not claim_is_own_vital(
-                self.conn, pid, r['id'], r['type'], self._vital_subjects):
-            return ''
-        if (own_death is not None and own_death['date_max'] and r['date_min']
-                and r['date_min'] > own_death['date_max']):
-            return ''
-        age = age_between(own_birth['date_edtf'], r['date_edtf'])
-        if age is None:
-            return ''
-        phrase = age_phrase(age)
-        return phrase if age[0] == 0 else f'aged {phrase}'
+        return own_line_age_text(self.conn, pid, r, own_birth, own_death,
+                                 self._vital_subjects)
 
     def _family_entry(self, pid: str, ev: dict, page_dir: Path) -> dict:
         """One family row as a timeline entry: "Her father Caleb Comstock

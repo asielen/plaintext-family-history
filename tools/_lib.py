@@ -25057,6 +25057,58 @@ def family_life_events(
     return result
 
 
+def repeats_family_event(conn: sqlite3.Connection, row, events: list[dict],
+                         cache: dict | None = None) -> bool:
+    """True when one of the person's own timeline lines only repeats a family
+    row: Ethel's birth written in both the register and the family bible shows
+    once on her mother's timeline, as the labelled family row, not again as a
+    bare "birth" line. `row` needs status, type and id. A birth, death or
+    burial happens once, and a marriage is the same when it is to the same
+    spouse. The other record still sits in the person's Sources. A record
+    accepted is never hidden behind a family row that is still unconfirmed
+    (the private preview and views). Shared by the site and `fha views
+    timeline`, so the two cannot disagree about which lines are repeats."""
+    for ev in events:
+        if row['status'] == 'accepted' and ev['status'] != 'accepted':
+            continue
+        if ev['type'] != row['type'] or not claim_is_own_vital(
+                conn, ev['relative_id'], row['id'], row['type'], cache):
+            continue
+        if row['type'] == 'marriage' and (ev['other_id'] is None or not claim_is_own_vital(
+                conn, ev['other_id'], row['id'], 'marriage', cache)):
+            continue
+        return True
+    return False
+
+
+def own_line_age_text(conn: sqlite3.Connection, pid: str, row,
+                      own_birth: dict | None, own_death: dict | None,
+                      cache: dict | None = None) -> str:
+    """"aged 21 or 22" for one of the person's own timeline lines, or ''.
+
+    `row` needs id, type, date_edtf and date_min. Empty on their own birth,
+    with no recorded birth, when the dates are too loose to say within a year
+    (`age_between`), on a record that is not their own birth, death or
+    marriage (the informant on her grandfather's death is not 82), and on a
+    record dated after their death (a will proved years later is not something
+    they did at 60). Shared by the site and `fha views timeline`."""
+    if own_birth is None or not row['date_edtf']:
+        return ''
+    if row['type'] == 'birth' and claim_is_own_vital(conn, pid, row['id'], 'birth', cache):
+        return ''
+    if row['type'] in VITAL_SUBJECT_ROLES and not claim_is_own_vital(
+            conn, pid, row['id'], row['type'], cache):
+        return ''
+    if (own_death is not None and own_death['date_max'] and row['date_min']
+            and row['date_min'] > own_death['date_max']):
+        return ''
+    age = age_between(own_birth['date_edtf'], row['date_edtf'])
+    if age is None:
+        return ''
+    phrase = age_phrase(age)
+    return phrase if age[0] == 0 else f'aged {phrase}'
+
+
 # ── "Probably not living" (fha lint W173; TOOLING §3) ────────────────────────
 #
 # "Thomas Hartley shows as Living Person on the family site, but his son was

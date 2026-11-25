@@ -159,6 +159,10 @@ from _lib import (
     archive_title,        # masthead/page title from fha.yaml site.archive_name,
     build_ahnentafel_map,    # index BFS {P-id → position}; shared with fha person promote,
     claim_is_own_vital,   # is this vital claim a record OF this person? (roles:, #126),
+    age_phrase,           # '5 or 6' for the timeline's family lines,
+    family_life_events,   # the relatives' births, marriages, deaths inside a life,
+    own_line_age_text,    # '(aged 21 or 22)' on a person's own timeline line,
+    repeats_family_event, # an own line that only repeats a family line,
     couple_folder_dirs,   # digit-prefixed dirs under people/ (not stubs/connections),
     couple_folder_for_prefix,   # canonical on-disk couple folder for a number, or None,
     couple_folder_prefix,    # position → the even couple-folder number,
@@ -167,7 +171,7 @@ from _lib import (
     cited_source_ids,
     connected_facts,
     find_person_record_path,   # disk-truth record lookup for --fix-promote applies,
-    place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
+    place_history_context, place_history_phrase, place_visits_from_rows,
     fmt_id_display,       # the one ID form tools write and show: all lowercase,
     bracket_given_name,      # default child token, title-aware - shared with lint W103,
     reconcile_bracket_entries,   # keeps a still-true hand-written child token (W103),
@@ -286,6 +290,8 @@ def _views_result(
 #  Timeline view  (_generate_timeline)
 #    _decade_from_edtf            - EDTF string → '### 1880s' decade header
 #    _timeline_claim_line         - format one claim as a timeline bullet
+#    _timeline_family_line        - format one family row (relative's birth, death, marriage)
+#    _timeline_entry_line         - pick the line builder for an own or family entry
 #    _generate_timeline           - main generator: queries, groups, writes file
 #
 #  Sources-index view  (_generate_sources_index_*)
@@ -1090,7 +1096,7 @@ def _decade_from_edtf(date_edtf: str | None) -> str | None:
         return None
 
 
-def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
+def _timeline_claim_line(row: dict, conn: sqlite3.Connection) -> str:
     """Format one timeline line from a claims query row.
 
     A claim that is not settled fact carries a plain-word tag at the end of
@@ -1103,8 +1109,12 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     they already render under their own 'Unreviewed' header. Requires the
     query row to carry status/confidence/reviewed alongside the display
     columns.
+
+    The person's age at the record ends the line before any tag: '(aged 21 or
+    22)' when the row carries `age_text` (`_lib.own_line_age_text`), so a
+    biography drafted from this file can say how old she was.
     """
-    if isinstance(row, dict) and row.get('kind') == 'context':
+    if row.get('kind') == 'context':
         # Background about the place, not a record of the family. A period
         # written to the year begins on 1 January: print the year, not a day
         # the records never gave.
@@ -1118,6 +1128,8 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     if place:
         line += f' @ {place}'
     line += f' {_format_sid(row["source_id"])}'
+    if row.get('age_text'):
+        line += f' ({row["age_text"]})'
     if row['status'] == 'suggested' and row['reviewed']:
         line += f' [unconfirmed - parked {row["reviewed"]}]'
     elif row['status'] == 'accepted' and row['confidence'] == 'low':
@@ -1125,15 +1137,56 @@ def _timeline_claim_line(row: sqlite3.Row, conn: sqlite3.Connection) -> str:
     return line
 
 
+_FAMILY_VERBS = {'birth': 'born', 'death': 'died', 'burial': 'buried', 'marriage': 'married'}
+
+
+def _timeline_family_line(ev: dict, conn: sqlite3.Connection, subject_first: str) -> str:
+    """One family row of a person's timeline, in the same shape as their own
+    lines: '1877 - family: father [[p-...|Caleb Comstock Hartley]] died @
+    Easton [[S-...]] (Thomas aged 5 or 6)'.
+
+    The timeline Claude reads before drafting a biography says when each
+    parent, spouse, child and sibling was born, married or died inside the
+    person's life, so a draft can say "her father died when she was six" and
+    cite the right source. A marriage names the relative's spouse. The age is
+    the subject's, named by first name so the line cannot be read as the
+    relative's. A parked or low-confidence claim carries the same tag as an
+    own line."""
+    link = _summary_person_link(conn, ev['relative_id'])
+    line = f'{ev["date_edtf"] or "(undated)"} - family: {ev["relation"]} {link} {_FAMILY_VERBS[ev["type"]]}'
+    if ev['type'] == 'marriage' and ev['other_id']:
+        line += f' {_summary_person_link(conn, ev["other_id"])}'
+    place = _place_label(ev['place_text'], ev['place_id'], conn)
+    if place:
+        line += f' @ {place}'
+    line += f' {_format_sid(ev["source_id"])}'
+    if ev['age'] is not None:
+        phrase = age_phrase(ev['age'])
+        line += f' ({subject_first} {phrase if ev["age"][0] == 0 else "aged " + phrase})'
+    if ev['status'] == 'suggested' and ev['reviewed']:
+        line += f' [unconfirmed - parked {ev["reviewed"]}]'
+    elif ev['status'] == 'accepted' and ev['confidence'] == 'low':
+        line += ' [low confidence]'
+    return line
+
+
+def _timeline_entry_line(entry: dict, conn: sqlite3.Connection, subject_first: str) -> str:
+    """The finished line for one timeline entry, own claim or family row."""
+    if entry.get('kind') == 'family':
+        return _timeline_family_line(entry, conn, subject_first)
+    return _timeline_claim_line(entry, conn)
+
+
 def _timeline_body_html(
     conn: sqlite3.Connection,
-    sections: list[tuple[str | None, list[sqlite3.Row]]],
-    suggested_rows: list[sqlite3.Row],
+    sections: list[tuple[str | None, list[dict]]],
+    suggested_rows: list[dict],
+    subject_first: str = '',
 ) -> str:
     """Render the timeline sections as an HTML body fragment.
 
     Consumes the exact section structure the .md serializer renders and reuses
-    `_timeline_claim_line` for every entry (the finished .md line, escaped and
+    `_timeline_entry_line` for every entry (the finished .md line, escaped and
     token-styled by `_md_inline_to_html`), so the HTML twin can never say
     something the .md does not.
     """
@@ -1145,14 +1198,14 @@ def _timeline_body_html(
             # decade_hdr is the .md '### 1880s' header; strip the '### ' prefix.
             parts.append(f'<h3>{html_escape(decade_hdr[4:])}</h3>')
         items = ''.join(
-            f'<li>{_md_inline_to_html(_timeline_claim_line(r, conn))}</li>'
+            f'<li>{_md_inline_to_html(_timeline_entry_line(r, conn, subject_first))}</li>'
             for r in rows
         )
         parts.append(f'<ul class="timeline">{items}</ul>')
     if suggested_rows:
         parts.append('<h2>Unreviewed</h2>')
         items = ''.join(
-            f'<li>{_md_inline_to_html(_timeline_claim_line(r, conn))}</li>'
+            f'<li>{_md_inline_to_html(_timeline_entry_line(r, conn, subject_first))}</li>'
             for r in suggested_rows
         )
         parts.append(f'<ul class="timeline">{items}</ul>')
@@ -1193,9 +1246,9 @@ def _generate_timeline(
     # ([..1895]) files in with the dated entries instead of leading the
     # timeline under a stray decade heading. date_edtf is read separately for
     # display and decade grouping (see _decade_from_edtf).
-    main_rows = conn.execute(
+    main_rows = [dict(r) for r in conn.execute(
         f"""
-        SELECT DISTINCT c.date_edtf, c.date_min, c.date_max, c.type, c.value,
+        SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value,
                c.place_id, c.place_text, c.source_id,
                c.status, c.confidence, c.reviewed
         FROM claim_persons cp
@@ -1204,9 +1257,38 @@ def _generate_timeline(
         ORDER BY {claim_date_order_sql('c')}
         """,
         (person_id,),
-    ).fetchall()
+    ).fetchall()]
 
-    suggested_rows = conn.execute(
+    # Family rows: the births, marriages and deaths of parents, spouses,
+    # children and siblings inside this person's life. A private research
+    # view, so no privacy callbacks: living relatives show, as in the
+    # workbench. A claim shown as a family row is not repeated as an own line.
+    family = family_life_events(conn, person_id, include_parked=True)
+    # Place-history rows: when a place the person was recorded at changed
+    # government between their first and last record there, say so.
+    context = place_history_context(conn, place_visits_from_rows(main_rows))
+    vital_cache: dict = {}
+    main_rows = [r for r in main_rows
+                 if not repeats_family_event(conn, r, family['events'], vital_cache)
+                 or claim_is_own_vital(conn, person_id, r['id'], r['type'], vital_cache)]
+    for r in main_rows:
+        r['age_text'] = own_line_age_text(
+            conn, person_id, r, family['birth'], family['death'], vital_cache)
+    # Own lines keep the SQL order; a family row goes after own lines on the
+    # same day, by source and claim id, so two runs write the same file.
+    keyed: list[tuple] = []
+    for seq, r in enumerate(main_rows):
+        bound = r['date_max'] if (r['date_edtf'] or '').startswith('[..') else r['date_min']
+        keyed.append(((0 if r['date_min'] else 1, bound or '', 0, (seq,)), r))
+    for ev in family['events']:
+        keyed.append(((0, ev['sort_key'][1], 1, ev['sort_key'][3:]), ev))
+    for c in context:
+        keyed.append((c['sort_key'], c))
+    keyed.sort(key=lambda item: item[0])
+    main_rows = [item for _key, item in keyed]
+    subject_first = (person_name.split() or [person_id])[0]
+
+    suggested_rows = [dict(r) for r in conn.execute(
         f"""
         SELECT DISTINCT c.date_edtf, c.date_min, c.date_max, c.type, c.value,
                c.place_id, c.place_text, c.source_id,
@@ -1217,7 +1299,7 @@ def _generate_timeline(
         ORDER BY {claim_date_order_sql('c')}
         """,
         (person_id,),
-    ).fetchall()
+    ).fetchall()]
 
     out_path = _out_path_for(profile_p, 'timeline', person_id)
 
@@ -1226,17 +1308,12 @@ def _generate_timeline(
     # a blank line BEFORE each ### header - we don't know whether a new section
     # is starting until we've already seen the first row of it.  Collecting first
     # lets us emit clean separators in a second pass without lookahead.
-    # Place-history rows: when a place the person was recorded at changed
-    # government between their first and last record there, say so.
-    main_rows = insert_context_rows(
-        list(main_rows),
-        place_history_context(conn, place_visits_from_rows(main_rows)))
-    sections: list[tuple[str | None, list[sqlite3.Row]]] = []
+    sections: list[tuple[str | None, list[dict]]] = []
     current_decade: str | None = 'UNSET'   # sentinel; distinct from None (= undated)
-    current_rows: list[sqlite3.Row] = []
+    current_rows: list[dict] = []
     for row in main_rows:
         decade_hdr = _decade_from_edtf(
-            row['date_iso'] if isinstance(row, dict) else row['date_edtf'])
+            row['date_iso'] if row.get('kind') == 'context' else row['date_edtf'])
         if decade_hdr != current_decade:
             if current_rows or current_decade != 'UNSET':
                 sections.append((current_decade if current_decade != 'UNSET' else None, current_rows))
@@ -1247,7 +1324,7 @@ def _generate_timeline(
         sections.append((current_decade if current_decade != 'UNSET' else None, current_rows))
 
     if fmt == 'html':
-        body = _purpose_block_html('timeline') + _timeline_body_html(conn, sections, suggested_rows)
+        body = _purpose_block_html('timeline') + _timeline_body_html(conn, sections, suggested_rows, subject_first)
         return _write_view_file(
             _html_out_path(archive_root, out_path),
             _render_view_html(
@@ -1265,12 +1342,12 @@ def _generate_timeline(
             parts.append(f'\n{decade_hdr}\n\n')
         else:
             parts.append('\n')
-        parts.append('\n'.join(f'- {_timeline_claim_line(r, conn)}' for r in rows))
+        parts.append('\n'.join(f'- {_timeline_entry_line(r, conn, subject_first)}' for r in rows))
         parts.append('\n')
 
     if suggested_rows:
         parts.append('\n## Unreviewed\n\n')
-        parts.append('\n'.join(f'- {_timeline_claim_line(r, conn)}' for r in suggested_rows))
+        parts.append('\n'.join(f'- {_timeline_entry_line(r, conn, subject_first)}' for r in suggested_rows))
         parts.append('\n')
 
     return _write_view_file(out_path, ''.join(parts), _view_links(archive_root))
