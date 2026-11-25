@@ -1,0 +1,19 @@
+{% extends "base.html" %}
+{% block title %}Questions for the family - {{ site_title }}{% endblock %}
+{% block content %}
+<article class="questions">
+  <h1>Questions for the family</h1>
+  {% if questions %}
+  <p>These are things we are still trying to find out. If you know anything, even a guess or a half-remembered story, please say so.</p>
+  {% for q in questions %}
+  <section class="question">
+    <h2>{{ q.heading_html }}</h2>
+    {% if q.people %}<p class="note">About {{ q.people }}</p>{% endif %}
+    {% if q.sources %}<p class="note">Records: {{ q.sources }}</p>{% endif %}
+  </section>
+  {% endfor %}
+  {% else %}
+  <p class="empty">There are no questions to share just now.</p>
+  {% endif %}
+</article>
+{% endblock %}

@@ -464,6 +464,8 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
 - **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
 
+**How it is drawn.** Only `low` fades (medium is the ordinary single-source case, and fading it would fade most of most trees). Fading alone cannot be the signal: a faded card prints as a grey one and is lost to a colour-blind reader, so the faded card also gets a dotted outline, and the tie is thin and dash-dot (the explorer already uses solid, long dash and dots for the kinds of tie). A key sentence under the chart says what it means, and appears only when something is faded. A Private card is never faded, and its ties count as unrated, so nobody behind it fades because of them: either would tell a visitor something about a living person's records.
+
 ---
 
 ## 21. Importing a newer download of the same tree
@@ -485,7 +487,19 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 
 ---
 
-## 22. The family map draws its own outline
+## 22. Surname pages: feminine forms join only when the masculine form is there
+
+**The rule.** The family site gives each family name a page. Accent and case spellings share one page (Müller, Muller). A Polish feminine form (Kowalska, Wiśniewska) or a Czech one (Nováková) joins the masculine page only when the masculine form is also carried by someone the site shows. A note's `also:` list merges any other spelling.
+
+**Why.** Kowalska and Kowalski are one family name in two grammatical forms, so a relative looking for the family wants both on one page. But a tree that holds only Kowalskas should not have its page renamed after a man who is not in it, and a guess about which spellings are "the same" stays out of the rule: anything else is merged by hand, in the human's own note. A name carried only by people the shared site hides gets no page at all, because an empty page would tell visitors the name exists, and so that a living person carries it.
+
+**Rejected.**
+
+- **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
+- **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
+- **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
+
+## 23. The family map draws its own outline
 
 **The rule.** The family map (`map.html`) draws Natural Earth's 1:110m country outline, shipped with the tools as `vendor/fha-world.js`, with the vendored D3 and topojson-client. It fetches nothing, so it works from a USB stick. Pins go only where a registered place has coordinates, its own or those of the place it is `within:`; a place without them is listed under the map. A claim places only the people it is about.
 

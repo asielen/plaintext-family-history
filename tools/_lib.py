@@ -7803,7 +7803,7 @@ QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
 # an indented `context:` finding that happens to say "guess:" is never read.
 _QUESTION_FIELD_RES = {
     name: re.compile(rf'^- {name}:[ \t]*(.*)$', re.M)
-    for name in ('origin', 'id', 'guess', 'basis', 'verify')
+    for name in ('origin', 'id', 'guess', 'basis', 'verify', 'share')
 }
 # Where one entry's own field lines end: the next `#`/`##` heading of any
 # kind. The last question in a research file is followed by other sections
@@ -7855,7 +7855,9 @@ def parse_question_blocks(text: str) -> dict[str, dict]:
     heading of any kind - so a field line in a later section is never taken
     for this question's. `id` is the working answer's normalized `h-` id
     (SPEC §17a step 2), '' when the question has no guess yet; `guess`,
-    `basis`, `verify` and `origin` are the field text, '' when absent.
+    `basis`, `verify`, `origin` and `share` (SPEC §17b: `family` puts the
+    question on the shared site's questions page) are the field text, ''
+    when absent.
     """
     out: dict[str, dict] = {}
     blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
@@ -8685,6 +8687,51 @@ def normalize_date(s: str | None) -> str | None:
     if candidate and is_valid_edtf(candidate):
         return candidate
     return None
+
+
+def _chart_year(edtf) -> str:
+    """The year a chart prints for a date, keeping what the date means: a
+    death recorded "before 1920" must not read as a death in 1920. Charts show
+    years only; the person's page carries the full date. Owner decision
+    (2026-11-22) on the short forms:
+
+    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
+      '1840?' are both '1840');
+    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
+    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
+    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
+    - an interval `1918/1920`: '1918–1920', or the one year when both ends
+      fall in it.
+
+    Anything else falls back to the first four-digit run, or '' when there is
+    none. Used by the fan and the family chart alike."""
+    if not edtf:
+        return ''
+    s = str(edtf).strip()
+    if '/' in s:
+        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
+        if ends[0] and ends[1]:
+            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
+        return ends[0] or ends[1]
+    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
+    if m:
+        return f'bef. {m.group(1)}'
+    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
+    if m:
+        return f'aft. {m.group(1)}'
+    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
+    if m:
+        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
+    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
+    if m:
+        return f'abt. {m.group(1) or m.group(2)}'
+    return _chart_bare_year(s)
+
+
+def _chart_bare_year(s: str) -> str:
+    """The first four-digit run of a date's text, or ''."""
+    m = re.search(r'\d{4}', s)
+    return m.group(0) if m else ''
 
 
 def edtf_bounds(s: str | None) -> tuple[str, str]:
@@ -19628,8 +19675,20 @@ def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
     root_position: int = 1,
+    *, edge_ok: Callable[[dict], bool] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
+
+    `edge_ok(row) -> bool`, when given, is asked once per parent edge (a dict
+    with person_id, rel, other_id, claim_id, source_id, status, subtype - the
+    same row `kin_graph` hands its filter) and a False edge is not walked, so
+    a shared page's family-tree number is never worked out through a tie the
+    page may not show. A parent kept by one allowed claim still counts when
+    another claim for the same tie is refused. A shown parent keeps the slot
+    the unfiltered walk gives them when it fits their recorded sex (a hidden
+    father does not push an unsexed mother into no. 2); otherwise (a hidden
+    DNA father outranked the legal one) they take the slot the shown parents
+    alone give them. None (the default) walks every edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19683,72 +19742,125 @@ def build_ahnentafel_map(
     pid_to_pos: dict[str, int] = {root_pid: root_position}
     queue: deque[tuple[str, int]] = deque([(root_pid, root_position)])
 
+    def _slots(edges: list[tuple[str, str]], n: int) -> list[tuple[str, str, int, bool]]:
+        """(pid, sex, position, only_parent) for the parents of the person at n."""
+        if len(edges) == 1:
+            p_pid, p_sex = edges[0]
+            return [(p_pid, p_sex, 2 * n if p_sex != 'F' else 2 * n + 1, True)]
+        # Two or more genetic parent edges - assisted reproduction (a
+        # donor-egg mother plus a surrogate-genetic mother plus a
+        # donor-sperm father), or a co-valid biological/surrogate-genetic
+        # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
+        # exactly one contributor per slot: the father slot is 2n, the
+        # mother slot 2n+1. Taking the first two SQL rows would let two
+        # female contributors land in both slots and drop the sperm
+        # contributor entirely, and the choice would swing with row order.
+        #
+        # TOOLING 7 fixes the rule: "The parent with sex: M takes position
+        # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
+        # first-encountered parent (by P-id, deterministic) takes the lower
+        # slot. Where two genetic contributors share a role ... the genetic
+        # contributor anchors the number and the other is shown beside it."
+        # So we rank every contributor for each slot by (sex-fitness, P-id):
+        # the father slot prefers M, then U, then F; the mother slot prefers
+        # F, then U, then M; P-id breaks every tie so runs always agree.
+        # The father-slot winner is chosen first and removed, then the
+        # mother-slot winner from the rest. Extra contributors beyond the two
+        # slots are intentionally left unnumbered here - `fha views brackets`
+        # lists them beside the couple. This reproduces the old two-parent
+        # behaviour exactly for every sex combination while staying
+        # deterministic for three or more contributors.
+        def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
+
+        def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
+
+        sex_of = dict(edges)
+        father = min(edges, key=_father_rank)[0]
+        remaining = [e for e in edges if e[0] != father]
+        mother = min(remaining, key=_mother_rank)[0]
+        return [(father, sex_of[father], 2 * n, False),
+                (mother, sex_of[mother], 2 * n + 1, False)]
+
     while queue:
         pid, n = queue.popleft()
-        parent_rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.other_id AS pid, p.sex
-            FROM relationships r
-            JOIN persons p ON r.other_id = p.id
-            LEFT JOIN claims c ON r.claim_id = c.id
-            WHERE r.person_id = ? AND r.rel = 'parent'
-              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
-            ORDER BY r.other_id
-            """,
-            (pid, *social),
-        ).fetchall()
-
-        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        allowed: set[str] | None = None
+        if edge_ok is None:
+            parent_rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.other_id AS pid, p.sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id
+                """,
+                (pid, *social),
+            ).fetchall()
+            parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        else:
+            cur = conn.execute(
+                f"""
+                SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id,
+                       r.claim_id AS claim_id, c.source_id AS source_id,
+                       c.status AS status, c.subtype AS subtype, p.sex AS sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id, r.claim_id
+                """,
+                (pid, *social),
+            )
+            # A hidden tie still holds its slot: a mother whose sex is unset
+            # keeps the number the folders give her (3) when only the father's
+            # tie is refused, instead of sliding into his slot (2). Slots are
+            # chosen over every genetic parent; only allowed ones are walked.
+            cols = [d[0] for d in cur.description]
+            every: dict[str, str] = {}
+            allowed = set()
+            for raw in cur.fetchall():
+                row = dict(zip(cols, tuple(raw.values()) if isinstance(raw, dict) else tuple(raw)))
+                every.setdefault(row['other_id'], row['sex'] or 'U')
+                if edge_ok(row):
+                    allowed.add(row['other_id'])
+            parents = sorted(every.items())
         if not parents:
             continue
 
-        if len(parents) == 1:
-            p_pid, p_sex = parents[0]
-            pos = 2 * n if p_sex != 'F' else 2 * n + 1
+        slots = _slots(parents, n)
+        if allowed is not None:
+            # A shown parent keeps the slot the full walk gives them when it
+            # fits their own recorded sex, so a hidden father never pushes an
+            # unsexed mother into his number. Otherwise (a hidden DNA father
+            # outranked the legal one, or pushed him into the mother's number)
+            # they take the slot the shown parents alone would give them. The
+            # folders' number wins where the two pull apart (an unsexed parent
+            # beside a hidden father keeps no. 3), so a rare mix of three or
+            # more genetic parents can still number differently from a tree
+            # without the hidden one.
+            def _fits(e: tuple[str, str, int, bool]) -> bool:
+                return {'M': e[2] % 2 == 0, 'F': e[2] % 2 == 1}.get(e[1], True)
+            kept = [e for e in slots if e[0] in allowed and _fits(e)]
+            taken = {e[2] for e in kept}
+            have = {e[0] for e in kept}
+            for e in _slots([e for e in parents if e[0] in allowed], n) if allowed else []:
+                if e[0] not in have and e[2] not in taken:
+                    kept.append(e)
+                    taken.add(e[2])
+                    have.add(e[0])
+            slots = kept
+        for p_pid, p_sex, pos, only_parent in slots:
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
-                if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
+                if only_parent and sex_gaps is not None and sex_slot_is_defaulted(p_sex):
                     sex_gaps.append({'pid': p_pid, 'pos': pos, 'sex': p_sex})
-        else:
-            # Two or more genetic parent edges - assisted reproduction (a
-            # donor-egg mother plus a surrogate-genetic mother plus a
-            # donor-sperm father), or a co-valid biological/surrogate-genetic
-            # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
-            # exactly one contributor per slot: the father slot is 2n, the
-            # mother slot 2n+1. Taking the first two SQL rows would let two
-            # female contributors land in both slots and drop the sperm
-            # contributor entirely, and the choice would swing with row order.
-            #
-            # TOOLING 7 fixes the rule: "The parent with sex: M takes position
-            # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
-            # first-encountered parent (by P-id, deterministic) takes the lower
-            # slot. Where two genetic contributors share a role ... the genetic
-            # contributor anchors the number and the other is shown beside it."
-            # So we rank every contributor for each slot by (sex-fitness, P-id):
-            # the father slot prefers M, then U, then F; the mother slot prefers
-            # F, then U, then M; P-id breaks every tie so runs always agree.
-            # The father-slot winner is chosen first and removed, then the
-            # mother-slot winner from the rest. Extra contributors beyond the two
-            # slots are intentionally left unnumbered here - `fha views brackets`
-            # lists them beside the couple. This reproduces the old two-parent
-            # behaviour exactly for every sex combination while staying
-            # deterministic for three or more contributors.
-            def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
-
-            def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
-
-            father = min(parents, key=_father_rank)[0]
-            remaining = [e for e in parents if e[0] != father]
-            mother = min(remaining, key=_mother_rank)[0]
-            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
-                if pp not in pid_to_pos:
-                    pid_to_pos[pp] = pos
-                    queue.append((pp, pos))
 
     return pid_to_pos
 
@@ -21359,6 +21471,140 @@ def place_hierarchy_in_year(
     if year is None:
         return (None, None)
     return place_hierarchy_at(conn, place_id, year, year)
+
+
+def place_history_context(
+    conn: sqlite3.Connection, visits: dict[str, tuple[str, str]],
+) -> list[dict]:
+    """Background lines for a person's timeline: when a place they lived at
+    changed hands, the timeline says so, between their first and last record
+    there, so a place left in childhood does not narrate its later history.
+
+    `visits` is {place_id: (first_iso, last_iso)}: the earliest and latest
+    known dates of the person's own rows at that place
+    (`place_visits_from_rows`). A place reached through `within:` (a house
+    inside Fairview) counts as a visit to the containing place too, one hop
+    only (SPEC A.9).
+
+    The days the government can change are each `history:` entry's first day
+    and the day after its last (open ends make none). On a day a period
+    begins, that period is what the place became, even when the one before it
+    was written to end the same year (`1855/1861` then `1861/1889`: Fairview
+    became a state in 1861, not 1862). On any other day `place_hierarchy_at`
+    says what held (the one period helper, SPEC A.9), or the place's present
+    `hierarchy:` when no period covers it. A day whose wording is the same as
+    the one before it is no change and makes no line. A line is kept only
+    inside the person's window at that place. Returns
+    [{'kind': 'context', 'place_id', 'name', 'date_iso', 'year', 'hierarchy',
+      'sort_key': (0, date_iso, 2, place_id, date_iso)}].
+    """
+    windows: dict[str, tuple[str, str]] = dict(visits)
+    for pid, (lo, hi) in visits.items():
+        up = conn.execute('SELECT within FROM places WHERE id = ?', (pid,)).fetchone()
+        outer = up[0] if up and up[0] else None
+        if outer and outer != pid:
+            cur = windows.get(outer)
+            windows[outer] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
+    out: list[dict] = []
+    for pid in sorted(windows):
+        lo, hi = windows[pid]
+        place = conn.execute('SELECT name, hierarchy FROM places WHERE id = ?', (pid,)).fetchone()
+        if place is None:
+            continue
+        days: set[str] = set()
+        starts: dict[str, list[str]] = {}
+        for r in conn.execute(
+                'SELECT date_min, date_max, hierarchy FROM place_history '
+                'WHERE place_id = ? ORDER BY rowid', (pid,)).fetchall():
+            elo, ehi = _date_edge(r[0], False), _date_edge(r[1], True)
+            if elo is not None and elo > '0001-12-31':
+                days.add(elo)
+                if r[2]:
+                    starts.setdefault(elo, []).append(str(r[2]))
+            if ehi is not None and ehi < '9999-01-01':
+                days.add((datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat())
+        prev: str | None = None
+        for iso in sorted(days):
+            held = place_hierarchy_at(conn, pid, iso, iso)[0]
+            begun = starts.get(iso)
+            if begun and held not in begun:
+                held = begun[0]
+            hier = str(held or place[1] or '')
+            if hier and hier != prev and lo <= iso <= hi:
+                out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
+                            'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
+                            'sort_key': (0, iso, 2, pid, iso)})
+            prev = hier
+    out.sort(key=lambda r: r['sort_key'])
+    return out
+
+
+# A burial back home says nothing about living there, so it does not stretch
+# her stay: a woman buried in her birthplace after sixty years away would
+# otherwise get every change of those sixty years on her timeline.
+_NOT_A_STAY_TYPES = frozenset({'burial'})
+
+
+def _row_known_bounds(r) -> tuple[str | None, str | None]:
+    """A timeline row's (first, last) known day, with the index's open-end
+    floor and ceiling (0001-01-01 for "by 1895", 9999-12-31 for "from 1883
+    on") read as unknown: an open end falls back to the known one."""
+    lo = _date_edge(r['date_min'], False)
+    hi = _date_edge(r['date_max'], True)
+    if lo is not None and lo <= '0001-12-31':
+        lo = None
+    if hi is not None and hi >= '9999-01-01':
+        hi = None
+    return (lo or hi, hi or lo)
+
+
+def place_visits_from_rows(rows, keep=None) -> dict[str, tuple[str, str]]:
+    """{place_id: (first_iso, last_iso)} from a person's own dated timeline
+    rows (each with place_id, type, date_min, date_max). A burial is not a
+    stay, and an open end ("by 1895", "from 1883 on") does not stretch it to
+    year 1 or 9999. `keep(place_id)` limits it to places that may be named
+    (the shared site: only places with a page)."""
+    visits: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        pid = r['place_id']
+        if not pid or (r['type'] or '') in _NOT_A_STAY_TYPES:
+            continue
+        lo, hi = _row_known_bounds(r)
+        if lo is None or hi is None or (keep is not None and not keep(pid)):
+            continue
+        hi = max(hi, lo)
+        cur = visits.get(pid)
+        visits[pid] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
+    return visits
+
+
+def insert_context_rows(rows: list, context: list[dict]) -> list:
+    """The person's own rows (already in date order) with each place-history
+    row put just before the first own row that sorts later, so a context line
+    never jumps ahead of a record from the same day. A row sorts by the same
+    known bound as `claim_date_order_sql` ("by 1895" by 1895)."""
+    out = list(rows)
+    for c in context:
+        at = len(out)
+        for i, r in enumerate(out):
+            if isinstance(r, dict):
+                continue
+            lo = _row_known_bounds(r)[0]
+            if lo is None or lo > c['date_iso']:
+                at = i
+                break
+        out.insert(at, c)
+    return out
+
+
+def place_history_phrase(row: dict) -> str:
+    """The one sentence the site and the timeline view both print for a
+    place-history row: "From 1861, Fairview was in Breton Co., Kansas, USA."
+    """
+    hier, name = row['hierarchy'], row['name']
+    if name and hier.startswith(f'{name}, '):
+        return f"From {row['year']}, {name} was in {hier[len(name) + 2:]}."
+    return f"From {row['year']}, this place was recorded as {hier}."
 
 
 REPOSITORIES_PATH = Path(__file__).resolve().parent / 'repositories.json'

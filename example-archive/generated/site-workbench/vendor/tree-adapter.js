@@ -46,8 +46,9 @@
         // boolean (false ⇒ a legal parent/child bond) for back-compat.
         var genetic = e.genetic !== false;
         var kind = e.kind || (genetic ? 'genetic' : 'legal');
+        // A tie rated 'low' is drawn thin and broken (chart plan 08-7).
         (childrenOf[e.from] = childrenOf[e.from] || []).push(
-          { to: e.to, genetic: genetic, kind: kind });
+          { to: e.to, genetic: genetic, kind: kind, weak: e.confidence === 'low' });
       }
     });
 
@@ -55,13 +56,17 @@
     function build(id) {
       var n = byId[id] || { p_id: id, name: id, vitals: {} };
       var node = { id: n.p_id, name: n.name || n.p_id, url: n.url || null,
-                   dates: fmtDates(n.vitals), photo: n.photo || null, children: [] };
+                   dates: fmtDates(n.vitals), photo: n.photo || null, children: [],
+                   // Linked to the seed only through a low-confidence record:
+                   // drawn faded. A Private card never carries a line.
+                   weak: n.line_confidence === 'low' };
       if (!seen[id]) {
         seen[id] = true;
         (childrenOf[id] || []).forEach(function (c) {
           var childNode = build(c.to);
           childNode.edgeGenetic = c.genetic;   // back-compat: genetic bond?
           childNode.edgeKind = c.kind;         // 'genetic' | 'legal' | 'other'
+          childNode.edgeWeak = c.weak;         // low-confidence tie: thin, broken
           node.children.push(childNode);
         });
       }
