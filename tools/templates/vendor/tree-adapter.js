@@ -3,9 +3,10 @@
  * contract and the vendored renderer (fha-tree.js).
  *
  * In the family explorer a husband and wife are drawn side by side, a
- * second marriage sits beside the first, and each child hangs under their
- * own mother and father. This file decides which cards go together; it
- * draws nothing.
+ * second marriage sits beside the first, each child hangs under their own
+ * mother and father, and his parents and grandparents stand above him as
+ * couples too. This file decides which cards go together; it draws
+ * nothing.
  *
  * It is the ONLY code that understands both:
  *   - the neutral tree JSON (TOOLING §7, as emitted by `fha views tree
@@ -33,9 +34,13 @@
  * a repeat unit, so a cousin marriage or a cycle in the data never draws a
  * branch twice and never loops.
  *
- * Ancestors, and data without `family` keys (version 1 JSON): one person
- * per unit, each nested under the person they descend from (ancestors: the
- * person they are a parent of), as the explorer always drew them.
+ * Hourglass (and ancestors): the model also carries `up`, the seed's
+ * ancestors as units drawn above them (see ancestorUnits), and `upOf`, the
+ * seed's id. In ancestors mode the model itself is just the seed's card.
+ *
+ * Data without `family` keys (version 1 JSON): one person per unit, each
+ * nested under the person they descend from (ancestors: the person they
+ * are a parent of), as the explorer always drew them.
  *
  * Swapping renderers later means rewriting this file plus fha-tree.js; the
  * generated pages and the server-side JSON are untouched.
@@ -86,8 +91,108 @@
     }
 
     var hasFamilies = edges.some(function (e) { return !!e.family; });
-    if (data.mode === 'ancestors' || !hasFamilies) return perPerson(data, edges, card);
-    return couples(data, edges, card, byId);
+    if (!hasFamilies) return perPerson(data, edges, card);
+    var model;
+    if (data.mode === 'ancestors') {
+      model = { key: data.seed, kind: 'single', people: [card(data.seed)], main: 0,
+                extra: false, fam: null, owner: data.seed, edgeKind: null, edgeWeak: false,
+                seeKey: null, children: [] };
+    } else {
+      model = couples(data, edges, card, byId);
+    }
+    if (data.mode === 'ancestors' || data.mode === 'hourglass') {
+      model.up = ancestorUnits(data, edges, card, byId);
+      model.upOf = data.seed;
+    }
+    return model;
+  }
+
+  // His ancestors as couples, for the half of the explorer above him: his
+  // parents as one unit over his own card, each parent's parents over that
+  // parent, father's side first. A child's birth parents come first; an
+  // adoptive or step-parent stands in a unit of their own beside them,
+  // tied with a long dash, and a parent already on a card for that child
+  // is not drawn twice. A couple met a second time (two of his ancestors
+  // were brother and sister) is a small "already in the tree" card that
+  // jumps to the first, which also ends a loop in the data.
+  //
+  //   up unit = { key: 'up:' + family, kind: 'family' | 'repeat', above: true,
+  //               people: [card, ...], below: id of the child they are
+  //               parents of, edgeKind, edgeWeak, seeKey, children: [up unit] }
+  //
+  // `children` of an up unit are the units ABOVE it (its people's parents).
+  function ancestorUnits(data, edges, card, byId) {
+    var tiesOf = {};   // child id -> {family key: [parent edge]}
+    edges.forEach(function (e) {
+      if (e.type !== 'parent' || !e.family) return;
+      var f = tiesOf[e.from] = tiesOf[e.from] || {};
+      (f[e.family] = f[e.family] || []).push(e);
+    });
+    function sexRank(id) {
+      var s = byId[id] && byId[id].sex;
+      return s === 'M' ? 0 : s === 'F' ? 1 : 2;
+    }
+    function byParentOrder(a, b) {
+      var d = sexRank(a) - sexRank(b);
+      if (d) return d;
+      return a < b ? -1 : a > b ? 1 : 0;
+    }
+    function genetic(ties) {
+      return ties.some(function (t) { return edgeKind(t) === 'genetic'; });
+    }
+    // The tie the line to the child is drawn by: a birth tie when there is one.
+    function tieOf(ties) {
+      return ties.slice().sort(function (a, b) {
+        var ga = edgeKind(a) === 'genetic' ? 0 : 1, gb = edgeKind(b) === 'genetic' ? 0 : 1;
+        if (ga !== gb) return ga - gb;
+        return a.to < b.to ? -1 : a.to > b.to ? 1 : 0;
+      })[0];
+    }
+    var drawn = {};    // family key -> unit key
+    var repeats = 0;
+    function parentsOf(pid) {
+      var fams = tiesOf[pid] || {};
+      var keys = Object.keys(fams).sort(function (a, b) {
+        var ga = genetic(fams[a]) ? 0 : 1, gb = genetic(fams[b]) ? 0 : 1;
+        if (ga !== gb) return ga - gb;
+        return a < b ? -1 : a > b ? 1 : 0;
+      });
+      var onCard = {};
+      var out = [];
+      keys.forEach(function (fam) {
+        var ids = [];
+        fams[fam].forEach(function (t) {
+          if (ids.indexOf(t.to) < 0 && !onCard[t.to]) ids.push(t.to);
+        });
+        if (!ids.length) return;
+        ids.sort(byParentOrder);
+        ids.forEach(function (id) { onCard[id] = true; });
+        var tie = tieOf(fams[fam]);
+        var u = { key: 'up:' + fam, kind: 'family', above: true, people: ids.map(card),
+                  main: -1, extra: false, fam: fam, owner: pid, below: pid,
+                  edgeKind: edgeKind(tie), edgeWeak: tie.confidence === 'low',
+                  seeKey: null, children: [] };
+        if (drawn[fam]) {
+          repeats += 1;
+          u.key = 'up-repeat:' + fam + ':' + repeats;
+          u.kind = 'repeat';
+          u.people = [card(ids[0])];
+          u.fam = null;
+          u.seeKey = drawn[fam];
+        } else {
+          drawn[fam] = u.key;
+        }
+        out.push(u);
+      });
+      out.forEach(function (u) {
+        if (u.kind !== 'family') return;
+        u.people.forEach(function (c) {
+          Array.prototype.push.apply(u.children, parentsOf(c.id));
+        });
+      });
+      return out;
+    }
+    return parentsOf(data.seed);
   }
 
   // One person per unit (ancestors mode, or version 1 JSON).

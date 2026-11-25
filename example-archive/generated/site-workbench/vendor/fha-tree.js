@@ -3,7 +3,8 @@
  *
  * In the explorer a husband and wife stand side by side as one pair, a
  * later marriage sits beside the first with a dotted link, each child hangs
- * under their own mother and father, and a person met a second time is a
+ * under their own mother and father, his parents and grandparents stand
+ * above him as couples (an hourglass), and a person met a second time is a
  * small "already in the tree" card that jumps to the first one. Names link
  * to person pages; -/+ collapse and expand a family.
  *
@@ -20,6 +21,9 @@
  *
  *     { key, kind, people: [card, ...], main, extra, owner, edgeKind,
  *       edgeWeak, seeKey, children: [ <same shape>, ... ] }
+ *
+ * plus, for an hourglass, `up` (the units above the seed, flagged `above`,
+ * whose `children` are the generation above them) and `upOf` (the seed).
  *
  * Navigation: large trees render wider than the page, so the tree lives inside
  * a fixed-size viewport and is explored by dragging to pan and by wheel /
@@ -120,7 +124,7 @@
   // H_GAP apart (a little more between cousins than between siblings). A
   // unit collapsed by the reader contributes no children. Returns the
   // units with x (centre) and y (top), shifted so the drawing starts at 0,0.
-  function layoutUnits(model, collapsed) {
+  function flexLayout(model, collapsed) {
     var flex = global.d3.flextree()
       .nodeSize(function (n) {
         return [unitWidth(n.data) + H_GAP, n.data.kind === 'root' ? 0 : CARD_H + V_GAP];
@@ -130,15 +134,71 @@
       return collapsed[u.key] || !(u.children && u.children.length) ? null : u.children;
     });
     flex(h);
+    return h;
+  }
+
+  // The card index of person `id` in a placed unit (-1 when not on it).
+  function cardIndex(unit, id) {
+    for (var i = 0; i < unit.people.length; i++) {
+      if (unit.people[i] && unit.people[i].id === id) return i;
+    }
+    return -1;
+  }
+
+  // The unit the seed's ancestors stand over: the one they head (their
+  // first marriage), else any unit their card is on.
+  function seedUnit(model, id) {
+    var heads = null, appears = null;
+    (function find(x) {
+      if (heads) return;
+      if (x.kind !== 'repeat' && x.kind !== 'root') {
+        if (x.main >= 0 && x.people[x.main].id === id) { heads = x; return; }
+        if (!appears && cardIndex(x, id) >= 0) appears = x;
+      }
+      (x.children || []).forEach(find);
+    })(model);
+    return heads || appears;
+  }
+
+  // Place every visible unit with d3-flextree: each unit is as wide as its
+  // cards, children sit one generation below, and neighbouring units keep
+  // H_GAP apart (a little more between cousins than between siblings). A
+  // unit collapsed by the reader contributes no children. Returns the
+  // units with x (centre) and y (top), shifted so the drawing starts at 0,0.
+  //
+  // With ancestors (model.up, an hourglass), they are laid out as a second
+  // tree and turned upside down: his parents' couple one row above his own
+  // card and centred on it, their parents a row above that, and so on.
+  // Each placed ancestor unit carries `belowKey`, the unit it hangs over.
+  function layoutUnits(model, collapsed) {
     var placed = [];
     var minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
-    h.each(function (n) {
+    function keep(p) {
+      placed.push(p);
+      minX = Math.min(minX, p.x - p.w / 2); maxX = Math.max(maxX, p.x + p.w / 2);
+      minY = Math.min(minY, p.y); maxY = Math.max(maxY, p.y + CARD_H);
+    }
+    var at = {};
+    flexLayout(model, collapsed).each(function (n) {
       if (n.data.kind === 'root') return;   // the hidden holder of several families
-      var w = unitWidth(n.data);
-      placed.push({ unit: n.data, x: n.x, y: n.y, w: w });
-      minX = Math.min(minX, n.x - w / 2); maxX = Math.max(maxX, n.x + w / 2);
-      minY = Math.min(minY, n.y); maxY = Math.max(maxY, n.y + CARD_H);
+      var p = { unit: n.data, x: n.x, y: n.y, w: unitWidth(n.data) };
+      at[n.data.key] = p;
+      keep(p);
     });
+    var seed = model.up && model.up.length ? seedUnit(model, model.upOf) : null;
+    var base = seed && at[seed.key];
+    if (base) {
+      var i = Math.max(cardIndex(base.unit, model.upOf), 0);
+      var cx = base.x - base.w / 2 + i * (CARD_W + COUPLE_GAP) + CARD_W / 2;
+      var top = { key: 'up:root', kind: 'root', people: [], children: model.up };
+      var h = flexLayout(top, collapsed);
+      var dx = cx - h.x;
+      h.each(function (n) {
+        if (n === h) return;
+        keep({ unit: n.data, x: n.x + dx, y: base.y - (CARD_H + V_GAP) - n.y,
+               w: unitWidth(n.data), belowKey: n.parent === h ? base.unit.key : n.parent.data.key });
+      });
+    }
     if (!placed.length) return { units: [], width: CARD_W, height: CARD_H };
     placed.forEach(function (p) { p.x -= minX; p.y -= minY; });
     return { units: placed, width: maxX - minX, height: maxY - minY };
@@ -190,6 +250,24 @@
         index(c);
       });
     })(model);
+    // Ancestors: each unit's "parent" here is the unit it stands over, so
+    // opening a collapsed couple reveals the generation above it.
+    var up = model.up || [];
+    up.forEach(function index(u) {
+      (u.children || []).forEach(function (c) { parentOf[c.key] = u; index(c); });
+    });
+
+    function findUnit(key) {
+      var hit = null;
+      function find(x) {
+        if (hit) return;
+        if (x.key === key) { hit = x; return; }
+        (x.children || []).forEach(find);
+      }
+      find(model);
+      up.forEach(find);
+      return hit;
+    }
 
     // Bound the initial paint: families at or beyond options.initialDepth
     // generations start collapsed, so a large descendant explorer renders a
@@ -203,6 +281,16 @@
         kids.forEach(function (c) { seed(c, depth + 1); });
       })(model, model.kind === 'root' ? -1 : 0);
     }
+    // Above him, his parents and grandparents show at first
+    // (options.initialAncestorDepth, default 2 generations); "+" on a
+    // couple shows the generation above them.
+    var ancestorDepth = options.initialAncestorDepth != null ? options.initialAncestorDepth : 2;
+    up.forEach(function seed(u) {
+      var depth = 1;
+      for (var a = parentOf[u.key]; a; a = parentOf[a.key]) depth += 1;
+      if (depth >= ancestorDepth && (u.children || []).length) collapsed[u.key] = true;
+      (u.children || []).forEach(seed);
+    });
 
     // ---- viewport scaffold (built once; survives collapse redraws) ----------
     // The tree canvas is a fixed-size window; the tree may be far larger and is
@@ -334,12 +422,7 @@
     // it is drawn. With a person id, centre on that person's card. Falls
     // back to Fit when the unit is not in the tree.
     function focusUnit(key, pid) {
-      var u = null;
-      (function find(x) {
-        if (u) return;
-        if (x.key === key) { u = x; return; }
-        (x.children || []).forEach(find);
-      })(model);
+      var u = findUnit(key);
       if (!u) { fit(); return; }
       var opened = false;
       for (var a = parentOf[key]; a; a = parentOf[a.key]) {
@@ -369,16 +452,8 @@
     // in the tree.
     function home() {
       if (options.homeId == null) { fit(); return; }
-      var heads = null, appears = null;
-      (function find(x) {
-        if (heads) return;
-        if (x.kind !== 'repeat' && x.kind !== 'root') {
-          if (x.main >= 0 && x.people[x.main].id === options.homeId) { heads = x; return; }
-          if (!appears && x.people.some(function (c) { return c && c.id === options.homeId; })) appears = x;
-        }
-        (x.children || []).forEach(find);
-      })(model);
-      var target = heads || appears;
+      var target = seedUnit(model, options.homeId);
+      for (var i = 0; !target && i < up.length; i++) target = seedUnit(up[i], options.homeId);
       if (!target) { fit(); return; }
       focusUnit(target.key, options.homeId);
     }
@@ -517,7 +592,9 @@
         toggle.type = 'button';
         toggle.className = 'fha-toggle';
         toggle.textContent = collapsed[unit.key] ? '+' : '−'; // minus sign
-        toggle.setAttribute('aria-label', collapsed[unit.key] ? 'Show this family\'s children' : 'Hide this family\'s children');
+        toggle.setAttribute('aria-label', unit.above
+          ? (collapsed[unit.key] ? 'Show their parents' : 'Hide their parents')
+          : (collapsed[unit.key] ? 'Show this family\'s children' : 'Hide this family\'s children'));
         toggle.onclick = function (ev) {
           ev.preventDefault();
           collapsed[unit.key] = !collapsed[unit.key];
@@ -626,18 +703,31 @@
           hangFrom[u.key] = { x: cardLeft(p, 0) + CARD_W / 2, y: p.y + CARD_H };
         }
       });
+      function elbowTo(from, tx, q, kind, weak) {
+        var elbow = q.y - V_GAP / 2;
+        line(edgeClass(kind, weak),
+             'M' + from.x + ',' + from.y + ' V' + elbow + ' H' + tx + ' V' + q.y);
+      }
       lay.units.forEach(function (p) {
         var u = p.unit;
-        if (collapsed[u.key] || !hangFrom[u.key]) return;
+        if (u.above || collapsed[u.key] || !hangFrom[u.key]) return;
         var from = hangFrom[u.key];
         (u.children || []).forEach(function (c) {
           var q = pos[c.key];
           if (!q || c.extra) return;   // a later marriage has its dotted link instead
           var tx = c.kind === 'repeat' ? q.x : cardLeft(q, Math.max(c.main, 0)) + CARD_W / 2;
-          var elbow = q.y - V_GAP / 2;
-          line(edgeClass(c.edgeKind, c.edgeWeak),
-               'M' + from.x + ',' + from.y + ' V' + elbow + ' H' + tx + ' V' + q.y);
+          elbowTo(from, tx, q, c.edgeKind, c.edgeWeak);
         });
+      });
+      // Each ancestor couple's line runs down to the card of the child
+      // they are parents of, in the unit below them.
+      lay.units.forEach(function (p) {
+        var u = p.unit, q = pos[p.belowKey];
+        if (!u.above || !q) return;
+        var from = u.kind === 'repeat' ? { x: p.x, y: p.y + CARD_H } : hangFrom[u.key];
+        var i = cardIndex(q.unit, u.below);
+        var tx = i < 0 ? q.x : cardLeft(q, i) + CARD_W / 2;
+        elbowTo(from, tx, q, u.edgeKind, u.edgeWeak);
       });
 
       // Cards.

@@ -245,7 +245,7 @@ CODE MAP
       ._land_picture           - write a worker's picture into media/ and the cache,
                                  in hand-over order; a failure asks for a serial rebuild
       .build_source_page       - source page
-      .build_person_page       - person page; also builds `descendants_tree`
+      .build_person_page       - person page; also builds `family_tree`
                                  (#115: the interactive explorer, demoted here
                                  as a per-person opt-in link)
       ._home_pedigree_depth    - #115: site.home_pedigree_generations, clamped
@@ -7710,10 +7710,21 @@ class _SiteBuilder:
         # data stays complete (memoized `relationships` queries keep the walk
         # affordable - see that constant's own comment), and `initial_depth`
         # below is what actually bounds the client's initial paint.
-        descendants_tree = self._make_tree_ctx(
-            pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
-            f'Descendants of {name}', initial_depth=4,
-            chart_name=_chart_name(name, 'descendants'))
+        #
+        # The family explorer (chart plan 08-10): a person with descendants
+        # sees them below, and their own parents, grandparents and further
+        # back above, in one picture. It is offered only to a person with
+        # descendants, as before; their ancestors alone are already on the
+        # family chart and the fan. `data/tree_{p}_descendants.json` is
+        # still written, so anything that reads that file keeps working.
+        family_tree = None
+        if self._make_tree_ctx(pid, 'descendants', _DESCENDANT_TREE_MAX_HOPS, page_dir,
+                               f'Descendants of {name}', initial_depth=4,
+                               chart_name=_chart_name(name, 'descendants')):
+            family_tree = self._make_tree_ctx(
+                pid, 'hourglass', _DESCENDANT_TREE_MAX_HOPS, page_dir,
+                f"{name}'s family: ancestors above, descendants below", initial_depth=4,
+                chart_name=_chart_name(name, 'family'))
 
         ctx = {
             'display_id': fmt_id_display(pid), 'name': name,
@@ -7735,7 +7746,7 @@ class _SiteBuilder:
             'lifespan': lifespan,
             'fan_weak_key': fan_weak_key,
             'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
-            'descendants_tree': descendants_tree,
+            'family_tree': family_tree,
             'summary': summary,
             'burial_visit': self._burial_visit(pid, page_dir),
             'biography_html': self._markup(biography_html) if biography_html else None,
@@ -11668,8 +11679,9 @@ class _SiteBuilder:
     def _build_tree_data(self, seed: str, mode: str, max_hops: int | None, page_dir: Path) -> dict:
         """BFS the `relationships` graph from `seed` and emit the neutral tree
         JSON (TOOLING §7/§14b) plus a per-node `url`. `descendants` follows
-        `child` edges, `ancestors` follows `parent` edges; a visited set guards
-        cousin-marriage cycles. Redaction is applied per node in `_tree_node`.
+        `child` edges, `ancestors` follows `parent` edges, and `hourglass`
+        runs the ancestors walk then the descendants walk (chart plan 08-10);
+        a visited set per walk guards cousin-marriage cycles. Redaction is applied per node in `_tree_node`.
         `max_hops` is a safety net, not a display bound (#152 review fix, P2,
         finding 1) - see `_DESCENDANT_TREE_MAX_HOPS`'s comment. Hitting it
         drops real genealogy data, so callers pass a bound generous enough
@@ -11707,7 +11719,6 @@ class _SiteBuilder:
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
         seen = {seed}       # in the data: walked, or a one-hop leaf
-        walked = {seed}     # queued for the walk
         # (a, b, type) -> the one edge for that tie, plus the row it names.
         ties: dict[tuple[str, str, str], dict] = {}
         # A child's other parents and their tie to that child (descendants):
@@ -11756,34 +11767,43 @@ class _SiteBuilder:
                 order.append(pid)
 
         truncated = False
-        queue: deque[tuple[str, int]] = deque([(seed, 0)])
-        while queue:
-            cur, hop = queue.popleft()
-            if max_hops is not None and hop >= max_hops:
-                truncated = True
-            else:
-                for r in self._tree_relationship_rows(cur, rel):
-                    other = r['other_id']
-                    if not tie_shown(cur, other, r):
-                        continue
-                    add_tie(ties, cur, other, rel, r)
-                    add_node(other)
-                    if other not in walked:
-                        walked.add(other)
-                        queue.append((other, hop + 1))
-                    if mode == 'descendants' and other not in coparented:
-                        coparented.add(other)
-                        for up in self._tree_relationship_rows(other, 'parent'):
-                            if up['other_id'] != cur and tie_shown(other, up['other_id'], up):
-                                add_tie(coparent_ties, up['other_id'], other, 'child', up)
-                                add_node(up['other_id'])
-            if mode == 'descendants':
-                # Husbands and wives as one-hop leaves (never walked, so an
-                # in-law's own family stays out), as `fha views tree` does.
-                for r in self._tree_relationship_rows(cur, 'spouse'):
-                    if r['other_id'] != cur and tie_shown(cur, r['other_id'], r):
-                        add_tie(ties, cur, r['other_id'], 'spouse', r)
-                        add_node(r['other_id'])
+        # An hourglass (his ancestors above him, his descendants below) is
+        # the ancestors walk and then the descendants walk from the same
+        # seed, as `fha views tree --mode hourglass` builds it: the
+        # ancestors' other children (his brothers and sisters) are never
+        # followed. Both walks share one set of cards, so a Private card
+        # keeps one placeholder id and the same privacy rules cut both.
+        for rel in (('parent', 'child') if mode == 'hourglass' else (rel,)):
+            walked = {seed}
+            queue: deque[tuple[str, int]] = deque([(seed, 0)])
+            while queue:
+                cur, hop = queue.popleft()
+                if max_hops is not None and hop >= max_hops:
+                    truncated = True
+                else:
+                    for r in self._tree_relationship_rows(cur, rel):
+                        other = r['other_id']
+                        if not tie_shown(cur, other, r):
+                            continue
+                        add_tie(ties, cur, other, rel, r)
+                        add_node(other)
+                        if other not in walked:
+                            walked.add(other)
+                            queue.append((other, hop + 1))
+                        if rel == 'child' and other not in coparented:
+                            coparented.add(other)
+                            for up in self._tree_relationship_rows(other, 'parent'):
+                                if up['other_id'] != cur and tie_shown(other, up['other_id'], up):
+                                    add_tie(coparent_ties, up['other_id'], other, 'child', up)
+                                    add_node(up['other_id'])
+                if rel == 'child':
+                    # Husbands and wives as one-hop leaves (never walked, so
+                    # an in-law's own family stays out), as `fha views tree`
+                    # does.
+                    for r in self._tree_relationship_rows(cur, 'spouse'):
+                        if r['other_id'] != cur and tie_shown(cur, r['other_id'], r):
+                            add_tie(ties, cur, r['other_id'], 'spouse', r)
+                            add_node(r['other_id'])
         leaf_keys = set()
         for key, tie in coparent_ties.items():
             if key not in ties:

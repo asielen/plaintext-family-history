@@ -686,7 +686,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "195942fa8b44f911089d2bb80ffbce533181df39e9f3594731764718d567cca6",
+      "sha256": "7e154c97ae744fb8ce9564d97f3600294723bc6036e156f22579e6c3c0bfb747",
       "spec_version": "2.44",
       "src": "docs/DESIGN.md"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "e366fa8a568cd6767c6425ec41c31a5642706c5e15e42152877529a3a1c4c6e3",
+      "sha256": "146f42d61e5f0915d616d06fa20d464ab1f0ba68167de9cb57a11f3da980371a",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1316,7 +1316,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "1183bcc8db0ed2e001076e8e2150bcca7da8569a8fadc99bb5b0abfac57e6d3a",
+      "sha256": "26f70049c124d446b2528dbc748ff6d1afd0ca4b21d200b8109ad144178a05c5",
       "spec_version": "2.44",
       "src": "tools/templates/person.html"
     },
@@ -1421,7 +1421,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-tree.js",
       "category": "operating",
-      "sha256": "06103de61298cf3b82a342d6813e89d258e5985c6e45aa609eb6c4ee33817eaf",
+      "sha256": "35f237af3b599457d50fc8c9cc71b48c78430adf325db032849dfb4e2b2fd1be",
       "spec_version": "2.44",
       "src": "tools/templates/vendor/fha-tree.js"
     },
@@ -1477,7 +1477,7 @@
     {
       "path": ".fha/tools/templates/vendor/tree-adapter.js",
       "category": "operating",
-      "sha256": "44f57f22604b178747e3df708a579910f54033c4d8a7f6abee5047693f2e5bd5",
+      "sha256": "fed75697f0738d12e654a981bb14b8bb62f59ec61540f0acaeec5f3944acea00",
       "spec_version": "2.44",
       "src": "tools/templates/vendor/tree-adapter.js"
     },
@@ -1526,7 +1526,7 @@
     {
       "path": ".fha/tools/views.py",
       "category": "operating",
-      "sha256": "4b03a28c687a9056d2a80af5eb5b1db45ee96bf87738cf44c4b3b9a79aaea9fa",
+      "sha256": "abbd9ffed41b7b58df30b55c08e88a63add126a635d62b47cc31a85e84d58051",
       "spec_version": "2.44",
       "src": "tools/views.py"
     },
@@ -1600,7 +1600,7 @@
     {
       "path": "docs/COMMANDS.md",
       "category": "operating",
-      "sha256": "84cdcb57f37e5a104a302525d0e9095ca3c08692c1ec782ea51e0b47c38cf08e",
+      "sha256": "a61e6db23998fb8008435534ecf67406ad679350ef4a05cd7834f3081309f865",
       "spec_version": "2.44"
     },
     {
@@ -1667,7 +1667,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "36bbd43bd7d32122479ef31535c23b1bb4a7622a4f79f33c3b72bbb73c92cf65",
+      "sha256": "8d61e7a9716746eef003c6d4a248eec70a1025454ca4d8c8547b86ee2110caa1",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
