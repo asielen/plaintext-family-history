@@ -358,6 +358,8 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     extract_bare_ids,
+    family_key,
+    family_keys,
     build_ahnentafel_map,
     FhaConfigError,
     place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
@@ -11503,7 +11505,7 @@ class _SiteBuilder:
         if rows is None:
             rows = self.conn.execute(
                 '''SELECT DISTINCT r.other_id, r.claim_id, c.subtype, c.confidence,
-                          c.source_id, c.status
+                          c.source_id, c.status, r.date_start, r.date_end
                    FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id
                    WHERE r.person_id = ? AND r.rel = ?
                    ORDER BY r.other_id, r.claim_id''',
@@ -11532,6 +11534,16 @@ class _SiteBuilder:
         tie on their best route to the seed. A tie two records prove is one
         edge, not one per record, so the person no longer appears twice.
 
+        Each parent, child and spouse edge names its family (`family`, chart
+        plan 08-8), so the explorer can keep the children of a man's first
+        and second marriages under the right wife. For that, a descendant
+        tree also carries each child's other parents and each descendant's
+        husbands and wives, as one-hop leaves the walk never follows, the
+        way `fha views tree` does; the families are the same in both
+        (`_tree_families`). A tie to anyone left out is not in the data and
+        never in a key. Any tie touching a Private card (parent, child or
+        spouse) still draws but carries no date, record id or confidence.
+
         PRIVATE CARDS (shared build, chart plan 13-2, owner decisions D16 and
         D20): every person past the seed is sorted by `_tree_card_kind`. A
         living adult is a node reading "Private" under a placeholder id
@@ -11543,9 +11555,15 @@ class _SiteBuilder:
         unlinked name, so the line is not cut at every uncurated ancestor."""
         rel = 'parent' if mode == 'ancestors' else 'child'
         order = [seed]
-        seen = {seed}
-        # (cur, other) -> the one edge for that tie, plus its claim rows.
-        ties: dict[tuple[str, str], dict] = {}
+        seen = {seed}       # in the data: walked, or a one-hop leaf
+        walked = {seed}     # queued for the walk
+        # (a, b, type) -> the one edge for that tie, plus the row it names.
+        ties: dict[tuple[str, str, str], dict] = {}
+        # A child's other parents and their tie to that child (descendants):
+        # one-hop leaves, as `fha views tree` adds them, kept apart until the
+        # walk ends so an edge the walk reaches itself keeps its place.
+        coparent_ties: dict[tuple[str, str, str], dict] = {}
+        coparented: set[str] = set()
         kinds: dict[str, str] = {}
 
         def card_kind(pid: str) -> str:
@@ -11553,43 +11571,73 @@ class _SiteBuilder:
             if pid not in kinds:
                 kinds[pid] = self._tree_card_kind(pid)
             return kinds[pid]
+
+        def tie_shown(a: str, b: str, r) -> bool:
+            """May this build show tie row `r` from `a` to `b`?"""
+            if self.linked:
+                return True
+            if card_kind(b) == 'omit':
+                return False
+            # Each tie is judged by its own records, never pair-wide: a
+            # census line naming both must not publish a parent tie the
+            # owner sealed, or hang the sealed child under a Private card
+            # (PR #495 review). A tie with no claim row behind it is judged
+            # as the site's other walks judge one.
+            if r['status'] is None:
+                return self._has_public_claim(a, b)
+            return self._claim_row_is_publishable(r['claim_id'], r['source_id'], r['status'])
+
+        def add_tie(store: dict, a: str, b: str, etype: str, r) -> None:
+            tie = store.get((a, b, etype))
+            if tie is None:
+                tie = store[(a, b, etype)] = {'row': r, 'confidence': None}
+            elif (not is_genetic_parent_subtype(_tree_row_subtype(tie['row']))
+                  and is_genetic_parent_subtype(_tree_row_subtype(r))):
+                # A father with both a birth record and an adoption record
+                # for his son is drawn as the father, as his pedigree
+                # seats him; the edge names that birth record.
+                tie['row'] = r
+            tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
+
+        def add_node(pid: str) -> None:
+            if pid not in seen:
+                seen.add(pid)
+                order.append(pid)
+
         truncated = False
         queue: deque[tuple[str, int]] = deque([(seed, 0)])
         while queue:
             cur, hop = queue.popleft()
             if max_hops is not None and hop >= max_hops:
                 truncated = True
-                continue
-            for r in self._tree_relationship_rows(cur, rel):
-                other = r['other_id']
-                if not self.linked:
-                    if card_kind(other) == 'omit':
+            else:
+                for r in self._tree_relationship_rows(cur, rel):
+                    other = r['other_id']
+                    if not tie_shown(cur, other, r):
                         continue
-                    # Each tie is judged by its own records, never pair-wide:
-                    # a census line naming both must not publish a parent
-                    # tie the owner sealed, or hang the sealed child under a
-                    # Private card (PR #495 review). A tie with no claim row
-                    # behind it is judged as the site's other walks judge one.
-                    if r['status'] is None:
-                        if not self._has_public_claim(cur, other):
-                            continue
-                    elif not self._claim_row_is_publishable(
-                            r['claim_id'], r['source_id'], r['status']):
-                        continue
-                tie = ties.get((cur, other))
-                if tie is None:
-                    tie = ties[(cur, other)] = {'row': r, 'confidence': None}
-                elif (not is_genetic_parent_subtype(_tree_row_subtype(tie['row']))
-                      and is_genetic_parent_subtype(_tree_row_subtype(r))):
-                    # A father with both a birth record and an adoption record
-                    # for his son is drawn as the father, as his pedigree
-                    # seats him; the edge names that birth record.
-                    tie['row'] = r
-                tie['confidence'] = stronger_confidence(tie['confidence'], r['confidence'])
-                if other not in seen:
-                    seen.add(other)
-                    order.append(other)
-                    queue.append((other, hop + 1))
+                    add_tie(ties, cur, other, rel, r)
+                    add_node(other)
+                    if other not in walked:
+                        walked.add(other)
+                        queue.append((other, hop + 1))
+                    if mode == 'descendants' and other not in coparented:
+                        coparented.add(other)
+                        for up in self._tree_relationship_rows(other, 'parent'):
+                            if up['other_id'] != cur and tie_shown(other, up['other_id'], up):
+                                add_tie(coparent_ties, up['other_id'], other, 'child', up)
+                                add_node(up['other_id'])
+            if mode == 'descendants':
+                # Husbands and wives as one-hop leaves (never walked, so an
+                # in-law's own family stays out), as `fha views tree` does.
+                for r in self._tree_relationship_rows(cur, 'spouse'):
+                    if r['other_id'] != cur and tie_shown(cur, r['other_id'], r):
+                        add_tie(ties, cur, r['other_id'], 'spouse', r)
+                        add_node(r['other_id'])
+        leaf_keys = set()
+        for key, tie in coparent_ties.items():
+            if key not in ties:
+                ties[key] = tie
+                leaf_keys.add(key)
         # A private card's id never reaches the shared site: a placeholder
         # stands in for it, numbered in the order the walk reached them.
         shown_id: dict[str, str] = {}
@@ -11600,16 +11648,29 @@ class _SiteBuilder:
                 shown_id[pid] = f'private-{placeholders}'
             else:
                 shown_id[pid] = fmt_id_display(pid)
+        families = self._tree_families(ties, shown_id, tie_shown)
         edges: list[dict] = []
-        for (cur, other), tie in ties.items():
+        # (from, to, type), one per edge, so the line search below can tell
+        # a co-parent's leaf tie from a route onward.
+        edge_keys: list[tuple[str, str, str]] = []
+        for (cur, other, etype), tie in ties.items():
             r = tie['row']
             # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
             # (adoptive, step, foster, guardian, …) draws distinctly from the
             # genetic line. Unset/legacy subtypes default to genetic.
             subtype = _tree_row_subtype(r)
+            if etype == 'spouse' and subtype and self.conn.execute(
+                    "SELECT 1 FROM relationships WHERE claim_id = ? "
+                    "AND rel IN ('parent', 'child') LIMIT 1", (r['claim_id'],)).fetchone():
+                # On a claim that also records a parent tie, `subtype:` is
+                # that tie's nature (SPEC §8.2): a wife named on a
+                # stepmother record is a wife, not a "step" marriage. Same
+                # rule as `fha views tree`. Asked only of a marriage with a
+                # subtype, which is rare.
+                subtype = None
             genetic = is_genetic_parent_subtype(subtype)
-            edges.append({
-                'type': rel, 'from': shown_id[cur], 'to': shown_id[other],
+            edge = {
+                'type': etype, 'from': shown_id[cur], 'to': shown_id[other],
                 'claim_id': fmt_id_display(r['claim_id']) if r['claim_id'] else None,
                 'subtype': subtype,
                 'genetic': genetic,
@@ -11621,7 +11682,24 @@ class _SiteBuilder:
                 'kind': 'genetic' if genetic else 'legal',
                 'confidence': tie['confidence'],
                 'dates': {'start': None, 'end': None},
-            })
+            }
+            touches_private = (shown_id[cur].startswith('private-')
+                               or shown_id[other].startswith('private-'))
+            if touches_private:
+                # A living person's ties stay home: the line still draws,
+                # but with no record id a relative could look up, no
+                # wedding date, no word on how well a record proves it.
+                edge['claim_id'] = edge['confidence'] = None
+            if etype == 'spouse':
+                if not touches_private:
+                    edge['dates'] = {'start': r['date_start'] or None,
+                                     'end': r['date_end'] or None}
+                edge['family'] = family_key([shown_id[cur], shown_id[other]])
+            else:
+                child, parent = (cur, other) if etype == 'parent' else (other, cur)
+                edge['family'] = families[child][parent]
+            edge_keys.append((cur, other, etype))
+            edges.append(edge)
         if truncated:
             # Should not happen in any real archive (see `_DESCENDANT_TREE_
             # MAX_HOPS`'s comment) - surfaced loudly rather than silently
@@ -11630,16 +11708,19 @@ class _SiteBuilder:
                 f'WARNING: {mode} tree for {fmt_id_display(seed)} exceeded '
                 f'{max_hops} generations and was truncated; some real '
                 f'genealogy data was omitted from its tree JSON.')
+        # A co-parent's tie to the child brings them in but is never a route
+        # onward, so a wife's strong tie to her son cannot hide that his
+        # descent rests on a family story.
         # A Private card carries no detail about itself, and that includes how
         # well its ties are proven. Those ties are claims naming a living
-        # person, so they count as unrated before the line is worked out: a
-        # dead grandchild faded only because Pat's own parentage is a family
-        # story would tell every visitor that about Pat.
-        for e in edges:
-            if e['from'].startswith('private-') or e['to'].startswith('private-'):
-                e['confidence'] = None
+        # person, so they count as unrated (their edges' confidence is already
+        # blanked above): a dead grandchild faded only because Pat's own
+        # parentage is a family story would tell every visitor that about Pat.
         lines = line_confidence(shown_id[seed], [
-            (e['from'], e['to'], e['type'], e['confidence']) for e in edges])
+            (e['from'], e['to'], e['type'], e['confidence'])
+            for key, e in zip(edge_keys, edges) if key not in leaf_keys
+        ], leaf_ties=[(e['from'], e['to'], e['confidence'])
+                      for key, e in zip(edge_keys, edges) if key in leaf_keys])
         nodes = []
         for pid in order:
             if shown_id[pid].startswith('private-'):
@@ -11657,6 +11738,33 @@ class _SiteBuilder:
             'edges': edges,
         }
 
+    def _tree_families(self, ties: dict, shown_id: dict, tie_shown) -> dict:
+        """{child: {parent: family key}} for every child in the walk's parent
+        and child ties, so the explorer can keep the children of a first and
+        a second marriage under the right couple (`_lib.family_keys`, chart
+        plan 08-8). Keys are written in the ids the build shows (a Private
+        card's placeholder), and only from what the build shows: a parent
+        the walk left out is in no key, and a step-parent is paired with the
+        parent they married only when the build may show that marriage. The
+        walk gathers every parent it may show for each child it reaches, so
+        the key is the same whichever way the child was reached."""
+        parents: dict[str, dict[str, bool]] = {}
+        for (a, b, etype), tie in ties.items():
+            if etype == 'spouse':
+                continue
+            child, parent = (a, b) if etype == 'parent' else (b, a)
+            parents.setdefault(child, {})[parent] = is_genetic_parent_subtype(
+                _tree_row_subtype(tie['row']))
+        families: dict[str, dict[str, str]] = {}
+        for child, of in parents.items():
+            married = {
+                frozenset((shown_id[n], shown_id[r['other_id']]))
+                for n, genetic in of.items() if not genetic
+                for r in self._tree_relationship_rows(n, 'spouse')
+                if r['other_id'] in of and r['other_id'] != n and tie_shown(n, r['other_id'], r)}
+            keys = family_keys({shown_id[p]: g for p, g in of.items()}, married)
+            families[child] = {p: keys[shown_id[p]] for p in of}
+        return families
     def _dated_record_years(self, pid: str) -> tuple[int | None, int | None]:
         """The years of this person's earliest and latest dated accepted
         record, for a lifespan bar whose birth or death is not recorded.
@@ -12429,12 +12537,13 @@ class _SiteBuilder:
                        home_id: str | None = None, chart_name: str = '') -> dict | None:
         """Build a tree, write its `data/tree_{seed}_{mode}.json` artifact, and
         return the template context (inline-embeddable JSON + caption). Returns
-        None when the tree has no edges (a lone node is not worth rendering), so
-        the page simply omits the tree section. `initial_depth` bounds the
+        None when the tree has no parent or child edges (a lone node, or a
+        person with a wife but no children, is not worth rendering), so the
+        page simply omits the tree section. `initial_depth` bounds the
         renderer's initial paint (deeper nodes start collapsed) for potentially
         large descendant explorers; None shows every generation expanded."""
         tree = self._build_tree_data(seed, mode, max_hops, page_dir)
-        if not tree['edges']:
+        if not any(e['type'] in ('parent', 'child') for e in tree['edges']):
             return None
         try:
             self.data_dir.mkdir(parents=True, exist_ok=True)
