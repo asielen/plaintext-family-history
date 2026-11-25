@@ -94,6 +94,8 @@ If Ancestry will not hand over the scan (you are signed out, or the collection d
 
 Badges from the Seen It add-on ("Seen 2×", "Captured, not filed") are never saved as part of a record or a page copy.
 
+Two kinds of Ancestry page are copies of something better elsewhere, and the panel says so above the form. A **Newspapers.com clipping saved to a tree** is a smaller copy of the clipping: the panel offers **Open it on Newspapers.com**, where you capture the full one. A **Find a Grave Index entry** points to a memorial: the panel offers **Open it on Find a Grave**. Either way it says whether your archive already holds the original, and the people you ticked come along. You can still capture Ancestry's copy if you want it.
+
 ### Photos shared on Ancestry
 
 When a photo shared to an Ancestry tree (yours or another member's) is open on its own page (the photo fills the screen; the address has `mediaui-viewer` in it), the panel's button reads **Capture this photo**. It saves:
@@ -141,7 +143,13 @@ Many FamilySearch images can only be seen at a FamilySearch center or an affilia
 
 On other FamilySearch pages, if the file address the panel found will not download (the viewer's image pieces often refuse), Capture tries once more through FamilySearch itself for the same image.
 
-On an image viewer that was not opened from a record, Capture saves the full image the same way.
+On an image viewer that was not opened from a record (paging through a film that has no index, looking for a deed), Capture saves the full image the same way, with the film number, the image number and a citation naming both. If the archive already holds an image one or two away on the same film, the panel asks first whether this one is the next page of that record: answer **Yes** and it is filed into the same source; answer **No, it's a separate record** and it becomes a new one. Nothing is joined without your answer.
+
+When the image is open in FamilySearch's **Full-Text** view, Capture also keeps FamilySearch's machine reading of its words as `transcript.md`, marked as unchecked. It makes the words searchable; it is often wrong, so read the image itself before you trust a word of it.
+
+Some records show a "View on wvculture.org" badge instead of an image: the image is held by the West Virginia Archives. Capture follows the badge and saves that image beside FamilySearch's index, and the citation says where the original is.
+
+An entry in FamilySearch's Find a Grave Index points to a memorial, which holds the photos and family links. The panel says so and offers **Open it on Find a Grave**, where you capture the memorial itself.
 
 The add-on uses your FamilySearch sign-in only to talk to FamilySearch itself, reads it from the page each time, and never keeps or saves it.
 
@@ -161,13 +169,25 @@ A photo already saved is not downloaded again: one from an earlier capture in th
 
 ---
 
+## Books on the Internet Archive
+
+On a page of a book in the Internet Archive's reader (archive.org), click the toolbar button and then **Capture**. No sign-in is used. The add-on saves the page's picture, the page's machine-read text as `transcript.md` (marked unchecked: read the picture before you trust it), and the book's details, with a citation naming the author, title, publisher, year and printed page. The "Pages to save" box lets you take the next page or two as well. A book that is only lent (a lending-library book) saves its details and citation but none of its pages, and the panel says so.
+
+---
+
+## WikiTree profiles
+
+On a WikiTree profile or free-space page, click the toolbar button and then **Capture**. No sign-in is used, so only what WikiTree shows everyone is saved: the names, dates and places, the parents, spouses and children (as WikiTree IDs), the biography as `page.md`, the profile's photos, and any scan or transcription WikiTree itself holds for a cited source. The record's notes end with the profile's cited sources as a list to tick off as you find each one. A WikiTree profile is someone else's summary of the records, so it is filed as a copy made from other records; the records it cites are the evidence to chase. When you file it, your assistant offers to note the person's WikiTree ID on their record.
+
+---
+
 ## What it will not do
 
 - It only reads the page you are looking at, in your own browser session, when you click the button. It never browses on its own, never logs in for you, and never runs in the background.
 - It saves only what you can already see. If a website will not hand over an image, the add-on says so plainly and you can download the file yourself and drop it into the panel.
 - It records the page's web address, never a folder path from your computer.
 - It never saves the Seen It add-on's badges ("Seen 1× · last Nov 8", "In archive") as part of a record, its people's names or a page copy, on any site.
-- It sends nothing anywhere. Captures go to your Downloads folder and then into your archive, nowhere else, and never onto the public web. The one question it may ask the Seen It add-on, on your own computer, is whether the archive already holds an Ancestry census page or a Find a Grave photo. What is published is decided later, by you, when you export something.
+- It sends nothing anywhere. Captures go to your Downloads folder and then into your archive, nowhere else, and never onto the public web. The one question it may ask the Seen It add-on, on your own computer, is whether the archive already holds what you are about to save (a census page, a photo, a clipping, a memorial or a film image). What is published is decided later, by you, when you export something.
 
 ---
 
