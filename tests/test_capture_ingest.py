@@ -99,6 +99,62 @@ class IngestTestCase(unittest.TestCase):
         self.assertIn('grave-1', primary[0]['file'])
         self.assertEqual(primary[0]['role'], 'grave-1')
 
+    def test_a_wikitree_capture_files_its_held_sources_as_source_n_and_keeps_the_id_line(self) -> None:
+        # #423: a WikiTree profile's capture files the page text, the scan and
+        # the transcription WikiTree holds for its cited sources (`source-N`,
+        # never a family photo), the profile's photo (`photo-1`), and its
+        # "Cited sources" list into the source's Notes. The WikiTree id line
+        # the process-source skill reads is still written.
+        import argparse
+        import process
+        notes = ('WikiTree citation: WikiTree, "Calvin Hartley (Hartley-6084)," '
+                 '(https://www.wikitree.com/wiki/Hartley-6084 : last edited 2023-05-26; accessed 2026-11-24).\n\n'
+                 '### Cited sources\n\nLinked (open each and check it):\n'
+                 '- [ ] Marriage record: image - https://www.wikitree.com/photo/jpg/Hartley-6084-2; saved in this '
+                 'source as source-1.jpg ("Hartley-Cole marriage record"), from '
+                 'https://www.wikitree.com/photo/jpg/Hartley-6084-2\n\nTo find:\n- [ ] Family letters')
+        bundle = _make_bundle(
+            self.staging, 'calvin-wikitree', page_html=_sample('wikitree-profile'),
+            capture_json={
+                'schema': 2, 'url': 'https://www.wikitree.com/wiki/Hartley-6084',
+                'title': 'Calvin Hartley (Hartley-6084) - WikiTree profile', 'source_type': 'website',
+                'source_class': 'derivative', 'repository': 'WikiTree', 'recipe_hint': 'wikitree',
+                'people': ['Calvin Hartley'], 'notes': notes,
+                'citation': 'WikiTree, "Calvin Hartley (Hartley-6084)," (https://www.wikitree.com/wiki/Hartley-6084 '
+                            ': last edited 2023-05-26; accessed 2026-11-24).',
+                'assets': [{'file': 'page.md', 'role': 'transcript', 'is_primary': True},
+                           {'file': 'source-1.jpg', 'role': 'source-1'},
+                           {'file': 'source-2.md', 'role': 'source-2'},
+                           {'file': 'photo-1.jpg', 'role': 'photo-1'},
+                           {'file': 'record-data.json', 'role': 'site-data'}],
+            })
+        (bundle / 'page.md').write_text('# Calvin Hartley (WikiTree Hartley-6084)\n\nBorn 1842.\n', encoding='utf-8')
+        (bundle / 'source-1.jpg').write_bytes(b'\xff\xd8\xff\xe0 marriage record scan')
+        (bundle / 'source-2.md').write_text('# Hartley Family Bible\n\nCalvin Hartley born 12 March 1842\n',
+                                            encoding='utf-8')
+        (bundle / 'photo-1.jpg').write_bytes(b'\xff\xd8\xff\xe0 portrait')
+        (bundle / 'record-data.json').write_text('{}', encoding='utf-8')
+        self.assertEqual(self._ingest().exit_code, EXIT_CLEAN)
+        folder = next(p for p in (self.archive / 'inbox').iterdir() if p.is_dir())
+        args = argparse.Namespace(root=str(self.archive), file=str(folder), source_type=None, title=None,
+                                  slug=None, source_date=None, more=None, people=None, dry_run=False)
+        with mock.patch('sys.stdout', new_callable=io.StringIO):
+            self.assertEqual(process.run_process(args).exit_code, EXIT_CLEAN)
+        record_path = next((self.archive / 'sources').rglob('*_s-*.md'))
+        record = read_record(record_path)
+        files = {f['role']: f for f in record['meta']['files']}
+        self.assertEqual(set(files), {'transcript', 'source-1', 'source-2', 'photo-1', 'site-data'})
+        self.assertTrue(files['transcript'].get('is_primary'))
+        self.assertTrue(files['source-1']['file'].endswith('.jpg'))
+        self.assertTrue(files['source-2']['file'].endswith('.md'))
+        for entry in files.values():
+            self.assertTrue((self.archive / entry['file']).is_file(), entry['file'])
+        self.assertEqual(record['meta']['source_class'], 'derivative')
+        text = record_path.read_text(encoding='utf-8')
+        self.assertIn('### Cited sources', text)
+        self.assertIn('saved in this source as source-1.jpg', text)
+        self.assertIn('Site id of the person this page is about (Calvin Hartley): wikitree: Hartley-6084', text)
+
     # ── a neighbouring film image added to the source he already has ────────
 
     def _film_bundle(self, name: str, number: int, *, attach_to=None) -> Path:

@@ -450,7 +450,7 @@ class CaptureTestCase(unittest.TestCase):
         recipes = capture._load_site_recipes()
         names = {getattr(m, 'SOURCE_NAME', m.__name__): m for m in recipes}
         self.assertEqual(set(names), {'Ancestry', 'FamilySearch', 'Newspapers.com', 'FindAGrave', 'WVCulture',
-                                      'InternetArchive'})
+                                      'InternetArchive', 'WikiTree'})
 
         urls = {
             'Ancestry': 'https://www.ancestry.com/discoveryui-content/view/1:2',
@@ -459,6 +459,7 @@ class CaptureTestCase(unittest.TestCase):
             'FindAGrave': 'https://www.findagrave.com/memorial/1/x',
             'WVCulture': 'https://archive.wvculture.org/vrr/va_view2.aspx?FilmNumber=1984148&ImageNumber=2530',
             'InternetArchive': 'https://archive.org/details/historyofamadorc00maso/page/n20',
+            'WikiTree': 'https://www.wikitree.com/wiki/Hartley-6084',
         }
         samples = {
             'Ancestry': _sample('ancestry'),
@@ -467,6 +468,7 @@ class CaptureTestCase(unittest.TestCase):
             'FindAGrave': _sample('findagrave'),
             'WVCulture': _sample('wvculture-view'),
             'InternetArchive': _sample('archiveorg-bookreader'),
+            'WikiTree': _sample('wikitree-profile'),
         }
         # Each recipe detects its own sample and rejects the others.
         for owner, mod in names.items():
@@ -1067,6 +1069,83 @@ class CaptureTestCase(unittest.TestCase):
             '(https://archive.org/details/historyofamadorc00maso/page/n20 : accessed '), meta['citation'])
         self.assertIn('https://archive.org/details/historyofamadorc00maso/page/n20',
                       [x['url'] for x in meta['external_links']])
+
+    def test_wikitree_profile_keeps_its_id_last_edit_family_and_sources_to_find(self) -> None:
+        # #423: a WikiTree profile filed from a saved page keeps its WikiTree ID
+        # (so the person can be matched later), the day it was last edited, its
+        # family as WikiTree IDs, and its cited sources as a list to tick.
+        url = 'https://www.wikitree.com/wiki/Hartley-6084'
+        rc = self._capture(_sample('wikitree-profile'), url=url)
+        self.assertEqual(rc, EXIT_CLEAN)
+        rec = read_record(self._only_stub())
+        meta = rec['meta']
+        self.assertEqual(meta['title'], 'Calvin Hartley (Hartley-6084) - WikiTree profile')
+        self.assertEqual(meta['repository'], 'WikiTree')
+        self.assertEqual(meta['source_type'], 'website')
+        self.assertEqual(meta['source_class'], 'derivative')   # a compiled tree page
+        self.assertNotIn('source_date', meta)                   # never dated by the person's dates
+        self.assertEqual(meta['external_ids'], {'wikitree': 'Hartley-6084'})
+        self.assertEqual(meta['people'][0], 'Calvin Hartley')
+        self.assertTrue(meta['citation'].startswith(
+            'WikiTree, "Calvin Hartley (Hartley-6084)," (https://www.wikitree.com/wiki/Hartley-6084 : '
+            'last edited 2023-05-26; accessed '), meta['citation'])
+        body = rec['body']
+        self.assertIn('WikiTree ID: Hartley-6084', body)
+        self.assertIn('Family (father): Caleb Comstock Hartley (WikiTree Hartley-6083)', body)
+        self.assertIn('Family (spouse): Ethel (Cole) Hartley (WikiTree Cole-1234)', body)
+        self.assertIn('Family (child): Edith Louise Hartley (WikiTree Hartley-6090)', body)
+        self.assertNotIn('Hartley-6085', body)                  # a sibling is not listed as family here
+        self.assertIn('lived at Fairview on the paternal homestead', body)
+        self.assertIn('### Cited sources\n\nTo find:\n- [ ] 1. [S362] History of the Hartley Family', body)
+        self.assertEqual(body.count('- [ ] '), 4)
+
+    def test_wikitree_recipe_takes_profiles_and_space_pages_only(self) -> None:
+        from capture_recipes import wikitree
+        html = '<html><head><title>WikiTree</title></head><body><h1>Hartley Family Bible</h1></body></html>'
+        for url in ('https://www.wikitree.com/wiki/Hartley-6084', 'https://wikitree.com/wiki/Hartley-6084',
+                    'https://www.wikitree.com/wiki/Space:Hartley_Family_Bible'):
+            self.assertTrue(wikitree.detect(html, url), url)
+        for url in ('https://www.wikitree.com/wiki/Category:Fairview', 'https://www.wikitree.com/genealogy/HARTLEY',
+                    'https://www.wikitree.com/photo/jpg/Hartley-6084-2', 'https://example.org/wiki/Hartley-6084'):
+            self.assertFalse(wikitree.detect(html, url), url)
+        got = wikitree.extract(html, 'https://www.wikitree.com/wiki/Space:Hartley_Family_Bible')
+        self.assertEqual(got['title'], 'Hartley Family Bible - WikiTree free-space page')
+        self.assertTrue(got['citation'].startswith('WikiTree, "Space:Hartley Family Bible," '
+                                                   '(https://www.wikitree.com/wiki/Space:Hartley_Family_Bible : accessed '))
+        self.assertEqual(got['people'], [])
+        self.assertEqual(capture.site_person_ids(got['external_links']), {})   # a Space page names no one person
+
+    def test_wikitree_profile_id_may_start_with_an_accented_letter(self) -> None:
+        # Review of #512: an Åberg profile is a profile, not a plain page save.
+        from capture_recipes import wikitree
+        html = '<html><head><title>WikiTree</title></head><body><h1>Anna Åberg</h1></body></html>'
+        self.assertTrue(wikitree.detect(html, 'https://www.wikitree.com/wiki/%C3%85berg-55'))
+        self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/1890-12'))
+        self.assertFalse(wikitree.detect(html, 'https://www.wikitree.com/wiki/_Hartley-12'))
+
+    def test_wikitree_sources_under_sub_headings_stay_but_thanks_do_not(self) -> None:
+        # Review of #512: Primary/Secondary sub-headings hold sources; Acknowledgements does not.
+        from capture_recipes import wikitree
+        root = wikitree._tree('<html><body><div class="body-text"><h2 id="Sources">Sources</h2>'
+                                   '<h3>Primary sources</h3><ul><li>Fairview marriage register, 1866.</li></ul>'
+                                   '<h3>Acknowledgements</h3><ul><li>Thanks to Edith Hartley.</li></ul>'
+                                   '<h3>Secondary sources</h3><ul><li>Webb, A History of Fairview.</li></ul>'
+                                   '<h2>Research Notes</h2><ul><li>Check the Reed letters.</li></ul>'
+                                   '</div></body></html>')
+        self.assertEqual([e['text'] for e in wikitree._sources(root)],
+                         ['Fairview marriage register, 1866.', 'Webb, A History of Fairview.'])
+
+    def test_wikitree_sources_list_puts_linked_ones_first(self) -> None:
+        from capture_recipes import wikitree
+        html = ('<html><body><h1>Calvin Hartley</h1><div class="body-text"><h2 id="Biography">Biography</h2>'
+                '<p>Born 1842.</p><h2 id="Sources">Sources</h2>'
+                '<ol class="references"><li><span class="reference-text">Family letters</span></li></ol>'
+                '<ul><li>Census: <a href="https://www.familysearch.org/ark:/61903/1:1:ABCD-123">FamilySearch</a></li>'
+                '<li>See <a href="/wiki/Hartley-6083">his father</a></li></ul></div></body></html>')
+        body = wikitree.extract(html, 'https://www.wikitree.com/wiki/Hartley-6084')['body']
+        self.assertIn('### Cited sources\n\nLinked (open each and check it):\n'
+                      '- [ ] Census: FamilySearch - https://www.familysearch.org/ark:/61903/1:1:ABCD-123\n\n'
+                      'To find:\n- [ ] Family letters\n- [ ] See his father', body)
 
     def test_internet_archive_recording_is_not_filed_as_a_book(self) -> None:
         # Codex 4662757865: an oral-history recording saved from archive.org is
