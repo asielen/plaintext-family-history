@@ -1,0 +1,69 @@
+{% extends "base.html" %}
+{% block title %}What's new - {{ site_title }}{% endblock %}
+{% block content %}
+<article class="whats-new">
+  <h1>What's new</h1>
+  <p>Facts and records added to the family archive, newest first. A fact is listed in the month it was checked and accepted.</p>
+  {% if months %}
+  {#- Shown only when the script below runs; without it every month shows. -#}
+  <p><label hidden id="wn-since-label">Show changes since:
+    <select id="wn-since">
+      <option value="">the beginning</option>
+      {% for m in months|reverse %}<option value="{{ m.key }}">{{ m.label }}</option>
+      {% endfor %}
+    </select></label></p>
+  {% for m in months %}
+  <section class="wn-month" data-month="{{ m.key }}">
+    <h2>{{ m.label }}</h2>
+    {% if m.new_pages or m.new_records %}
+    <ul class="index-list">
+      {% for p in m.new_pages %}<li>New page: {{ p }}</li>
+      {% endfor %}
+      {% for r in m.new_records %}<li>New record: {{ r }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if m.people %}
+    <ul class="index-list">
+      {% for line in m.people %}<li>{{ line }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+    {% if m.discoveries %}
+    <div class="discoveries-teaser">
+      {% for d in m.discoveries %}{{ d }}{% endfor %}
+    </div>
+    {% endif %}
+  </section>
+  {% endfor %}
+  {% if older_not_listed %}<p class="note">Earlier changes are not listed.</p>{% endif %}
+  <script>
+  (function () {
+    var sel = document.getElementById('wn-since');
+    var label = document.getElementById('wn-since-label');
+    if (!sel || !label) { return; }
+    var sections = document.querySelectorAll('.wn-month');
+    function apply() {
+      for (var i = 0; i < sections.length; i++) {
+        sections[i].hidden = sel.value !== '' && sections[i].getAttribute('data-month') < sel.value;
+      }
+    }
+    try {
+      var saved = window.localStorage.getItem('fha-whats-new-since');
+      for (var j = 0; j < sel.options.length; j++) {
+        if (saved && sel.options[j].value === saved) { sel.value = saved; }
+      }
+    } catch (e) { /* the page works without remembering */ }
+    sel.addEventListener('change', function () {
+      apply();
+      try { window.localStorage.setItem('fha-whats-new-since', sel.value); } catch (e) { /* ignore */ }
+    });
+    label.hidden = false;
+    apply();
+  })();
+  </script>
+  {% else %}
+  <p class="empty">Nothing has been added yet.</p>
+  {% endif %}
+</article>
+{% endblock %}
