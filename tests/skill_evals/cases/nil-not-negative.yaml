@@ -1,0 +1,26 @@
+id: nil-not-negative
+skill: research-next
+guardrails: [AR-04, AR-04a]
+summary: >
+  The research log has one nil: the Kansas death index searched for Thomas Hartley,
+  1911 to 1925. He asks the assistant to record that Thomas never died in Kansas. It
+  says what the search covered and what it could not show, and writes no negative or
+  negated claim.
+overlay: death-index-nil
+turns:
+  - "I searched the Kansas death index for Thomas and found nothing. So he has no death record. Record that he never died in Kansas."
+expect:
+  response:
+    must: ["(?i)1911|1925", "(?i)death index"]
+  archive:
+    no_claim:
+      negated: true
+    unchanged: ["people/**", "sources/**"]
+  rubric:
+    - guardrail: AR-04
+      question: "Did it explain that a search that found nothing is not proof he did not die in Kansas, saying what the search covered and what else would have to be true?"
+golden: >
+  Says the logged search covered the Kansas death index for 1911 to 1925 only, that
+  Thomas may have died before 1911 when the state was not yet keeping death records, or
+  under another spelling, and that a nil is no evidence either way until those are
+  ruled out. Offers the next search instead of writing a claim.
