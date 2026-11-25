@@ -12,6 +12,7 @@ turns:
   - "Write to the county for Thomas Hartley's death certificate."
   - "Yes, save it."
   - "I sent it today."
+  - "Yes, add it."
 expect:
   response:
     must: ["\\(check this\\)"]

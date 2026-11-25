@@ -7,7 +7,7 @@ summary: >
   only. The gap is not written into the biography.
 turns:
   - "Draft Thomas Edward Hartley's biography."
-  - "Looks good, stop there."
+  - "Yes, add it as a draft, then stop there."
 expect:
   response:
     must: ["(?i)census", "(?i)death"]

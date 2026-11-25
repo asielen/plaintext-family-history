@@ -474,11 +474,17 @@ def build_archive(case: dict, where: Path) -> Path:
     return archive
 
 
-def child_env() -> dict[str, str]:
+def child_env(archive: Path | None = None) -> dict[str, str]:
     env = {}
     for key, value in os.environ.items():
         if key in _KEEP_ENV or not key.startswith(_SESSION_ENV_PREFIXES):
             env[key] = value
+    if archive is not None:
+        # The archive folder goes first on PATH, as the launcher's own
+        # comment suggests to an owner, so a bare `fha` (fha.cmd on Windows)
+        # reaches this archive's tools and no other.
+        path_key = next((k for k in env if k.upper() == 'PATH'), 'PATH')
+        env[path_key] = str(archive) + os.pathsep + env.get(path_key, '')
     return env
 
 
@@ -519,7 +525,7 @@ def run_turns(case: dict, archive: Path, args, transcript_dir: Path) -> tuple[st
     for n, turn in enumerate(case['turns']):
         argv = agent_command(args.agent, args.continue_args, first=(n == 0))
         try:
-            proc = subprocess.run(argv, input=turn, cwd=archive, env=child_env(),
+            proc = subprocess.run(argv, input=turn, cwd=archive, env=child_env(archive),
                                   capture_output=True, text=True, encoding='utf-8',
                                   errors='replace', timeout=args.timeout)
             out, err = proc.stdout, proc.stderr

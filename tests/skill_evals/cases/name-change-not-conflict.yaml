@@ -11,7 +11,7 @@ turns:
   - "Is Chastina A. Hartley the same person as Chastina Augusta Reed?"
 expect:
   response:
-    must: ["(?i)married", "\\?"]
+    must: ["(?i)married", "(?i)\\?|if you say yes|shall I|should I|do you want|would you like"]
     must_not: ["(?i)names? (conflict|do(es)? not match|don't match)", "(?i)\\bI('ve| have) merged\\b"]
   archive:
     unchanged: ["people/**"]

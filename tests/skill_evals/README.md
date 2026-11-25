@@ -31,7 +31,7 @@ For each case and repeat it:
 
 1. runs `fha install` into a new temp folder outside the repo, copies `example-archive/` over it (everything except `generated/` and `.cache/`), then the case's overlay, and runs `fha index` and `fha photoindex`;
 2. records a hash of every file, the index's claims, the research log entries and the `fha lint` codes;
-3. sends each turn on stdin to the agent command, in the temp folder, one session across turns, with the agent allowed to edit files and run the archive's `fha` there and nothing else; agent-session variables inherited from your own session are dropped, credentials are kept; each turn times out (300 s by default);
+3. sends each turn on stdin to the agent command, in the temp folder, one session across turns, with the agent allowed to edit files and run the archive's `fha` there and nothing else (the temp archive is first on its PATH, so a bare `fha` reaches it); agent-session variables inherited from your own session are dropped, credentials are kept; each turn times out (300 s by default);
 4. reindexes and evaluates the case's checks against the before and after state;
 5. with `--judge`, asks a second model call each rubric question; the verdict is reported beside the checks and never fails a case;
 6. writes `results.json`, `results.md` and the transcripts to `--out` (default: a dated folder in the system temp folder).

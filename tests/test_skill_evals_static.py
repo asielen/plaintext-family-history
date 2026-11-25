@@ -25,6 +25,7 @@ is run by hand. It is never collected here (its filename has no test_ prefix).
 """
 
 import importlib.util
+import os
 import re
 import tempfile
 import unittest
@@ -341,6 +342,22 @@ class RunnerChecksTests(unittest.TestCase):
     def test_every_allowed_check_is_implemented(self) -> None:
         for name in self.runner.ALLOWED_ARCHIVE_CHECKS:
             self.assertIn(name, self.runner.ARCHIVE_CHECKS, name)
+
+    def test_child_env_drops_the_parent_session_and_finds_this_fha(self) -> None:
+        saved = dict(os.environ)
+        try:
+            os.environ['CLAUDECODE'] = '1'
+            os.environ['CLAUDE_CODE_ENTRYPOINT'] = 'cli'
+            os.environ['ANTHROPIC_API_KEY'] = 'k'
+            env = self.runner.child_env(Path('somewhere') / 'archive')
+        finally:
+            os.environ.clear()
+            os.environ.update(saved)
+        self.assertNotIn('CLAUDECODE', env)
+        self.assertNotIn('CLAUDE_CODE_ENTRYPOINT', env)
+        self.assertEqual(env['ANTHROPIC_API_KEY'], 'k')
+        path = next(v for k, v in env.items() if k.upper() == 'PATH')
+        self.assertTrue(path.startswith(str(Path('somewhere') / 'archive') + os.pathsep))
 
     def test_lint_codes_are_read_from_lint_output(self) -> None:
         out = ('W101 people/x.md: no birth or death\n'
