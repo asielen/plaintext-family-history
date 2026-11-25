@@ -4946,6 +4946,11 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "Questions for the family" page: off unless fha.yaml says
+        # `questions_page: true`, and only in a shared (standalone) build -
+        # the working views already show open questions on person pages.
+        questions_on, questions_warning = _site_switch(site_cfg, 'questions_page')
+        self.show_questions = questions_on and not linked
         # The "What's new" page: off unless fha.yaml says `whats_new: true`.
         self.show_whats_new, whats_new_warning = _site_switch(site_cfg, 'whats_new')
         self._whats_new_cache: tuple[list[dict], bool] | None = None
@@ -4955,7 +4960,8 @@ class _SiteBuilder:
         # The statistics page: off unless asked for (TOOLING §12).
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
-                                             surname_warning, statistics_warning, whats_new_warning) if w]
+                                             surname_warning, statistics_warning, whats_new_warning,
+                                             questions_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -9860,6 +9866,127 @@ class _SiteBuilder:
         self._write_page(self.places_dir / _page_filename(lid), 'place.html',
                          {'place': ctx, 'root_prefix': '..'})
 
+    # - questions page -
+
+    def _shared_questions(self) -> list[dict]:
+        """The open questions he marked `share: family` that this build may
+        show relatives (SPEC §17b), as {'heading_html', 'people', 'sources'}.
+
+        A relative should see only what he chose to share and never a living
+        person's name, so a question is dropped whole when anything it names
+        is withheld: its home file is the research file of a person with no
+        page here, a person in `refs:` has no page here (living, unknown,
+        restricted, by-request, or not in the archive), a source in `refs:`
+        has no page, a ref is not an ID, or its heading names a withheld
+        person or record in any link form. Only the heading and the
+        people and sources in `refs:` are published: the working answer, its
+        basis and `context:` never are. Sorted by heading, then file, so a
+        rebuild is byte-identical."""
+        undecodable: list[Path] = []
+        page_dir = self.out_dir
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        found: list[tuple[str, str, dict]] = []
+        for _key, info in parse_questions(self.archive_root,
+                                          on_decode_error=undecodable.append).items():
+            if question_state(info['status']) != 'open':
+                continue
+            if (info.get('share') or '').strip().lower() != 'family':
+                continue
+            if self._question_origin_is_by_request(info):
+                continue
+            # A question kept in a person's research file is about that
+            # person: if her page is withheld (living, unknown, private), the
+            # question stays home too. A file whose owner cannot be read
+            # from its name stays home as well (fail closed).
+            home = info.get('file') or ''
+            if home != 'notes/questions.md':
+                parsed = parse_filename(Path(home))
+                if (parsed is None or parsed.get('id_type') != 'P'
+                        or normalize_id(parsed['id_str']) not in self.person_pages):
+                    continue
+            # Every ref must be a recognisable ID; a ref written as a
+            # wikilink is read for the ID inside it, and anything else
+            # (a name, a typo) keeps the question home rather than guessing.
+            ref_ids: list[str] | None = []
+            for raw in info['refs']:
+                ids = [normalize_id(m) for m in _BARE_ID_RE.findall(raw)]
+                if not ids:
+                    ref_ids = None
+                    break
+                ref_ids.extend(ids)
+            if ref_ids is None:
+                continue
+            refs = list(dict.fromkeys(ref_ids))
+            people = [r for r in refs if r.startswith('p-')]
+            sources = [r for r in refs if r.startswith('s-')]
+            if any(p not in self.person_pages or self._person_is_by_request(
+                    p, question_origin=info.get('file')) for p in people):
+                continue
+            if any(s not in self.source_pages for s in sources):
+                continue
+            if any(not self._question_claim_is_shareable(r) for r in refs
+                   if r.startswith('c-')):
+                continue
+            # The heading may name people or records in any link form
+            # (`[[p-…]]`, a markdown link to the person's file, a bare ID).
+            # Any person or record without a page here keeps it home, and so
+            # does a rendered "Living Person" or "Restricted" label: even the
+            # label tells relatives something private exists.
+            heading_ids = {normalize_id(m) for m in _BARE_ID_RE.findall(info['heading'])}
+            if any((h.startswith('p-') and h not in self.person_pages)
+                   or (h.startswith('s-') and h not in self.source_pages)
+                   or (h.startswith('c-') and not self._question_claim_is_shareable(h))
+                   for h in heading_ids):
+                continue
+            heading_html = _inline_html(info['heading'], render)
+            if _LIVING_LABEL in heading_html or _RESTRICTED_LABEL in heading_html:
+                continue
+            found.append((info['heading'], info['file'], {
+                'heading_html': self._markup(heading_html),
+                'people': self._markup(', '.join(render(p) for p in people)),
+                'sources': self._markup(', '.join(render(s) for s in sources)),
+            }))
+        for path in undecodable:
+            try:
+                rel = path.relative_to(self.archive_root).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            self.messages.append(
+                f"WARNING: could not read {rel} (this file isn't saved as UTF-8 text); "
+                'its questions are left off the questions page. Open it, save it again '
+                'as UTF-8, then run `fha site` again.')
+        found.sort(key=lambda t: (t[0], t[1]))
+        return [q for _h, _f, q in found]
+
+    def _question_claim_is_shareable(self, cid: str) -> bool:
+        """True when a claim a shared question names may be pointed at: its
+        record has a page here, neither the claim nor its record is marked
+        private, and everyone it names has a page. A question about a living
+        cousin's birth record stays home even when the heading never says her
+        name. Its review status does not matter: the claim is never shown, and
+        a conflict between two records he has not settled yet (lint E009's
+        `refs: [c-…, c-…]`) is just the kind of question a relative answers."""
+        try:
+            row = self.conn.execute('SELECT source_id FROM claims WHERE id = ?',
+                                    (cid,)).fetchone()
+            named = [r['person_id'] for r in self.conn.execute(
+                'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))]
+        except sqlite3.DatabaseError:
+            return False
+        if row is None or not row['source_id'] or row['source_id'] not in self.source_pages:
+            return False
+        if cid in self.restricted_claims or self._source_hard_restricted(row['source_id']):
+            return False
+        return all(normalize_id(pid) in self.person_pages for pid in named)
+
+    def build_questions_page(self) -> None:
+        """Write questions.html: the open questions he marked `share: family`,
+        so relatives can see what he is still trying to find out. Written even
+        when none qualify, because the nav link points at it."""
+        self._write_page(self.out_dir / 'questions.html', 'questions.html', {
+            'questions': self._shared_questions(), 'root_prefix': '.',
+        })
+
     # - discoveries page -
 
     def build_discoveries_page(self) -> None:
@@ -12828,12 +12955,14 @@ class _SiteBuilder:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
         search is on, plus graves.html when anyone has a grave to list, plus
-        statistics.html when statistics are on. `run()` and `--dry-run` both
+        statistics.html when statistics are on, plus questions.html when the
+        questions page is on. `run()` and `--dry-run` both
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
                 + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
+                + (1 if self.show_questions else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
@@ -12855,6 +12984,9 @@ class _SiteBuilder:
                 ),
                 # The search box in every page's header (base.html).
                 'show_search': self.show_search,
+                # Nav link to questions.html (base.html): only when this
+                # build writes that page, so the link never points nowhere.
+                'questions_page_built': self.show_questions,
                 # The "Surnames" link in the header: only when a page exists.
                 'show_surnames': bool(self._surname_groups()),
             }
@@ -12904,6 +13036,8 @@ class _SiteBuilder:
         self.build_discoveries_page()
         if self.show_whats_new:
             self.build_whats_new_page()
+        if self.show_questions:
+            self.build_questions_page()
         self.build_surname_pages()
         self.build_index_page()
         if self.show_search:
@@ -12926,6 +13060,7 @@ class _SiteBuilder:
         return [self.persons_dir, self.sources_dir, self.places_dir,
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
+                self.out_dir / 'graves.html', self.out_dir / 'questions.html',
                 self.out_dir / 'graves.html',
                 # Listed whether "What's new" is on or off, so switching it off
                 # removes the old page.
