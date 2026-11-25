@@ -126,6 +126,8 @@ Otherwise the shared page says "a recording, kept in the archive" and does not g
 
 The shared site never carries your original file. It plays a copy with the hidden details removed (a phone writes where and on what a recording was made, as a camera does into a photo). The free program **ffmpeg** makes that copy; `fha doctor` tells you whether it is installed. Without it, recordings stay off the shared site and the build says so.
 
+Each person heard on a recording that plays also gets it on their own page, under **Recordings**, and a "listen" link beside each fact on their timeline that was said on it. If the record keeps a short quote from them (a `quotes:` line), the first one shows under their name. A quote is printed words, not a voice, so it does not need your `recording_ok` yes, but it waits for the same rule about who is living.
+
 ## Building the site after a change
 
 Whenever you've changed any of the above, rebuild. Run these from your archive folder, one after the other (commands are written bare; the [cheat sheet](CHEATSHEET.md#typing-fha) shows the `./fha` or `.\fha` form your terminal needs):

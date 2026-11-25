@@ -406,6 +406,136 @@ class PlayFromTests(_Base):
         self.assertNotIn('fha-recording-script', self.page())
 
 
+HELEN = 'p-7777777777'      # deceased: talked about on the tape, never heard on it
+QUOTE = 'We never locked the door, not once.'
+
+
+def _quotes(*entries) -> str:
+    """A source's `quotes:` block (SPEC A.10), each (speaker, text, anchor)."""
+    lines = ['quotes:']
+    for speaker, text, anchor in entries:
+        item = f'  - {{speaker: {speaker}, text: "{text}"'
+        lines.append(item + (f', anchor: "{anchor}"}}' if anchor else '}'))
+    return '\n'.join(lines)
+
+
+class PersonPageTests(_Base):
+    """Grandpa's own page has his voice: the recordings he is heard on, and a
+    short quote in his own words, under the same SPEC §19 rule as the
+    source page (TOOLING §12)."""
+
+    def person_page(self, pid=GRANDPA, out=None) -> str:
+        return ((out or self.out) / 'persons' / f'{pid}.html').read_text(encoding='utf-8')
+
+    def test_a_speakers_page_plays_the_same_copy_as_the_source_page(self):
+        self.source()
+        self.build()
+        html = self.person_page()
+        self.assertIn('<h2>Recordings</h2>', html)
+        self.assertIn('Walter Hartley can be heard on this recording.', html)
+        copy = self.media()[0]
+        href = f'../media/{SID}/{copy.name}'
+        self.assertIn(f'src="{href}"', self.page())
+        self.assertIn(f'<audio id="rec-{SID}-1" controls preload="none"><source src="{href}" '
+                      'type="audio/mp4">', html)
+        self.assertIn(f'href="../sources/{SID}.html">Interview with Walter Hartley, 1998</a>', html)
+        self.assertNotIn('documents/interviews', html)
+        # The other speaker is heard on it too.
+        self.assertIn('<h2>Recordings</h2>', self.person_page(ASKER))
+
+    def test_someone_only_talked_about_gets_no_recordings_section(self):
+        self.person(HELEN, 'Helen Hartley')
+        self.source(people=(GRANDPA, HELEN))
+        self.build()
+        self.assertIn('<audio', self.page())
+        self.assertNotIn('<h2>Recordings</h2>', self.person_page(HELEN))
+
+    def test_a_living_speaker_keeps_both_the_recording_and_the_quote_home(self):
+        self.person(LIVE, 'Carol Hartley', living='true')
+        self.source(speakers=(GRANDPA, LIVE), extra=_quotes((GRANDPA, QUOTE, '00:14:32')))
+        self.build()
+        html = self.person_page()
+        self.assertNotIn('<h2>Recordings</h2>', html)
+        self.assertNotIn('<audio', html)
+        self.assertNotIn('locked the door', html)
+        self.assertFalse((self.out / 'persons' / f'{LIVE}.html').exists())
+
+    def test_a_quote_needs_no_yes_for_the_recording(self):
+        self.source(recording_ok=None, extra=_quotes((GRANDPA, QUOTE, '00:14:32')))
+        self.build()
+        html = self.person_page()
+        self.assertNotIn('<h2>Recordings</h2>', html)
+        m = re.search(r'<blockquote class="voice-quote">(.*?)</blockquote>', html, re.S)
+        self.assertIsNotNone(m, html)
+        self.assertIn(f'"{QUOTE}"', m.group(1))
+        self.assertIn('class="fn-ref"', m.group(1))     # its footnote
+        self.assertNotIn('hear it', m.group(1))          # nothing to play
+
+    def test_a_quote_on_a_shared_recording_can_be_heard(self):
+        self.source(extra=_quotes((GRANDPA, QUOTE, '00:14:32')))
+        self.build()
+        html = self.person_page()
+        self.assertIn(f'<a class="play-from" href="../sources/{SID}.html#play-rec-1-872" '
+                      f'data-audio="rec-{SID}-1" data-t="872">hear it</a>', html)
+        self.assertIn('id="fha-recording-script"', html)
+
+    def test_a_quote_from_someone_not_on_speakers_is_not_shown(self):
+        self.person(HELEN, 'Helen Hartley')
+        self.source(people=(GRANDPA, HELEN), extra=_quotes((HELEN, QUOTE, None)))
+        self.build()
+        self.assertNotIn('locked the door', self.all_output())
+
+    def test_a_long_quote_is_still_shown(self):
+        # Lint is the place to warn about length, not the site.
+        long_text = ' '.join(['word'] * 60)
+        self.source(extra=_quotes((GRANDPA, long_text, None)))
+        self.build()
+        self.assertIn(long_text, self.person_page())
+
+    def test_the_first_quote_in_source_order_is_the_one_shown(self):
+        self.source(extra=_quotes((ASKER, 'Tell me about the farm.', None),
+                                  (GRANDPA, QUOTE, None),
+                                  (GRANDPA, 'A second thing he said.', None)))
+        self.build()
+        html = self.person_page()
+        self.assertIn(QUOTE, html)
+        self.assertNotIn('A second thing he said.', html)
+        self.assertNotIn('Tell me about the farm.', html)
+        self.assertIn('Tell me about the farm.', self.person_page(ASKER))
+
+    def test_a_timeline_fact_from_the_recording_has_a_listen_link(self):
+        self.source()
+        self.build()
+        html = self.person_page()
+        self.assertIn(f'<a class="play-from" href="../sources/{SID}.html#play-rec-1-872" '
+                      f'data-audio="rec-{SID}-1" data-t="872">listen</a>', html)
+
+    def test_a_timeline_fact_from_a_withheld_recording_has_no_listen_link(self):
+        self.source(recording_ok=None)
+        self.build()
+        html = self.person_page()
+        self.assertNotIn('listen</a>', html)
+        self.assertNotIn('play-from', html)
+        self.assertNotIn('fha-recording-script', html)
+
+    def test_the_owners_preview_plays_a_living_speakers_recording(self):
+        self.person(LIVE, 'Carol Hartley', living='true')
+        self.source(speakers=(GRANDPA, LIVE), recording_ok=None,
+                    extra=_quotes((LIVE, QUOTE, '00:14:32')))
+        self.build(linked=True)
+        html = self.person_page(LIVE)
+        self.assertIn('<h2>Recordings</h2>', html)
+        self.assertIn(f'documents/interviews/{SESSION}/{SESSION}_{SID}.m4a', html)
+        self.assertIn(QUOTE, html)
+
+    def test_person_pages_are_identical_build_to_build(self):
+        self.source(extra=_quotes((GRANDPA, QUOTE, '00:14:32')))
+        other = Path(self._tmp.name) / 'site2'
+        self.build()
+        self.build(out=other)
+        self.assertEqual(self.person_page(), self.person_page(out=other))
+
+
 class AnchorSecondsTests(unittest.TestCase):
     def test_forms(self):
         self.assertEqual(anchor_seconds('00:14:32'), (None, 872))

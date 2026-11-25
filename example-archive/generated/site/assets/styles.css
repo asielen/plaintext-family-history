@@ -338,6 +338,10 @@ ul.files li.recording-item { width: 100%; }
 .recording audio { width: 100%; max-width: 32rem; }
 .recording figcaption { font-size: var(--text-xs); color: var(--muted); margin-top: var(--space-1); }
 .play-from { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; }
+/* A few words in the person's own voice, under their name. */
+blockquote.voice-quote { margin: var(--space-3) 0; padding-left: var(--space-4);
+                         border-left: 3px solid var(--rule); font-style: italic; }
+blockquote.voice-quote .fn-ref, blockquote.voice-quote .play-from { font-style: normal; }
 .photo-strip { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .photo-strip figure { margin: 0; width: 9rem; }
 .photo-strip figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: var(--space-1); }

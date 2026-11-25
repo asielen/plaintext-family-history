@@ -4727,6 +4727,15 @@ def _render_lifespan_svg(rows: list[dict]) -> str:
 
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
 
+def _rehome_href(href: str, from_dir: Path, to_dir: Path) -> str:
+    """The same file linked from another page: a relative href written for
+    a page in `from_dir`, rewritten for a page in `to_dir`. An absolute URL
+    (`/root/…`, `file://…`) is returned as it is."""
+    if href.startswith(('/', '#')) or ':' in href.split('/', 1)[0]:
+        return href
+    return _rel_href(Path(os.path.normpath(from_dir / href)), to_dir)
+
+
 def _rel_href(target: Path, page_dir: Path) -> str:
     """Relative href (forward-slash) from a page's directory to a target file.
 
@@ -5259,6 +5268,10 @@ class _SiteBuilder:
         # {'path', 'original_filename', 'entry'} (its Files-list entry), for
         # matching a claim's anchor to the recording it was said on.
         self.recording_files: dict[str, list[dict]] = {}
+        # Grandpa's own page lists the recordings he is heard on: person id ->
+        # the sources whose `speakers:` name him (merges followed to the
+        # person whose page it is), oldest source first.
+        self.speaker_sources: dict[str, list[str]] = {}
         self._ffmpeg: str | None = None
         self._ffmpeg_looked = False
         self._recordings_without_ffmpeg = 0
@@ -5765,7 +5778,8 @@ class _SiteBuilder:
             if row['source_id'] in self.source_meta
             and Path(row['path']).suffix.lower() in _RECORDING_SUFFIXES})
         for sid in sids:
-            info = {'speakers': [], 'recording_ok': False, 'public': False}
+            info = {'speakers': [], 'recording_ok': False, 'public': False,
+                    'quotes': [], 'quotes_public': False}
             self.recordings[sid] = info
             row = self.source_meta[sid]
             if not row['path']:
@@ -5786,17 +5800,59 @@ class _SiteBuilder:
             info['recording_ok'] = ok is True or ok in ('true', 'True', 'TRUE')
             speakers, unknown_speakers = self._resolve_person_refs(meta.get('speakers'))
             info['speakers'] = speakers
+            info['quotes'] = self._source_quotes(meta.get('quotes'), speakers)
+            for pid in speakers:
+                page_pid = self._merge_survivor(pid)
+                if sid not in self.speaker_sources.setdefault(page_pid, []):
+                    self.speaker_sources[page_pid].append(sid)
             if self.linked:
+                info['quotes_public'] = True
                 continue
             for ref in unknown_speakers:
                 self.messages.append(
                     f'WARNING: {row["path"]} lists speaker {ref}, who is not in the index; '
                     f'its recording is not shared on this site. Check the ID with '
                     f'`fha find {ref}`.')
-            info['public'] = (
-                sid in self.source_pages and info['recording_ok']
+            # A quote is shared under the recording's rule less the owner's
+            # yes (SPEC A.10): his words in print are ordinary cited text.
+            info['quotes_public'] = (
+                sid in self.source_pages
                 and bool(speakers) and not unknown_speakers
                 and self._recording_names_only_the_shareable(sid, meta, rec['claims'], speakers))
+            info['public'] = info['recording_ok'] and info['quotes_public']
+        for sids_of in self.speaker_sources.values():
+            sids_of.sort(key=lambda s: (self.source_meta[s]['date_min'] or '9999', s))
+
+    def _merge_survivor(self, pid: str) -> str:
+        """The person whose page a merged-away ID now belongs to (its
+        `merged_into` chain followed to the end); pid itself otherwise."""
+        seen = {pid}
+        while True:
+            row = self.person_meta.get(pid)
+            nxt = normalize_id(str(row['merged_into'])) if row is not None and row['merged_into'] else None
+            if not nxt or nxt in seen or nxt not in self.person_meta:
+                return pid
+            seen.add(nxt)
+            pid = nxt
+
+    def _source_quotes(self, value, speakers: list[str]) -> list[dict]:
+        """A source's `quotes:` (SPEC A.10) as {'speaker', 'text', 'anchor'},
+        in the order written, keeping only quotes whose speaker is on the
+        source's `speakers:` list. The words are shown as written; no tool
+        reads them."""
+        out: list[dict] = []
+        if not isinstance(value, list):
+            return out
+        for q in value:
+            if not isinstance(q, dict) or not isinstance(q.get('text'), str) or not q['text'].strip():
+                continue
+            found, _missing = self._resolve_person_refs(q.get('speaker'))
+            if len(found) != 1 or found[0] not in speakers:
+                continue
+            anchor = q.get('anchor')
+            out.append({'speaker': self._merge_survivor(found[0]), 'text': q['text'].strip(),
+                        'anchor': anchor if isinstance(anchor, str) else None})
+        return out
 
     def _resolve_person_refs(self, value) -> tuple[list[str], list[str]]:
         """(person ids found in the index, references that found nobody) for
@@ -7538,10 +7594,14 @@ class _SiteBuilder:
         self._footnotes = {}          # start this page's source-footnote numbering
         self._footnote_seq = []
 
+        # The quote sits at the top of the page, so it takes the first
+        # footnote number.
+        recordings = self._person_recordings(pid, page_dir)
+        quote = self._person_quote(pid, page_dir, {r['audio_id'] for r in recordings})
         summary = self._person_summary(pid, page_dir)
         (biography_html, stories_html, research_html, biography_raw,
          stories_entries, research_entries) = self._person_prose(row, page_dir)
-        timeline = self._person_timeline(pid, page_dir)
+        timeline = self._person_timeline(pid, page_dir, {r['audio_id'] for r in recordings})
         # #130: whether this page shows the "low confidence" and/or
         # "unconfirmed" badges at all - person.html's own legend paragraph
         # only earns its place on a page that actually carries one of them
@@ -7679,6 +7739,9 @@ class _SiteBuilder:
                                for q in (self._person_open_questions(pid, page_dir)
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
+            'recordings': recordings, 'quote': quote,
+            'has_play': bool(recordings or (quote and quote['play'])
+                             or any(e.get('listen') for g in timeline for e in g['entries'])),
             'has_qa_badges': has_qa_badges,
             'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
@@ -7711,6 +7774,77 @@ class _SiteBuilder:
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
         self._footnotes = None        # footnotes are strictly person-page-scoped
+
+    def _person_recordings(self, pid: str, page_dir: Path) -> list[dict]:
+        """So the family can hear Grandpa on his own page: a player for each
+        recording he is listed as a speaker on that plays on this build
+        (SPEC §19, the source page's own verdict and its stripped copy), oldest
+        source first. Someone only talked about on a tape is on `people:`,
+        not `speakers:`, and gets none."""
+        out: list[dict] = []
+        for sid in self.speaker_sources.get(pid, []):
+            if not self._recording_is_public(sid):
+                continue
+            row = self.source_meta[sid]
+            title = row['title'] or fmt_id_display(sid)
+            for rec in self.recording_files.get(sid, []):
+                entry = rec['entry']
+                if not entry.get('audio_id'):
+                    continue
+                out.append({
+                    'title_html': self._markup(self._cite_source(sid, page_dir, in_display=title)),
+                    'audio_href': _rehome_href(entry['audio_href'], self.sources_dir, page_dir),
+                    'audio_type': entry['audio_type'],
+                    'audio_id': self._person_audio_id(sid, entry['audio_id']),
+                    'date': _humanize_edtf(row['date_edtf']) if row['date_edtf'] else '',
+                })
+        return out
+
+    @staticmethod
+    def _person_audio_id(sid: str, source_audio_id: str) -> str:
+        """The player id on a person page for the source page's `rec-1`:
+        `rec-{sid}-1`, unique however many sources the page plays."""
+        return f'rec-{sid}-{source_audio_id.removeprefix("rec-")}'
+
+    def _listen_link(self, sid: str | None, anchor: str | None, page_dir: Path,
+                     players: set[str]) -> dict | None:
+        """A link to the minute a fact was said, on its source page
+        (`#play-rec-1-872`), for an anchor that gives a time in a recording
+        that plays on this build. `audio_id` names this page's own player for
+        it when the page has one, so a click plays it here."""
+        if not sid or not anchor:
+            return None
+        sid = normalize_id(sid)
+        recordings = self.recording_files.get(sid)
+        if not recordings:
+            return None
+        play = self._play_link(anchor, recordings)
+        if play is None:
+            return None
+        audio_id = self._person_audio_id(sid, play['audio_id'])
+        href = _rel_href(self.sources_dir / _page_filename(sid), page_dir)
+        return {'href': f'{href}#play-{play["audio_id"]}-{play["seconds"]}',
+                'audio_id': audio_id if audio_id in players else None,
+                'seconds': play['seconds']}
+
+    def _person_quote(self, pid: str, page_dir: Path, players: set[str]) -> dict | None:
+        """A short quote in the person's own words under his name: the first
+        `quotes:` entry (SPEC A.10) he speaks, in the order his recordings are
+        listed. Shown under the recording's rule less the owner's yes to play
+        it, since printed words are ordinary cited text; on the shared site a
+        quote from a source that names anyone withheld is left out whole."""
+        for sid in self.speaker_sources.get(pid, []):
+            info = self.recordings.get(sid, {})
+            if not info.get('quotes_public'):
+                continue
+            for q in info.get('quotes', []):
+                if q['speaker'] != pid:
+                    continue
+                return {'text': q['text'],
+                        'source_html': self._markup(self._source_link(sid, page_dir)),
+                        'play': (self._listen_link(sid, q['anchor'], page_dir, players)
+                                 if self._recording_is_public(sid) else None)}
+        return None
 
     def _completeness_context(self) -> dict:
         """The completeness engine's read of the index (`_lib.completeness_
@@ -8987,7 +9121,8 @@ class _SiteBuilder:
                 out.append({'heading': info['heading'], 'file': info['file'], 'html': html})
         return out
 
-    def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
+    def _person_timeline(self, pid: str, page_dir: Path,
+                         players: set[str] = frozenset()) -> list[dict]:
         """The person's claims grouped by decade (TOOLING §12; same shape as
         `fha views timeline`'s main chronology). Statuses diverge by audience
         (owner decision 2026-07-22): the published standalone timeline shows
@@ -9056,7 +9191,7 @@ class _SiteBuilder:
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
             "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value, c.place_id, c.place_text, c.source_id, "
-            "c.status, c.confidence, c.reviewed "
+            "c.status, c.confidence, c.reviewed, c.anchor "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
             f"ORDER BY {claim_date_order_sql('c')}",
@@ -9147,6 +9282,8 @@ class _SiteBuilder:
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'unconfirmed': r['status'] == 'suggested',
                 'parked': r['reviewed'] or '',
+                # "listen": the minute this was said, when its recording plays.
+                'listen': self._listen_link(r['source_id'], r['anchor'], page_dir, players),
             })
         if entries:
             groups.append({'decade': None if current == '\x00' else current, 'entries': entries})

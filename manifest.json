@@ -62,7 +62,7 @@
     {
       "path": ".agents/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "809717683d311f6cacf2820c734b1f5c429f7ef31c57596fbc3bd4ff2835131c",
+      "sha256": "44f5d976a1c155b02b1bbc5ef4d1612526785ad8d0699511ed06085f0dba94b6",
       "spec_version": "2.44",
       "src": ".claude/skills/mine-transcript/SKILL.md"
     },
@@ -243,7 +243,7 @@
     {
       "path": ".claude/skills/mine-transcript/SKILL.md",
       "category": "operating",
-      "sha256": "809717683d311f6cacf2820c734b1f5c429f7ef31c57596fbc3bd4ff2835131c",
+      "sha256": "44f5d976a1c155b02b1bbc5ef4d1612526785ad8d0699511ed06085f0dba94b6",
       "spec_version": "2.44"
     },
     {
@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "bcb4bbdeeb9ee6fc35e33f040a21ec22a2fabb89801fd71905a114aa050cfad2",
+      "sha256": "81ad883f7ca417b930dbb64240e4e58cf6dc90536bda88dcf7bb73a0b506c022",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "ba2a46eb9e2f9c42e907913a17c90a000b52e890b01a01bced6956a57abe6aed",
+      "sha256": "d091fb5978048559c459e07c47d22235826c75a000fdeaef2355915c571b1f31",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1316,7 +1316,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "3cab630b8d5783232b7c6a95adcb82b495464d1093961bfa856be8ffc31ab22d",
+      "sha256": "66d9df82e09cd2cf6f1ea49e0a0263fb5aafd33b9aebcb5fc2f05ecc8df868a6",
       "spec_version": "2.44",
       "src": "tools/templates/person.html"
     },
@@ -1598,7 +1598,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "1dc58f094cb1db8c81bf117080afc8ab35589564e65d31f24f1f4a7178a54feb",
+      "sha256": "4265c6867910ddaecd1474de7e38e4c2ee608b16010d3a4de4d65970e232c699",
       "spec_version": "2.44"
     },
     {
@@ -1653,7 +1653,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "512efbecaa8b409d74d02dfe19f1fa91f034a85cb8fb3ee73a3ddbb50bf87aaa",
+      "sha256": "8d1a96216c9556e1a0b59833ac64d2fd252acdd5dcf16e3ff03e15146ba37b5d",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
