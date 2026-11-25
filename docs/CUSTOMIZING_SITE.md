@@ -112,6 +112,18 @@ In `notes/home.md` (and other writing), you can place a specific photo using the
 
 The part before the `|` is the photo's source ID; the part after is the caption. When you build, the site shows the photo with that caption. Like the banner photo, it gets a web-sized copy with the hidden data removed, and a photo showing a living person is left out of the shareable version. If you don't know a photo's ID, ask the assistant: "put the porch photo on the homepage" is enough.
 
+## Recordings on the site
+
+A family recording can play on its interview's page, with a "play from 14:32" link beside each fact taken from it. Your own preview (`fha serve`, or `fha site --linked`) plays every recording. The safe-to-share site plays one only when all of this is true:
+
+- you said yes, by adding `recording_ok: true` under `rights:` in the source record. No tool adds it for you.
+- the record's `speakers:` line lists everyone heard on the recording, and every one of them has died and is not marked private.
+- nobody else the record names is living, of unknown status, or marked private.
+
+Otherwise the shared page says "a recording, kept in the archive" and does not give the file's name, because the name often names the person interviewed. A voice cannot be blurred the way a name can be left out, so the rule waits for everyone on the tape.
+
+The shared site never carries your original file. It plays a copy with the hidden details removed (a phone writes where and on what a recording was made, as a camera does into a photo). The free program **ffmpeg** makes that copy; `fha doctor` tells you whether it is installed. Without it, recordings stay off the shared site and the build says so.
+
 ## Building the site after a change
 
 Whenever you've changed any of the above, rebuild. Run these from your archive folder, one after the other (commands are written bare; the [cheat sheet](CHEATSHEET.md#typing-fha) shows the `./fha` or `.\fha` form your terminal needs):
