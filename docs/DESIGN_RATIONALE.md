@@ -197,6 +197,14 @@ The same ordering guides which problems get fixed first: a confident wrong answe
 
 **Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration beyond the dated records (reading an immigration claim's arrival, or a gap between two countries' records, as the date of a move): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence. A dated record of where the person was is evidence of that night; an inferred move date is not.
 
+### Family rows and ages
+
+**The rule.** A person page's timeline shows the births, marriages and deaths of parents, spouses, children and siblings that fall inside the person's recorded life, and each line says how old the person was. Nothing is stored: every row is worked out from accepted claims at build time. An age is shown only when the records pin it within one year ("5 or 6"); a wider range shows no age.
+
+**Why.** "Her father died when she was 6" is the line a reader remembers, and the claims already hold it. Storing it would make a second copy that can go stale when a date is corrected. A vague age reads as fact: "about 9" from an "about 1840" birth is a guess wearing a number, so the page says nothing instead. The life stops at the last record, because a woman whose death nobody found did not live to 100.
+
+**Rejected.** Using a baptism as the birth for ages (wrong for an adult baptism). Showing a living relative as a "Living Person" row: the tie itself is personal.
+
 ---
 
 ## 6. Deferred until needed: events and organizations

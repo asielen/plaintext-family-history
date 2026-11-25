@@ -672,7 +672,11 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
+<<<<<<< HEAD
       "sha256": "762e8545558df5be55dce73aa955936719ba12632e35a9a280845f527bc20ed5",
+=======
+      "sha256": "32d4a0ae678626ebbe80245142930a7612c8b630ba246c163374855931941116",
+>>>>>>> plaintext-family-history/master
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -700,7 +704,7 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "211248583b6a23ec3b0ba6414ff409691eb50792c2b9c8b406d9306d22eef54f",
+      "sha256": "c4407e3e6553beb9d09c0ef038fba45d123f5667572bfa560c7bd29a80638767",
       "spec_version": "2.44",
       "src": "tools/_lib.py"
     },
@@ -1197,7 +1201,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "484398abb36f3f9a7de49442be5cf40b77983131a47e948a1dbd18c79e27b562",
+      "sha256": "cf2d33d1212ecf16d7047b6ddaab17c0225b06100143eb661018ddf2a4dc68ea",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1316,7 +1320,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "66d9df82e09cd2cf6f1ea49e0a0263fb5aafd33b9aebcb5fc2f05ecc8df868a6",
+      "sha256": "1183bcc8db0ed2e001076e8e2150bcca7da8569a8fadc99bb5b0abfac57e6d3a",
       "spec_version": "2.44",
       "src": "tools/templates/person.html"
     },
@@ -1612,13 +1616,17 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "4265c6867910ddaecd1474de7e38e4c2ee608b16010d3a4de4d65970e232c699",
+      "sha256": "0466a5efb0195a67c64d48dcac276c8f145db725bba8c85059642472c13ed1e5",
       "spec_version": "2.44"
     },
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
+<<<<<<< HEAD
       "sha256": "e3e777789777be8c8584d6b3dc7d23f6d65ea3751741ed5e872ca396dce722a1",
+=======
+      "sha256": "aa5f1eaf15059c04f0172f7963c6e967976f30ff6053a851137f4a531e95705c",
+>>>>>>> plaintext-family-history/master
       "spec_version": "2.44"
     },
     {
@@ -1667,7 +1675,11 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
+<<<<<<< HEAD
       "sha256": "ff2686a6682ac6ba13bd9569ebee5bc7c38eac52fd4fc269b62f871024d154e9",
+=======
+      "sha256": "cb406ccc60a2937e6ee9fc2749da7300f65f8ae0249c7be6e1d6f6a83fe49cdb",
+>>>>>>> plaintext-family-history/master
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },

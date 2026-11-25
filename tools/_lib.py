@@ -510,6 +510,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    one_person_problems       - W163 out of order, W164 over 120 years, W165 life after death
 #    plausibility_message      - the plain sentence, with caller-supplied name and claim refs
 #
+#  Family rows and ages (fha site timeline; TOOLING §12): "her father died when
+#  she was 5 or 6", worked out from accepted claims, never stored
+#    age_between               - birth EDTF + event EDTF -> (youngest, oldest) whole years, or None
+#    age_phrase                - (5, 6) -> "5 or 6", (0, 0) -> "under a year old"
+#    family_life_events        - the births, marriages and deaths of parents, spouses,
+#                                 children and siblings inside one person's recorded life;
+#                                 privacy through the caller's person_ok/claim_ok/edge_ok
+#
 #  Alias resolution / publication guards
 #    person_alias_mirror       : the names a person's aliases: carries: name + public other names
 #    person_restricted_names   : the restricted other names that never sit in aliases:
@@ -24672,6 +24680,381 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
                 'Open those records and fix the one that is wrong; until then the family '
                 'tree cannot show this line correctly.')
     raise ValueError(f'unknown plausibility problem kind {kind!r}')
+
+
+# ── Family rows and ages (fha site timeline; TOOLING §12) ────────────────────
+#
+# A cousin reading Margaret's page should see, between her own records, that
+# her father died when she was 5 or 6 and when each of her children was born,
+# and how old she was at each of her own records. Nothing here is stored: every
+# row is worked out from accepted claims (and parked ones, for the private
+# preview) each time a page is built. Privacy is the caller's: the shared site
+# and the private views draw the line in different places, so they hand in
+# their own person_ok / claim_ok / edge_ok tests.
+
+_AGE_OPEN_BOUNDS = (_EDTF_FLOOR, _EDTF_CEILING)
+
+
+def age_between(birth_edtf: str | None, event_edtf: str | None) -> tuple[int, int] | None:
+    """How old someone born on `birth_edtf` was at `event_edtf`, as (youngest,
+    oldest) whole years, or None when the records cannot say closely enough.
+
+    Both dates are read through `edtf_bounds`. None when either date is
+    missing, open-ended ("before 1871") or unreadable, when the event ends
+    before the birth begins, or when the two ages differ by more than one year:
+    "between 8 and 11" tells a reader nothing they can use, and a vague age
+    reads as fact, so the page shows no age at all rather than a loose one.
+    A year-only birth and a year-only event give two ages ("5 or 6"), which is
+    honest: the records do not say which side of the birthday it fell."""
+    if not birth_edtf or not event_edtf:
+        return None
+    try:
+        b_min, b_max = edtf_bounds(birth_edtf)
+        e_min, e_max = edtf_bounds(event_edtf)
+        if any(v in _AGE_OPEN_BOUNDS for v in (b_min, b_max, e_min, e_max)):
+            return None
+        if e_max < b_min:
+            return None
+        lo = _whole_years_between(b_max, e_min)
+        hi = _whole_years_between(b_min, e_max)
+    except (ValueError, TypeError):
+        return None
+    # The one-year test reads the spread before a "not yet born" end is
+    # clamped to 0: for an "about 1871" birth, a father's death in 1870 may
+    # have come before she was born, and "She was under a year old" would
+    # state as fact what the records leave open.
+    if hi < 0 or hi - lo > 1:
+        return None
+    return (max(lo, 0), hi)
+
+
+def age_phrase(age: tuple[int, int]) -> str:
+    """An age from `age_between` in words: (0, 0) -> 'under a year old',
+    (0, 1) -> 'not yet 2', (6, 6) -> '6', (5, 6) -> '5 or 6'. Callers add the
+    verb ('She was 5 or 6', 'aged 5 or 6')."""
+    lo, hi = age
+    if hi == 0:
+        return 'under a year old'
+    if lo == 0:
+        return f'not yet {hi + 1}'
+    if lo == hi:
+        return str(lo)
+    return f'{lo} or {hi}'
+
+
+# The order a relative reached two ways is kept in: a sister who is also a
+# child (a cousin marriage) reads as the nearer of the two.
+_FAMILY_RELATION_RANK = {'parent': 0, 'spouse': 1, 'child': 2, 'sibling': 3}
+
+# The events each kind of relative contributes to the person's timeline.
+_FAMILY_EVENT_TYPES = {
+    'parent': ('death', 'marriage'),
+    'spouse': ('death',),
+    'child': ('birth', 'death', 'marriage'),
+    'sibling': ('birth', 'death', 'marriage'),
+}
+
+_FAMILY_WORDS = {
+    # relation kind -> (male, female, neutral)
+    'parent': ('father', 'mother', 'parent'),
+    'child': ('son', 'daughter', 'child'),
+    'spouse': ('husband', 'wife', 'spouse'),
+}
+
+# A parent or child tie that is not by birth names its nature, the way a
+# family says it: "stepfather", "adopted daughter", "foster son".
+_FAMILY_NATURE_WORDS = {
+    ('parent', 'adoptive'): ('adoptive father', 'adoptive mother', 'adoptive parent'),
+    ('parent', 'step'): ('stepfather', 'stepmother', 'step-parent'),
+    ('parent', 'foster'): ('foster father', 'foster mother', 'foster parent'),
+    ('parent', 'guardian'): ('guardian', 'guardian', 'guardian'),
+    ('child', 'adoptive'): ('adopted son', 'adopted daughter', 'adopted child'),
+    ('child', 'step'): ('stepson', 'stepdaughter', 'stepchild'),
+    ('child', 'foster'): ('foster son', 'foster daughter', 'foster child'),
+    ('child', 'guardian'): ('ward', 'ward', 'ward'),
+}
+
+
+def _family_word(kind: str, sex: str, nature: str | None = None) -> str:
+    words = _FAMILY_NATURE_WORDS.get((kind, nature or '')) or _FAMILY_WORDS[kind]
+    return {'M': words[0], 'F': words[1]}.get((sex or '').strip().upper(), words[2])
+
+
+def _family_dicts(cur) -> list[dict]:
+    """Rows as dicts whatever the connection's row_factory is."""
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, tuple(r.values()) if isinstance(r, dict) else tuple(r)))
+            for r in cur.fetchall()]
+
+
+def _family_bound(row: dict) -> str | None:
+    """The day a claim sorts on, as `claim_date_order_sql` does: its known end
+    for "before 1895", else its start. None for an undated claim."""
+    if not row.get('date_min'):
+        return None
+    if str(row.get('date_edtf') or '').startswith('[..'):
+        return row.get('date_max') or None
+    return row['date_min']
+
+
+def _family_natures(rows: list[dict]) -> dict[str, str | None]:
+    """other_id -> None for a tie by birth, else its nature ('step', ...).
+    One tie backed by both a birth record and a step record reads as by birth."""
+    out: dict[str, str | None] = {}
+    for r in rows:
+        nature = (None if is_genetic_parent_subtype(r['subtype'])
+                  else str(r['subtype']).strip().lower())
+        if r['other_id'] not in out:
+            out[r['other_id']] = nature
+        elif nature is None:
+            out[r['other_id']] = None
+    return out
+
+
+def family_life_events(
+    conn: sqlite3.Connection, pid: str, *,
+    include_parked: bool = False,
+    person_ok: Callable[[str], bool] | None = None,
+    claim_ok: Callable[[dict], bool] | None = None,
+    edge_ok: Callable[[str, str, str, Any], bool] | None = None,
+    cache: dict | None = None,
+    kin: KinshipGraph | None = None,
+) -> dict:
+    """The person's own birth and death, and the births, marriages and deaths
+    of their close family that fall inside the person's recorded life.
+
+    Read only. Only accepted, non-negated claims count (plus parked ones when
+    `include_parked`). Privacy is the caller's, through three tests, each
+    None for "everyone": `person_ok(pid)` for a relative (a relative it
+    refuses gives no row at all, and is no route to a sibling), `claim_ok(row)`
+    for every claim used (row has id, source_id, status, type), and
+    `edge_ok(person_id, rel, other_id, claim_id)` for every `relationships`
+    row a tie rests on. `cache` is handed to `claim_is_own_vital`. `kin` is
+    the KinshipGraph the "half-brother" word is read from (`blood_answer`,
+    the rule `fha relate` uses); a caller building many pages passes one
+    built once with the same edge test, else one is built here.
+
+    A tie may pass through a parent `person_ok` refuses (living or unknown):
+    her brother is still her brother, and that parent is never named. A
+    parent the caller must not even route through (restricted, by-request)
+    is the caller's `edge_ok` to refuse.
+
+    The life runs from the own birth (else the earliest of the person's own
+    dated records) to the own death or burial (else the latest own record).
+    Nothing is projected past the last record: a woman with no recorded death
+    gets no family rows after the last thing we know about her.
+
+    Returns {'birth': row | None, 'death': row | None, 'window': (lo, hi) |
+    None, 'events': [...]}. Each event: kind 'family', claim_id, source_id,
+    type (birth, death, burial, marriage), date_edtf, date_min, date_max,
+    place_id, place_text, relative_id, relation (the word: 'father',
+    'half-sister'), relation_kind (parent, spouse, child, sibling), other_id
+    (the relative's spouse on a marriage, else None), status, confidence,
+    reviewed, age (the person's age at it, from `age_between`, or None) and
+    sort_key. Sorted by sort_key, which ends in the source, claim and person
+    ids, so two builds list them in the same order."""
+    pid = normalize_id(str(pid))
+    status_sql = (f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})" if include_parked
+                  else "c.status = 'accepted'")
+
+    def _claims_naming(person: str, types: tuple[str, ...] | None) -> list[dict]:
+        type_sql = (f"AND c.type IN ({', '.join('?' for _ in types)}) " if types else '')
+        rows = _family_dicts(conn.execute(
+            'SELECT DISTINCT c.id AS id, c.source_id AS source_id, c.status AS status, '
+            'c.type AS type, c.date_edtf AS date_edtf, c.place_id AS place_id, '
+            'c.place_text AS place_text, c.confidence AS confidence, c.reviewed AS reviewed '
+            'FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
+            f'WHERE cp.person_id = ? AND {status_sql} AND COALESCE(c.negated, 0) = 0 '
+            f'{type_sql}ORDER BY c.id',
+            (person, *(types or ()))))
+        out = []
+        for r in rows:
+            # Bounds from the claim's own date, the same `fha index` stores.
+            r['date_min'] = r['date_max'] = None
+            if r['date_edtf']:
+                try:
+                    r['date_min'], r['date_max'] = edtf_bounds(r['date_edtf'])
+                except ValueError:
+                    pass
+                if (r['date_min'], r['date_max']) == _AGE_OPEN_BOUNDS:
+                    r['date_min'] = r['date_max'] = None
+            if claim_ok is not None and not claim_ok(r):
+                continue
+            out.append(r)
+        return out
+
+    # A dated record he accepted is picked over a parked one, however exact
+    # the parked date: in his private preview the birth he accepted must not
+    # hide behind an "unconfirmed" row. A dated record still comes first of
+    # all, because an undated one cannot place the event or give an age.
+    def _own(person: str, ctype: str, rows: list[dict]) -> list[dict]:
+        return sorted((r for r in rows if r['type'] == ctype
+                       and claim_is_own_vital(conn, person, r['id'], ctype, cache)),
+                      key=lambda r: (_family_bound(r) is None, r['status'] != 'accepted',
+                                     vital_pick_key(r)))
+
+    # A will's "the late Caleb" is a death with no date; the burial register
+    # that dates him 1877 still gives her page "Her father was buried".
+    def _own_end(person: str, rows: list[dict]) -> list[dict]:
+        deaths = _own(person, 'death', rows)
+        if deaths and _family_bound(deaths[0]) is not None:
+            return deaths
+        return [r for r in _own(person, 'burial', rows)
+                if _family_bound(r) is not None] or deaths
+
+    own_rows = _claims_naming(pid, None)
+    births = _own(pid, 'birth', own_rows)
+    deaths = _own_end(pid, own_rows)
+    birth = births[0] if births else None
+    death = deaths[0] if deaths else None
+    result: dict = {'birth': birth, 'death': death, 'window': None, 'events': []}
+
+    dated = [r for r in own_rows if _family_bound(r)]
+    lo = birth['date_min'] if birth and birth['date_min'] not in (None, '0001-01-01') else None
+    if lo is None and dated:
+        lo = min(_family_bound(r) for r in dated)
+    hi = death['date_max'] if death and death['date_max'] not in (None, '9999-12-31') else None
+    if hi is None and dated:
+        hi = max((r['date_max'] if r['date_max'] and r['date_max'] != '9999-12-31'
+                  else _family_bound(r)) for r in dated)
+    if lo is None or hi is None:
+        return result
+    result['window'] = (lo, hi)
+
+    def _edges(person: str, rel: str, other: str | None = None) -> list[dict]:
+        sql = ('SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id, '
+               'r.claim_id AS claim_id, c.subtype AS subtype '
+               'FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id '
+               'WHERE r.person_id = ? AND r.rel = ?')
+        params: tuple = (person, rel)
+        if other is not None:
+            sql += ' AND r.other_id = ?'
+            params = (person, rel, other)
+        rows = _family_dicts(conn.execute(sql + ' ORDER BY r.other_id, r.claim_id', params))
+        return [r for r in rows if r['other_id'] and r['other_id'] != person
+                and (edge_ok is None
+                     or edge_ok(r['person_id'], r['rel'], r['other_id'], r['claim_id']))]
+
+    def _person_passes(other: str) -> bool:
+        return person_ok is None or person_ok(other)
+
+    sexes = {r['id']: (r['sex'] or '').strip() for r in _family_dicts(
+        conn.execute('SELECT id, sex FROM persons'))}
+    relatives: dict[str, tuple[int, str, str]] = {}   # id -> (rank, kind, word)
+
+    def _add(other: str, kind: str, word: str) -> None:
+        rank = _FAMILY_RELATION_RANK[kind]
+        if other == pid or not _person_passes(other):
+            return
+        if other not in relatives or rank < relatives[other][0]:
+            relatives[other] = (rank, kind, word)
+
+    parent_natures = _family_natures(_edges(pid, 'parent'))
+    for other, nature in sorted(parent_natures.items()):
+        _add(other, 'parent', _family_word('parent', sexes.get(other, ''), nature))
+    for other in sorted({r['other_id'] for r in _edges(pid, 'spouse')}):
+        _add(other, 'spouse', _family_word('spouse', sexes.get(other, '')))
+    for other, nature in sorted(_family_natures(_edges(pid, 'child')).items()):
+        _add(other, 'child', _family_word('child', sexes.get(other, ''), nature))
+
+    # Siblings: the other children of each parent the person's own tie to is
+    # kept, each through a tie of their own to that parent that is kept too.
+    # "Half" only on a firm basis, read from the kinship engine `fha relate`
+    # uses (`blood_answer`): a source that says so, or one shared parent and
+    # a different other parent recorded on each side. One parent unrecorded
+    # stays a plain brother or sister.
+    if kin is None:
+        kin = kin_graph(conn, edge_ok=None if edge_ok is None else (
+            lambda row: edge_ok(row['person_id'], row['rel'], row['other_id'],
+                                row['claim_id'])))
+    sibling_ties: dict[str, dict[str, str | None]] = {}   # sib -> {parent: sib's nature}
+    for parent in sorted(parent_natures):
+        for kid_edge in _edges(parent, 'child'):
+            kid = kid_edge['other_id']
+            if kid == pid:
+                continue
+            back = _edges(kid, 'parent', parent)
+            if back:
+                sibling_ties.setdefault(kid, {})[parent] = _family_natures(back)[parent]
+    my_genetic = {p for p, n in parent_natures.items() if n is None}
+    for sib, ties in sorted(sibling_ties.items()):
+        sex = sexes.get(sib, '')
+        if any(n is None and p in my_genetic for p, n in ties.items()):
+            answer = blood_answer(kin, sib, pid)
+            word = (answer['relationship']
+                    if answer and (answer['gens_a'], answer['gens_b']) == (1, 1)
+                    else kinship_word(1, 1, sex))
+        else:
+            # Tied only through a parent one of them has by marriage or
+            # fostering: a stepbrother, a foster sister. An adopted child of
+            # the same parents is a plain brother or sister.
+            natures = {parent_natures.get(p) for p in ties} | set(ties.values())
+            base = kinship_word(1, 1, sex)
+            if 'step' in natures:
+                word = 'step-sibling' if base == 'sibling' else f'step{base}'
+            elif 'foster' in natures:
+                word = f'foster {base}'
+            else:
+                word = base
+        _add(sib, 'sibling', word)
+
+    events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    seen_marriages: set[str] = set()
+    for rel_id in sorted(relatives):
+        _rank, kind, word = relatives[rel_id]
+        types = _FAMILY_EVENT_TYPES[kind]
+        rows = _claims_naming(rel_id, types + (('burial',) if 'death' in types else ()))
+        picked: list[tuple[dict, str | None]] = []
+        if 'birth' in types:
+            best = _own(rel_id, 'birth', rows)
+            if best:
+                picked.append((best[0], None))
+        if 'death' in types:
+            best = _own_end(rel_id, rows)
+            if best:
+                picked.append((best[0], None))
+        if 'marriage' in types:
+            for r in _own(rel_id, 'marriage', rows):
+                people = claim_role_pairs((p, role) for p, role in conn.execute(
+                    'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+                    'ORDER BY position', (r['id'],)).fetchall())
+                parties = [normalize_id(str(p)) for p in spouse_parties(people)]
+                if pid in parties:
+                    continue          # the person's own marriage is their own row
+                others = [p for p in parties if p != rel_id]
+                other = others[0] if others else None
+                if other is not None and not _person_passes(other):
+                    continue
+                picked.append((r, other))
+        for r, other in picked:
+            bound = _family_bound(r)
+            if bound is None or not (lo <= bound <= hi):
+                continue
+            key = (r['id'], rel_id)
+            if key in seen:
+                continue
+            if r['type'] == 'marriage':
+                # Her parents marrying after she was born is one event, not
+                # one per parent.
+                if r['id'] in seen_marriages:
+                    continue
+                seen_marriages.add(r['id'])
+            seen.add(key)
+            events.append({
+                'kind': 'family', 'claim_id': r['id'], 'source_id': r['source_id'],
+                'type': r['type'], 'date_edtf': r['date_edtf'],
+                'date_min': r['date_min'], 'date_max': r['date_max'],
+                'place_id': r['place_id'], 'place_text': r['place_text'],
+                'relative_id': rel_id, 'relation': word, 'relation_kind': kind,
+                'other_id': other, 'status': r['status'], 'confidence': r['confidence'],
+                'reviewed': r['reviewed'],
+                'age': age_between(birth['date_edtf'], r['date_edtf']) if birth else None,
+                'sort_key': (0, bound, 1, str(r['source_id'] or ''), str(r['id']), rel_id),
+            })
+    events.sort(key=lambda e: e['sort_key'])
+    result['events'] = events
+    return result
 
 
 # ── "Probably not living" (fha lint W173; TOOLING §3) ────────────────────────

@@ -346,6 +346,11 @@ from _lib import (
     ASSET_ROOT_ALIASES,
     bracket_given_name,
     claim_is_own_vital,
+    VITAL_SUBJECT_ROLES,
+    age_between,
+    age_phrase,
+    family_life_events,
+    kin_graph,
     edtf_bounds,
     is_placeholder_name,
     person_surname,
@@ -5302,6 +5307,8 @@ class _SiteBuilder:
         # so a person named on twenty records would otherwise re-read the same
         # claim_persons rows twenty times. None means the claim never said.
         self._vital_subjects: dict[str, list[str] | None] = {}
+        # The family graph the timeline's family rows read (`_family_events`).
+        self._family_kin = None
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
         self._graves_cache: list[dict] | None = None      # graves.html groups, built once per build
@@ -7761,6 +7768,8 @@ class _SiteBuilder:
             'has_play': bool(recordings or (quote and quote['play'])
                              or any(e.get('listen') for g in timeline for e in g['entries'])),
             'has_qa_badges': has_qa_badges,
+            'has_family_rows': any(e.get('kind') == 'family'
+                                   for group in timeline for e in group['entries']),
             'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
             # no fha.yaml switch; the switch is for the shared site.
@@ -9227,34 +9236,65 @@ class _SiteBuilder:
             rows = [r for r in rows
                     if normalize_id(str(r['id'])) not in self.restricted_claims
                     and not self._source_hard_restricted(r['source_id'])]
+        # Family rows: her father's death and her children's births sit
+        # between her own records, each saying how old she was
+        # (`_lib.family_life_events`). A claim shown as a family row is not
+        # shown again as her own bare "birth" line.
+        family = self._family_events(pid)
+        # One record of a house fire that names her and her daughter as
+        # deceased is still her own death line as well.
+        family_claims = {ev['claim_id'] for ev in family['events']}
+        rows = [r for r in rows
+                if (r['id'] not in family_claims
+                    and not self._repeats_family_event(r, family['events']))
+                or claim_is_own_vital(self.conn, pid, r['id'], r['type'],
+                                      self._vital_subjects)]
+        own_birth, own_death = family['birth'], family['death']
+
+        # Own rows keep the SQL order; a family row goes after own rows on
+        # the same day, in source and claim id order, so two builds match.
+        items: list[tuple] = []
+        for seq, r in enumerate(rows):
+            bound = (r['date_max'] if (r['date_edtf'] or '').startswith('[..')
+                     else r['date_min'])
+            items.append(((0 if r['date_min'] else 1, bound or '', 0, (seq,)), r, None))
+        for ev in family['events']:
+            items.append(((0, ev['sort_key'][1], 1, ev['sort_key'][3:]), None, ev))
+        # Place-history context rows: when a place the person was recorded at
+        # changed government between their first and last record there, the
+        # timeline says so, marked as background about the place. A shared
+        # (standalone) page names only places that have a page. A context row
+        # sorts after own and family rows on the same day.
+        keep = None if self.linked else (lambda p: p in self.place_pages)
+        context = place_history_context(self.conn, place_visits_from_rows(rows, keep))
+        if keep:
+            context = [c for c in context if keep(c['place_id'])]
+        for c in context:
+            items.append((c['sort_key'], c, None))
+        items.sort(key=lambda item: item[0])
+
         def _decade_sort_key(decade: str | None) -> tuple[int, int]:
             if decade is None:
                 return (1, 0)   # undated sorts after every dated decade
             return (0, int(decade[:-1]))   # '1930s' -> 1930
 
-        # Place-history context rows: when a place the person was recorded at
-        # changed government between their first and last record there, the
-        # timeline says so, marked as background about the place. A shared
-        # (standalone) page names only places that have a page.
-        keep = None if self.linked else (lambda p: p in self.place_pages)
-        context = place_history_context(self.conn, place_visits_from_rows(rows, keep))
-        if keep:
-            context = [c for c in context if keep(c['place_id'])]
-        rows = insert_context_rows(list(rows), context)
-
-        rows_with_decade = [(r, _decade_header(r['date_iso'] if isinstance(r, dict) else r['date_edtf']))
-                            for r in rows]
+        rows_with_decade = [((r, ev), _decade_header(
+                                (r or ev)['date_iso'] if isinstance(r, dict) else (r or ev)['date_edtf']))
+                            for _key, r, ev in items]
         rows_with_decade.sort(key=lambda item: _decade_sort_key(item[1]))
 
         groups: list[dict] = []
         current: str | None = '\x00'   # sentinel distinct from None (undated)
         entries: list[dict] = []
-        for r, decade in rows_with_decade:
+        for (r, ev), decade in rows_with_decade:
             if decade != current:
                 if entries:
                     groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
                 current = decade
                 entries = []
+            if ev is not None:
+                entries.append(self._family_entry(pid, ev, page_dir))
+                continue
             if isinstance(r, dict):
                 # Background about the place, not a record of the family:
                 # no citation, no age, no confidence flag.
@@ -9304,12 +9344,148 @@ class _SiteBuilder:
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'unconfirmed': r['status'] == 'suggested',
                 'parked': r['reviewed'] or '',
+                'kind': 'own',
+                'age_text': self._own_age_text(pid, r, own_birth, own_death),
                 # "listen": the minute this was said, when its recording plays.
                 'listen': self._listen_link(r['source_id'], r['anchor'], page_dir, players),
             })
         if entries:
             groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
         return groups
+
+    def _family_events(self, pid: str) -> dict:
+        """The family rows for one person's timeline, under this build's
+        privacy line (`_lib.family_life_events`).
+
+        On the shared site a relative is named only when their own page could
+        be shown: a living, unknown, restricted or by-request brother (merges
+        followed) gives no row at all, not a "Living Person" row, since a
+        family tie is itself personal. Every claim used must be publishable
+        (accepted, not restricted, not on a restricted or DNA source) and not
+        withheld for a living person's sake (SPEC §21); a record kept because
+        it only names a living godparent is fine, as the row names only the
+        relative. Each tie must rest on a publishable claim, the rule the
+        Family section uses (`_has_public_parent_edge`), and no tie may run
+        through a restricted or by-request person. A tie may run through a
+        living or unknown parent, who is never named (owner decision D16,
+        the rule the relationship line follows): her brother is her brother
+        even when their father's record is still marked unknown. The linked
+        preview and the workbench show everything, parked claims flagged."""
+        if self.linked:
+            person_ok = claim_ok = edge_ok = None
+        else:
+            def person_ok(other: str) -> bool:
+                meta = self.person_meta.get(other)
+                return meta is not None and not self._person_is_redacted(meta)
+
+            def claim_ok(row: dict) -> bool:
+                return (self._claim_row_is_publishable(row['id'], row['source_id'], row['status'])
+                        and self._claim_verdicts.get(row['id']) != CLAIM_WITHHELD)
+
+            def edge_ok(person_id, rel, other_id, claim_id) -> bool:
+                if self._pid_is_restricted(person_id) or self._pid_is_restricted(other_id):
+                    return False
+                if claim_id is None:
+                    return True
+                row = self.conn.execute(
+                    'SELECT source_id, status FROM claims WHERE id = ?', (claim_id,)).fetchone()
+                if row is None:
+                    return True     # a bare edge with nothing behind it to hide
+                return self._claim_row_is_publishable(claim_id, row['source_id'], row['status'])
+        if self._family_kin is None:
+            # One family graph per build for the "half-brother" word, under
+            # the same edge test as the rows themselves.
+            self._family_kin = kin_graph(self.conn, edge_ok=None if edge_ok is None else (
+                lambda row: edge_ok(row['person_id'], row['rel'], row['other_id'],
+                                    row['claim_id'])))
+        return family_life_events(
+            self.conn, pid, include_parked=self.linked, person_ok=person_ok,
+            claim_ok=claim_ok, edge_ok=edge_ok, cache=self._vital_subjects,
+            kin=self._family_kin)
+
+    def _repeats_family_event(self, r, events: list[dict]) -> bool:
+        """Ethel's birth written in both the register and the family bible
+        shows once on her mother's page, as the labelled family row, not again
+        as a bare "birth" line. True when this own-row claim records the same
+        relative's same event as a family row: a birth, death or burial (each
+        happens once), or a marriage to the same spouse. The other record
+        still sits in her Sources list. A record he accepted is never hidden
+        behind a family row that is still unconfirmed (preview only)."""
+        for ev in events:
+            if r['status'] == 'accepted' and ev['status'] != 'accepted':
+                continue
+            if ev['type'] != r['type'] or not claim_is_own_vital(
+                    self.conn, ev['relative_id'], r['id'], r['type'], self._vital_subjects):
+                continue
+            if r['type'] == 'marriage' and (ev['other_id'] is None or not claim_is_own_vital(
+                    self.conn, ev['other_id'], r['id'], 'marriage', self._vital_subjects)):
+                continue
+            return True
+        return False
+
+    def _own_age_text(self, pid: str, r, own_birth: dict | None,
+                      own_death: dict | None) -> str:
+        """"aged 21 or 22" for one of the person's own timeline lines, or ''.
+
+        None on their own birth, with no recorded birth, when the dates are
+        too loose to say within a year (`_lib.age_between`), and on a record
+        dated after their death (a will proved years later is not something
+        they did at 60)."""
+        if own_birth is None or not r['date_edtf']:
+            return ''
+        if r['type'] == 'birth' and claim_is_own_vital(
+                self.conn, pid, r['id'], 'birth', self._vital_subjects):
+            return ''
+        # Her grandfather's death, where she was only the informant, is not
+        # her event: "Josiah died, aged 82 ... aged 18 or 19" reads as his
+        # age twice. Only her own birth, death or marriage carries her age.
+        if r['type'] in VITAL_SUBJECT_ROLES and not claim_is_own_vital(
+                self.conn, pid, r['id'], r['type'], self._vital_subjects):
+            return ''
+        if (own_death is not None and own_death['date_max'] and r['date_min']
+                and r['date_min'] > own_death['date_max']):
+            return ''
+        age = age_between(own_birth['date_edtf'], r['date_edtf'])
+        if age is None:
+            return ''
+        phrase = age_phrase(age)
+        return phrase if age[0] == 0 else f'aged {phrase}'
+
+    def _family_entry(self, pid: str, ev: dict, page_dir: Path) -> dict:
+        """One family row as a timeline entry: "Her father Caleb Comstock
+        Hartley died at Easton. She was 5 or 6." Possessive and pronoun come
+        from the person's recorded sex only; with none, the first word of
+        their name stands in ("Margaret's father", "Margaret was 5"), never a
+        guess from the name. The relative's name links to their page when
+        there is one. Flags match the person's own rows, so `has_qa_badges`
+        and the legend still work."""
+        row = self.person_meta.get(pid)
+        sex = ((row['sex'] if row is not None else '') or '').strip().upper()
+        first = ((row['name'] if row is not None else '') or fmt_id_display(pid)).split()[0]
+        possessive, subject = {'M': ('His', 'He'), 'F': ('Her', 'She')}.get(
+            sex, (f"{first}'s", first))
+        name = self._person_link(ev['relative_id'], page_dir)
+        place = str(self._place_html(ev['place_text'], ev['place_id'], page_dir))
+        at = f' at {place}' if place else ''
+        verb = {'birth': 'was born', 'death': 'died', 'burial': 'was buried'}.get(ev['type'])
+        if ev['type'] == 'marriage':
+            other = f" {self._person_link(ev['other_id'], page_dir)}" if ev['other_id'] else ''
+            what = f'married{other}{at}.'
+        else:
+            what = f'{verb}{at}.'
+        sentence = f'{_escape(possessive)} {_escape(ev["relation"])} {name} {what}'
+        if ev['age'] is not None:
+            sentence += f' {_escape(subject)} was {_escape(age_phrase(ev["age"]))}.'
+        return {
+            'kind': 'family', 'date': ev['date_edtf'] or '(undated)', 'type': ev['type'],
+            'sentence': self._markup(sentence),
+            'source_html': (self._markup(self._source_link(ev['source_id'], page_dir))
+                            if ev['source_id'] else ''),
+            'status': ev['status'], 'confidence': ev['confidence'] or '',
+            'unconfirmed': ev['status'] == 'suggested',
+            'parked': ev['reviewed'] or '',
+            'age_text': '',
+        }
 
     def _person_sources(self, pid: str, page_dir: Path) -> list[dict]:
         """The person's Sources as a numbered footnote list - each source's human
