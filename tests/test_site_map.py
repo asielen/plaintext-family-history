@@ -715,6 +715,75 @@ class JourneyPrivacyTests(_JourneyBase):
                          [ELM_CREEK, FAIRVIEW])
 
 
+class YearSliderTests(_JourneyBase):
+    """A slider under the map from the first year on any line to the last:
+    moving it back shows where the family had got to by then. Its years come
+    only from the lines, so nobody the shared site hides moves its ends."""
+
+    def test_the_years_run_from_the_first_stop_to_the_last(self):
+        self.claim('c-aaaaaaaaaa', 'birth', [THOMAS], ELM_CREEK, roles={THOMAS: 'child'},
+                   date='1840~')
+        self.claim('c-bbbbbbbbbb', 'census', [THOMAS], FAIRVIEW, roles={THOMAS: 'head'},
+                   date='1870')
+        self.claim('c-cccccccccc', 'residence', [THOMAS], FAIRVIEW, date='1880')
+        self.claim('c-dddddddddd', 'residence', [MARGARET], HAYS, date='1855')
+        self.claim('c-eeeeeeeeee', 'residence', [MARGARET], FAIRVIEW, date='[..1895]')
+        self.build()
+        data = self.data()
+        self.assertEqual(data['years'], [1840, 1895])
+        # Last key, in a fixed place, so two builds give the same bytes.
+        self.assertEqual(list(data)[-1], 'years')
+        page = self.page()
+        self.assertIn('type="range"', page)
+        self.assertIn('min="1840" max="1895" step="1" value="1895"', page)
+        self.assertIn('aria-valuetext="Every year, up to 1895"', page)
+
+    def test_a_stop_over_several_records_counts_to_its_last_year(self):
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        self.claim('c-cccccccccc', 'residence', [THOMAS], FAIRVIEW, date='1910')
+        self.build()
+        self.assertEqual(self.data()['years'], [1860, 1910])
+
+    def test_no_lines_means_no_years_and_no_slider(self):
+        # One stop draws no line, so there is nothing to step through.
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.build()
+        data = self.data()
+        self.assertEqual(data['journeys'], [])
+        self.assertNotIn('years', data)
+        self.assertNotIn('type="range"', self.page())
+
+    def test_a_hidden_person_does_not_move_the_ends(self):
+        self.person(LIVE, WITHHELD_NAMES[LIVE], living='true')
+        self.person(UNK, WITHHELD_NAMES[UNK], living='unknown')
+        self.person(SECRET, WITHHELD_NAMES[SECRET], extra='restricted: true\n')
+        self.person(QUIET, WITHHELD_NAMES[QUIET], extra='restricted: by-request\n')
+        self.claim('c-aaaaaaaaaa', 'residence', [THOMAS], ELM_CREEK, date='1860')
+        self.claim('c-bbbbbbbbbb', 'residence', [THOMAS], FAIRVIEW, date='1870')
+        for n, pid in enumerate((LIVE, UNK, SECRET, QUIET)):
+            sid = f's-{"bcde"[n] * 10}'
+            self.source(sid, f'Register volume {"ABCD"[n]}')
+            self.claim(f'c-{"cdef"[n] * 10}', 'residence', [pid], ELM_CREEK, date='1801',
+                       source=sid)
+            self.claim(f'c-{"ghjk"[n] * 10}', 'residence', [pid], HAYS, date='1990',
+                       source=sid)
+        self.build()
+        self.assertEqual(self.data()['years'], [1860, 1870])
+        page = self.page()
+        for year in ('1801', '1990'):
+            self.assertNotIn(year, page)
+        # The private preview: the restricted are the owner's own to see,
+        # but a living or unknown person still has no line, so no years.
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id IN (?, ?)",
+                          (SECRET, QUIET))
+        self.build(linked=True)
+        self.assertEqual(self.data()['years'], [1860, 1870])
+        self.conn.execute("UPDATE persons SET living = 'false' WHERE id = ?", (SECRET,))
+        self.build(linked=True)
+        self.assertEqual(self.data()['years'], [1801, 1990])
+
+
 class VendoredMapFilesTests(unittest.TestCase):
     """The outline the map draws is Natural Earth's 1:110m countries, from
     world-atlas 2.0.2, wrapped as a script so a page opened from disk can
@@ -845,6 +914,44 @@ class MapLayoutJsTests(unittest.TestCase):
             'Not on this line: 1 event at a place with no map position yet.',
             'Not on this line: 1 event with no date.', ''])
         self.assertEqual(out['missing'], [], 'a stop with no pin draws no move')
+
+    def test_the_year_slider_shows_what_had_happened_by_then(self):
+        payload = {'journeys': [
+            {'stops': [{'place': 'l-a', 'year_from': 1840, 'year_to': 1840},
+                       {'place': 'l-b', 'year_from': 1870, 'year_to': 1900}]},
+            {'stops': [{'place': 'l-b', 'year_from': 1855, 'year_to': 1855},
+                       {'place': 'l-c', 'year_from': 1895, 'year_to': 1895}]}],
+            'years': [1840, 1895]}
+        out = self.run_js(
+            'const ys = input.years;'
+            'let y = m.playStart(ys[1], ys); const play = [y];'
+            'for (let i = 0; i < 20; i++) { y = m.nextPlayYear(y, ys); if (y === null) break;'
+            '  play.push(y); }'
+            'play.push(m.playStart(1870, ys));'
+            'process.stdout.write(JSON.stringify({'
+            ' pins: m.pinYears(input.journeys),'
+            ' shown: [m.shownBy(1870, 1870), m.shownBy(1871, 1870), m.shownBy(undefined, 1870),'
+            '         m.shownBy(undefined, null), m.shownBy(1999, null)],'
+            ' text: [m.yearText(1870, ys), m.yearText(null, ys), m.yearText(1895, ys)],'
+            ' play: play}));', payload)
+        # A pin shows from the first year a line reaches it.
+        self.assertEqual(out['pins'], {'l-a': 1840, 'l-b': 1855, 'l-c': 1895})
+        # Up to the year, inclusive; a pin no line reaches waits for "Show all".
+        self.assertEqual(out['shown'], [True, False, False, True, True])
+        self.assertEqual(out['text'], ['Up to 1870', 'Every year, up to 1895',
+                                       'Every year, up to 1895'])
+        # Play from the last year starts again at the first, steps a decade
+        # at a time and ends on the last year; from a year partway, it goes
+        # on from there.
+        self.assertEqual(out['play'], [1840, 1850, 1860, 1870, 1880, 1890, 1895, 1870])
+
+    def test_playing_the_years_is_left_out_for_someone_who_wants_less_motion(self):
+        out = self.run_js(
+            'const win = r => ({matchMedia: q => ({matches: r && q.includes("reduce")})});'
+            'process.stdout.write(JSON.stringify([m.motionReduced(win(true)),'
+            ' m.motionReduced(win(false)), m.motionReduced(undefined), m.motionReduced({})]));',
+            {})
+        self.assertEqual(out, [True, False, False, False])
 
     def test_the_outline_turns_into_shapes(self):
         out = self.run_js(

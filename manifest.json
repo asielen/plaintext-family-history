@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "891fd0a660e0495ec22aec9bb5e8434bb4399eb53dfea02ac21a4bf8d996a9de",
+      "sha256": "32d4a0ae678626ebbe80245142930a7612c8b630ba246c163374855931941116",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "b459ca50fc225284731d4226d0903ce10d3745774ed0d4a5bf4206b083b489a5",
+      "sha256": "cf2d33d1212ecf16d7047b6ddaab17c0225b06100143eb661018ddf2a4dc68ea",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1288,7 +1288,7 @@
     {
       "path": ".fha/tools/templates/map.html",
       "category": "operating",
-      "sha256": "bbf712e4e9330ce97fb4b1017bd199d57d6c6d3d9be5f762cf3bf9eaf9eb8759",
+      "sha256": "725d8b30f09e1412a182258281eaa86f7fdfc0e8d2518024025d624fb9ea6a38",
       "spec_version": "2.44",
       "src": "tools/templates/map.html"
     },
@@ -1386,7 +1386,7 @@
     {
       "path": ".fha/tools/templates/vendor/fha-map.js",
       "category": "operating",
-      "sha256": "650a33697dbe9865e98dfd3dbb530ec7d3ce6afa652291b2f0c3d4d791522957",
+      "sha256": "8b928509402bbb55ee42ede51ddae96f1530ac8824eb464a0a842f193b1f0ba8",
       "spec_version": "2.44",
       "src": "tools/templates/vendor/fha-map.js"
     },
@@ -1653,7 +1653,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "985816d440194e656f3a91fca89d0edbe0d87ad16d7a322956e292d13f77df16",
+      "sha256": "cb406ccc60a2937e6ee9fc2749da7300f65f8ae0249c7be6e1d6f6a83fe49cdb",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
