@@ -7658,7 +7658,7 @@ class _SiteBuilder:
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
             'recordings': recordings, 'quote': quote,
             'has_play': bool(recordings or (quote and quote['play'])
-                             or any(e['listen'] for g in timeline for e in g['entries'])),
+                             or any(e.get('listen') for g in timeline for e in g['entries'])),
             'has_qa_badges': has_qa_badges,
             'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
