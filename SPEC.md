@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.45, 2026-11-24**
+**Version 2.46, 2026-11-25**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -577,8 +577,7 @@ The design fact this establishes: **the archive is a records core plus mapped as
 
 - **A file, not an `fha.yaml` key.** Working-copy status is a fact about *this copy on this machine*, not about the archive, so it must never travel: the marker is **git-ignored** (it can never be committed and synced back to flip the main archive into working-copy mode) and **machine-local**.
 - **Human-managed and visible.** The human opts this copy in, and opts out by removing it, so it is a visible file at the root (found by opening the folder in any file browser), carrying a plain-language explanation inside. Only its *existence* matters to the tools, not its content.
-- **`fha working-copy on` / `fha working-copy off`** create or remove the marker (and keep it git-ignored), so nobody has to remember the filename or contents. Turning the mode *on* only ever withholds, so it needs no confirmation. Turning it *off* **must confirm first**: if the originals are not in fact on this machine, switching off would make the tools treat them as missing and could let a photo re-index prune the catalogue.
-- The scaffolding commands (`fha install`/`fha update-tools`) never touch the marker: it is a statement about this machine's copy, not about the tools.
+- How the tools switch the mode on and off (`fha working-copy`), and what each tool does while it is on: TOOLING §13d.
 
 In this mode tools *must* treat absent assets as present-but-unavailable rather than lost:
 - asset-on-disk checks are suppressed: a missing original is not flagged as an error;
@@ -1048,23 +1047,14 @@ Generated output that leaves the archive falls into two categories with differen
 - A report about a living or unknown subject is refused, except the Ahnentafel report, which shows a living subject as "a living relative" and continues with the deceased ancestors (an Ahnentafel of one's own line is the common use); a `restricted` subject is refused without printing the name.
 - Reports are written under `generated/views/` with the GENERATED marker and are swept by `fha views clean`. They carry a banner saying living relatives are counted, not named.
 
-**Site generation freshness contract:**
-- `fha site` reads structured data (claims, vitals, relationships, sources) from `.cache/index.sqlite`; it is as live as the last `fha index` run.
-- Biography, Stories, and Research Notes prose are read from the curated person `.md` file directly. Friends & Family, by contrast, is *not* read as prose: that page section is independently derived from relationship claims (§9), the same as every other structured-data section; a human's own free text under the profile's `## Friends & Family` heading is for the working archive, not the site.
-- The generated `.md` views (timeline, draft-queue) are research artifacts for the agent; `fha site` does not read them, nor does it read a profile's own inline `## Sources` region or its summary region (§21b): the per-person source list and summary on a site page are built independently from the index, like every other structured section.
-- The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
-
-**View maintenance (`fha views clean`):**
-- Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean`: files without it are never touched, even if they match a view filename pattern.
-- Views rendered as standalone HTML (`--format html`) are single-file documents under `generated/views/`, carrying the same header as their **first line, before the doctype**; `fha views clean` sweeps them by the same marker-per-file signal (a hand-written file in that folder is never touched). They render the same content as their `.md` twins and remain private, unredacted research artifacts, not public output (TOOLING §7 D11).
-- Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
+**Generated views and the site snapshot.** Both are derived from the index and the person files and are fully rebuildable, so deleting them loses nothing durable. A generated file is recognised only by its `GENERATED` header (TOOLING §1). How `fha site` reads its data and stays fresh is in TOOLING §12; how `fha views clean` decides what to delete is in TOOLING §7.
 
 ### 21b. Purpose blocks and generated regions in publication
 
 Two conventions sit *inside* an otherwise human-owned file rather than replacing it, and neither is publication content:
 
 - **The purpose block** (§16a) is the first thing in the body of every document `fha` writes or scaffolds: a visible blockquote, distinct from the whole-file `GENERATED` header above and not consumed by `fha views clean`. `fha site` never reaches it: every prose section it publishes is read by a specific `## Heading` match that starts capturing strictly after that heading line, and the purpose block always sits before the first `##` heading, right after the H1. `fha packet` reaches the block structurally (a profile or source record is read as one string before it is copied), so it strips the block explicitly before any copy ships.
-- **A GENERATED-BEGIN/END region** is a third generated-content convention, distinct from both the whole-file header and the purpose block. A profile has two: its `## Sources` section and its summary lines under the H1 (§16). Paired `<!-- GENERATED-BEGIN name by cmd on date -->` / `<!-- GENERATED-END name -->` markers rewrite one named part of an otherwise human-owned file in place, never the whole file. `fha views clean` never touches it (there is no whole file to delete); the view command that owns it rewrites it in place instead (`fha views sources-index`, `fha views summary`). `fha site` never reads it, per the freshness contract above. `fha packet` drops both entirely from the profile copy it packs, and `fha wikitree` drops the summary, rather than including them verbatim. Each is read from the index with none of the export's own privacy filtering (the summary names every child, living or not; the sources list names sources by archive-relative path), so the copy ships without a substitute rather than with a stale or unfiltered one.
+- **A GENERATED-BEGIN/END region** is a third generated-content convention, distinct from both the whole-file header and the purpose block. A profile has two: its `## Sources` section and its summary lines under the H1 (§16). Paired `<!-- GENERATED-BEGIN name by cmd on date -->` / `<!-- GENERATED-END name -->` markers rewrite one named part of an otherwise human-owned file in place, never the whole file. `fha views clean` never touches it (there is no whole file to delete); the view command that owns it rewrites it in place instead (`fha views sources-index`, `fha views summary`). `fha site` never reads it (TOOLING §12). `fha packet` drops both entirely from the profile copy it packs, and `fha wikitree` drops the summary, rather than including them verbatim. Each is read from the index with none of the export's own privacy filtering (the summary names every child, living or not; the sources list names sources by archive-relative path), so the copy ships without a substitute rather than with a stale or unfiltered one.
 
 Neither convention changes what "generated" means for §5's disposability rule: both are fully rebuildable, and deleting either loses nothing durable.
 

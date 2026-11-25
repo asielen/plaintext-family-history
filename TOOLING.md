@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the `fha` tools. To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.45, 2026-11-24 · companion to SPEC.md v2.45 (versions track the SPEC)**
+**Version 2.46, 2026-11-25 · companion to SPEC.md v2.46 (versions track the SPEC)**
 
 SPEC.md states *what* each tool must do; this doc states *how* (schemas, algorithms, commands, edge cases), enough to rebuild any tool in any language. The archive works by hand without the tools, and everything they generate is a disposable cache. A tooling change that affects the spec is made in SPEC.md too.
 
@@ -1089,7 +1089,7 @@ Four checks, all previewed. `--fix` applies 1-3, `--fix-promote` applies 4, `--r
 
 ### `fha views clean [--root PATH] [--dry-run]`
 
-Deletes GENERATED-headed files: companion `.md` files under `people/`, `.html` (or stray `.md`) under `generated/views/`, the place notes in `places/` (judged on the first line after their frontmatter; `places.yaml` is never touched), and the Obsidian canvases in `notes/obsidian/canvas/` (judged on their first card). The first-line marker is the only signal, file by file; profiles, research files, authored files and the inline `## Sources` region are never touched. A hand-written file in `generated/views/` survives. `--dry-run` lists every file it would delete. A `people/` companion's index rows (`person_files`, `notes_fts`) are deleted in the same pass, so a clean sweep exits 0. Exit 1 when something is left for the human: a file that would not delete or read (named, skipped; `data['failures']`, `data['unreadable']`) or a failed row cleanup (`data['index_stale']`). An unreadable file is unknown, never "not ours". Uses: compacting for sharing; resetting before a full refresh.
+Deletes GENERATED-headed files: companion `.md` files under `people/`, `.html` (or stray `.md`) under `generated/views/`, the place notes in `places/` (judged on the first line after their frontmatter; `places.yaml` is never touched), and the Obsidian canvases in `notes/obsidian/canvas/` (judged on their first card). The first-line marker is the only signal, file by file; profiles, research files, authored files and the inline `## Sources` region are never touched. A hand-written file in `generated/views/` survives. `--dry-run` lists every file it would delete. A `people/` companion's index rows (`person_files`, `notes_fts`) are deleted in the same pass, so a clean sweep exits 0. Exit 1 when something is left for the human: a file that would not delete or read (named, skipped; `data['failures']`, `data['unreadable']`) or a failed row cleanup (`data['index_stale']`). An unreadable file is unknown, never "not ours". Uses: compacting for sharing; resetting before a full refresh. Deleting views never affects the archive's correctness: every view is rebuilt from the index. A standalone `.html` view carries the same header as its first line, before the doctype, renders the same content as its `.md` twin, and stays a private, unredacted research file, not public output (D11).
 
 ### Printed reports (`fha views family-sheet`, `ahnentafel`, `descendants` and `register`)
 
@@ -1494,6 +1494,8 @@ Exit codes: 0 written/dry-run; 1 unknown l-id or missing registry (with `fha fin
 Builds the archive as a website in `generated/site/` (or `--out`): relative links, no CDN, works from `file://`. The packet embeds a one-person slice.
 
 **Data:** structured data from `.cache/index.sqlite` (never the `fha views` files); biography and Stories prose from the person file. Jinja2 templates in `tools/templates/`; a minimal stdlib Markdown converter; PIL for images. `[[ID]]` (or its file-stem form) becomes a relative link labelled by `|display` or the record name; a name/stem resolves through the alias map (so a living person is redacted however named); an unresolved stem is plain text; an unresolved ID renders highlighted.
+
+**Freshness.** Structured data (claims, vitals, relationships, sources) is as live as the last `fha index` run. Biography, Stories and Research Notes prose is read from the person file directly. Friends & Family is not read as prose: that section is derived from relationship claims (SPEC §9) like every other structured section, and a human's own text under the profile's `## Friends & Family` heading stays in the working archive. The site never reads the generated `.md` views (timeline, draft-queue) or a profile's GENERATED regions (its `## Sources` list and summary, SPEC §21b); the source list and summary on a site page are built from the index. A built site is frozen at build time: rebuilding is idempotent, and an old snapshot stays a valid view of the archive as it was.
 
 ### Pages
 - **Home**: ancestor pedigree (below) seeded on `site.home_person` else `root_person`, depth `site.home_pedigree_generations` (default 5, max 8); surname A-Z index; recent discoveries; **Sources** grouped by decade of `date_min`, alphabetical within, undated last.
