@@ -1117,7 +1117,7 @@ Exit codes: 0 written; 1 person not in the index, or written with a file left ou
 
 ### `fha views refresh [--format md|html|both] [--root PATH]`
 
-Regenerates timeline and draft-queue for every curated person (`md`: plus every person's `## Sources` and summary regions, stubs included, a stub reads like any profile; `html`: the `generated/views/` set). With `links: obsidian`, the `md` pass first does what `fha views places` does, so the views written after it link places by their notes' current names; when that pass re-points links, the run exits 1 with `data['index_stale']` and says to run `fha index`. Needs a fresh index. One person's failure warns and skips; the run then exits 1 with `data['skipped']`. A failed index-row update exits 1 with `data['index_stale']`.
+The counterpart of `fha views clean`, and the usual step after `fha index` when every view needs rebuilding (a fresh copy, a reset after `views clean`); a review session instead refreshes only the people it touched (§17), so untouched views keep their generation dates. Regenerates timeline and draft-queue for every curated person (`md`: plus every person's `## Sources` and summary regions, stubs included, a stub reads like any profile; `html`: the `generated/views/` set). With `links: obsidian`, the `md` pass first does what `fha views places` does, so the views written after it link places by their notes' current names; when that pass re-points links, the run exits 1 with `data['index_stale']` and says to run `fha index`. Needs a fresh index. One person's failure warns and skips; the run then exits 1 with `data['skipped']`. A failed index-row update exits 1 with `data['index_stale']`.
 
 ### D11: single-file HTML views
 

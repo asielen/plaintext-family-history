@@ -1054,10 +1054,9 @@ Generated output that leaves the archive falls into two categories with differen
 - The generated `.md` views (timeline, draft-queue) are research artifacts for the agent; `fha site` does not read them, nor does it read a profile's own inline `## Sources` region or its summary region (§21b): the per-person source list and summary on a site page are built independently from the index, like every other structured section.
 - The site snapshot is frozen at generation time. Regenerating is idempotent; an old snapshot remains a valid frozen view as the archive moves on.
 
-**View maintenance (`fha views clean` / `fha views refresh`):**
+**View maintenance (`fha views clean`):**
 - Generated `.md` views carry the `<!-- GENERATED … -->` header. This header is the sole signal for deletion by `fha views clean`: files without it are never touched, even if they match a view filename pattern.
 - Views rendered as standalone HTML (`--format html`) are single-file documents under `generated/views/`, carrying the same header as their **first line, before the doctype**; `fha views clean` sweeps them by the same marker-per-file signal (a hand-written file in that folder is never touched). They render the same content as their `.md` twins and remain private, unredacted research artifacts, not public output (TOOLING §7 D11).
-- `fha views refresh` is the counterpart: regenerate all content views in one pass after `fha index`. It is the recommended post-index step for bulk regeneration (a fresh copy, a reset after `views clean`); a review session instead refreshes just the touched persons' views (TOOLING §17), so untouched views keep their generation dates.
 - Deleting generated views reduces archive size for sharing but does not affect archive correctness; all views are rebuildable from the index.
 
 ### 21b. Purpose blocks and generated regions in publication
