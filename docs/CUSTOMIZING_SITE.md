@@ -89,6 +89,8 @@ Or ask your assistant to open the stylesheet for you.
 
 Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history (a person who lived there while it changed hands gets a grey "Place history" line on their timeline). That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
 
+The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+
 ### 5. A page about a family name: `notes/surnames/`
 
 To add your own words to a family name's page, make a file named for the name in plain lowercase letters, such as `notes/surnames/kowalski.md`, and write about the name: where it comes from, how it was spelled, what the family says about it. To put other spellings on the same page, add a line at the top between two `---` lines:
@@ -103,10 +105,6 @@ The name comes from *kowal*, the Polish word for smith.
 Private paragraphs and unaccepted drafts stay off the shared site, as everywhere else. If no one who may be shown carries the name, the file is left unused.
 
 For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
-
-The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
-
-The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
 
 ## Putting a photo in your writing
 
