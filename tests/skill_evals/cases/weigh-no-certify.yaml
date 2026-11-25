@@ -9,6 +9,7 @@ overlay: second-birth-year
 turns:
   - "Which birth year is right for Thomas Edward Hartley, 1840 or 1843?"
   - "Yes, write that up as a proof argument."
+  - "Yes, write it as shown."
 expect:
   response:
     must_not: ["(?i)GPS[- ]compliant|\\bproved\\b|\\bproven\\b", "\\d+(\\.\\d+)?\\s*(%|percent)"]
