@@ -258,6 +258,10 @@ fha process refile <s-id> --to photos|documents
                             sanctioned correction; rename at the crossing; --dry-run)
 fha views timeline|sources-index|brackets     regenerate views (timeline and draft-queue also
                             take --format html: a printable page under generated/views/)
+fha views family-sheet|ahnentafel|descendants|register <p-id> --format html
+                            printable pages to hand a relative: living relatives counted or
+                            labelled, never named; private records left out (share-and-export
+                            says what each keeps out)
 fha views places             with links: obsidian, one generated note per place in places/
                             (a mirror of places.yaml, never edited; --dry-run)
 fha normalize-links          tidy citations/cross-links to the [[ ]] form (dry-run default);
@@ -294,7 +298,9 @@ fha compare <p-id> [--fact birth|death|…]   every record about one fact for on
                             says, when it was written, who told it, firsthand or not, and which records
                             are copies of one another
 fha calendar [WHEN]          family births, marriages, deaths and arrivals in a month, on a
-                            day, or in the week ahead (--week)
+                            day, or in the week ahead (--week); --birthdays (living relatives'
+                            coming birthdays) and --format html (a wall calendar) name living
+                            people, so they stay private
 fha date convert DATE --from julian|gregorian|hebrew
                             a date in the old calendar or the Hebrew one, as today's day
                             (never convert in your head); fha date feast NAME YEAR
