@@ -469,6 +469,180 @@ class CommandTests(unittest.TestCase):
         self.assertIn('a year alone', out.getvalue())
 
 
+class BirthdayListTests(unittest.TestCase):
+    """`fha calendar --birthdays`: the owner's private list of living
+    relatives' coming birthdays (TOOLING §7b)."""
+
+    def setUp(self):
+        self.a = _Archive()
+        self._n = 0
+
+    def tearDown(self):
+        shutil.rmtree(self.a.root, ignore_errors=True)
+
+    def person(self, name, living, born, **claim):
+        self._n += 1
+        pid = f'p-{self._n:010d}'
+        meta = {'id': pid, 'name': name, 'living': living, 'tier': 'stub'}
+        (self.a.root / 'people' / 'stubs' / f'p__{self._n}_{pid}.md').write_text(
+            '---\n' + yaml.safe_dump(meta) + f'---\n\n# {name}\n', encoding='utf-8')
+        if born:
+            self.a.source([{'type': 'birth', 'persons': [pid], 'date': born, **claim}])
+        return pid
+
+    def listing(self, today, days=30):
+        self.a.build()
+        return anniversaries.run_birthdays(self.a.root, days=days, today=today)
+
+    def names(self, r):
+        return [e['name'] for e in r.data['upcoming']]
+
+    def test_a_card_reminder_with_age_and_days(self):
+        self.person('Margaret Cole', 'true', '1946-06-14')
+        r = self.listing(datetime.date(2026, 6, 2))
+        (e,) = r.data['upcoming']
+        self.assertEqual((e['birthday'], e['age'], e['days_away']), ('2026-06-14', 80, 12))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(r)
+        text = out.getvalue()
+        self.assertIn('Margaret Cole turns 80 (in 12 days)', text)
+        self.assertIn('for you only; not for sharing', text)
+
+    def test_today_and_tomorrow_wording(self):
+        self.person('Ann Price', 'true', '1990-06-02')
+        self.person('Bo Price', 'true', '1990-06-03')
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(self.listing(datetime.date(2026, 6, 2)))
+        self.assertIn('Ann Price turns 36 (today)', out.getvalue())
+        self.assertIn('Bo Price turns 36 (tomorrow)', out.getvalue())
+
+    def test_only_a_birth_recorded_to_the_day_counts_and_the_rest_are_counted(self):
+        self.person('Day Person', 'true', '1946-06-14')
+        self.person('Month Person', 'true', '1946-06')
+        self.person('Year Person', 'true', '1946')
+        r = self.listing(datetime.date(2026, 6, 2))
+        self.assertEqual(self.names(r), ['Day Person'])
+        self.assertEqual(r.data['inexact'], 2)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(r)
+        self.assertIn('2 living relatives have a birth date not recorded to the exact day',
+                      out.getvalue())
+
+    def test_a_plain_day_wins_over_a_surer_but_uncertain_one(self):
+        # Two records agree on her birthday; the more trusted one marks it "?".
+        # She still gets her card reminder, from the plain date.
+        pid = self.person('Margaret Cole', 'true', '1946-06-14', confidence='medium')
+        self.a.source([{'type': 'birth', 'persons': [pid], 'date': '1946-06-14?',
+                        'confidence': 'high'}])
+        r = self.listing(datetime.date(2026, 6, 2))
+        self.assertEqual(self.names(r), ['Margaret Cole'])
+        self.assertEqual(r.data['inexact'], 0)
+
+    def test_the_110_year_rule_at_the_boundary(self):
+        self.person('Edge Ten', 'true', '1916-06-14')       # 110 in 2026: listed
+        self.person('Past Ten', 'true', '1915-06-14')       # 111: left off
+        r = self.listing(datetime.date(2026, 6, 2))
+        self.assertEqual(self.names(r), ['Edge Ten'])
+        self.assertEqual([e['name'] for e in r.data['too_old']], ['Past Ten'])
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(r)
+        self.assertIn('fha person set-living <p-id> false', out.getvalue())
+
+    def test_feb_29_is_celebrated_on_the_28th_in_a_common_year(self):
+        self.person('Leap Child', 'true', '2020-02-29')
+        common = self.listing(datetime.date(2027, 2, 20)).data['upcoming']
+        self.assertEqual((common[0]['birthday'], common[0]['feb29']), ('2027-02-28', True))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(self.listing(datetime.date(2027, 2, 20)))
+        self.assertIn('(born 29 February)', out.getvalue())
+        leap = self.listing(datetime.date(2028, 2, 20)).data['upcoming']
+        self.assertEqual(leap[0]['birthday'], '2028-02-29')
+
+    def test_the_window_includes_the_last_day_but_not_the_next(self):
+        self.person('Inside', 'true', '1990-07-01')       # 29 days after 2 June
+        self.person('Outside', 'true', '1990-07-02')      # 30 days after
+        r = self.listing(datetime.date(2026, 6, 2), days=30)
+        self.assertEqual(self.names(r), ['Inside'])
+
+    def test_a_birthday_just_after_new_year_counts_the_new_year(self):
+        self.person('January Baby', 'true', '1950-01-03')
+        (e,) = self.listing(datetime.date(2026, 12, 20)).data['upcoming']
+        self.assertEqual((e['birthday'], e['age']), ('2027-01-03', 77))
+
+    def test_unknown_living_is_listed_and_the_dead_are_not(self):
+        self.person('Unsure Person', 'unknown', '1950-06-10')
+        self.person('Gone Person', 'false', '1950-06-11')
+        self.assertEqual(self.names(self.listing(datetime.date(2026, 6, 2))),
+                         ['Unsure Person'])
+
+    def test_a_merged_tombstone_is_left_out(self):
+        pid = self.person('Old Twin', 'true', '1950-06-10')
+        path = next((self.a.root / 'people' / 'stubs').glob(f'*{pid}.md'))
+        path.write_text(path.read_text(encoding='utf-8').replace(
+            'tier: stub', f'tier: stub\nstatus: merged\nmerged_into: {KID}'),
+            encoding='utf-8')
+        # The tombstone is never listed under its own name; its living flag is
+        # carried to the survivor, who is then listed once (SPEC §8.2, #304).
+        self.assertNotIn('Old Twin', self.names(self.listing(datetime.date(2026, 6, 2))))
+
+    def test_a_birth_record_naming_her_son_is_not_her_birthday(self):
+        mom = self.person('Mary Mother', 'true', None)
+        kid = self.person('Kay Kid', 'false', None)
+        self.a.source([{'type': 'birth', 'persons': [kid, mom], 'date': '2000-06-10',
+                        'roles': {'child': kid, 'mother': mom}}])
+        self.assertEqual(self.names(self.listing(datetime.date(2026, 6, 2))), [])
+
+    def test_a_suggested_birth_is_not_used(self):
+        self.person('Maybe Person', 'true', '1950-06-10', status='suggested')
+        self.assertEqual(self.names(self.listing(datetime.date(2026, 6, 2))), [])
+
+    def test_none_in_the_window_says_so(self):
+        self.person('Far Away', 'true', '1950-11-10')
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(self.listing(datetime.date(2026, 6, 2)))
+        self.assertIn('No birthdays of living relatives in the next 30 days.', out.getvalue())
+
+    def test_other_options_and_bad_days_are_refused_with_exit_2(self):
+        self.a.build()
+        # On its own (and with --json, --days or a plain --format text) it runs.
+        for extra in ([], ['--json'], ['--days', '60'], ['--format', 'text']):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                code = anniversaries._standalone_main(
+                    ['--birthdays', *extra, '--root', str(self.a.root)])
+            self.assertEqual(code, 0, extra)
+        for extra in (['june'], ['--week'], ['--include-suggested'],
+                      ['--format', 'html'], ['--year', '2027']):
+            err = io.StringIO()
+            with redirect_stdout(io.StringIO()), redirect_stderr(err):
+                code = anniversaries._standalone_main(
+                    ['--birthdays', *extra, '--root', str(self.a.root)])
+            self.assertEqual(code, EXIT_ERRORS, extra)
+            self.assertIn('leave out the other options', err.getvalue())
+            self.assertIn('fha calendar --birthdays --days 60', err.getvalue())
+        for days in ('0', '367'):
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+                code = anniversaries._standalone_main(
+                    ['--birthdays', '--days', days, '--root', str(self.a.root)])
+            self.assertEqual(code, EXIT_ERRORS, days)
+        with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()):
+            self.assertEqual(anniversaries._standalone_main(
+                ['--days', '5', '--root', str(self.a.root)]), EXIT_ERRORS)
+
+    def test_json(self):
+        self.person('Margaret Cole', 'true', '1946-06-14')
+        r = self.listing(datetime.date(2026, 6, 2))
+        out = io.StringIO()
+        with redirect_stdout(out):
+            anniversaries._cmd_birthdays(r, use_json=True)
+        self.assertEqual(json.loads(out.getvalue())['data']['upcoming'][0]['age'], 80)
+
+
 if __name__ == '__main__':
     unittest.main()
 

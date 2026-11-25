@@ -200,8 +200,11 @@ Build always-current summary pages from your records.
   fha views draft-queue <p-id>     Accepted facts not yet written into the bio
   fha views places                 One note per place, for Obsidian
                                    (only with links: obsidian in fha.yaml)
+  fha views canvas [p-id]          An Obsidian canvas per direct-line family
+                                   (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views register <p-id>        A printable book-style register of a person's descendants
   fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
   fha views descendants <p-id>     A printable numbered list of a person's descendants
 
@@ -310,6 +313,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `--dry-run` | Show what would be written, removed and re-pointed, without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
+### `fha views canvas`
+
+Write an Obsidian canvas per direct-line family (links: obsidian only).
+
+```text
+With links: obsidian in fha.yaml, write one Obsidian canvas per direct-line
+couple folder into notes/obsidian/canvas/: the couple in the middle, their
+parents above, their children below, each card the person's own note.
+Give a p-id for one canvas centred on that person and their spouses.
+A canvas is rebuilt each run (a card you moved is put back) and holds no
+data, so deleting one loses nothing. A file there that this tool did not
+write is never touched. With links: id nothing is written.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `[p-id]` | Make one canvas for this person and their family. |
+| `--dry-run` | Show what would be written or removed, without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
 ### `fha views brackets`
 
 Check couple-folder bracket lists, Ahnentafel placement, and direct-line stubs (W103/W110/W119/W120).
@@ -339,7 +363,7 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `p-id` | Seed person for traversal. |
 | `--mode` `{ancestors,descendants,fan,hourglass}` | ancestors: pedigree BFS; descendants: all descendants + in-law spouses; fan: all edge types (default 2 hops); hourglass: ancestors above and descendants below, with spouses. |
 | `--generations` `N` | Maximum generations / hops (default: unlimited; fan default: 2). |
-| `--format` `{json,dot,html}` | Output format (default: json). html is not available here; run `fha site` for a browsable tree. |
+| `--format` `{json,dot,html}` | Output format (default: json). dot is a family chart for Graphviz: each family a union point and a sibling bar, adopted or step ties dashed, friends dotted. Both formats name everyone, living people included (private research use); to share a tree use `fha site`, `fha packet` or `fha gedcom`. html is not available here; run `fha site` for a browsable tree. |
 | `--out` `FILE` | Write output to FILE instead of stdout. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -359,6 +383,26 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 |---|---|
 | `p-id` | A deceased person; the sheet is for them and a spouse. |
 | `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views register`
+
+Print a book-style register of a person's descendants, each fact with its source.
+
+```text
+Write a printed register report to generated/views/: the person is
+1, each descendant who has children gets the next number (generation by
+generation) and a short paragraph, and children are listed with Roman
+numerals. Living descendants are counted under their parent, never
+named, and their own children are left out; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; everyone descended from them is listed. |
+| `--generations` `N` | How many generations to print, the person being the first (default 4, most 10). |
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -524,6 +568,8 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A --all        Everyone related to one person: blood relatives
+                              nearest first, then those related by marriage
   fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
   fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
@@ -534,6 +580,7 @@ A read-only view over accepted relationship claims: nothing is written.
 |---|---|
 | `[P-A]` | First person: ID or full name |
 | `[P-B]` | Second person: ID or full name |
+| `--all` | List everyone related to one person, by blood or by marriage |
 | `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
@@ -611,6 +658,9 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --birthdays     Living relatives' birthdays in the next 30 days
+                               (private: for you only, never in a shared copy)
+  fha calendar --birthdays --days 60
   fha calendar --format html   A printable wall calendar for this year
   fha calendar --format html --year 2027
                                The same, for another year
@@ -625,6 +675,8 @@ living relatives, so keep it to yourself.
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
+| `--birthdays` | Living relatives' coming birthdays (private; for you only) |
+| `--days` `N` | With --birthdays: how many days ahead (1 to 366, default 30) |
 | `--json` | Machine-readable JSON output |
 | `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
 | `--year` `YYYY` | With --format html: the year to print (default: this year) |
