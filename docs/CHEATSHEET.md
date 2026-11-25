@@ -55,7 +55,12 @@ fha relate p-aaaa --all       # everyone related to this person
 fha relate --cm 450           # which relationships fit 450 cM of shared DNA?
 fha metrics                   # who still lacks a birth, census or marriage record?
 fha metrics "Ann Smith"       # one person's checks in detail, by name or p-id
+fha compare p-aaaa --fact birth   # every record about his birth side by side, to see where they disagree
+fha repositories --place Fairview --year 1860 --record birth   # which archives and record sites hold it, with cost
+fha source new --type proof-argument --title "When Thomas was born"   # start a written proof argument
 fha calendar today            # who in the family was born, married or died on this day?
+fha calendar --format html     # a printable wall calendar for this year (lands in generated/views/; names living relatives, so keep it private)
+fha calendar --birthdays      # living relatives' birthdays in the next 30 days, for you only
 fha date convert "11 Feb 1731/32" --from julian   # an old-calendar date as today's day (also feasts: fha date feast Michaelmas 1850)
 fha person new "Ann Smith" --sex F   # add one new person (refuses a name already on file)
 fha person new --from-file people.tsv   # add a list at once: name, sex, surname per line, tab-separated

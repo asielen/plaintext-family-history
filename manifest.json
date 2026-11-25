@@ -686,7 +686,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "7e154c97ae744fb8ce9564d97f3600294723bc6036e156f22579e6c3c0bfb747",
+      "sha256": "0a1533141c7f014f71d87cd454f6ab3ff5bef42f66369e8f1a26a91967940a1e",
       "spec_version": "2.45",
       "src": "docs/DESIGN.md"
     },
@@ -1594,7 +1594,7 @@
     {
       "path": "docs/CHEATSHEET.md",
       "category": "operating",
-      "sha256": "0cce33ade9c77b0a7d4b93e612c23234f662657b06fab1bd56ddaa9a197a230d",
+      "sha256": "bef71fe29891064fefa7ea162cafd31c6626202d50182100f8ace499fcfa7d2d",
       "spec_version": "2.45"
     },
     {
@@ -1606,13 +1606,13 @@
     {
       "path": "docs/CONTRIBUTING_SOURCES.md",
       "category": "operating",
-      "sha256": "1afe5e6f9c29be31bf6c0aabde20dbd4931f79e00e512d4996cbf15cb2211f23",
+      "sha256": "a66e56daa49d677788267d2b294f49af4a41b5f43a5475d585981a3ca30f8705",
       "spec_version": "2.45"
     },
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "9f422dec33e793432e6506d4f26f47920b0e698271a4369af76944866ee1dc0f",
+      "sha256": "125c1b9bff1dc38fa4007a3dcf24d9bec8536067112613fa4561ab88e3891e8d",
       "spec_version": "2.45"
     },
     {
@@ -1642,13 +1642,13 @@
     {
       "path": "docs/GLOSSARY.md",
       "category": "operating",
-      "sha256": "4bcb8670190249cc75c5ca72b981076318a61a37c9e4b3beb3c941a095c16a7f",
+      "sha256": "fd4eaa030c4396fdab0a7bf512422d49e2fc65460bfb1fb9c6ea77c26d29cf67",
       "spec_version": "2.45"
     },
     {
       "path": "docs/README.md",
       "category": "operating",
-      "sha256": "08b0c04cf044c63d76fb4801dbd6b11e8aa46f7fee926b5809c430324edb8220",
+      "sha256": "5a089a34034c21d7136cc1fd9567e30272d898291fea797e14f7987a5de741c2",
       "spec_version": "2.45"
     },
     {
@@ -1711,7 +1711,7 @@
     {
       "path": "fha.yaml",
       "category": "skeleton",
-      "sha256": "371b63029ab9ba63859c40ca7604480a8fb22c0d51d968742d7a08bdc531b639",
+      "sha256": "24f6733ff0f105af9861ac12ec4117de66f30eaf253f79c8b0588f8c3e3c9b04",
       "spec_version": "2.45",
       "src": "archive-template/fha.yaml"
     },

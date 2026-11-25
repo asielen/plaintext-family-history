@@ -89,6 +89,8 @@ Or ask your assistant to open the stylesheet for you.
 
 Most of the site shows your archive as it is. To change what a person's page *says*, improve that person's record: accept a claim, write a biography paragraph, choose their portrait photo, add a place's history (a person who lived there while it changed hands gets a grey "Place history" line on their timeline). That's ordinary genealogy work, and the site shows it the next time you build. There is no separate website content to maintain.
 
+The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+
 ### 5. A page about a family name: `notes/surnames/`
 
 To add your own words to a family name's page, make a file named for the name in plain lowercase letters, such as `notes/surnames/kowalski.md`, and write about the name: where it comes from, how it was spelled, what the family says about it. To put other spellings on the same page, add a line at the top between two `---` lines:
@@ -104,9 +106,14 @@ Private paragraphs and unaccepted drafts stay off the shared site, as everywhere
 
 For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
-The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+## What the site builds with no setting
 
-The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+Some pages and charts need no switch. They appear once your records hold what they draw, and they follow the same privacy rules as the rest of the site.
+
+- **The family map** (`map.html`, "Map" in the menu) puts a pin at each place an accepted record puts someone, draws each person's moves from record to record, and has a year slider that shows where the family had got to by a given year. A place is on the map only once it has a map position: ask the assistant to fill in the places' coordinates, or see `fha places geocode` and `fha places set` in [COMMANDS.md](COMMANDS.md). Places with records but no position are listed under the map. It needs no internet.
+- **Graves to visit** (`graves.html`, linked from the homepage) lists the family's graves by burial place, from accepted burial records, and each of those people's pages says where they are buried.
+- **The charts on a person's page**: the family chart, the Ancestor fan, "Where the family came from" (one bar per generation), "Who overlapped" (a bar per relative on one time line) and the family explorer (ancestors above, descendants below, husband and wife side by side). A parent tie with weak proof is drawn as a faded line. Under each chart are "Save as a picture (PNG)" and "Save as a drawing (SVG)", for printing or sending; the saved copy leaves out photos, and a "Private" card stays private.
+- **A place's page** has a "Through the years" list: the town's names over time and every accepted event there, burials in its cemeteries included, each saying what the town was called then.
 
 ## Putting a photo in your writing
 

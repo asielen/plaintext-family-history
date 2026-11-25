@@ -20,7 +20,7 @@
 | [TROUBLESHOOTING.md](TROUBLESHOOTING.md) | Something went wrong: each common problem, its cause and its fix. |
 | [FILING_CABINET.md](FILING_CABINET.md) | The archive explained as the paper filing cabinet you already know. |
 | [USING_WITH_OBSIDIAN.md](USING_WITH_OBSIDIAN.md) | Opening and working in the archive with the Obsidian note-taking app. |
-| [CUSTOMIZING_SITE.md](CUSTOMIZING_SITE.md) | Making the family website your own: its name, homepage welcome, banner and styling. |
+| [CUSTOMIZING_SITE.md](CUSTOMIZING_SITE.md) | Making the family website your own: its name, homepage welcome, banner and styling, the optional pages you can switch on, and what the site shows with no setting. |
 | [CONTRIBUTING_SOURCES.md](CONTRIBUTING_SOURCES.md) | For a relative you've asked for documents: how to send them. |
 | [GLOSSARY.md](GLOSSARY.md) | Every term, ID type and record type, defined. |
 | [FAQ.md](FAQ.md) | Why files, why not a database, why AI, and how long it lasts. |

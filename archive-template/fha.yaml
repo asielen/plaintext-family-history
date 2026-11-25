@@ -163,26 +163,11 @@
 #   claims_threshold: 5    # default 5 when the key is absent
 
 # ── Family website extras (optional) ──
-#   `fha site` builds the family website. Every page has a search box that
-#   finds people, places and records by name, even spelled differently; it
-#   lists only who the site already shows. It is on unless you set
-#   `search: false`. Two extra panels are off unless you switch them on:
-#     completeness_rings - each person's page shows a small ring of five
-#       parts (birth record, censuses, parents, marriage records, death or
-#       burial) with a list saying what is found and what is still missing.
-#       Never shown for anyone living or of unknown status, and private
-#       records do not count toward it on the shareable site.
-#     calendar - the homepage shows "This month in the family": births,
-#       baptisms, marriages, deaths, burials and arrivals that fell in the
-#       visitor's current month, with every month listed below. Anything
-#       about a living or private person, or resting on a private record,
-#       is left off.
-#   contact_email - your email address. Each person's page on the shareable
-#     site then ends with a "Tell me what you know" link that opens an email
-#     to you with that person's name filled in. Anyone with a copy of the
-#     site can read the address, and spammers collect addresses from public
-#     pages, so use a separate address made for this, not your main one.
-#   docs/CUSTOMIZING_SITE.md lists the other site settings (title, banner).
+#   `fha site` builds the family website. Its settings go under `site:`:
+#   the site's name and banner, who the homepage chart starts from, and the
+#   optional pages and panels you can switch on or off. docs/CUSTOMIZING_SITE.md
+#   lists every one, what it does and its default. Two that are off
+#   unless you switch them on:
 #
 # site:
 #   completeness_rings: true
