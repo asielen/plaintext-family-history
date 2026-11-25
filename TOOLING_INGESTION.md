@@ -123,7 +123,7 @@ HTML arrives on **stdin** (`… | fha capture`) or from an `--asset` that is its
 
 Recipes live in [`tools/capture_recipes/`](tools/capture_recipes/), one module per site, each exposing `detect(html, url)` and `extract(html, url)`, discovered at runtime and sorted by `PRIORITY`. They are **plug-in data** for capture: a new site needs a new module, not an engine change. A broken or interface-incomplete recipe is skipped with a warning and the page is captured by the generic recipe instead.
 
-Current coverage, in priority order: **Ancestry** (record pages, the image viewer, census household tables, shared tree photos), **Newspapers.com** (clipping + citation), **FamilySearch** (record, tree person, and a bare film image with its film, image number and citation, and, when its Full-Text view is open, FamilySearch's machine reading of the image as an unchecked `transcript`), **Find a Grave** (memorial + cemetery place), **Internet Archive** (a book page: title, author, citation with the page link), **West Virginia Archives** (a Vital Research Records image: its film and image number; also the image behind a FamilySearch record's "View on wvculture.org" badge, saved with that record), **WikiTree** (a profile or free-space page: its ID, last edit, family as WikiTree IDs, its cited sources as a list to tick, and the scans and transcriptions WikiTree holds for them as `source-N`). Any other site gets the generic recipe.
+Current coverage, in priority order: **Ancestry** (record pages, the image viewer, census household tables, shared tree photos), **FamilySearch** (record, tree person, and a bare film image with its film, image number and citation, and, when its Full-Text view is open, FamilySearch's machine reading of the image as an unchecked `transcript`), **Newspapers.com** (clipping + citation), **West Virginia Archives** (a Vital Research Records image: its film and image number; also the image behind a FamilySearch record's "View on wvculture.org" badge, saved with that record), **WikiTree** (a profile or free-space page: its ID, last edit, family as WikiTree IDs, its cited sources as a list to tick, and the scans and transcriptions WikiTree holds for them as `source-N`), **Find a Grave** (memorial + cemetery place), **Internet Archive** (a book page: title, author, citation with the page link). Any other site gets the generic recipe.
 
 ### 2.3 The three asset cases
 
@@ -151,7 +151,7 @@ The engine reads only the HTML it is given; it fetches nothing itself. A front e
 | `--path PATH` | register a file that must stay exactly where it is (§2.6) |
 | `--note TEXT` | a note to record with `--path` (goes in the stub body) |
 | `--ingest [DIR]` | sweep staged bundles from `DIR` (default: `fha.yaml` `capture_staging:`, else `~/Downloads/fha-inbox`) into the inbox (§6) |
-| `--host` / `--install-host [--browser B]` | the native-messaging host and its one-time registration (§5.7) |
+| `--host` / `--install-host [--browser B] [--extension-id ID] [--host-manifest-dir DIR]` | the native-messaging host and its one-time registration (§5.7) |
 | `--dry-run` | preview every write without touching disk |
 
 The modes are mutually exclusive: `--install-host`, `--host`, `--ingest`, `--path`, and the default page capture (`--url`/`--title`/`--type`/`--date`/`--asset`) each run alone. Mixing flags across two modes (e.g. `--ingest --url …`) is a hard error naming both sides, not a silent drop of the losing mode's flags. (`--browser` belongs to `--install-host`; `--dry-run` is cross-mode; `--title` is shared between page capture and `--path`, since both use it to label the stub.)
@@ -281,7 +281,7 @@ The companion's own [`manifest.json`](browser-companion/manifest.json) is the re
 
 ### 5.5 Pre-fill and site readers
 
-On any page the panel reads generic signals (`<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, JSON-LD Person names, the largest image) and guesses `recipe_hint` from the hostname. On the sites it knows (Ancestry, FamilySearch, Find a Grave, Newspapers.com, Internet Archive book pages, and IIIF image servers) a **site reader** in the companion reads the record as the site presents it and saves what it finds as bundle assets: the record image at full size, the site's own index of the record as a `site-data` JSON file, photos, and the site's own citation. Each reader is described in [`browser-companion/README.md`](browser-companion/README.md).
+On any page the panel reads generic signals (`<title>`/`og:title`, `<link rel=canonical>`, `article:published_time`, JSON-LD Person names, the largest image) and guesses `recipe_hint` from the hostname. On the sites it knows (Ancestry, FamilySearch, Find a Grave, Newspapers.com, Internet Archive book pages, WikiTree, West Virginia Archives, and IIIF image servers) a **site reader** in the companion reads the record as the site presents it and saves what it finds as bundle assets: the record image at full size, the site's own index of the record as a `site-data` JSON file, photos, and the site's own citation. Each reader is described in [`browser-companion/README.md`](browser-companion/README.md).
 
 The Python recipe still runs on the saved `page.html` at ingest, and the human's typed fields still win over both. Where the browser and the recipe derive the same hint (`source_type`, `source_date`, `source_class` from a record's collection and event date), they apply **one shared rule written twice**, `recordHints` in `browser-companion/src/lib/ancestry-record.js` and `record_hints` in `tools/capture_recipes/_common.py`, held to the same answers by one case table (`tests/fixtures/capture-samples/ancestry-hints.json`) that both test suites run.
 
@@ -350,7 +350,7 @@ These bind every front end and the engine alike:
 | Inbox contract read by `fha process` (§1) | **built** ([`tools/process.py`](tools/process.py) `_read_sidecar`, `_bundle_file_hints`, `process_pointer_only`, `process_bundle`) |
 | Engine `fha capture` (paste, recipes, generic, stub, search log) | **built** ([`tools/capture.py`](tools/capture.py)) |
 | `fha capture --path` (§2.6) | **built** (`run_capture_path`; `fha process` reads `asset_path`) |
-| Recipes: Ancestry, FamilySearch, Newspapers.com, Find a Grave, Internet Archive + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
+| Recipes: Ancestry, FamilySearch, Newspapers.com, West Virginia Archives, WikiTree, Find a Grave, Internet Archive + generic | **built** ([`tools/capture_recipes/`](tools/capture_recipes/)) |
 | `fha capture --ingest` (§6) and the `fha doctor` nudge | **built** (`run_ingest`; [`tools/doctor.py`](tools/doctor.py)) |
 | Browser companion (§5) | **built** ([`browser-companion/`](browser-companion/)); copied into every archive at `.fha/browser-companion/` |
 | Native-messaging host (§5.7) | **built** (`fha capture --host` / `--install-host`; off by default in the extension) |
