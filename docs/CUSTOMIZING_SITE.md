@@ -104,6 +104,8 @@ Private paragraphs and unaccepted drafts stay off the shared site, as everywhere
 
 For a name written in another alphabet (Иванов, 李), name the file after its page instead: the last part of the page's address, such as `name-1a2b3c4d` in `surnames/name-1a2b3c4d.html`, gives `notes/surnames/name-1a2b3c4d.md`. The same goes for a name Windows keeps for itself, such as Con or Nul: its page is `con-family.html`, so its note is `notes/surnames/con-family.md`.
 
+The lighter lines on a person's timeline come from the records too: when a parent, husband or wife, child, brother or sister was born, married or died during that person's life, with how old the person was then. Accept the relative's claim and the line appears; there is no setting to turn on. A relative who may be living never appears on the shared site.
+
 ## Putting a photo in your writing
 
 In `notes/home.md` (and other writing), you can place a specific photo using the same double-bracket style the archive uses everywhere, with a `!` in front to mean "show the picture here":

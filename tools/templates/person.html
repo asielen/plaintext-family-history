@@ -218,6 +218,9 @@
   yet; when the label adds "<strong>parked</strong>" with a date, that date is simply the last time
   anyone checked, not something that happened to the family.</p>
   {% endif %}
+  {% if person.has_family_rows %}
+  <p class="note timeline-legend">The lighter lines are events in the family around {{ person.name }}: the births, marriages and deaths of parents, brothers and sisters, husbands or wives, and children, while {{ person.name }} was alive. Ages are worked out from the recorded dates, so "5 or 6" means the records do not say which.</p>
+  {% endif %}
   {% if person.has_place_history %}
   <p class="note">Lines marked Place history are background about the places, not records of the family.</p>
   {% endif %}
@@ -252,8 +255,10 @@
             docstring). -#}
         {% if e.kind == 'context' %}
         <li class="tl-context"><span class="tl-label">Place history</span> {{ e.sentence }}</li>
+        {% elif e.kind == 'family' %}
+        <li class="tl-family">{{ e.date }} - {{ e.sentence }} {{ e.source_html }}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% else %}
-        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.listen %} <a class="play-from" href="{{ e.listen.href }}"{% if e.listen.audio_id %} data-audio="{{ e.listen.audio_id }}" data-t="{{ e.listen.seconds }}"{% endif %}>listen</a>{% endif %}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.age_text %} <span class="tl-age">{{ e.age_text }}</span>{% endif %}{% if e.listen %} <a class="play-from" href="{{ e.listen.href }}"{% if e.listen.audio_id %} data-audio="{{ e.listen.audio_id }}" data-t="{{ e.listen.seconds }}"{% endif %}>listen</a>{% endif %}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% endif %}
         {% endfor %}
       </ul>
