@@ -21,9 +21,9 @@
 **cM (centimorgan):** The unit DNA testing companies use for how much DNA two people share. More cM means a closer relationship, but every amount fits several relationships: `fha relate --cm 450` lists them. It never gives a percentage chance, and documents decide which relationship it is. Figures: The Shared cM Project 4.0 (Blaine T. Bettinger, 2020), CC BY 4.0.
 *Example: A match page says "450 cM". That fits first cousins, half first cousins and several others, so it is a reason to look for documents, not an answer.*
 
-**Double cousin:** when two brothers marry two sisters, their children share all four grandparents and are double first cousins. `fha relate` says *double* only for two full lines at the same cousin degree; two people related some other way twice (cousins whose grandparents were cousins) hear each line on its own, nearest first.
-
 **Doctor:** `fha doctor`, the archive's health check. It looks for the common problems (an out-of-date index, a drive that isn't plugged in, a missing helper program, an old backup) and names the fix for each. Run it first whenever something seems wrong.
+
+**Double cousin:** when two brothers marry two sisters, their children share all four grandparents and are double first cousins. `fha relate` says *double* only for two full lines at the same cousin degree; two people related some other way twice (cousins whose grandparents were cousins) hear each line on its own, nearest first.
 
 **EDTF:** Extended Date/Time Format (ISO 8601-2), the way all dates are written, so approximate and partial dates are as valid as exact ones (`1850~`, `185X`, `1871-02/1871-03`).
 *Example: you say "about 1880" and the assistant writes `1880~`. You say "the 1880s" and it writes `188X`.*
@@ -62,6 +62,9 @@
 
 **Processing:** turning a file in the inbox into a source: giving it an ID, filing it, creating its record and drafting claims for you to review.
 *Example: you drop a census scan in `inbox/` and say "process it"; back come suggested names, dates and places to approve.*
+
+**Proof argument:** a written case for a conclusion no single record states outright: the question, the evidence on each side, the reasoning and the answer. It is filed as a source with no file of its own, in `sources/proofs/`, so it can be cited like any record. `fha source new --type proof-argument --title "..."` starts one with the headings ready to fill in; when the assistant drafts the words, they count as yours only once you have read them and said so.
+*Example: two records give Thomas Hartley's birth as 1838 and 1840; a proof argument weighs them and says which year the archive goes with and why.*
 
 **Provisional date:** a birth or death date you write down before you've found the record that proves it. Recording what you know now is a normal starting point, not an error: the tools remind you it still needs a source, and a sourced birth or death claim replaces it when you add one.
 *Example: you're fairly sure great-grandma was born around 1849, so you write `birth: 1849~` on her record, and it appears on the "still to source" list until a certificate turns up.*
