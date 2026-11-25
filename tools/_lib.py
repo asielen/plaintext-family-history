@@ -775,7 +775,7 @@ def weaker_confidence(a: str | None, b: str | None) -> str | None:
     return _CONFIDENCE_WORD.get(min(ra, rb))
 
 
-def line_confidence(seed: str, edges) -> dict[str, str | None]:
+def line_confidence(seed: str, edges, leaf_ties=()) -> dict[str, str | None]:
     """For each person reachable from `seed`, the weakest rated parent or
     child tie on their strongest route from the seed: 'low' | 'medium' |
     'high', or None when no rated tie lies on that route (the seed itself, or
@@ -794,7 +794,13 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
     topola's propagateConfidence (https://github.com/PeWu/topola,
     src/confidence.ts, Apache-2.0); this is a fresh implementation.
     Deterministic: ties between equal values go by person id, and the result
-    is sorted by person id."""
+    is sorted by person id.
+
+    `leaf_ties` holds (leaf, person, confidence) for a parent or child tie
+    that brings in a one-hop leaf (a grandson's mother, who married in): it
+    gives the leaf a line, the weaker of the person's and the tie's, but is
+    never a route onward, so a wife's strong tie to her son cannot hide that
+    his descent from the seed rests on a family story."""
     adjacency: dict[str, list[tuple[str, int]]] = {}
     for a, b, etype, conf in edges:
         if etype == 'spouse':
@@ -818,7 +824,49 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
             if nxt not in settled and value > best.get(nxt, 0):
                 best[nxt] = value
                 heapq.heappush(heap, (-value, nxt))
+    for leaf, pid, conf in leaf_ties:
+        if pid in settled:
+            value = min(best[pid], CONFIDENCE_RANK.get(conf or '', _UNRATED))
+            if value > best.get(leaf, 0):
+                best[leaf] = value
     return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
+
+
+def family_key(parent_ids) -> str:
+    """The name of one family in the tree data, so a chart keeps the children
+    of a man's first and second marriages under the right wife: 'fam:' and
+    the parents' ids, sorted, joined by '+' (`fam:p-aaa+p-bbb`, or `fam:p-aaa`
+    for a single parent). It names the parent pair, not a marriage record, so
+    a couple who never married, or whose wedding was never found, is still a
+    family, and a reader can work the key out by hand (TOOLING §7)."""
+    return 'fam:' + '+'.join(sorted(parent_ids))
+
+
+def family_keys(parents: dict, spouse_pairs) -> dict[str, str]:
+    """Which family each of one child's parent ties belongs to: {parent id:
+    family key}. `parents` maps each parent the chart may show to whether the
+    tie is genetic (SPEC §12.2); `spouse_pairs` holds frozenset({a, b}) for
+    each spouse tie the chart may show among them.
+
+    - The genetic parents form one family. Three or more genetic parents is
+      a conflict still being worked out, so each gets a family of their own
+      rather than a guessed pairing.
+    - A step, adoptive or other non-genetic parent forms a family with the
+      one parent of the child they married; with none, or more than one, they
+      stand alone.
+    - A parent the chart leaves out is not passed in, so it never appears in
+      a key and the child sits in the family of the parent who is shown. The
+      key then gives away nothing about a withheld partner."""
+    genetic = sorted(p for p, g in parents.items() if g)
+    keys: dict[str, str] = {}
+    if len(genetic) <= 2:
+        keys.update((p, family_key(genetic)) for p in genetic)
+    else:
+        keys.update((p, family_key([p])) for p in genetic)
+    for n in sorted(p for p, g in parents.items() if not g):
+        partners = [s for s in parents if s != n and frozenset((n, s)) in spouse_pairs]
+        keys[n] = family_key([n, partners[0]] if len(partners) == 1 else [n])
+    return keys
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:
