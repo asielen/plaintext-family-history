@@ -25028,6 +25028,77 @@ def family_calendar_year(
     return months
 
 
+# The month grid of a wall calendar, shared by the private printed calendar
+# (`fha calendar --format html`) and the family site's calendar page, so a month
+# is laid out one way. Privacy is the caller's: it passes in only the events it
+# may show, and `person` (HTML for one named person) when names are linked.
+
+WALL_ABBREV = {'birth': 'b.', 'baptism': 'bap.', 'marriage': 'm.', 'death': 'd.',
+                'burial': 'bur.', 'immigration': 'arr.'}
+WALL_LEGEND = 'b. born, bap. baptised, m. married, d. died, bur. buried, arr. arrived'
+WALL_LINES_PER_DAY = 3
+
+
+def wall_names_html(ev: dict, person=None) -> str:
+    """The people an event is about. `person` turns one of them into HTML
+    (the family site passes a linked name with a face); the private view
+    prints bare names."""
+    names = [person(p) if person else html.escape(p['name'] or '') for p in ev['people']]
+    return names[0] if len(names) == 1 else ', '.join(names[:-1]) + ' and ' + names[-1]
+
+
+def wall_line_html(ev: dict, person=None) -> str:
+    """One event as `b. Thomas Hartley (1840)`: what, who, which year. A
+    29 February moved to the 28th says so after the name; an event resting
+    only on a suggested claim says it is not yet reviewed."""
+    moved = ' (29 February)' if ev.get('leap_moved') else ''
+    review = '' if ev.get('accepted', True) else ' (not yet reviewed)'
+    return (f"{WALL_ABBREV.get(ev['type'], ev['word'])} {wall_names_html(ev, person)}"
+            f"{moved} ({ev['year']}){review}")
+
+
+def wall_month_html(year: int, entry: dict, person=None) -> str:
+    """One month's grid, legend and lists as HTML. The family site's wall
+    calendar calls this too, with `person` set, so both calendars lay a month
+    out the same way."""
+    month = entry['month']
+    name = calendar.month_name[month]
+    out = ['<section class="wall-month-block">', f'<h2>{name} {year}</h2>',
+           '<table class="wall-month">', '<thead><tr>'
+           + ''.join(f'<th>{d}</th>' for d in ('Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'))
+           + '</tr></thead>', '<tbody>']
+    for week in calendar.Calendar(firstweekday=6).monthdayscalendar(year, month):
+        out.append('<tr>')
+        for day in week:
+            if not day:
+                out.append('<td></td>')
+                continue
+            events = entry['days'].get(day, [])
+            cell = [f'<span class="day-num">{day}</span>']
+            for ev in events[:WALL_LINES_PER_DAY]:
+                cell.append(f'<span class="wall-line">{wall_line_html(ev, person)}</span>')
+            if len(events) > WALL_LINES_PER_DAY:
+                cell.append('<span class="wall-line">and '
+                            f'{len(events) - WALL_LINES_PER_DAY} more</span>')
+            out.append('<td>' + ''.join(cell) + '</td>')
+        out.append('</tr>')
+    out += ['</tbody>', '</table>', f'<p class="wall-legend">{WALL_LEGEND}</p>']
+    if any(len(v) > WALL_LINES_PER_DAY for v in entry['days'].values()):
+        out.append(f'<p class="wall-more">All of {name}:</p><ul>')
+        for day in sorted(entry['days']):
+            for ev in entry['days'][day]:
+                out.append(f'<li>{day} {name}: {wall_line_html(ev, person)}</li>')
+        out.append('</ul>')
+    if entry['month_only']:
+        out.append(f'<p class="wall-more">Also in {name}, day not recorded:</p><ul>')
+        out += [f'<li>{wall_line_html(ev, person)}</li>' for ev in entry['month_only']]
+        out.append('</ul>')
+    if not entry['days'] and not entry['month_only']:
+        out.append(f'<p class="wall-more">Nothing on file for {name} yet.</p>')
+    out.append('</section>')
+    return '\n'.join(out)
+
+
 def calendar_years_ago_phrase(years_ago: int) -> str:
     """How long ago a calendar event was, in words: "146 years ago", "1 year
     ago", "this year". A date after this year is a mistake in the record,
@@ -25041,6 +25112,86 @@ def calendar_years_ago_phrase(years_ago: int) -> str:
     if years_ago == 1:
         return '1 year ago'
     return f'{years_ago} years ago'
+
+
+def living_birthdays(conn: sqlite3.Connection, today: datetime.date, days: int = 30
+                     ) -> dict:
+    """The owner's own list of living relatives' coming birthdays, so he can
+    send a card in time. PRIVATE: read only by `fha calendar --birthdays` in
+    his terminal. No shared output (site, packet, GEDCOM, WikiTree, search,
+    tree JSON, printed report) may call this or print what it returns; a
+    living person's birthday, even day and month without the year, is exactly
+    what SPEC §21 keeps off every shared copy.
+
+    Returns {'upcoming': [...], 'too_old': [...], 'inexact': n}. Each entry:
+    {id, name, birth_date, birthday (ISO date of the next one), age (turned),
+    days_away, feb29 (bool: born 29 February, celebrated 28 February)}.
+
+    People are living or unknown (`person_is_living`, merges followed; a
+    merged tombstone is skipped). The birth date is the person's own best
+    accepted, non-negated birth claim (`claim_is_own_vital`, `vital_pick_key`);
+    only a plain date recorded to the day counts, since "June 1946" has no
+    day to celebrate (`inexact` counts those people), and such a date is
+    preferred over a surer but qualified one. Someone born more than
+    `LIVING_CUTOFF_YEARS` years before this year goes in `too_old`: probably
+    dead, but the record does not say so."""
+    rows = conn.execute(
+        """SELECT c.id, c.date_edtf, c.date_min, c.date_max, c.confidence,
+                  cp.person_id
+           FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+           WHERE LOWER(c.type) = 'birth' AND c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0""").fetchall()
+    # A date exact to the day ranks ahead of everything else, so a cousin
+    # with a plain "1946-06-14" is still listed when a higher-confidence
+    # "1946-06-14?" sits beside it; within each group the headline pick holds.
+    def _rank(claim: Any) -> tuple:
+        parts = calendar_date_parts(claim['date_edtf'])
+        return (0 if parts is not None and parts[2] is not None else 1,
+                vital_pick_key(claim))
+    best: dict[str, Any] = {}
+    cache: dict[str, list[str] | None] = {}
+    for r in rows:
+        pid = normalize_id(str(r['person_id']))
+        if not claim_is_own_vital(conn, pid, r['id'], 'birth', cache):
+            continue
+        if pid not in best or _rank(r) < _rank(best[pid]):
+            best[pid] = r
+    names = {r['id']: (r['name'], r['status']) for r in conn.execute(
+        'SELECT id, name, status FROM persons')}
+    upcoming: list[dict] = []
+    too_old: list[dict] = []
+    inexact = 0
+    for pid, claim in best.items():
+        if pid not in names or (names[pid][1] or '') == 'merged':
+            continue
+        if not person_is_living(conn, pid):
+            continue
+        parts = calendar_date_parts(claim['date_edtf'])
+        if parts is None or parts[2] is None:
+            inexact += 1
+            continue
+        year, month, day = parts
+        entry = {'id': pid, 'name': names[pid][0],
+                 'birth_date': str(claim['date_edtf']).strip()}
+        if today.year - year > LIVING_CUTOFF_YEARS:
+            too_old.append(entry)
+            continue
+        feb29 = (month, day) == (2, 29)
+
+        def _on(y: int) -> datetime.date:
+            if feb29 and not calendar.isleap(y):
+                return datetime.date(y, 2, 28)
+            return datetime.date(y, month, day)
+        nxt = _on(today.year)
+        if nxt < today:
+            nxt = _on(today.year + 1)
+        away = (nxt - today).days
+        if away < days:
+            upcoming.append({**entry, 'birthday': nxt.isoformat(), 'age': nxt.year - year,
+                             'days_away': away, 'feb29': feb29})
+    upcoming.sort(key=lambda e: (e['birthday'], e['name'] or '', e['id']))
+    too_old.sort(key=lambda e: (e['name'] or '', e['id']))
+    return {'upcoming': upcoming, 'too_old': too_old, 'inexact': inexact}
 
 
 def couple_folder_dirs(archive_root: str | Path) -> list[Path]:
