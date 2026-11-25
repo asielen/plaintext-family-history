@@ -33,6 +33,7 @@ Contents:
 23. A recording plays on the shared site only on an explicit yes
 24. The family map draws its own outline
 25. A journey stop sits at the middle of its date
+26. A family in the tree data is its parent pair
 
 ---
 
@@ -540,3 +541,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **The timeline's order (first day).** It keeps a vague date's earliest edge, which suits a list read top to bottom and misleads on a route drawn across a map.
 - **Drawing undated records somewhere.** A guessed position in time looks like a known one once it is a line, so they are counted under the map instead.
 - **Lines for living people in the private preview.** A drawn route of everywhere a living relative has lived is the most revealing thing the map could show, and a preview is often read over someone's shoulder.
+
+---
+
+## 26. A family in the tree data is its parent pair
+
+**The rule.** Every parent, child and spouse tie in the tree data names the family it belongs to: `fam:` and the parents' ids, sorted. A child's birth parents are one family. A step or adoptive parent joins the parent they married. A spouse tie names the couple, children or not. On the shared site a co-parent the site does not show is left out of the key.
+
+**Why.** A man with three wives has children by two of them, and a chart has to know which child goes under which wife. A marriage record cannot say: plenty of couples never married, and plenty of weddings were never found, yet their children are still theirs. The parent pair is in every child's record already, so the key needs nothing new, comes out the same from `fha views tree` and the site, and a reader can work it out by hand. Leaving a withheld partner out of the key, instead of writing a blank or a count, means the child simply sits in the shown parent's family, so the key never tells a visitor that someone is missing.
+
+**Rejected.**
+
+- **Keying on the marriage claim.** It loses every unmarried couple and every wedding not yet found, and splits one couple into two families when two marriage records disagree.
+- **Guessing a pairing when three birth parents are recorded.** That is a conflict still under review; each parent stands alone until it is settled.
+- **A placeholder for a withheld co-parent** ("unknown partner 1"). It tells a visitor there is a partner the site is keeping back, which is the thing being withheld.

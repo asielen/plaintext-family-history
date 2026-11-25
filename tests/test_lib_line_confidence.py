@@ -103,6 +103,20 @@ class LineConfidenceTests(unittest.TestCase):
             self.assertEqual(got, want)
             self.assertEqual(list(got), list(want))   # same key order too
 
+    def test_a_leaf_tie_gives_the_leaf_a_line_but_is_no_route_onward(self):
+        # Thomas's son Samuel (high); Samuel's son Gus rests on a family
+        # story (low); Gus's mother Ann married in and is on his birth record.
+        edges = [('tom', 'sam', 'child', 'high'), ('sam', 'gus', 'child', 'low'),
+                 ('sam', 'ann', 'spouse', None)]
+        got = line_confidence('tom', edges, leaf_ties=[('ann', 'gus', 'high')])
+        self.assertEqual(got['gus'], 'low')
+        self.assertEqual(got['ann'], 'high')     # from her husband, the better route
+        # Unmarried: her line is the weaker of her son's and her tie to him.
+        got = line_confidence('tom', edges[:2], leaf_ties=[('ann', 'gus', 'high')])
+        self.assertEqual(got, {'ann': 'low', 'gus': 'low', 'sam': 'high', 'tom': None})
+        # A leaf tied to someone the seed cannot reach is left out.
+        self.assertNotIn('ann', line_confidence('tom', [], leaf_ties=[('ann', 'gus', 'high')]))
+
     def test_people_the_seed_cannot_reach_are_left_out(self):
         got = line_confidence('kit', [('alan', 'silas', 'parent', 'high')])
         self.assertEqual(got, {'kit': None})
