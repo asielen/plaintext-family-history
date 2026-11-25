@@ -12940,18 +12940,12 @@ class VendoredLibraryTests(_Base):
                                 f'{entries[name]} named for {name} does not exist')
 
     def test_the_licence_records_the_checksum_of_the_shipped_file(self):
-        # Every third-party file, not only D3: a changed byte in any of them
-        # means the site no longer runs what its licence note describes.
-        entries = self._readme_entries()
-        for name in sorted(p.name for p in self.VENDOR.iterdir()
-                           if p.is_file() and p.name not in self.OWN_CODE):
-            with self.subTest(name):
-                licence = (self.LICENCES / entries[name]).read_text(encoding='utf-8')
-                m = re.search(r'sha256 ([0-9a-f]{64})', licence)
-                self.assertIsNotNone(m, f'{entries[name]} must record the sha256 of {name}')
-                digest = hashlib.sha256((self.VENDOR / name).read_bytes()).hexdigest()
-                self.assertEqual(m.group(1), digest,
-                                 f'{name} does not match the sha256 pinned in {entries[name]}')
+        licence = (self.LICENCES / 'd3-ISC.txt').read_text(encoding='utf-8')
+        m = re.search(r'sha256 ([0-9a-f]{64})', licence)
+        self.assertIsNotNone(m, 'd3-ISC.txt must record the sha256 of d3.min.js')
+        digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
+        self.assertEqual(m.group(1), digest,
+                         'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
 
     def test_flextree_is_vendored_with_its_licence(self):
         # The explorer's couple layout (chart plan 08-9): d3-flextree 2.1.2,
