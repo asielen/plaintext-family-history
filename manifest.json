@@ -1618,7 +1618,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "31c1f3609d3ac274b988c99e155a4fd6e40f386e0a3fc48a9cade7bf782f17c7",
+      "sha256": "9701239fc2a8c1831fc4acd9b5cc8efcfab40f8e8078c861b715505ff4aef089",
       "spec_version": "2.44"
     },
     {
@@ -1660,14 +1660,14 @@
     {
       "path": "docs/SPEC.md",
       "category": "operating",
-      "sha256": "3536fcb4be1c0d26948f29bb2cfd63010d7dc7cd4c149436a33ff65ff9bccaa6",
+      "sha256": "a4ffadb705fe355de614857542d81e813b70199a3c1949b0918a7a22b05a98d6",
       "spec_version": "2.44",
       "src": "SPEC.md"
     },
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "8d61e7a9716746eef003c6d4a248eec70a1025454ca4d8c8547b86ee2110caa1",
+      "sha256": "660af9a569fba6c56a89f27b185b6914f0e83bd4796974ef141de05f73710fca",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },
