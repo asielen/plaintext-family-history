@@ -1,4 +1,5 @@
 {
+  "version": 2,
   "seed": "p-nf819w33dy",
   "mode": "descendants",
   "nodes": [
@@ -11,7 +12,8 @@
         "death": null
       },
       "url": "p-nf819w33dy.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": null
     },
     {
       "p_id": "p-htyn3mpg9g",
@@ -22,7 +24,8 @@
         "death": null
       },
       "url": "p-htyn3mpg9g.html",
-      "photo": null
+      "photo": null,
+      "line_confidence": "medium"
     }
   ],
   "edges": [
@@ -34,6 +37,7 @@
       "subtype": "biological",
       "genetic": true,
       "kind": "genetic",
+      "confidence": "medium",
       "dates": {
         "start": null,
         "end": null
