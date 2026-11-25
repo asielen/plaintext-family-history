@@ -10662,9 +10662,9 @@ class _SiteBuilder:
                 shown_id[pid] = fmt_id_display(pid)
         families = self._tree_families(ties, shown_id, tie_shown)
         edges: list[dict] = []
-        # (from, to, type, confidence before any Private card's is
-        # blanked), one per edge, for the line search below.
-        edge_keys: list[tuple[str, str, str, str | None]] = []
+        # (from, to, type), one per edge, so the line search below can tell
+        # a co-parent's leaf tie from a route onward.
+        edge_keys: list[tuple[str, str, str]] = []
         for (cur, other, etype), tie in ties.items():
             r = tie['row']
             # The edge's nature (SPEC §12.2): a non-genetic parent/child bond
@@ -10710,7 +10710,7 @@ class _SiteBuilder:
             else:
                 child, parent = (cur, other) if etype == 'parent' else (other, cur)
                 edge['family'] = families[child][parent]
-            edge_keys.append((cur, other, etype, tie['confidence']))
+            edge_keys.append((cur, other, etype))
             edges.append(edge)
         if truncated:
             # Should not happen in any real archive (see `_DESCENDANT_TREE_
@@ -10722,22 +10722,17 @@ class _SiteBuilder:
                 f'genealogy data was omitted from its tree JSON.')
         # A co-parent's tie to the child brings them in but is never a route
         # onward, so a wife's strong tie to her son cannot hide that his
-        # descent rests on a family story. The line is worked out through a
-        # Private card (a dead grandchild below one still fades), but the
-        # card itself says nothing about it (below).
+        # descent rests on a family story.
         # A Private card carries no detail about itself, and that includes how
         # well its ties are proven. Those ties are claims naming a living
-        # person, so they count as unrated before the line is worked out: a
-        # dead grandchild faded only because Pat's own parentage is a family
-        # story would tell every visitor that about Pat.
-        for e in edges:
-            if e['from'].startswith('private-') or e['to'].startswith('private-'):
-                e['confidence'] = None
+        # person, so they count as unrated (their edges' confidence is already
+        # blanked above): a dead grandchild faded only because Pat's own
+        # parentage is a family story would tell every visitor that about Pat.
         lines = line_confidence(shown_id[seed], [
-            (e['from'], e['to'], e['type'], key[3])
-            for key, e in zip(edge_keys, edges) if key[:3] not in leaf_keys
-        ], leaf_ties=[(e['from'], e['to'], key[3])
-                      for key, e in zip(edge_keys, edges) if key[:3] in leaf_keys])
+            (e['from'], e['to'], e['type'], e['confidence'])
+            for key, e in zip(edge_keys, edges) if key not in leaf_keys
+        ], leaf_ties=[(e['from'], e['to'], e['confidence'])
+                      for key, e in zip(edge_keys, edges) if key in leaf_keys])
         nodes = []
         for pid in order:
             if shown_id[pid].startswith('private-'):

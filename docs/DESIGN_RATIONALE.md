@@ -29,7 +29,8 @@ Contents:
 19. Calendar conversion is a tool
 20. The tree fades a weak line, from the tie outward
 21. Importing a newer download of the same tree
-22. A family in the tree data is its parent pair
+22. Surname pages: feminine forms join only when the masculine form is there
+23. A family in the tree data is its parent pair
 
 ---
 
@@ -487,17 +488,6 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 
 ---
 
-## 22. A family in the tree data is its parent pair
-
-**The rule.** Every parent, child and spouse tie in the tree data names the family it belongs to: `fam:` and the parents' ids, sorted. A child's birth parents are one family. A step or adoptive parent joins the parent they married. A spouse tie names the couple, children or not. On the shared site a co-parent the site does not show is left out of the key.
-
-**Why.** A man with three wives has children by two of them, and a chart has to know which child goes under which wife. A marriage record cannot say: plenty of couples never married, and plenty of weddings were never found, yet their children are still theirs. The parent pair is in every child's record already, so the key needs nothing new, comes out the same from `fha views tree` and the site, and a reader can work it out by hand. Leaving a withheld partner out of the key, instead of writing a blank or a count, means the child simply sits in the shown parent's family, so the key never tells a visitor that someone is missing.
-
-**Rejected.**
-
-- **Keying on the marriage claim.** It loses every unmarried couple and every wedding not yet found, and splits one couple into two families when two marriage records disagree.
-- **Guessing a pairing when three birth parents are recorded.** That is a conflict still under review; each parent stands alone until it is settled.
-- **A placeholder for a withheld co-parent** ("unknown partner 1"). It tells a visitor there is a partner the site is keeping back, which is the thing being withheld.
 ## 22. Surname pages: feminine forms join only when the masculine form is there
 
 **The rule.** The family site gives each family name a page. Accent and case spellings share one page (Müller, Muller). A Polish feminine form (Kowalska, Wiśniewska) or a Czech one (Nováková) joins the masculine page only when the masculine form is also carried by someone the site shows. A note's `also:` list merges any other spelling.
@@ -509,3 +499,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
 - **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
 - **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
+
+---
+
+## 23. A family in the tree data is its parent pair
+
+**The rule.** Every parent, child and spouse tie in the tree data names the family it belongs to: `fam:` and the parents' ids, sorted. A child's birth parents are one family. A step or adoptive parent joins the parent they married. A spouse tie names the couple, children or not. On the shared site a co-parent the site does not show is left out of the key.
+
+**Why.** A man with three wives has children by two of them, and a chart has to know which child goes under which wife. A marriage record cannot say: plenty of couples never married, and plenty of weddings were never found, yet their children are still theirs. The parent pair is in every child's record already, so the key needs nothing new, comes out the same from `fha views tree` and the site, and a reader can work it out by hand. Leaving a withheld partner out of the key, instead of writing a blank or a count, means the child simply sits in the shown parent's family, so the key never tells a visitor that someone is missing.
+
+**Rejected.**
+
+- **Keying on the marriage claim.** It loses every unmarried couple and every wedding not yet found, and splits one couple into two families when two marriage records disagree.
+- **Guessing a pairing when three birth parents are recorded.** That is a conflict still under review; each parent stands alone until it is settled.
+- **A placeholder for a withheld co-parent** ("unknown partner 1"). It tells a visitor there is a partner the site is keeping back, which is the thing being withheld.

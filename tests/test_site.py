@@ -5565,6 +5565,7 @@ class TreeJsonConfidenceTests(_Base):
         self.assertEqual(names, {'Grandparent Gus', 'Parent Pat', 'Child Carl',
                                  'Minor Mina', 'Uncle Umberto'})
 
+
     def test_a_private_card_and_its_ties_say_nothing_about_their_evidence(self):
         # Every parent tie is a family story. Umberto, dead, is Gus's son on
         # his own story and fades. Carl, dead, sits under Private Pat: the
@@ -5729,9 +5730,10 @@ class TreeFamilyKeyTests(_Base):
         nodes = {n['p_id']: n for n in tree['nodes']}
         self.assertIsNone(nodes['private-1']['line_confidence'])
         self.assertIsNone(nodes['private-2']['line_confidence'])
-        # The line is still worked out through them: their dead daughter's
-        # descent is rated, as the faded-line chart (08-7) needs.
-        self.assertEqual(nodes[case['people']['grandchild']]['line_confidence'], 'high')
+        # Their ties count as unrated (#518): their dead daughter's descent
+        # runs only through them, so it carries no rating either, and her
+        # card can never hint at how well her living parents are proven.
+        self.assertIsNone(nodes[case['people']['grandchild']]['line_confidence'])
         claims = {r[0] for r in self.conn.execute(
             "SELECT DISTINCT claim_id FROM relationships WHERE claim_id IS NOT NULL "
             "AND (person_id IN ({0}) OR other_id IN ({0}))".format(

@@ -1183,7 +1183,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "8b8a0e668c6347373f20cfa42c17a846eef5db23efc0c80b20e5a9dd5a03c0f8",
+      "sha256": "27c680d2e9b2ff54ffb7be6e3d3d98ae2699a926645eea6836a7c6b3a435d703",
       "spec_version": "2.40",
       "src": "tools/site.py"
     },
@@ -1527,7 +1527,7 @@
     {
       "path": "docs/DESIGN_RATIONALE.md",
       "category": "operating",
-      "sha256": "1243410a7095e7cd71675f68d86a7aac746e4fd56ce4957a996f9355e3f9afd8",
+      "sha256": "11f84a03803b2bc57b3baf19eec47fffd84baac344a1d20cf696c8d21cc6d1b8",
       "spec_version": "2.40"
     },
     {
