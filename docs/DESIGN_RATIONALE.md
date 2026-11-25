@@ -32,6 +32,7 @@ Contents:
 22. Surname pages: feminine forms join only when the masculine form is there
 23. A recording plays on the shared site only on an explicit yes
 24. The family map draws its own outline
+25. A journey stop sits at the middle of its date
 
 ---
 
@@ -525,3 +526,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **The 1:50m outline.** Seven times the size in every copy of the site, for a coastline sharper than pins placed by town need.
 - **US state outlines.** A second data file, left until a family needs it.
 - **The outline as a separate JSON file.** Browsers refuse to fetch a file from disk, so it ships as a script.
+
+---
+
+## 25. A journey stop sits at the middle of its date
+
+**The rule.** On the family map, each stop on a person's journey line is ordered and labelled by the middle of its date: "about 1840" is 1840, "186X" is 1865, "1870/1880" is 1875, and an open-ended date ("before 1895") uses the year it names. Records on the same date keep the timeline's order. Only people whose record says `living: false` have a line, and a record the shared site withholds is not a stop.
+
+**Why.** The index widens a vague date both ways, so "about 1840" starts in 1839. Ordered by its first day, a burial "about 1901" would come before a death on 30 December 1900, and the line would visit the cemetery before the deathbed. The middle is where a vague date most likely falls, and ordering and labelling by the same year keeps the numbers along a line from running backwards. A line drawn through a withheld record would show where it was, so the line runs straight past it.
+
+**Rejected.**
+
+- **The timeline's order (first day).** It keeps a vague date's earliest edge, which suits a list read top to bottom and misleads on a route drawn across a map.
+- **Drawing undated records somewhere.** A guessed position in time looks like a known one once it is a line, so they are counted under the map instead.
+- **Lines for living people in the private preview.** A drawn route of everywhere a living relative has lived is the most revealing thing the map could show, and a preview is often read over someone's shoulder.

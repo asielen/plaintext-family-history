@@ -188,6 +188,8 @@ CODE MAP
     _rel_href                  - relative href from a page dir to a target file
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
+    _journey_when              - a family-map stop's year and sort key: the middle of its date
+    _journey_note              - the map's "Not on the lines: ..." sentence
 
   Site search (the spelling rule; the builder's search methods are below)
     _search_fold: text -> search words (accents, old spellings, doubled
@@ -272,6 +274,8 @@ CODE MAP
           what was accepted each month, shown facts only
       ._surname_groups / .build_surname_pages: surnames/*.html, one page per
           family name the build shows a person for
+      ._map_traveller / ._map_journeys / ._map_life: each dead person's
+          journey on the map, stop by stop in date order
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -4838,6 +4842,52 @@ def _json_for_script(obj) -> str:
             .replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026'))
 
 
+def _journey_when(date_edtf, date_min, date_max) -> tuple[int, int] | None:
+    """When a record puts someone at a stop on the family map's journey
+    line: (the year the stop is labelled with, a finer sort key), or None
+    when the record gives no usable date.
+
+    A stop sits at the middle of its date. "About 1840" (`1840~`) is indexed
+    as 1839 to 1841 (`edtf_bounds` widens it both ways), so reading its first
+    day would label it 1839 and could put a burial "about 1901" ahead of a
+    death on 30 December 1900. The year is the middle of the two bounds'
+    years, rounding up (`186X` reads 1865, `1870/1880` 1875), and the sort
+    key is the middle day, so labels never run backwards along a line. An
+    open-ended date reads its one known bound (`[..1895]` 1895, `[1883..]`
+    1883). Bounds are today's (Gregorian) calendar, which `date:` always is
+    (SPEC §11). No date, an unreadable one (the index's 0001 to 9999 for both
+    bounds), or a range written backwards gives None: counted, not drawn."""
+    if not date_edtf or not date_min or not date_max:
+        return None
+    try:
+        lo = None if date_min == '0001-01-01' else datetime.date.fromisoformat(date_min)
+        hi = None if date_max == '9999-12-31' else datetime.date.fromisoformat(date_max)
+    except ValueError:
+        return None
+    if lo is None and hi is None:
+        return None
+    if lo is None:
+        return hi.year, 2 * hi.toordinal()
+    if hi is None:
+        return lo.year, 2 * lo.toordinal()
+    if lo > hi:
+        return None
+    return (lo.year + hi.year + 1) // 2, lo.toordinal() + hi.toordinal()
+
+
+def _journey_note(undated: int, unplaced: int) -> str:
+    """The family map's plain line for the records its journey lines leave
+    out, or '' when there are none: "Not on the lines: 2 events with no date
+    and 1 at a place with no map position yet." """
+    parts = []
+    if undated:
+        parts.append(f'{undated} event{"" if undated == 1 else "s"} with no date')
+    if unplaced:
+        noun = '' if undated else f' event{"" if unplaced == 1 else "s"}'
+        parts.append(f'{unplaced}{noun} at a place with no map position yet')
+    return f'Not on the lines: {" and ".join(parts)}.' if parts else ''
+
+
 # ── Site search: the spelling rule ──────────────────────────────────────────
 # A cousin types "Kowalsky" and finds Kowalski: old records spell one name
 # many ways, so the search folds both the names it ships and the words typed
@@ -8631,7 +8681,8 @@ class _SiteBuilder:
         at the places that have a map position. None when no pin would
         show (then there is no page and no link). Worked out once per build.
 
-        Returns {'places': [...], 'unmapped': [...]}. A pin is a registered
+        Returns {'places': [...], 'unmapped': [...], 'journeys': [...],
+        'undated_total': n, 'unplaced_total': n}. A pin is a registered
         place with its own coordinates; a claim at a place without any (a
         cemetery nobody pinned) counts on the first place it sits `within:`
         that has some, the rule the graves list uses, so nothing is placed
@@ -8648,18 +8699,25 @@ class _SiteBuilder:
         restricted claim, no hard-restricted source) and never places a
         hidden person, so a place whose records are all about hidden people
         has no pin, and a count is the same as if they were not on the
-        records at all. People are listed only when they have a page."""
+        records at all. People are listed only when they have a page.
+
+        The same records, read per person, give each journey
+        (`_map_journeys`); they come in the timeline's order, so records on
+        one date keep it."""
         if self._map_done:
             return self._map_cache
         self._map_done = True
         hidden_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
-            "SELECT c.id, c.type, c.place_id, c.source_id FROM claims c "
+            "SELECT c.id, c.type, c.place_id, c.source_id, c.date_edtf, c.date_min, "
+            "c.date_max FROM claims c "
             "WHERE c.place_id IS NOT NULL AND c.place_id != '' "
             "AND COALESCE(c.negated, 0) = 0 AND c.status = 'accepted' "
-            f"{hidden_filter} ORDER BY c.id").fetchall()
+            f"{hidden_filter} ORDER BY {claim_date_order_sql('c')}").fetchall()
         pins: dict[str, dict] = {}
         unmapped: dict[str, int] = {}
+        # p-id -> [(claim row, the pin it lands on or None)], timeline order.
+        lives: dict[str, list[tuple[sqlite3.Row, str | None]]] = {}
         for c in rows:
             if c['place_id'] not in self.place_meta:
                 continue
@@ -8679,6 +8737,9 @@ class _SiteBuilder:
             if not placed:
                 continue
             coords = self._place_coords(c['place_id'])
+            for pid in dict.fromkeys(placed):
+                if self._map_traveller(pid):
+                    lives.setdefault(pid, []).append((c, coords[2] if coords else None))
             if coords is None:
                 unmapped[c['place_id']] = unmapped.get(c['place_id'], 0) + 1
                 continue
@@ -8726,7 +8787,93 @@ class _SiteBuilder:
                           'events': unmapped[lid]}
                          for lid in sorted(unmapped, key=by_name)],
         }
+        self._map_cache.update(self._map_journeys(lives, href))
         return self._map_cache
+
+    def _map_traveller(self, pid: str) -> bool:
+        """Whether the family map draws a journey for this person: someone
+        with a page whose record says `living: false`. A living or unknown
+        person never gets one, not even in the private preview; a shared
+        build has already left out the restricted and by-request (`placed`
+        holds only people it shows), and a stub has no page."""
+        meta = self.person_meta.get(pid)
+        return (pid in self.person_pages and meta is not None
+                and (meta['living'] or '') == 'false')
+
+    def _map_journeys(self, lives: dict, href) -> dict:
+        """Each journey on the family map: the places a person's own records
+        put them, in date order, as a line from pin to pin.
+
+        `lives` holds, for each person `_map_traveller` allows, the records
+        `_map_data` let through (accepted, shown, about this person) in the
+        timeline's order, each with the pin it lands on. A record at a place
+        with no map position on its `within:` chain counts in `unplaced`, one
+        with no usable date in `undated`; neither is drawn. The rest are
+        stops, ordered by `_journey_when` (the middle of the date) with the
+        timeline's order breaking ties, and records in a row at one pin are
+        one stop from its first year to its last. Two stops or more make a
+        journey; one stop draws no line.
+
+        A record the shared build withholds never reached `lives`, so a line
+        runs straight past it and no count includes it. The totals count
+        each record once, however many people it places."""
+        journeys = []
+        undated_ids: set = set()
+        unplaced_ids: set = set()
+        for pid, entries in lives.items():
+            dated = []
+            undated = unplaced = 0
+            for c, lid in entries:
+                if lid is None:
+                    unplaced += 1
+                    unplaced_ids.add(c['id'])
+                    continue
+                when = _journey_when(c['date_edtf'], c['date_min'], c['date_max'])
+                if when is None:
+                    undated += 1
+                    undated_ids.add(c['id'])
+                    continue
+                dated.append((when, lid, c['type']))
+            dated.sort(key=lambda d: d[0])   # stable: equal dates keep the timeline's order
+            stops: list[dict] = []
+            for (year, _key), lid, ctype in dated:
+                if stops and stops[-1]['place'] == lid:
+                    stops[-1]['year_to'] = year
+                    if ctype not in stops[-1]['what']:
+                        stops[-1]['what'].append(ctype)
+                    continue
+                stops.append({'place': lid, 'year_from': year, 'year_to': year,
+                              'what': [ctype]})
+            if len(stops) < 2:
+                continue
+            name = self.person_meta[pid]['name'] or fmt_id_display(pid)
+            journeys.append(((fold_accents(name).lower(), pid), {
+                'name': name,
+                'href': href(self.persons_dir / _page_filename(pid)),
+                'life': self._map_life(pid),
+                'stops': stops, 'undated': undated, 'unplaced': unplaced,
+            }))
+        journeys.sort(key=lambda kj: kj[0])
+        return {'journeys': [j for _k, j in journeys], 'undated_total': len(undated_ids),
+                'unplaced_total': len(unplaced_ids)}
+
+    def _map_life(self, pid: str) -> str:
+        """The years of a life for the map's journey picker, from the birth
+        and death the person page's summary shows: "1840-1941", "born 1840",
+        "died 1941", or ''."""
+        vitals = self._person_picked_vitals(pid)
+
+        def year(kind: str) -> int | None:
+            row = vitals.get(kind)
+            when = row and _journey_when(row['date_edtf'], row['date_min'], row['date_max'])
+            return when[0] if when else None
+
+        born, died = year('birth'), year('death')
+        if born and died:
+            return f'{born}-{died}'
+        if born:
+            return f'born {born}'
+        return f'died {died}' if died else ''
 
     def build_map_page(self) -> None:
         """Write map.html when at least one place has a pin. The pins go into
@@ -8744,11 +8891,16 @@ class _SiteBuilder:
             groups.setdefault(country, []).append(p)
         ordered = [{'country': k or 'Other places', 'places': groups[k]}
                    for k in sorted(groups, key=lambda k: (k == '', fold_accents(k).lower()))]
-        payload = {'version': 1, 'places': data['places']}
+        payload = {'version': 1, 'places': data['places'], 'journeys': data['journeys'],
+                   'undated_total': data['undated_total'],
+                   'unplaced_total': data['unplaced_total']}
+        note = (_journey_note(data['undated_total'], data['unplaced_total'])
+                if data['journeys'] else '')
         self._write_page(self.out_dir / 'map.html', 'map.html', {
             'root_prefix': '.',
             'map': {'data_json': self._markup(_json_for_script(payload)),
-                    'groups': ordered, 'unmapped': data['unmapped']},
+                    'groups': ordered, 'unmapped': data['unmapped'],
+                    'has_journeys': bool(data['journeys']), 'journey_note': note},
         })
 
     def _provisional_vital(self, pid: str, field: str) -> str | None:
