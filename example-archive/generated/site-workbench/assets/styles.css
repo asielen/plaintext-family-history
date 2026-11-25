@@ -701,6 +701,32 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 .chart-save:empty { display: none; }
 .chart-save-msg { font-size: 0.9rem; }
 
+/* Family map (map.html, drawn by vendor/fha-map.js). The outline and pins
+   take their colours from the tokens, so a dark theme or custom.css follows;
+   a pin also carries its name and count as text, never colour alone. Lines
+   keep their width as the map zooms. */
+.map-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(12rem, 1fr);
+              gap: var(--space-4); align-items: start; margin: var(--space-4) 0; }
+@media (max-width: 40rem) { .map-layout { grid-template-columns: minmax(0, 1fr); } }
+.map-svg { display: block; width: 100%; height: auto; background: var(--surface);
+           border: var(--border); cursor: grab; }
+.map-land { fill: var(--surface-sunken); stroke: var(--rule-strong); stroke-width: 0.6;
+            vector-effect: non-scaling-stroke; }
+.map-borders { fill: none; stroke: var(--rule-strong); stroke-width: 0.6;
+               vector-effect: non-scaling-stroke; }
+.map-pin { cursor: pointer; outline: none; }
+.map-pin circle { fill: var(--accent); fill-opacity: 0.85; stroke: var(--paper); stroke-width: 1.5; }
+.map-pin:hover circle, .map-pin:focus circle, .map-pin.is-active circle {
+    fill-opacity: 1; stroke: var(--focus-ring); stroke-width: 3; }
+.map-label { display: none; font-family: var(--font-sans); font-size: 20px; fill: var(--ink);
+             paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round;
+             pointer-events: none; }
+.map-few .map-label, .map-pin:hover .map-label, .map-pin:focus .map-label,
+.map-pin.is-active .map-label { display: inline; }
+.map-panel { border-left: 3px solid var(--rule); padding-left: var(--space-4); }
+.map-panel h2 { margin-top: 0; }
+.map-people { padding-left: var(--space-5); }
+
 
 /* 9. UTILITIES */
 
@@ -742,6 +768,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, .chart-save, noscript,
+  .map-panel, .map-reset,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
   .wb-add-hint, audio, .play-from, .contribute { display: none !important; }

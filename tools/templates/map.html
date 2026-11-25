@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Family map: {{ site_title }}{% endblock %}
+{% block content %}
+{#- The family map (TOOLING 12, "Family map"). vendor/fha-map.js draws the
+    pins in the inline JSON below over the vendored world outline, with no
+    internet. The lists under the map are the same places as plain links:
+    what a reader without script, or a printer, gets. #}
+<article class="family-map">
+  <h1>Family map</h1>
+  <p class="note">A pin marks each place where the family's records put someone, at the position recorded for that place. Click a pin to see who.</p>
+  <div class="map-layout">
+    <div id="fha-map" class="map-canvas" role="region" aria-label="Map of the family's places" hidden></div>
+    <div id="fha-map-panel" class="map-panel" aria-live="polite" hidden>
+      <p class="note">Choose a pin to see the place and the people the records put there.</p>
+    </div>
+  </div>
+  <p><button type="button" id="fha-map-reset" class="map-reset" hidden>Reset the view</button></p>
+
+  <h2>Places on the map</h2>
+  {% for g in map.groups %}
+  <h3>{{ g.country }}</h3>
+  <ul class="index-list">
+    {% for p in g.places %}<li><a href="{{ p.href }}">{{ p.name }}</a>{% if p.label != p.name %}, <span class="note">{{ p.label }}</span>{% endif %} ({{ p.events }} event{% if p.events != 1 %}s{% endif %})</li>
+    {% endfor %}
+  </ul>
+  {% endfor %}
+  {%- if map.unmapped %}
+
+  <h2>Places with no map position yet</h2>
+  <ul class="index-list">
+    {% for p in map.unmapped %}<li><a href="{{ p.href }}">{{ p.name }}</a> ({{ p.events }} event{% if p.events != 1 %}s{% endif %})</li>
+    {% endfor %}
+  </ul>
+  {%- if workbench %}
+  <p class="note">Set a position on each place's page to put it on the map.</p>
+  {%- endif %}
+  {%- endif %}
+</article>
+<script type="application/json" id="fha-map-data">{{ map.data_json }}</script>
+<script src="{{ root_prefix }}/vendor/d3.min.js"></script>
+<script src="{{ root_prefix }}/vendor/topojson-client.min.js"></script>
+<script src="{{ root_prefix }}/vendor/fha-world.js"></script>
+<script src="{{ root_prefix }}/vendor/fha-map.js"></script>
+{% endblock %}
