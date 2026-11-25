@@ -20,6 +20,9 @@
   {% if person.alt_names %}
   <p class="alt-names">{% for a in person.alt_names %}{{ a }}{% if not loop.last %} <span class="alt-sep">·</span> {% endif %}{% endfor %}</p>
   {% endif %}
+  {% if person.kinship %}
+  <p class="kin-line">{% if person.kinship.lead_html %}{{ person.kinship.lead_html }}{% endif %}{% if person.kinship.ahnentafel %} <span class="ahnentafel-no" title="In the family numbering each father is twice his child's number and each mother is twice plus one.">ancestor no. {{ person.kinship.ahnentafel }}</span>{% endif %}{% if person.kinship.note %} <span class="note">({{ person.kinship.note }})</span>{% endif %}</p>
+  {% endif %}
   {% if workbench and person.open_review_count %}
   <p class="wb-pointer">{{ person.open_review_count }} open review item{{ 's' if person.open_review_count != 1 else '' }} involve{{ '' if person.open_review_count != 1 else 's' }} this person -
     <a href="{{ root_prefix }}/review">open the review queue</a>.</p>
@@ -102,7 +105,8 @@
   {% if person.pedigree %}
   <details class="chart" open>
     <summary class="chart-title">{{ person.chart_title }}</summary>
-    <div class="chart-body">{{ person.pedigree }}</div>
+    <div class="chart-body">{{ person.pedigree }}{% if person.chart_weak_key %}<p class="fan-key fha-weak-key">{{ person.chart_weak_key }}</p>{% endif %}
+      <div class="chart-save" data-for="{{ person.pedigree_chart }}"></div></div>
   </details>
   {% endif %}
 
@@ -124,7 +128,8 @@
     <input type="radio" class="fan-mode" name="fan-mode" id="fan-mode-maternal">
     <label for="fan-mode-maternal" class="fan-modes">Mother's mother's line</label>
     {%- endif %}
-    <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div></div>
+    <div class="chart-body"><div class="fan-wrap" id="fha-fan">{{ person.fan }}</div>{% if person.fan_weak_key %}<p class="fan-key fha-weak-key">{{ person.fan_weak_key }}</p>{% endif %}
+      <div class="chart-save" data-for="{{ person.fan_chart }}"></div></div>
   </details>
   {% if not person.descendants_tree %}<script src="{{ root_prefix }}/vendor/fha-tree.js"></script>{% endif %}
   <script>
@@ -139,6 +144,31 @@
     });
   })();
   </script>
+  {% endif %}
+
+  {% if person.heritage %}
+  {#- Where the family came from (chart plan 08-12): one bar per generation,
+      computed from the same ancestors the fan shows, so a person the page may
+      not name never adds a country. Static SVG, no script. -#}
+  <details class="chart heritage-chart-wrap">
+    <summary class="chart-title">Where the family came from</summary>
+    <div class="chart-body">
+      <p class="heritage-note">Each bar is one generation. A coloured part is the share of that generation born in one country, from the birth records we have, named by today's borders (a village in Prussia in 1850 reads as the country it is in now). "Birthplace unknown" is someone shown whose birthplace is not recorded, and "Not traced" is a place in the tree nobody is recorded in yet.{% if person.heritage_repeats %} A person who appears twice in the tree is counted in both places.{% endif %}</p>
+      {{ person.heritage }}
+      <div class="chart-save" data-for="{{ person.heritage_chart }}"></div>
+    </div>
+  </details>
+  {% endif %}
+
+  {% if person.lifespan %}
+  <details class="chart lifespan">
+    <summary class="chart-title">Who overlapped</summary>
+    <div class="chart-body">
+      <div class="lifespan-wrap">{{ person.lifespan.svg }}</div>
+      <p class="lifespan-key">A solid bar runs from birth to death. A hatched end is a date that is approximate or not recorded. Vertical lines mark {{ person.name }}'s birth and death.
+      {%- if person.lifespan.omitted %} {{ person.lifespan.omitted }} {{ 'person' if person.lifespan.omitted == 1 else 'people' }} without dates {{ 'is' if person.lifespan.omitted == 1 else 'are' }} not shown.{% endif %}</p>
+      <div class="chart-save" data-for="{{ person.lifespan.chart }}"></div></div>
+  </details>
   {% endif %}
 
   {% if person.descendants_tree %}
@@ -185,6 +215,9 @@
   yet; when the label adds "<strong>parked</strong>" with a date, that date is simply the last time
   anyone checked, not something that happened to the family.</p>
   {% endif %}
+  {% if person.has_place_history %}
+  <p class="note">Lines marked Place history are background about the places, not records of the family.</p>
+  {% endif %}
   {% if person.timeline %}
   <div class="timeline">
     {% for group in person.timeline %}
@@ -214,7 +247,11 @@
             sentence instead of the mention itself (#180 post-merge
             follow-up, finding 2; see site.py's `_timeline_value_html`
             docstring). -#}
+        {% if e.kind == 'context' %}
+        <li class="tl-context"><span class="tl-label">Place history</span> {{ e.sentence }}</li>
+        {% else %}
         <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
+        {% endif %}
         {% endfor %}
       </ul>
     {% endfor %}

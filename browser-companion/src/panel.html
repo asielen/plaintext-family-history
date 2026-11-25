@@ -197,6 +197,14 @@
           </div>
           <button id="btn-capture" type="button" class="primary">Capture &amp; save</button>
 
+          <!-- Asked at Capture when a FamilySearch film image sits next to one
+               the archive already holds (panel.js askAttach): add it to that
+               source, or file it as a new one. Hidden otherwise. -->
+          <div id="attach-ask" class="attach-ask" role="group" aria-labelledby="attach-ask-text" hidden>
+            <p id="attach-ask-text"></p>
+            <div id="attach-ask-choices" class="attach-ask-choices"></div>
+          </div>
+
           <div id="handoff" class="handoff">
             <p class="h-title">✓ Saved. Nothing is lost.</p>
             <p id="handoff-body" class="h-body">This creates a source package in your
@@ -248,6 +256,7 @@
     <script src="lib/newspapers.js"></script>
     <script src="lib/findagrave.js"></script>
     <script src="lib/wvculture.js"></script>
+    <script src="lib/wikitree-record.js"></script>
     <script src="lib/archiveorg-record.js"></script>
     <script src="lib/capture-batch.js"></script>
     <script src="batch.js"></script>
