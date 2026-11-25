@@ -331,6 +331,17 @@ img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); 
             background: var(--surface); box-shadow: var(--shadow-photo); }
 .full-size-link { display: block; font-family: var(--font-sans); font-size: var(--text-xs);
                    margin-top: var(--space-1); }
+/* A family recording: a full-width player in the Files list, and a small
+   "play from 14:32" link beside each fact taken from it. */
+ul.files li.recording-item { width: 100%; }
+.recording { margin: var(--space-2) 0; }
+.recording audio { width: 100%; max-width: 32rem; }
+.recording figcaption { font-size: var(--text-xs); color: var(--muted); margin-top: var(--space-1); }
+.play-from { font-family: var(--font-sans); font-size: var(--text-xs); white-space: nowrap; }
+/* A few words in the person's own voice, under their name. */
+blockquote.voice-quote { margin: var(--space-3) 0; padding-left: var(--space-4);
+                         border-left: 3px solid var(--rule); font-style: italic; }
+blockquote.voice-quote .fn-ref, blockquote.voice-quote .play-from { font-style: normal; }
 .photo-strip { display: flex; flex-wrap: wrap; gap: var(--space-3); }
 .photo-strip figure { margin: 0; width: 9rem; }
 .photo-strip figcaption { font-size: var(--text-xs); color: var(--muted); font-style: italic; margin-top: var(--space-1); }
@@ -354,6 +365,8 @@ img.thumb { max-width: 10rem; max-height: 10rem; border: 1px solid var(--rule); 
 mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
+/* "Tell me what you know" at the foot of a shared person page (site: contact_email). */
+.contribute { margin-top: var(--space-6); padding-top: var(--space-3); border-top: var(--border); font-size: var(--text-sm); }
 .timeline li.tl-context { color: var(--muted); font-size: var(--text-sm); font-style: italic; list-style-type: none; }
 .timeline .tl-label { font-family: var(--font-sans); font-size: var(--text-xs); font-style: normal; text-transform: uppercase; letter-spacing: 0.04em; margin-right: var(--space-1); }
 
@@ -515,6 +528,24 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
 .fan-years { font-family: var(--font-sans); fill: var(--muted);
              text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
+/* The same ancestor in two places (cousins married): one shared colour, a
+   dashed edge, and a lettered badge so colour is never the only signal. */
+.fan-seg-repeat { stroke: var(--ink); stroke-dasharray: 3 2; }
+.fan-repeat-mark circle { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
+.fan-repeat-mark text { font-family: var(--font-sans); font-size: 8px; font-weight: 700;
+                        fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
+/* The fan's line switch: radios placed before .chart-body, so no script is
+   needed and the printed page shows the view that was chosen. */
+.fan-mode { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.fan-mode + label { display: inline-block; margin: var(--space-2) var(--space-2) 0 0;
+                    padding: var(--space-1) var(--space-3); border: 1px solid var(--rule-strong);
+                    border-radius: 999px; cursor: pointer; font-family: var(--font-sans);
+                    font-size: .9rem; color: var(--ink); background: var(--paper); }
+.fan-mode:checked + label { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.fan-mode:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+#fan-mode-paternal:checked ~ .chart-body .fan-seg:not(.fan-line-paternal):not(.fan-seg-subject):not(.fan-seg-private),
+#fan-mode-maternal:checked ~ .chart-body .fan-seg:not(.fan-line-maternal):not(.fan-seg-subject):not(.fan-seg-private) {
+  opacity: .25; }
 /* Heritage chart on a person page: one bar per generation, a segment per
    country. The colour is set inline as --seg-color (a --branch-N token); the
    segment's own name and tooltip carry the meaning too. */
@@ -674,6 +705,45 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 .chart-save:empty { display: none; }
 .chart-save-msg { font-size: 0.9rem; }
 
+/* Family map (map.html, drawn by vendor/fha-map.js). The outline and pins
+   take their colours from the tokens, so a dark theme or custom.css follows;
+   a pin also carries its name and count as text, never colour alone. Lines
+   keep their width as the map zooms. */
+.map-layout { display: grid; grid-template-columns: minmax(0, 2fr) minmax(12rem, 1fr);
+              gap: var(--space-4); align-items: start; margin: var(--space-4) 0; }
+@media (max-width: 40rem) { .map-layout { grid-template-columns: minmax(0, 1fr); } }
+.map-svg { display: block; width: 100%; height: auto; background: var(--surface);
+           border: var(--border); cursor: grab; }
+.map-land { fill: var(--surface-sunken); stroke: var(--rule-strong); stroke-width: 0.6;
+            vector-effect: non-scaling-stroke; }
+.map-borders { fill: none; stroke: var(--rule-strong); stroke-width: 0.6;
+               vector-effect: non-scaling-stroke; }
+.map-pin { cursor: pointer; outline: none; }
+.map-pin circle { fill: var(--accent); fill-opacity: 0.85; stroke: var(--paper); stroke-width: 1.5; }
+.map-pin:hover circle, .map-pin:focus circle, .map-pin.is-active circle {
+    fill-opacity: 1; stroke: var(--focus-ring); stroke-width: 3; }
+.map-label { display: none; font-family: var(--font-sans); font-size: 20px; fill: var(--ink);
+             paint-order: stroke; stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round;
+             pointer-events: none; }
+.map-few .map-label, .map-pin:hover .map-label, .map-pin:focus .map-label,
+.map-pin.is-active .map-label { display: inline; }
+.map-panel { border-left: 3px solid var(--rule); padding-left: var(--space-4); }
+.map-panel h2 { margin-top: 0; }
+.map-people, .map-stops { padding-left: var(--space-5); }
+/* Journey lines: everyone's faint, the followed one in the accent colour
+   with numbered stops and an arrow halfway along each move. The script sets
+   each line's width so it stays the same on screen as the map zooms. */
+.map-journey { fill: none; stroke: var(--muted); stroke-opacity: 0.45; stroke-linecap: round; }
+.map-journey.is-followed { stroke: var(--accent); stroke-opacity: 1; }
+.map-following .map-journeys { opacity: 0.35; }
+.map-arrow { fill: var(--accent); }
+.map-stop-number { font-family: var(--font-sans); font-size: 18px; font-weight: 700;
+                   fill: var(--ink); text-anchor: middle; paint-order: stroke;
+                   stroke: var(--paper); stroke-width: 3px; stroke-linejoin: round;
+                   pointer-events: none; }
+.map-follow { font-size: var(--text-xs); margin-left: var(--space-1); }
+.map-journey-picker select { max-width: 100%; }
+
 
 /* 9. UTILITIES */
 
@@ -696,14 +766,29 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 
 .print-only { display: none; }
 
+/* The wall calendar page (calendar.html): the same grid markup as the private
+   printed calendar, in the site's colours. */
+.wall-calendar { max-width: none; }
+.wall-month-block { margin-bottom: var(--space-6); }
+.wall-month { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.wall-month th { font-size: var(--text-xs); font-weight: 600; text-align: left; padding: 2px 4px; }
+.wall-month td { height: 6.5rem; vertical-align: top; border: 1px solid var(--rule);
+                 font-size: var(--text-xs); padding: 2px 4px; overflow: hidden; }
+.wall-month .day-num { font-weight: 600; }
+.wall-month .wall-line { display: block; line-height: 1.25; }
+.wall-legend, .wall-more { font-size: var(--text-xs); margin: var(--space-2) 0; }
+.wall-face { width: 28px; height: 28px; object-fit: cover; vertical-align: middle;
+             border: 1px solid var(--rule-strong); background: var(--surface-sunken); }
+
 @media print {
   @page { margin: 1.5cm; }
   :root { --paper: #fff; --surface: #fff; }
   body { background: #fff; color: #000; font-size: 11pt; }
   .site-nav, .site-search, .fha-tree-controls, .fha-tree-explorer, .chart-save, noscript,
+  .map-panel, .map-reset, .map-journey-picker,
   .wb-bar, .wb-add, .wb-fix, .wb-record, .wb-pointer, .wb-fill, .wb-fill-note,
   [data-wb-open]:not(.ped-empty), [data-wb-open-file], [data-wb-open] + .wb-later,
-  .wb-add-hint { display: none !important; }
+  .wb-add-hint, audio, .play-from, .contribute { display: none !important; }
   /* The whole year prints under its "All months" heading, without the arrow. */
   .cal-all > summary { list-style: none; font-weight: 600; margin-top: var(--space-4); }
   .cal-all > summary::-webkit-details-marker { display: none; }
@@ -713,8 +798,11 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   .fha-tree-viewport, .fha-tree-viewport svg,
   .pedigree-home-wrap { height: auto !important; overflow: visible !important; }
   svg.pedigree, svg.fan-chart, svg.lifespan-chart { max-width: 100%; height: auto; }
+  .fan-mode, .fan-mode + label { display: none; }
   h2, h3, summary.chart-title { break-after: avoid; }
   figure, table tr, .ped-node, details.chart, .family-calendar-events li { break-inside: avoid; }
   .pedigree, .fan-chart, .lifespan-chart, .ped-node { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .print-only { display: block !important; }
+  .wall-month-block { break-after: page; break-inside: avoid; margin-bottom: 0; }
+  .wall-month td { height: 4rem; }
 }

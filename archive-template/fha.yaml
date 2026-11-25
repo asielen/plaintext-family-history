@@ -177,6 +177,11 @@
 #       visitor's current month, with every month listed below. Anything
 #       about a living or private person, or resting on a private record,
 #       is left off.
+#   contact_email - your email address. Each person's page on the shareable
+#     site then ends with a "Tell me what you know" link that opens an email
+#     to you with that person's name filled in. Anyone with a copy of the
+#     site can read the address, and spammers collect addresses from public
+#     pages, so use a separate address made for this, not your main one.
 #   docs/CUSTOMIZING_SITE.md lists the other site settings (title, banner).
 #
 # site:

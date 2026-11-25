@@ -4,7 +4,7 @@
 
 **Who this is for:** people defining or auditing the archive rules (spec authors, implementers, and anyone checking whether a tool or record conforms). To use the archive, start with `GETTING_STARTED.md` in the archive's `docs/` folder.
 
-**Version 2.40, 2026-11-24**
+**Version 2.44, 2026-11-24**
 
 This document is the source of truth for the archive: its philosophy, its data model, and its physical format. Its companion, **`TOOLING.md`**, is the design document for every supporting script, deep enough that all tooling can be rebuilt from scratch, in any language, from the two documents together. When a tool and the spec disagree, the spec wins. When the spec and the files disagree, fix one, and record the decision in the commit that fixes it.
 
@@ -411,6 +411,7 @@ family_archive/              ← the root (default name; rename freely - nothing
   places/{slug}_{l-id}.md    ←   generated place notes, Obsidian link mode only (§15)
   notes/                     ← general research workspace (§17)
   notes/obsidian/*.base      ←   ready-made Obsidian tables (Bases), Obsidian link mode only; written once, then the owner's
+  notes/obsidian/canvas/*.canvas ←   generated family canvases, Obsidian link mode only; rebuilt each run
   ── assets (mappable elsewhere via fha.yaml; not git-pushed if local) ──
   photos/{year}/             ← ASSET TREE: all photos, by year (§12.4 - often external)
   documents/{type}/          ← ASSET TREE: scans, clippings, recordings, transcripts
@@ -434,7 +435,7 @@ family_archive/              ← the root (default name; rename freely - nothing
 - `notes/research-log.md`: the research log of every search, by hand or by `fha capture` (§17).
 - `notes/questions.md`: open questions and working answers (§17).
 - `notes/surnames/{surname}.md`: notes about one family name, plain markdown written by the human (or drafted by an AI and accepted). `{surname}` is the name folded to plain lowercase letters, digits and hyphens (`kowalski.md`), or for a name in another alphabet the file name of its site page. `fha site` shows the text on that surname's page; an optional `also:` list in its frontmatter names other spellings that belong on the same page.
-- `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record.
+- `notes/obsidian/People.base`, `Sources.base`, `Places.base`: ready-made Obsidian tables (Bases) of the people, sources and places, written by `fha views places` and `fha views refresh` only with `links: obsidian` (§18), and only when `notes/obsidian/` does not yet exist. They own no data (§3, the working interface is never the truth): each reads what the records already say, so deleting one loses nothing. Obsidian saves the owner's column and sort changes into them, so after the first write no tool rewrites or removes them. They sit outside `people/`, `sources/` and `places/`, so no record tree holds a file that is not a record. `fha views canvas` (and `fha views refresh`, with `links: obsidian`) also writes one JSON Canvas file per direct-line family into `notes/obsidian/canvas/`. A canvas names files and holds no data (§3), so it is rebuilt on every run and deleting one loses nothing; a file there that the tool did not write is never touched, and nothing reads a canvas back.
 
 Each is optional; a missing file means "nothing recorded yet".
 
@@ -617,7 +618,7 @@ The deliberate style difference (person files underscored, source files hyphenat
 | `front`, `back` | the two faces of a photo, card or page |
 | `page-N` | the Nth page of a multi-page document |
 | `clipping` | a cut newspaper item |
-| `recording`, `transcript`, `translation` | an audio/video recording, a text transcript of it or of a document, an English rendering of a non-English original (`transcription` is an older spelling of `transcript` and means the same) |
+| `recording` (also `audio`), `transcript`, `translation` | an audio/video recording, a text transcript of it or of a document, an English rendering of a non-English original (`transcription` is an older spelling of `transcript` and means the same) |
 | `extracted-text` | the text layer a tool dumped out of a PDF, page-marked (`fha source extract`) |
 | `webpage` | the saved copy of a web page itself, a copy of what the site showed, never the original record |
 | `record` | the record's own image or scan, fetched from a site |
@@ -712,7 +713,8 @@ merged_from:                  # present once another source was merged into this
 created: 2026-06-10
 # ---- optional extensions (Appendix A) ----
 # rights, physical_location (A.6) ·
-# tested_person, provider, test_type on DNA sources (A.8)
+# tested_person, provider, test_type on DNA sources (A.8) ·
+# speakers, quotes (A.10)
 ---
 
 > Purpose block (§16a): a short visible blockquote, not an HTML comment,
@@ -914,6 +916,7 @@ An entry is an `## Q:` heading, then one markdown list line per field. The `- ` 
 - `refs:`: a bracketed list of bare IDs, `[p-…, c-…]`, naming who and what the question is about.
 - `id:`, `guess:`, `basis:`, `verify:`: present once the question has a working answer (step 2 of the ladder). The `h-` id is added with the guess and never changes or is reused; the people in `refs:` are the people the working answer is about.
 - `context:`: dated, origin-attributed findings indented beneath it and appended over time.
+- `share:`: optional; `family` marks a question the human is willing to show relatives (the shared site's questions page, `TOOLING.md` §12). Only its heading and `refs:` are shared; the working answer and `context:` never leave the archive. Absent means the question stays in the working archive. Like `status:`, it is the human's to set.
 
 Tooling may propose answers and closures and append context; status changes require human confirmation.
 
@@ -980,6 +983,15 @@ Two privacy flags; no tier system. Flags appear only where they apply.
 - `living: true | false | unknown` (Person): drives redaction in any external export, packet, or publication. **`unknown` is treated as living** for all external-facing output; stubs default to `unknown` (uncertainty is safe by default).
 - `restricted`: a marker placed on whatever should stay out of public output: a **source**, a single **claim**, a whole **person**, or a **name** (an entry in any of a person's name fields, `name_variants`, `name_at_birth`, `married_name` or `also_known_as`, written as `{value:, restricted: true}`, how a private prior name is recorded). Plain `restricted: true` is excluded from public output and from packets unless `--include-restricted` is passed. It may carry a free-text **type** instead (`restricted: dna`, `restricted: by-request`, …) when types must be told apart; two are **no-override**: `dna` (always restricted; requires its own `--include-dna`) and `by-request` (a person who asked to be left out, honored by every export path with no opt-in). The marker keeps material in the archive and out of what leaves it; nothing is deleted, and a restricted name still resolves internally (§18).
 
+**Recordings.** A voice cannot be redacted the way a name can, and a recording often names people who are still alive. A recording is any audio or video file on a source, whatever role its entry gives it. A source's `speakers:` (Appendix A.10) lists who is heard on its recordings. Public output plays or copies a recording only when all of these hold:
+
+- the source says `rights: recording_ok: true` (A.6);
+- `speakers:` lists at least one person, and every speaker is `living: false` and not restricted;
+- no one else the source names (its `people:` and its claims) is living, unknown or restricted, and a name there that does not resolve to a person counts as living;
+- the source itself may be shared under §21.
+
+Any other recording stays in the archive: public output plays nothing and does not give the file's name, which often names the person interviewed. A packet carries a recording only when it would play in public output. The owner's own working copies (the linked site preview and `fha serve`, which are not public output) play every recording.
+
 ## 20. Embedded metadata
 
 An AI photo-categorization pipeline (a separate tool, not part of this kit) is a curation-layer adapter writing IPTC/XMP: keywords, verbatim transcriptions, AI captions, date-confidence tags. Embedded metadata is part of the durable layer; it travels with the bytes. Integration rules:
@@ -1009,10 +1021,12 @@ Generated output that leaves the archive falls into two categories with differen
 
 **Public output, living-person redaction (mandatory):**
 - Any person whose `living` flag is `true` or `unknown` is redacted: their name is replaced with "Living Person" (never with a surname, which says who they are related to), and the photos naming them are withheld.
+- A recording plays only under §19's rule: the owner said yes, and everyone heard on it or named by its source has died and is not restricted. Every other recording is withheld.
 - A claim naming a living person is withheld when it is that person's own event, since its date and place are their birthday or wedding: the `child` on a birth or baptism, the `deceased` on a death or burial, a `spouse` on a marriage or divorce (§8.3), and on such a claim anyone named with no role. It is also withheld when it is a `relationship` claim, or when everyone it is about is living: the people under `subject`, `head` or `household_member`, or everyone it names when it names none of those.
 - Any other claim naming a living person is kept, since it may be central to a deceased person's story: a baptism with a living godparent, a census of a household with a living child. Its kind, date and place are shown with the deceased people it is about. The living people are not named, linked, listed or labelled on it, and its own wording, which usually names everyone on the record, is not shown. It adds no one to a chart, the family tree, the calendar, or any list of the family.
 - The source of a kept claim keeps its page and its citation. Its page may show the record's own words and images, which can print a living person's name, but never lists, links or labels that person. A source naming a living person and carrying no kept claim stays out, and its citation reads as withheld.
 - `unknown` is treated as living. Stubs default to `unknown`.
+- A living person's birth date or birthday is never in public output, not even as a day and month with no year: not on a page or calendar, in the search file, in the family-tree data, or in any export. The owner's private list of living relatives' coming birthdays (`fha calendar --birthdays`, TOOLING §7b) prints only to his own terminal, and no public output reads it.
 - In a shared site's family trees, a living or unknown adult is drawn as a card reading "Private" with nothing else on it, so the tree keeps its shape; a living person not known to be an adult is left out. The relationship line and family-tree number may be worked out through ties to people the page does not show; those people are never named.
 
 **Public output, restricted material (mandatory):**
@@ -1020,7 +1034,7 @@ Generated output that leaves the archive falls into two categories with differen
 - DNA evidence always carries `restricted: true`. No DNA-derived conclusions appear in public output without an additional, independent non-DNA source establishing the same fact.
 
 **Scope (what "public output" covers):**
-- `fha site`: the static HTML snapshot.
+- `fha site`: the static HTML snapshot (not its `--linked` local preview).
 - Any other public-publication export path (GEDCOM, WikiTree, etc.) unless that path has an explicit `--include-living` / `--include-restricted` opt-in documented in its TOOLING entry.
 
 **Private export (`fha packet`), its own rules, per TOOLING §8:**
@@ -1141,12 +1155,14 @@ The organization stays a value (§7); `value_org` only groups claims that name t
 rights:                          # optional publication metadata
   holder: family collection      #   who owns/holds copyright
   publication_ok: false          #   false keeps the source out of the site and every export
+  recording_ok: true             #   the owner agrees the source's recordings may play in public output (§19)
 physical_location:               # optional: where the PHYSICAL original lives (changes over time)
   holder: Sam Rivera
   as_of: 2025-05
 ```
 
 - **`rights`:** `publication_ok: false` means the source may not be shared: `fha site` and every export leave it out, exactly as they leave out a `restricted` source, and its claims' contributions follow the same rule (§21). Absent or `true`, the source is shared under the ordinary rules.
+- **`recording_ok`:** `true` says the owner has listened to the source's recordings and that `speakers:` names everyone heard on them, background voices included. It lets them play in public output, under §19's rule. Absent or anything else, they stay in the archive. A tool never sets it on its own.
 - **`physical_location`:** who holds the physical original, and since when. It matters for anything that was scanned: the scan is a copy, and the original may be the evidence a future researcher needs. `fha process` asks for it when it processes a scan and records the answer; leaving it blank is fine.
 
 ### A.7 Person: `gender` and `external_ids`
@@ -1183,3 +1199,17 @@ A dated `history:` carries a place's past names and jurisdictions, so a claim's 
   within: l-baba9801fa               # physically inside Fairview; one hop
   coords: [39.5644, -95.1209]
 ```
+
+### A.10 Recordings: who is heard, and quotes
+
+A source holding a recording may say who speaks on it, and keep short quotes from them:
+
+```yaml
+speakers: [p-de957bcda1, p-cd795c61e0]   # bare IDs of the people heard on the recordings
+quotes:                                  # optional
+  - {speaker: p-de957bcda1, text: "We never locked the door, not once.", anchor: "00:14:32"}
+```
+
+`speakers:` holds bare IDs, as `roles:` does (§8.7): everyone heard, interviewer included, and nobody who is only talked about (they belong on `people:`). Only a speaker the human has confirmed is written to it. A speaker ID that does not resolve to a readable person record counts as living. A merged-away ID is read as the person it was merged into (§9); a merged-away record marked `living: true` or restricted still holds the recording back.
+
+A quote is the speaker's own words exactly as the transcript gives them, at most forty words, with the `anchor` where they are said (§8.4). A quote that names or describes a living, unknown or restricted person is not written; tools do not read a quote's words, so this is for whoever drafts it and the owner to check. Public output shows a quote only when its speaker is on `speakers:`, is `living: false` and not restricted, and the source may be shared; otherwise the quote is withheld whole, never shown under "Living Person". Unlike the recording, a quote does not need `recording_ok`.

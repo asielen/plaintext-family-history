@@ -21,6 +21,10 @@
     <a href="{{ root_prefix }}/index.html">Home</a>
     <a href="{{ root_prefix }}/index.html#people">People</a>
     <a href="{{ root_prefix }}/index.html#places">Places</a>
+    {#- The family map (map.html), built only when a place has a pin. #}
+    {%- if has_map %}
+    <a href="{{ root_prefix }}/map.html">Map</a>
+    {%- endif %}
     <a href="{{ root_prefix }}/index.html#sources">Sources</a>
     {%- if show_surnames %}
     <a href="{{ root_prefix }}/surnames/index.html">Surnames</a>
@@ -30,6 +34,9 @@
         its only inbound link renders nothing at all - so this persistent nav
         link is the page's sole route in on a fresh or quiet archive. #}
     <a href="{{ root_prefix }}/discoveries.html">Discoveries</a>
+    {%- if questions_page_built %}
+    <a href="{{ root_prefix }}/questions.html">Questions</a>
+    {%- endif %}
   </nav>
   {%- if show_search %}
   {#- One box on every page (fha.yaml `site: search`, on unless false). It

@@ -150,6 +150,8 @@ CODE MAP
     _site_switch               - an on/off fha.yaml `site:` setting (the two
                                  optional panels, off unless it says yes; search,
                                  on unless it says no)
+    _site_contact_email        - fha.yaml `site: contact_email`: the address behind
+                                 each person page's "Tell me what you know" link
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -186,6 +188,8 @@ CODE MAP
     _rel_href                  - relative href from a page dir to a target file
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
+    _journey_when              - a family-map stop's year and sort key: the middle of its date
+    _journey_note              - the map's "Not on the lines: ..." sentence
 
   Site search (the spelling rule; the builder's search methods are below)
     _search_fold: text -> search words (accents, old spellings, doubled
@@ -252,6 +256,8 @@ CODE MAP
                                  home page's "This month in the family"
       ._calendar_event_is_shown - the site's own privacy rules, per event
       ._calendar_event_entry   - one calendar line, people linked
+      .build_wall_calendar_page - site.calendar: calendar.html, the whole year
+          as a wall calendar, a small face beside each name
       ._workbench_week         - workbench only: "This week in the family",
                                  the next seven days, everyone named
       ._vitals_cached: `_person_vitals`, once per person per build
@@ -261,10 +267,15 @@ CODE MAP
       .build_search_page: data/search-data.js and search.html
       ._graves / .build_graves_page: graves.html, every family grave by
           burial place with map and directions links
+      ._map_data / .build_map_page: map.html, a pin at each place with a
+          map position where the records put family, drawn offline by
+          vendor/fha-map.js over the vendored world outline
       ._whats_new / .build_whats_new_page: whats-new.html (site.whats_new),
           what was accepted each month, shown facts only
       ._surname_groups / .build_surname_pages: surnames/*.html, one page per
           family name the build shows a person for
+      ._map_traveller / ._map_journeys / ._map_life: each dead person's
+          journey on the map, stop by stop in date order
       ._page_count: the page count `run` and --dry-run both report
       .run                     - orchestrate: prepare, build all pages, write
 
@@ -291,6 +302,7 @@ import posixpath
 import re
 import shutil
 import sqlite3
+import subprocess
 import sys
 import tempfile
 import time
@@ -304,6 +316,7 @@ from urllib.parse import quote as _urlquote
 sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
+    anchor_seconds,
     _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
@@ -317,6 +330,8 @@ from _lib import (
     calendar_years_ago_phrase,
     family_calendar_events,
     family_calendar_week,
+    family_calendar_year,
+    wall_month_html,
     person_completeness,
     PARKED_CLAIM_SQL,
     CLAIM_UNWORDED,
@@ -348,6 +363,7 @@ from _lib import (
     FhaConfigError,
     place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
+    contribution_mailto,
     kin_graph,
     kin_relationship,
     person_life_dates,
@@ -400,7 +416,9 @@ from _lib import (
     Result,
     site_picture_job,
     split_log_entries,
+    link_field_refs,
     link_parts,
+    resolve_typed_ref,
     strip_link_wrapper,
     strip_unaccepted_drafts,
     unreadable_dir_recorder,
@@ -430,6 +448,25 @@ _REQUIRED_TABLES = (
 )
 
 _IMAGE_SUFFIXES = {'.jpg', '.jpeg', '.png', '.tif', '.tiff', '.heic', '.bmp', '.gif'}
+
+# A family recording plays in the browser when it is one of these (SPEC §19).
+# The type goes on the <source> tag so the browser need not guess.
+_AUDIO_TYPES = {'.mp3': 'audio/mpeg', '.m4a': 'audio/mp4', '.aac': 'audio/aac',
+                '.wav': 'audio/wav', '.ogg': 'audio/ogg', '.oga': 'audio/ogg',
+                '.opus': 'audio/ogg; codecs=opus', '.flac': 'audio/flac'}
+# Every audio or video file is a recording under SPEC §19, whatever role its
+# `files:` entry gives it, so a voice the rule holds back is never named on
+# the shared site. Kept the same as `media.MEDIA_EXTENSIONS` (tools never
+# import tools; tests/test_site_recordings.py checks the two agree).
+_RECORDING_SUFFIXES = {
+    '.aac', '.aif', '.aiff', '.amr', '.flac', '.m4a', '.m4b', '.mp3', '.oga',
+    '.ogg', '.opus', '.wav', '.wma',
+    '.3gp', '.avi', '.m4v', '.mkv', '.mov', '.mp4', '.mpeg', '.mpg', '.webm',
+    '.wmv',
+}
+# What the shared site shows for a recording it may not play (TOOLING §12):
+# no file name, since the name often names the person interviewed.
+_RECORDING_KEPT_LABEL = 'a recording, kept in the archive'
 
 # `fha photoindex reconcile` keeps a vanished photo's catalog row under the
 # synthetic key 'MISSING:' + its last known path, so the caption, keywords and
@@ -624,6 +661,10 @@ _HOME_PEDIGREE_GENERATIONS_MAX = 8
 # (never silently) if a walk ever actually hits it. See `build_person_page`'s
 # `descendants_tree` context and `_build_tree_data`'s `truncated` handling.
 _DESCENDANT_TREE_MAX_HOPS = 500
+
+# The family map's panel names this many people per pin, most placed there
+# first, and counts the rest; the place page lists everyone.
+_MAP_PEOPLE_PER_PIN = 12
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
@@ -2597,6 +2638,24 @@ def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool,
                    f'leaving it off. Write `{key}: true` to turn it on.')
 
 
+def _site_contact_email(site_cfg: dict) -> tuple[str | None, str | None]:
+    """fha.yaml `site: contact_email`: the address a relative's "Tell me what
+    you know" email goes to. Left out means no link and no warning. Something
+    that does not look like an address leaves the link off with a warning,
+    because a link that opens a mail to nowhere is worse than none.
+
+    Returns (address or None, warning or None)."""
+    raw = site_cfg.get('contact_email')
+    if raw is None:
+        return None, None
+    value = str(raw).strip() if isinstance(raw, str) else ''
+    if re.fullmatch(r'[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+', value):
+        return value, None
+    return None, (f'WARNING: fha.yaml site.contact_email {raw!r} does not look like an email '
+                  f'address, so the "Tell me what you know" link is left off. '
+                  f'Write it like  contact_email: name@example.com')
+
+
 def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
     """Was `src` last modified long enough ago to trust its size and time
     (`_DERIVATIVE_SETTLE_SECONDS`), and is it still the file `st` described?
@@ -3414,6 +3473,47 @@ def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: fl
     return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
+def _fan_repeats(labels: dict, n: int) -> dict:
+    """Which fan cells hold the same ancestor twice (cousins married), so a
+    relative sees where the two lines meet. {slot: {'k', 'letter', 'others',
+    'first', 'later'}}: `k` numbers the repeated people by their lowest slot
+    (colour and badge letter follow it), `others` are the person's other
+    slots, `later` is true for every slot but the lowest (the walk shows the
+    ancestors once, at the lowest). Only a label carrying a `pid` counts, and
+    the walk gives none to a Private card or to anyone reached through one, so
+    a repeat that only a hidden person explains never shows."""
+    slots: dict[str, list[int]] = {}
+    for num in sorted(labels):
+        info = labels[num]
+        g = num.bit_length() - 1
+        if g < 1 or g > n or info.get('private') or info.get('redacted') or info.get('behind_private') or not info.get('pid'):
+            continue
+        slots.setdefault(info['pid'], []).append(num)
+    out: dict[int, dict] = {}
+    groups = sorted((v for v in slots.values() if len(v) > 1), key=lambda v: v[0])
+    for k, group in enumerate(groups, 1):
+        letter = chr(ord('A') + k - 1) if k <= 26 else ''
+        for num in group:
+            out[num] = {'k': k, 'letter': letter, 'first': group[0], 'later': num != group[0],
+                        'others': [m for m in group if m != num]}
+    return out
+
+
+def _fan_line_class(num: int, info: dict) -> str:
+    """`fan-line-paternal` for the father's-father line (slots 2, 4, 8, ...) or
+    `fan-line-maternal` for the mother's-mother line (3, 7, 15, ...), only when
+    every step back to the subject was placed by a recorded sex. A slot placed
+    by guesswork never claims a side. A Private card gets no class: the switch
+    never colours it."""
+    if num < 2 or info.get('private') or info.get('redacted') or not info.get('line_ok', False):
+        return ''
+    if num & (num - 1) == 0:
+        return 'fan-line-paternal'
+    if (num + 1) & num == 0:
+        return 'fan-line-maternal'
+    return ''
+
+
 # Heritage chart (`_render_heritage_svg`): the two buckets that are not a
 # country. "Birthplace unknown" is a person the tree shows whose birthplace is
 # not recorded or not registered; "Not traced" is a place in the tree nobody
@@ -3592,6 +3692,7 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     defs: list[str] = []      # one <path> per label line; text rides it via <textPath>
     body: list[str] = []
     lid = 0
+    repeats = _fan_repeats(labels, n)
 
     for num in sorted(labels):
         g = num.bit_length() - 1
@@ -3620,8 +3721,23 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                          f'--gen-fade:{min((g - 2) * 15, 55)}%')
             else:
                 style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-            seg_cls = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
-            body.append(f'<path class="{seg_cls}" style="{style}" d="{d}"/>')
+            classes = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
+            rep = repeats.get(num)
+            if rep:
+                # The same ancestor in two places: one colour for both, a
+                # dashed edge and a lettered badge, so a reader who cannot
+                # tell the colours apart still sees it (and a black-and-white
+                # print keeps it).
+                classes += ' fan-seg-repeat'
+                style = f'--seg-color:var(--branch-{(rep["k"] - 1) % 7 + 1}); --gen-fade:45%'
+            line = _fan_line_class(num, info)
+            if line:
+                classes += f' {line}'
+            body.append(f'<path class="{classes}" style="{style}" d="{d}"/>')
+            if rep and rep['letter']:
+                bx, by = xy(r_out - 7.5, mid)
+                body.append(f'<g class="fan-repeat-mark"><circle cx="{bx:.1f}" cy="{by:.1f}" r="6"/>'
+                            f'<text x="{bx:.1f}" y="{by:.1f}">{rep["letter"]}</text></g>')
 
         if private:
             name, surname, years = 'Private', None, ''
@@ -3697,6 +3813,12 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                 body.append(f'<g class="fan-private">{text}</g>')
             continue
         full = name + (f', {years}' if years else '')
+        rep = repeats.get(num)
+        if rep:
+            mark = f'badge {rep["letter"]}' if rep['letter'] else 'the same colour and dashed edge'
+            full += f'. Also appears elsewhere on this chart ({mark})'
+            if rep['later']:
+                full += '; their ancestors are drawn at the first place'
         if _weak_slot(info):
             full += f'. {_WEAK_LINE_TITLE}'
         title = f'<title>{html.escape(full)}</title>'
@@ -4607,6 +4729,15 @@ def _render_lifespan_svg(rows: list[dict]) -> str:
 
 # ── Paths / hrefs ───────────────────────────────────────────────────────────
 
+def _rehome_href(href: str, from_dir: Path, to_dir: Path) -> str:
+    """The same file linked from another page: a relative href written for
+    a page in `from_dir`, rewritten for a page in `to_dir`. An absolute URL
+    (`/root/…`, `file://…`) is returned as it is."""
+    if href.startswith(('/', '#')) or ':' in href.split('/', 1)[0]:
+        return href
+    return _rel_href(Path(os.path.normpath(from_dir / href)), to_dir)
+
+
 def _rel_href(target: Path, page_dir: Path) -> str:
     """Relative href (forward-slash) from a page's directory to a target file.
 
@@ -4711,6 +4842,52 @@ def _json_for_script(obj) -> str:
     `JSON.parse(scriptEl.textContent)`, never fetched (file:// has no network)."""
     return (json.dumps(obj, ensure_ascii=False)
             .replace('<', '\\u003c').replace('>', '\\u003e').replace('&', '\\u0026'))
+
+
+def _journey_when(date_edtf, date_min, date_max) -> tuple[int, int] | None:
+    """When a record puts someone at a stop on the family map's journey
+    line: (the year the stop is labelled with, a finer sort key), or None
+    when the record gives no usable date.
+
+    A stop sits at the middle of its date. "About 1840" (`1840~`) is indexed
+    as 1839 to 1841 (`edtf_bounds` widens it both ways), so reading its first
+    day would label it 1839 and could put a burial "about 1901" ahead of a
+    death on 30 December 1900. The year is the middle of the two bounds'
+    years, rounding up (`186X` reads 1865, `1870/1880` 1875), and the sort
+    key is the middle day, so labels never run backwards along a line. An
+    open-ended date reads its one known bound (`[..1895]` 1895, `[1883..]`
+    1883). Bounds are today's (Gregorian) calendar, which `date:` always is
+    (SPEC §11). No date, an unreadable one (the index's 0001 to 9999 for both
+    bounds), or a range written backwards gives None: counted, not drawn."""
+    if not date_edtf or not date_min or not date_max:
+        return None
+    try:
+        lo = None if date_min == '0001-01-01' else datetime.date.fromisoformat(date_min)
+        hi = None if date_max == '9999-12-31' else datetime.date.fromisoformat(date_max)
+    except ValueError:
+        return None
+    if lo is None and hi is None:
+        return None
+    if lo is None:
+        return hi.year, 2 * hi.toordinal()
+    if hi is None:
+        return lo.year, 2 * lo.toordinal()
+    if lo > hi:
+        return None
+    return (lo.year + hi.year + 1) // 2, lo.toordinal() + hi.toordinal()
+
+
+def _journey_note(undated: int, unplaced: int) -> str:
+    """The family map's plain line for the records its journey lines leave
+    out, or '' when there are none: "Not on the lines: 2 events with no date
+    and 1 at a place with no map position yet." """
+    parts = []
+    if undated:
+        parts.append(f'{undated} event{"" if undated == 1 else "s"} with no date')
+    if unplaced:
+        noun = '' if undated else f' event{"" if unplaced == 1 else "s"}'
+        parts.append(f'{unplaced}{noun} at a place with no map position yet')
+    return f'Not on the lines: {" and ".join(parts)}.' if parts else ''
 
 
 # ── Site search: the spelling rule ──────────────────────────────────────────
@@ -4948,6 +5125,14 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "Tell me what you know" mailto at the foot of each person page of
+        # the shared build; never the linked preview or the workbench.
+        self.contact_email, contact_warning = _site_contact_email(site_cfg)
+        # The "Questions for the family" page: off unless fha.yaml says
+        # `questions_page: true`, and only in a shared (standalone) build -
+        # the working views already show open questions on person pages.
+        questions_on, questions_warning = _site_switch(site_cfg, 'questions_page')
+        self.show_questions = questions_on and not linked
         # The "What's new" page: off unless fha.yaml says `whats_new: true`.
         self.show_whats_new, whats_new_warning = _site_switch(site_cfg, 'whats_new')
         self._whats_new_cache: tuple[list[dict], bool] | None = None
@@ -4957,7 +5142,8 @@ class _SiteBuilder:
         # The statistics page: off unless asked for (TOOLING §12).
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
-                                             surname_warning, statistics_warning, whats_new_warning) if w]
+                                             surname_warning, statistics_warning, whats_new_warning,
+                                             questions_warning, contact_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -5072,6 +5258,25 @@ class _SiteBuilder:
         # title naming the living person cannot be searched for.
         self._sources_naming_living: set[str] = set()
         self.restricted_claims: set[str] = set()         # claim ids withheld
+        # A family recording plays on the shared site only when SPEC §19
+        # allows it: sid -> {'speakers': [pid], 'recording_ok': bool,
+        # 'public': bool}, for every source holding a recording
+        # (`_load_recordings`). `recording_hrefs` remembers the page-relative
+        # player href made for each (sid, file path), so a later page can
+        # reuse the same copy.
+        self.recordings: dict[str, dict] = {}
+        self.recording_hrefs: dict[tuple[str, str], str] = {}
+        # sid -> that source's recordings in `files:` order, each
+        # {'path', 'original_filename', 'entry'} (its Files-list entry), for
+        # matching a claim's anchor to the recording it was said on.
+        self.recording_files: dict[str, list[dict]] = {}
+        # Grandpa's own page lists the recordings he is heard on: person id ->
+        # the sources whose `speakers:` name him (merges followed to the
+        # person whose page it is), oldest source first.
+        self.speaker_sources: dict[str, list[str]] = {}
+        self._ffmpeg: str | None = None
+        self._ffmpeg_looked = False
+        self._recordings_without_ffmpeg = 0
         # What a shared build does with each claim, by who it names
         # (`_lib.claim_people_verdict`): only the claims it holds back or
         # shows without their wording are listed. Empty in a linked build.
@@ -5084,6 +5289,8 @@ class _SiteBuilder:
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
         self._graves_cache: list[dict] | None = None      # graves.html groups, built once per build
+        self._map_cache: dict | None = None               # map.html pins, built once per build
+        self._map_done = False                            # (None is a real answer: no map)
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
@@ -5372,6 +5579,8 @@ class _SiteBuilder:
             if self.linked or not self._person_is_redacted(row):
                 self.person_pages.add(pid)
 
+        self._load_recordings()
+
         # linked-or-workbench (build_person_page): parsing/indexing every
         # open question is skipped entirely on a standalone (public) build,
         # where the section never renders. A `## Q:` block still carries no
@@ -5546,6 +5755,299 @@ class _SiteBuilder:
                 cid = normalize_id(str(claim.get('id', '')))
                 if cid and _is_restricted_value(claim.get('restricted')):
                     self.restricted_claims.add(cid)
+
+    def _load_recordings(self) -> None:
+        """Decide, once per build, which family recordings may play on the
+        shared site, so a voice that could name a living relative never
+        leaves the archive (SPEC §19, Recordings).
+
+        Reads every source holding an audio or video file. A recording is
+        public only when all of these hold: the source has a page here;
+        `rights: recording_ok` is YAML `true`; `speakers:` lists at least one
+        person and every one is in the index and not withheld
+        (`_person_is_redacted`: living, unknown or restricted, merges
+        followed both ways); and nobody else the source names, on `people:`
+        or on any of its claims (whatever their status), is withheld or
+        unresolved. A name that resolves to nobody counts as living (SPEC
+        A.10). A claim on the source marked `restricted` also holds the
+        recording back: the recording is that fact's evidence, and playing
+        it would publish what the marker keeps home. A record that cannot be
+        read shares nothing. The linked preview and the workbench are the
+        owner's own copies and play everything, so they need no verdict."""
+        sids = sorted({
+            row['source_id'] for row in self.conn.execute(
+                'SELECT source_id, path FROM source_files WHERE path IS NOT NULL')
+            if row['source_id'] in self.source_meta
+            and Path(row['path']).suffix.lower() in _RECORDING_SUFFIXES})
+        for sid in sids:
+            info = {'speakers': [], 'recording_ok': False, 'public': False,
+                    'quotes': [], 'quotes_public': False}
+            self.recordings[sid] = info
+            row = self.source_meta[sid]
+            if not row['path']:
+                continue
+            try:
+                rec = read_record(self.archive_root / row['path'],
+                                  on_decode_error=_raise_friendly_decode_error)
+            except Exception:   # noqa: BLE001 - unreadable means nothing is shared
+                continue
+            if rec['parse_errors']:
+                continue
+            meta = rec['meta']
+            rights = meta.get('rights')
+            # The archive's YAML reader keeps scalars as written, so YAML
+            # `true` arrives as the text "true" (index.py reads
+            # `publication_ok` the same way). "yes" or anything else is no.
+            ok = rights.get('recording_ok') if isinstance(rights, dict) else None
+            info['recording_ok'] = ok is True or ok in ('true', 'True', 'TRUE')
+            speakers, unknown_speakers = self._resolve_person_refs(meta.get('speakers'))
+            info['speakers'] = speakers
+            info['quotes'] = self._source_quotes(meta.get('quotes'), speakers)
+            for pid in speakers:
+                page_pid = self._merge_survivor(pid)
+                if sid not in self.speaker_sources.setdefault(page_pid, []):
+                    self.speaker_sources[page_pid].append(sid)
+            if self.linked:
+                info['quotes_public'] = True
+                continue
+            for ref in unknown_speakers:
+                self.messages.append(
+                    f'WARNING: {row["path"]} lists speaker {ref}, who is not in the index; '
+                    f'its recording is not shared on this site. Check the ID with '
+                    f'`fha find {ref}`.')
+            # A quote is shared under the recording's rule less the owner's
+            # yes (SPEC A.10): his words in print are ordinary cited text.
+            info['quotes_public'] = (
+                sid in self.source_pages
+                and bool(speakers) and not unknown_speakers
+                and self._recording_names_only_the_shareable(sid, meta, rec['claims'], speakers))
+            info['public'] = info['recording_ok'] and info['quotes_public']
+        for sids_of in self.speaker_sources.values():
+            sids_of.sort(key=lambda s: (self.source_meta[s]['date_min'] or '9999', s))
+
+    def _merge_survivor(self, pid: str) -> str:
+        """The person whose page a merged-away ID now belongs to (its
+        `merged_into` chain followed to the end); pid itself otherwise."""
+        seen = {pid}
+        while True:
+            row = self.person_meta.get(pid)
+            nxt = normalize_id(str(row['merged_into'])) if row is not None and row['merged_into'] else None
+            if not nxt or nxt in seen or nxt not in self.person_meta:
+                return pid
+            seen.add(nxt)
+            pid = nxt
+
+    def _source_quotes(self, value, speakers: list[str]) -> list[dict]:
+        """A source's `quotes:` (SPEC A.10) as {'speaker', 'text', 'anchor'},
+        in the order written, keeping only quotes whose speaker is on the
+        source's `speakers:` list. The words are shown as written; no tool
+        reads them."""
+        out: list[dict] = []
+        if not isinstance(value, list):
+            return out
+        for q in value:
+            if not isinstance(q, dict) or not isinstance(q.get('text'), str) or not q['text'].strip():
+                continue
+            found, _missing = self._resolve_person_refs(q.get('speaker'))
+            if len(found) != 1 or found[0] not in speakers:
+                continue
+            anchor = q.get('anchor')
+            out.append({'speaker': self._merge_survivor(found[0]), 'text': q['text'].strip(),
+                        'anchor': anchor if isinstance(anchor, str) else None})
+        return out
+
+    def _resolve_person_refs(self, value) -> tuple[list[str], list[str]]:
+        """(person ids found in the index, references that found nobody) for
+        a people-valued field: bare ids, `[[p-…|Name]]` or `[[Name]]`."""
+        found: list[str] = []
+        missing: list[str] = []
+        for ref in link_field_refs(value):
+            pid = resolve_typed_ref(ref, self.alias_map, want='P')
+            pid = normalize_id(pid) if pid else None
+            if pid and pid in self.person_meta:
+                if pid not in found:
+                    found.append(pid)
+            elif ref not in missing:
+                missing.append(ref)
+        return found, missing
+
+    def _recording_names_only_the_shareable(self, sid: str, meta: dict, claims: list,
+                                            speakers: list[str]) -> bool:
+        """True when every person this recording's source names (speakers,
+        `people:`, and everyone on its claims, as written in the record and
+        as the index resolved them) can be shown on the shared site, and
+        no claim on it is marked restricted."""
+        refs: list = [meta.get('people')]
+        for claim in claims:
+            if not isinstance(claim, dict):
+                continue
+            if _is_restricted_value(claim.get('restricted')):
+                return False
+            refs.append(claim.get('persons'))
+            roles = claim.get('roles')
+            if isinstance(roles, dict):
+                refs.extend(roles.values())
+        named = list(speakers)
+        for value in refs:
+            found, missing = self._resolve_person_refs(value)
+            if missing:
+                return False
+            named.extend(found)
+        for (pid,) in self.conn.execute(
+                'SELECT person_id FROM source_people WHERE source_id = ? UNION '
+                'SELECT cp.person_id FROM claim_persons cp JOIN claims c ON c.id = cp.claim_id '
+                'WHERE c.source_id = ?', (sid, sid)):
+            named.append(pid)
+        for (cid,) in self.conn.execute('SELECT id FROM claims WHERE source_id = ?', (sid,)):
+            if normalize_id(str(cid)) in self.restricted_claims:
+                return False
+        for pid in named:
+            row = self.person_meta.get(pid)
+            if row is None or self._person_is_redacted(row):
+                return False
+        return True
+
+    def _recording_is_public(self, sid: str) -> bool:
+        """Whether this source's recordings may play on this build: always in
+        the owner's linked preview and workbench, and on the shared site
+        only under SPEC §19 (`_load_recordings`)."""
+        return self.linked or bool(self.recordings.get(sid, {}).get('public'))
+
+    def _ffmpeg_path(self) -> str | None:
+        """ffmpeg, looked up once per build; None when it is not installed."""
+        if not self._ffmpeg_looked:
+            self._ffmpeg_looked = True
+            self._ffmpeg = shutil.which('ffmpeg')
+        return self._ffmpeg
+
+    def _audio_dest(self, alias_path: str, sid: str) -> Path:
+        """Where the shared copy of a recording goes: media/{sid}/, named like
+        the web pictures (`_media_dest`) but keeping the recording's type."""
+        norm = alias_path.replace('\\', '/')
+        digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
+        return self.media_dir / sid / f'{Path(norm).stem}_{digest}{Path(norm).suffix.lower()}'
+
+    def _remux_audio(self, src: Path, dest: Path) -> bool:
+        """Make the copy of a recording the shared site plays. A phone writes
+        the place and the device into a recording, as a camera does into a
+        photo, so originals never leave: ffmpeg copies the sound without
+        re-encoding and drops every tag, chapter and attached picture.
+        `bitexact` keeps the bytes the same from build to build. False when
+        ffmpeg fails; the caller then lists the file without a player."""
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cmd = [self._ffmpeg or 'ffmpeg', '-nostdin', '-loglevel', 'error', '-y',
+               '-i', str(src), '-map', '0:a', '-c', 'copy',
+               '-map_metadata', '-1', '-map_chapters', '-1',
+               '-fflags', '+bitexact', '-flags:a', '+bitexact', str(dest)]
+        try:
+            done = subprocess.run(cmd, capture_output=True, timeout=600, check=False)
+            ok = done.returncode == 0 and dest.is_file() and dest.stat().st_size > 0
+        except (OSError, subprocess.SubprocessError):
+            ok = False
+        if not ok:
+            with contextlib.suppress(OSError):
+                dest.unlink()
+        return ok
+
+    def _recording_entry(self, sid: str, f: sqlite3.Row, page_dir: Path) -> dict:
+        """One recording's line in a source page's Files list.
+
+        Shared site: a recording SPEC §19 holds back shows only
+        `_RECORDING_KEPT_LABEL`, never its file name. One it allows gets a
+        player on a stripped copy (`_remux_audio`) when the browser can play
+        its type; without ffmpeg, or when the copy fails, it is listed as
+        kept in the archive. A video is listed as before, with no player.
+        Linked preview and workbench: a player on the real file."""
+        # A video kept under the photos root can carry a person tag in the
+        # photo catalog; one naming a living person stays home too.
+        if not self._recording_is_public(sid) or (
+                not self.linked and self._is_living_tagged_photo(f['path'])):
+            return {'label': _RECORDING_KEPT_LABEL, 'note': None,
+                    'link_href': None, 'thumb_href': None}
+        entry = self._file_entry(f['path'], f['role'], f['copy'], f['date_edtf'], page_dir)
+        suffix = Path(f['path']).suffix.lower()
+        if suffix not in _AUDIO_TYPES:
+            return entry
+        if self.linked:
+            if entry.get('link_href'):
+                entry.update(audio_href=entry['link_href'], audio_type=_AUDIO_TYPES[suffix])
+            return entry
+        try:
+            resolved = resolve_path(f['path'], self.fha_config, self.archive_root)
+        except Exception:   # noqa: BLE001 - _file_entry has already said why
+            return entry
+        if not resolved.is_file():
+            return entry
+        role_note = _role_note(f['role'], f['copy'], f['date_edtf'])
+        if not self._ffmpeg_path():
+            self._recordings_without_ffmpeg += 1
+            entry['note'] = _with_role_note(
+                'recording kept in the archive (install ffmpeg to share recordings on the site)',
+                role_note)
+            return entry
+        dest = self._audio_dest(f['path'], normalize_id(sid))
+        if not self._remux_audio(resolved, dest):
+            self.messages.append(
+                f'WARNING: could not make a shareable copy of the recording {f["path"]} '
+                '(ffmpeg could not read it); the site lists it as kept in the archive.')
+            entry['note'] = _with_role_note('recording kept in the archive', role_note)
+            return entry
+        entry.update(audio_href=_rel_href(dest, page_dir), audio_type=_AUDIO_TYPES[suffix],
+                     note=role_note)
+        return entry
+
+    def _recording_for_anchor(self, label: str | None, recordings: list[dict]) -> dict | None:
+        """Which of a source's recordings (all of them, in `files:` order) a
+        claim's anchor time is in, or None when that cannot be told for sure.
+
+        One recording on the source: that one. Otherwise the anchor's label
+        ("cars-whisper") must name exactly one: its words `whisper`, `app`
+        and `transcript` are dropped, and what is left must end the
+        recording's file name (less its s-id and an `-audio`/`-recording`
+        role) or the name it had before processing. Anything else gets no
+        link, rather than a link to the wrong minute of the wrong tape."""
+        if len(recordings) == 1:
+            return recordings[0]
+        if not label:
+            return None
+        noise = {'whisper', 'app', 'transcript', ''}
+        words = re.split(r'[-_\s]+', label.lower())
+        while words and words[0] in noise:
+            words.pop(0)
+        while words and words[-1] in noise:
+            words.pop()
+        key = '-'.join(words)
+        if not key:
+            return None
+
+        def names(r: dict) -> list[str]:
+            stem = Path(r['path']).stem.lower()
+            stem = re.sub(r'_s-[0-9a-z]+$', '', stem)
+            stem = re.sub(r'-(audio|recording)$', '', stem)
+            out = [stem]
+            if r.get('original_filename'):
+                out.append(Path(str(r['original_filename'])).stem.lower())
+            return out
+
+        hits = [r for r in recordings
+                if any(n == key or n.endswith('-' + key) for n in names(r))]
+        return hits[0] if len(hits) == 1 else None
+
+    def _play_link(self, anchor: str | None, recordings: list[dict]) -> dict | None:
+        """A "play from 14:32" link for a claim whose anchor gives a time in a
+        recording that plays on this page; None otherwise."""
+        parsed = anchor_seconds(anchor)
+        if parsed is None:
+            return None
+        label, seconds = parsed
+        rec = self._recording_for_anchor(label, recordings)
+        if rec is None or not rec['entry'].get('audio_id'):
+            return None
+        h, rest = divmod(seconds, 3600)
+        m, s = divmod(rest, 60)
+        shown = f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+        return {'href': rec['entry']['audio_href'], 'audio_id': rec['entry']['audio_id'],
+                'seconds': seconds, 'label': shown}
 
     def _load_open_questions(self) -> None:
         """Index every OPEN '## Q:' block by the person id(s) its `refs:`
@@ -6904,9 +7406,10 @@ class _SiteBuilder:
         status_filter = '' if self.linked else "AND status = 'accepted'"
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         claims = []
+        anchors: list[str | None] = []    # each claim's anchor, for its play-from link
         for c in self.conn.execute(
             'SELECT id, type, value, date_edtf, place_id, place_text, status, confidence, '
-            'reviewed FROM claims c '
+            'reviewed, anchor FROM claims c '
             f'WHERE source_id = ? {status_filter} {living_filter} ORDER BY '
             f"{claim_date_order_sql('c')}",
             (sid,),
@@ -6958,8 +7461,14 @@ class _SiteBuilder:
                 'place_id': fmt_id_display(c['place_id']) if c['place_id'] else '',
                 'persons_ids': ','.join(fmt_id_display(p['person_id']) for p in person_rows),
             })
+            anchors.append(c['anchor'])
 
         files, portrait_entry = self._source_file_entries(sid, page_dir)
+        # "play from 14:32" beside a fact taken from a recording that plays
+        # on this page (a withheld recording has no player, so no link).
+        recordings = self.recording_files.get(sid, [])
+        for claim, anchor in zip(claims, anchors):
+            claim['play'] = self._play_link(anchor, recordings) if recordings else None
         # The record-head thumbnail (win 2): the same href the Files entry
         # already resolved, just framed as a portrait plate with its own
         # caption - never a second derivative, never a second privacy check.
@@ -6984,6 +7493,8 @@ class _SiteBuilder:
                                    if c['status'] == 'suggested' and not c['parked']),
             'notes_html': notes_html,
             'notes_entries': notes_entries,
+            'has_play': any(c['play'] for c in claims),
+            'has_recordings': any(f.get('audio_href') for f in files),
         }
         self._write_page(self.sources_dir / _page_filename(sid), 'source.html',
                          {'source': ctx, 'root_prefix': '..'})
@@ -7010,11 +7521,22 @@ class _SiteBuilder:
         so a missing/omitted image degrades identically in both places."""
         entries: list[dict] = []
         candidates: list[tuple[int, dict]] = []   # (rank, entry) for resolvable images
+        recordings: list[dict] = []
         for f in self.conn.execute(
-            'SELECT path, role, copy, date_edtf, is_primary FROM source_files WHERE source_id = ? '
-            'ORDER BY rowid', (sid,)
+            'SELECT path, role, copy, date_edtf, is_primary, original_filename '
+            'FROM source_files WHERE source_id = ? ORDER BY rowid', (sid,)
         ):
             if not f['path']:
+                continue
+            # A recording first, before anything reads its name: on the
+            # shared site one SPEC §19 holds back is never named.
+            if Path(f['path']).suffix.lower() in _RECORDING_SUFFIXES:
+                entry = self._recording_entry(sid, f, page_dir)
+                if self.linked:
+                    entry['path'] = f['path']
+                entries.append(entry)
+                recordings.append({'path': f['path'], 'original_filename': f['original_filename'],
+                                   'entry': entry})
                 continue
             # Standalone: skip images co-tagged to a living person in the photo catalog.
             # Same bug shape as _file_entry/_standalone_image_entry's fallback
@@ -7053,6 +7575,15 @@ class _SiteBuilder:
                 # living-person gate at the top of this loop.
                 self._warn_if_published_photo_went_unchecked()
         portrait = min(candidates, key=lambda c: c[0])[1] if candidates else None
+        # Players are numbered in file order, so a link from another page
+        # (`#play-rec-1-872`) always finds the same recording.
+        n = 0
+        for rec in recordings:
+            if rec['entry'].get('audio_href'):
+                n += 1
+                rec['entry']['audio_id'] = f'rec-{n}'
+                self.recording_hrefs[(sid, rec['path'])] = rec['entry']['audio_href']
+        self.recording_files[sid] = recordings
         return entries, portrait
 
     # - person page -
@@ -7065,10 +7596,14 @@ class _SiteBuilder:
         self._footnotes = {}          # start this page's source-footnote numbering
         self._footnote_seq = []
 
+        # The quote sits at the top of the page, so it takes the first
+        # footnote number.
+        recordings = self._person_recordings(pid, page_dir)
+        quote = self._person_quote(pid, page_dir, {r['audio_id'] for r in recordings})
         summary = self._person_summary(pid, page_dir)
         (biography_html, stories_html, research_html, biography_raw,
          stories_entries, research_entries) = self._person_prose(row, page_dir)
-        timeline = self._person_timeline(pid, page_dir)
+        timeline = self._person_timeline(pid, page_dir, {r['audio_id'] for r in recordings})
         # #130: whether this page shows the "low confidence" and/or
         # "unconfirmed" badges at all - person.html's own legend paragraph
         # only earns its place on a page that actually carries one of them
@@ -7166,6 +7701,10 @@ class _SiteBuilder:
             'chart_title': chart_title,
             'chart_weak_key': chart_weak_key,
             'fan': fan,
+            # The switch only earns its place once a side runs past the
+            # parent, otherwise it would fade nothing but one other parent.
+            'fan_modes': bool(fan and (fan.count('fan-line-paternal') > 1
+                                       or fan.count('fan-line-maternal') > 1)),
             'heritage': heritage, 'heritage_repeats': heritage_repeats,
             'heritage_chart': _chart_name(name, 'heritage') if heritage else None,
             'lifespan': lifespan,
@@ -7202,6 +7741,9 @@ class _SiteBuilder:
                                for q in (self._person_open_questions(pid, page_dir)
                                          if self.linked else [])],
             'timeline': timeline, 'sources': sources, 'family': family, 'photos': photos,
+            'recordings': recordings, 'quote': quote,
+            'has_play': bool(recordings or (quote and quote['play'])
+                             or any(e.get('listen') for g in timeline for e in g['entries'])),
             'has_qa_badges': has_qa_badges,
             'has_place_history': has_place_history,
             # The workbench is the owner's private view, so its ring needs
@@ -7227,11 +7769,84 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            'contribute_href': (contribution_mailto(self.contact_email, name, pid)
+                                if self.contact_email and not self.linked else None),
             **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
                          {'person': ctx, 'root_prefix': '..'})
         self._footnotes = None        # footnotes are strictly person-page-scoped
+
+    def _person_recordings(self, pid: str, page_dir: Path) -> list[dict]:
+        """So the family can hear Grandpa on his own page: a player for each
+        recording he is listed as a speaker on that plays on this build
+        (SPEC §19, the source page's own verdict and its stripped copy), oldest
+        source first. Someone only talked about on a tape is on `people:`,
+        not `speakers:`, and gets none."""
+        out: list[dict] = []
+        for sid in self.speaker_sources.get(pid, []):
+            if not self._recording_is_public(sid):
+                continue
+            row = self.source_meta[sid]
+            title = row['title'] or fmt_id_display(sid)
+            for rec in self.recording_files.get(sid, []):
+                entry = rec['entry']
+                if not entry.get('audio_id'):
+                    continue
+                out.append({
+                    'title_html': self._markup(self._cite_source(sid, page_dir, in_display=title)),
+                    'audio_href': _rehome_href(entry['audio_href'], self.sources_dir, page_dir),
+                    'audio_type': entry['audio_type'],
+                    'audio_id': self._person_audio_id(sid, entry['audio_id']),
+                    'date': _humanize_edtf(row['date_edtf']) if row['date_edtf'] else '',
+                })
+        return out
+
+    @staticmethod
+    def _person_audio_id(sid: str, source_audio_id: str) -> str:
+        """The player id on a person page for the source page's `rec-1`:
+        `rec-{sid}-1`, unique however many sources the page plays."""
+        return f'rec-{sid}-{source_audio_id.removeprefix("rec-")}'
+
+    def _listen_link(self, sid: str | None, anchor: str | None, page_dir: Path,
+                     players: set[str]) -> dict | None:
+        """A link to the minute a fact was said, on its source page
+        (`#play-rec-1-872`), for an anchor that gives a time in a recording
+        that plays on this build. `audio_id` names this page's own player for
+        it when the page has one, so a click plays it here."""
+        if not sid or not anchor:
+            return None
+        sid = normalize_id(sid)
+        recordings = self.recording_files.get(sid)
+        if not recordings:
+            return None
+        play = self._play_link(anchor, recordings)
+        if play is None:
+            return None
+        audio_id = self._person_audio_id(sid, play['audio_id'])
+        href = _rel_href(self.sources_dir / _page_filename(sid), page_dir)
+        return {'href': f'{href}#play-{play["audio_id"]}-{play["seconds"]}',
+                'audio_id': audio_id if audio_id in players else None,
+                'seconds': play['seconds']}
+
+    def _person_quote(self, pid: str, page_dir: Path, players: set[str]) -> dict | None:
+        """A short quote in the person's own words under his name: the first
+        `quotes:` entry (SPEC A.10) he speaks, in the order his recordings are
+        listed. Shown under the recording's rule less the owner's yes to play
+        it, since printed words are ordinary cited text; on the shared site a
+        quote from a source that names anyone withheld is left out whole."""
+        for sid in self.speaker_sources.get(pid, []):
+            info = self.recordings.get(sid, {})
+            if not info.get('quotes_public'):
+                continue
+            for q in info.get('quotes', []):
+                if q['speaker'] != pid:
+                    continue
+                return {'text': q['text'],
+                        'source_html': self._markup(self._source_link(sid, page_dir)),
+                        'play': (self._listen_link(sid, q['anchor'], page_dir, players)
+                                 if self._recording_is_public(sid) else None)}
+        return None
 
     def _completeness_context(self) -> dict:
         """The completeness engine's read of the index (`_lib.completeness_
@@ -8061,6 +8676,235 @@ class _SiteBuilder:
         self._write_page(self.out_dir / 'graves.html', 'graves.html',
                          {'root_prefix': '.', 'groups': groups})
 
+    # - family map -
+
+    def _map_data(self) -> dict | None:
+        """The family map's pins: where the family's records put people,
+        at the places that have a map position. None when no pin would
+        show (then there is no page and no link). Worked out once per build.
+
+        Returns {'places': [...], 'unmapped': [...], 'journeys': [...],
+        'undated_total': n, 'unplaced_total': n}. A pin is a registered
+        place with its own coordinates; a claim at a place without any (a
+        cemetery nobody pinned) counts on the first place it sits `within:`
+        that has some, the rule the graves list uses, so nothing is placed
+        by a guess. Places with records but no position on their chain go in
+        `unmapped`, listed under the map.
+
+        A claim places only the people it is about (`_lib.claim_subjects`:
+        its own person on a birth or burial, the people under `subject`,
+        `head` or `household_member` on anything else), so a child named on
+        his father's census line gets no pin from it. A claim counts when it
+        places at least one person this build shows. Accepted claims only, in
+        every build: a pin reads as settled fact. A shared build also applies
+        the place page's filters (no claim withheld for who it names, no
+        restricted claim, no hard-restricted source) and never places a
+        hidden person, so a place whose records are all about hidden people
+        has no pin, and a count is the same as if they were not on the
+        records at all. People are listed only when they have a page.
+
+        The same records, read per person, give each journey
+        (`_map_journeys`); they come in the timeline's order, so records on
+        one date keep it."""
+        if self._map_done:
+            return self._map_cache
+        self._map_done = True
+        hidden_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        rows = self.conn.execute(
+            "SELECT c.id, c.type, c.place_id, c.source_id, c.date_edtf, c.date_min, "
+            "c.date_max FROM claims c "
+            "WHERE c.place_id IS NOT NULL AND c.place_id != '' "
+            "AND COALESCE(c.negated, 0) = 0 AND c.status = 'accepted' "
+            f"{hidden_filter} ORDER BY {claim_date_order_sql('c')}").fetchall()
+        pins: dict[str, dict] = {}
+        unmapped: dict[str, int] = {}
+        # p-id -> [(claim row, the pin it lands on or None)], timeline order.
+        lives: dict[str, list[tuple[sqlite3.Row, str | None]]] = {}
+        for c in rows:
+            if c['place_id'] not in self.place_meta:
+                continue
+            if not self.linked and (self._source_hard_restricted(c['source_id'])
+                                    or normalize_id(str(c['id'])) in self.restricted_claims):
+                continue
+            pairs = claim_role_pairs(
+                (r['person_id'], r['role']) for r in self.conn.execute(
+                    'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+                    'ORDER BY position', (c['id'],)))
+            placed: list[str] = []
+            for pid in claim_subjects(c['type'], pairs):
+                meta = self.person_meta.get(pid)
+                if meta is None or (not self.linked and self._person_is_redacted(meta)):
+                    continue
+                placed.append(self._shown_row(meta)['id'])
+            if not placed:
+                continue
+            coords = self._place_coords(c['place_id'])
+            for pid in dict.fromkeys(placed):
+                if self._map_traveller(pid):
+                    lives.setdefault(pid, []).append((c, coords[2] if coords else None))
+            if coords is None:
+                unmapped[c['place_id']] = unmapped.get(c['place_id'], 0) + 1
+                continue
+            pin = pins.setdefault(coords[2], {'events': 0, 'people': {}})
+            pin['events'] += 1
+            for pid in dict.fromkeys(placed):
+                if pid in self.person_pages:
+                    pin['people'][pid] = pin['people'].get(pid, 0) + 1
+        if not pins:
+            self._map_cache = None
+            return None
+
+        def place_name(lid: str) -> str:
+            return self.place_names.get(lid) or fmt_id_display(lid)
+
+        def by_name(lid: str):
+            return (fold_accents(place_name(lid)).lower(), lid)
+
+        def href(target: Path) -> str:
+            return _rel_href(target, self.out_dir)
+
+        places = []
+        for lid in sorted(pins, key=by_name):
+            meta = self.place_meta[lid]
+            pin = pins[lid]
+            people = sorted(
+                pin['people'].items(),
+                key=lambda kv: (-kv[1], fold_accents(self.person_meta[kv[0]]['name'] or '').lower(),
+                                kv[0]))
+            places.append({
+                'id': lid, 'name': place_name(lid),
+                'label': meta['hierarchy'] or place_name(lid),
+                'lat': meta['lat'], 'lon': meta['lon'],
+                'href': href(self.places_dir / _page_filename(lid)),
+                'events': pin['events'],
+                'people': [{'name': self.person_meta[pid]['name'] or fmt_id_display(pid),
+                            'href': href(self.persons_dir / _page_filename(pid))}
+                           for pid, _n in people[:_MAP_PEOPLE_PER_PIN]],
+                'more_people': max(0, len(people) - _MAP_PEOPLE_PER_PIN),
+            })
+        self._map_cache = {
+            'places': places,
+            'unmapped': [{'id': lid, 'name': place_name(lid),
+                          'href': href(self.places_dir / _page_filename(lid)),
+                          'events': unmapped[lid]}
+                         for lid in sorted(unmapped, key=by_name)],
+        }
+        self._map_cache.update(self._map_journeys(lives, href))
+        return self._map_cache
+
+    def _map_traveller(self, pid: str) -> bool:
+        """Whether the family map draws a journey for this person: someone
+        with a page whose record says `living: false`. A living or unknown
+        person never gets one, not even in the private preview; a shared
+        build has already left out the restricted and by-request (`placed`
+        holds only people it shows), and a stub has no page."""
+        meta = self.person_meta.get(pid)
+        return (pid in self.person_pages and meta is not None
+                and (meta['living'] or '') == 'false')
+
+    def _map_journeys(self, lives: dict, href) -> dict:
+        """Each journey on the family map: the places a person's own records
+        put them, in date order, as a line from pin to pin.
+
+        `lives` holds, for each person `_map_traveller` allows, the records
+        `_map_data` let through (accepted, shown, about this person) in the
+        timeline's order, each with the pin it lands on. A record at a place
+        with no map position on its `within:` chain counts in `unplaced`, one
+        with no usable date in `undated`; neither is drawn. The rest are
+        stops, ordered by `_journey_when` (the middle of the date) with the
+        timeline's order breaking ties, and records in a row at one pin are
+        one stop from its first year to its last. Two stops or more make a
+        journey; one stop draws no line.
+
+        A record the shared build withholds never reached `lives`, so a line
+        runs straight past it and no count includes it. The totals count
+        each record once, however many people it places."""
+        journeys = []
+        undated_ids: set = set()
+        unplaced_ids: set = set()
+        for pid, entries in lives.items():
+            dated = []
+            undated = unplaced = 0
+            for c, lid in entries:
+                if lid is None:
+                    unplaced += 1
+                    unplaced_ids.add(c['id'])
+                    continue
+                when = _journey_when(c['date_edtf'], c['date_min'], c['date_max'])
+                if when is None:
+                    undated += 1
+                    undated_ids.add(c['id'])
+                    continue
+                dated.append((when, lid, c['type']))
+            dated.sort(key=lambda d: d[0])   # stable: equal dates keep the timeline's order
+            stops: list[dict] = []
+            for (year, _key), lid, ctype in dated:
+                if stops and stops[-1]['place'] == lid:
+                    stops[-1]['year_to'] = year
+                    if ctype not in stops[-1]['what']:
+                        stops[-1]['what'].append(ctype)
+                    continue
+                stops.append({'place': lid, 'year_from': year, 'year_to': year,
+                              'what': [ctype]})
+            if len(stops) < 2:
+                continue
+            name = self.person_meta[pid]['name'] or fmt_id_display(pid)
+            journeys.append(((fold_accents(name).lower(), pid), {
+                'name': name,
+                'href': href(self.persons_dir / _page_filename(pid)),
+                'life': self._map_life(pid),
+                'stops': stops, 'undated': undated, 'unplaced': unplaced,
+            }))
+        journeys.sort(key=lambda kj: kj[0])
+        return {'journeys': [j for _k, j in journeys], 'undated_total': len(undated_ids),
+                'unplaced_total': len(unplaced_ids)}
+
+    def _map_life(self, pid: str) -> str:
+        """The years of a life for the map's journey picker, from the birth
+        and death the person page's summary shows: "1840-1941", "born 1840",
+        "died 1941", or ''."""
+        vitals = self._person_picked_vitals(pid)
+
+        def year(kind: str) -> int | None:
+            row = vitals.get(kind)
+            when = row and _journey_when(row['date_edtf'], row['date_min'], row['date_max'])
+            return when[0] if when else None
+
+        born, died = year('birth'), year('death')
+        if born and died:
+            return f'{born}-{died}'
+        if born:
+            return f'born {born}'
+        return f'died {died}' if died else ''
+
+    def build_map_page(self) -> None:
+        """Write map.html when at least one place has a pin. The pins go into
+        the page as inline JSON (`_json_for_script`), which vendor/fha-map.js
+        draws over the vendored world outline; the same places are listed as
+        plain links, grouped by country (the last part of the place's full
+        name), for a reader without script and for printing."""
+        data = self._map_data()
+        if data is None:
+            return
+        groups: dict[str, list[dict]] = {}
+        for p in data['places']:
+            parts = [x.strip() for x in p['label'].split(',')]
+            country = parts[-1] if len(parts) > 1 and parts[-1] else ''
+            groups.setdefault(country, []).append(p)
+        ordered = [{'country': k or 'Other places', 'places': groups[k]}
+                   for k in sorted(groups, key=lambda k: (k == '', fold_accents(k).lower()))]
+        payload = {'version': 1, 'places': data['places'], 'journeys': data['journeys'],
+                   'undated_total': data['undated_total'],
+                   'unplaced_total': data['unplaced_total']}
+        note = (_journey_note(data['undated_total'], data['unplaced_total'])
+                if data['journeys'] else '')
+        self._write_page(self.out_dir / 'map.html', 'map.html', {
+            'root_prefix': '.',
+            'map': {'data_json': self._markup(_json_for_script(payload)),
+                    'groups': ordered, 'unmapped': data['unmapped'],
+                    'has_journeys': bool(data['journeys']), 'journey_note': note},
+        })
+
     def _provisional_vital(self, pid: str, field: str) -> str | None:
         """Read one provisional (unsourced) `birth:`/`death:` estimate from a
         person's frontmatter, or None. Non-load-bearing family knowledge
@@ -8279,7 +9123,8 @@ class _SiteBuilder:
                 out.append({'heading': info['heading'], 'file': info['file'], 'html': html})
         return out
 
-    def _person_timeline(self, pid: str, page_dir: Path) -> list[dict]:
+    def _person_timeline(self, pid: str, page_dir: Path,
+                         players: set[str] = frozenset()) -> list[dict]:
         """The person's claims grouped by decade (TOOLING §12; same shape as
         `fha views timeline`'s main chronology). Statuses diverge by audience
         (owner decision 2026-07-22): the published standalone timeline shows
@@ -8348,7 +9193,7 @@ class _SiteBuilder:
         living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
         rows = self.conn.execute(
             "SELECT DISTINCT c.id, c.date_edtf, c.date_min, c.date_max, c.type, c.value, c.place_id, c.place_text, c.source_id, "
-            "c.status, c.confidence, c.reviewed "
+            "c.status, c.confidence, c.reviewed, c.anchor "
             "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
             f"WHERE cp.person_id = ? AND {status_filter} {living_filter} "
             f"ORDER BY {claim_date_order_sql('c')}",
@@ -8439,6 +9284,8 @@ class _SiteBuilder:
                 'status': r['status'], 'confidence': r['confidence'] or '',
                 'unconfirmed': r['status'] == 'suggested',
                 'parked': r['reviewed'] or '',
+                # "listen": the minute this was said, when its recording plays.
+                'listen': self._listen_link(r['source_id'], r['anchor'], page_dir, players),
             })
         if entries:
             groups.append({'decade': None if current == '\x00' else current, 'entries': entries})
@@ -9862,6 +10709,127 @@ class _SiteBuilder:
         self._write_page(self.places_dir / _page_filename(lid), 'place.html',
                          {'place': ctx, 'root_prefix': '..'})
 
+    # - questions page -
+
+    def _shared_questions(self) -> list[dict]:
+        """The open questions he marked `share: family` that this build may
+        show relatives (SPEC §17b), as {'heading_html', 'people', 'sources'}.
+
+        A relative should see only what he chose to share and never a living
+        person's name, so a question is dropped whole when anything it names
+        is withheld: its home file is the research file of a person with no
+        page here, a person in `refs:` has no page here (living, unknown,
+        restricted, by-request, or not in the archive), a source in `refs:`
+        has no page, a ref is not an ID, or its heading names a withheld
+        person or record in any link form. Only the heading and the
+        people and sources in `refs:` are published: the working answer, its
+        basis and `context:` never are. Sorted by heading, then file, so a
+        rebuild is byte-identical."""
+        undecodable: list[Path] = []
+        page_dir = self.out_dir
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        found: list[tuple[str, str, dict]] = []
+        for _key, info in parse_questions(self.archive_root,
+                                          on_decode_error=undecodable.append).items():
+            if question_state(info['status']) != 'open':
+                continue
+            if (info.get('share') or '').strip().lower() != 'family':
+                continue
+            if self._question_origin_is_by_request(info):
+                continue
+            # A question kept in a person's research file is about that
+            # person: if her page is withheld (living, unknown, private), the
+            # question stays home too. A file whose owner cannot be read
+            # from its name stays home as well (fail closed).
+            home = info.get('file') or ''
+            if home != 'notes/questions.md':
+                parsed = parse_filename(Path(home))
+                if (parsed is None or parsed.get('id_type') != 'P'
+                        or normalize_id(parsed['id_str']) not in self.person_pages):
+                    continue
+            # Every ref must be a recognisable ID; a ref written as a
+            # wikilink is read for the ID inside it, and anything else
+            # (a name, a typo) keeps the question home rather than guessing.
+            ref_ids: list[str] | None = []
+            for raw in info['refs']:
+                ids = [normalize_id(m) for m in _BARE_ID_RE.findall(raw)]
+                if not ids:
+                    ref_ids = None
+                    break
+                ref_ids.extend(ids)
+            if ref_ids is None:
+                continue
+            refs = list(dict.fromkeys(ref_ids))
+            people = [r for r in refs if r.startswith('p-')]
+            sources = [r for r in refs if r.startswith('s-')]
+            if any(p not in self.person_pages or self._person_is_by_request(
+                    p, question_origin=info.get('file')) for p in people):
+                continue
+            if any(s not in self.source_pages for s in sources):
+                continue
+            if any(not self._question_claim_is_shareable(r) for r in refs
+                   if r.startswith('c-')):
+                continue
+            # The heading may name people or records in any link form
+            # (`[[p-…]]`, a markdown link to the person's file, a bare ID).
+            # Any person or record without a page here keeps it home, and so
+            # does a rendered "Living Person" or "Restricted" label: even the
+            # label tells relatives something private exists.
+            heading_ids = {normalize_id(m) for m in _BARE_ID_RE.findall(info['heading'])}
+            if any((h.startswith('p-') and h not in self.person_pages)
+                   or (h.startswith('s-') and h not in self.source_pages)
+                   or (h.startswith('c-') and not self._question_claim_is_shareable(h))
+                   for h in heading_ids):
+                continue
+            heading_html = _inline_html(info['heading'], render)
+            if _LIVING_LABEL in heading_html or _RESTRICTED_LABEL in heading_html:
+                continue
+            found.append((info['heading'], info['file'], {
+                'heading_html': self._markup(heading_html),
+                'people': self._markup(', '.join(render(p) for p in people)),
+                'sources': self._markup(', '.join(render(s) for s in sources)),
+            }))
+        for path in undecodable:
+            try:
+                rel = path.relative_to(self.archive_root).as_posix()
+            except ValueError:
+                rel = path.as_posix()
+            self.messages.append(
+                f"WARNING: could not read {rel} (this file isn't saved as UTF-8 text); "
+                'its questions are left off the questions page. Open it, save it again '
+                'as UTF-8, then run `fha site` again.')
+        found.sort(key=lambda t: (t[0], t[1]))
+        return [q for _h, _f, q in found]
+
+    def _question_claim_is_shareable(self, cid: str) -> bool:
+        """True when a claim a shared question names may be pointed at: its
+        record has a page here, neither the claim nor its record is marked
+        private, and everyone it names has a page. A question about a living
+        cousin's birth record stays home even when the heading never says her
+        name. Its review status does not matter: the claim is never shown, and
+        a conflict between two records he has not settled yet (lint E009's
+        `refs: [c-…, c-…]`) is just the kind of question a relative answers."""
+        try:
+            row = self.conn.execute('SELECT source_id FROM claims WHERE id = ?',
+                                    (cid,)).fetchone()
+            named = [r['person_id'] for r in self.conn.execute(
+                'SELECT person_id FROM claim_persons WHERE claim_id = ?', (cid,))]
+        except sqlite3.DatabaseError:
+            return False
+        if row is None or not row['source_id'] or row['source_id'] not in self.source_pages:
+            return False
+        if cid in self.restricted_claims or self._source_hard_restricted(row['source_id']):
+            return False
+        return all(normalize_id(pid) in self.person_pages for pid in named)
+
+    def build_questions_page(self) -> None:
+        """Write questions.html: the open questions he marked `share: family`,
+        so relatives can see what he is still trying to find out. Written even
+        when none qualify, because the nav link points at it."""
+        self._write_page(self.out_dir / 'questions.html', 'questions.html', {
+            'questions': self._shared_questions(), 'root_prefix': '.',
+        })
+
     # - discoveries page -
 
     def build_discoveries_page(self) -> None:
@@ -10916,7 +11884,7 @@ class _SiteBuilder:
         # surname lets the fan put given names and surname on two lines.
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
                 'redacted': False, 'surname': meta['surname'],
-                'dates': self._person_vitals(pid)}
+                'dates': self._person_vitals(pid), 'pid': pid}
 
     def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
         """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
@@ -11147,6 +12115,14 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = entry_for(ppid, page_dir)
+                # The fan marks an ancestor who fills two places (cousins
+                # married). It may only say so from ties the page shows: a
+                # Private card, or anyone reached through one, is never
+                # grouped, so a repeat can't give away that two blanks are
+                # one living person or that a hidden person links the lines.
+                behind_private = bool(labels[num].get('private')
+                                      or labels[num].get('behind_private'))
+                labels[slot_num]['behind_private'] = behind_private
                 if not labels[slot_num].get('redacted'):
                     labels[slot_num]['pid'] = ppid     # never set on a withheld person
                 # How well this ancestor is tied to the subject (chart plan
@@ -11167,6 +12143,11 @@ class _SiteBuilder:
                 # which line is paternal (`_render_pedigree_svg`'s tint rule).
                 labels[slot_num]['sex_derived'] = (
                     sex_derived and not labels[slot_num].get('private'))
+                # A father's or mother's line may be followed through a
+                # Private card (their slot already says which side they are
+                # on); only a slot placed by guesswork breaks it.
+                labels[slot_num]['line_ok'] = bool(
+                    sex_derived and labels[num].get('line_ok', True))
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk
@@ -11990,6 +12971,7 @@ class _SiteBuilder:
             # panel: it is the owner's daily view, as `fha report`'s is.
             'calendar': (self._family_calendar(page_dir)
                          if self.show_calendar and not self.workbench else None),
+            'wall_calendar': self._wall_calendar_on(),
             'week_calendar': self._workbench_week(page_dir) if self.workbench else None,
         })
 
@@ -12018,6 +13000,49 @@ class _SiteBuilder:
                     events.append(self._calendar_event_entry(ev, page_dir))
             months.append({'num': month, 'name': _MONTH_NAMES[month - 1], 'events': events})
         return {'months': months, 'current': months[build_month - 1]}
+
+    def build_wall_calendar_page(self) -> None:
+        """Write calendar.html: a relative can see the whole year of family
+        birthdays, weddings and deaths on one page, each name linked, with
+        the person's chosen portrait beside it. Only people who have died
+        and whose records are open are on it, and a month with nothing to
+        show says so without hinting that anything was left off.
+
+        Built when `site: calendar` is on, in shared and linked builds (the
+        workbench keeps its own week panel). The events are
+        `_lib.family_calendar_year`'s (accepted claims, dates recorded to the
+        month or day), each held to `_calendar_event_is_shown` like the home
+        page's month panel, and the months are laid out by the same
+        `_lib.wall_month_html` as the private printed calendar. The year
+        is the build's own (`_today`): the site is a snapshot, and a rebuild
+        next January makes next year's. A 29 February moves to the 28th in a
+        year without one, as on the printed calendar."""
+        try:
+            year = int(_today()[:4])
+        except ValueError:
+            year = datetime.date.today().year
+        page_dir = self.out_dir
+
+        def person(p: dict) -> str:
+            link = self._person_link(p['id'], page_dir)
+            href = self._profile_photo_href(p['id'], page_dir)
+            if not href:
+                return link
+            return (f'<img class="wall-face" src="{_escape(href)}" alt="" '
+                    f'width="28" height="28" loading="lazy"> {link}')
+
+        months = []
+        for entry in family_calendar_year(self.conn, year):
+            days = {d: [ev for ev in evs if self._calendar_event_is_shown(ev)]
+                    for d, evs in entry['days'].items()}
+            months.append({
+                'month': entry['month'],
+                'days': {d: evs for d, evs in days.items() if evs},
+                'month_only': [ev for ev in entry['month_only']
+                               if self._calendar_event_is_shown(ev)]})
+        self._write_page(self.out_dir / 'calendar.html', 'calendar.html', {
+            'root_prefix': '.', 'year': year,
+            'months': [self._markup(wall_month_html(year, m, person)) for m in months]})
 
     def _calendar_event_is_shown(self, ev: dict) -> bool:
         """May this calendar event appear on this build's home page?
@@ -12937,13 +13962,23 @@ class _SiteBuilder:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
         search is on, plus graves.html when anyone has a grave to list, plus
-        statistics.html when statistics are on. `run()` and `--dry-run` both
+        calendar.html when the calendar is on (not in the workbench), plus
+        statistics.html when statistics are on, plus questions.html when the
+        questions page is on, plus map.html when a place has a pin. `run()` and `--dry-run` both
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
+                + (1 if self._wall_calendar_on() else 0)
                 + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
+                + (1 if self.show_questions else 0)
+                + (1 if self._map_data() else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
+
+    def _wall_calendar_on(self) -> bool:
+        """Does this build write calendar.html? With `site: calendar` on, yes,
+        except in the workbench, which shows the week instead."""
+        return bool(self.show_calendar and not self.workbench)
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -12964,6 +13999,11 @@ class _SiteBuilder:
                 ),
                 # The search box in every page's header (base.html).
                 'show_search': self.show_search,
+                # The "Map" item in every page's menu, only when map.html is built.
+                'has_map': self._map_data() is not None,
+                # Nav link to questions.html (base.html): only when this
+                # build writes that page, so the link never points nowhere.
+                'questions_page_built': self.show_questions,
                 # The "Surnames" link in the header: only when a page exists.
                 'show_surnames': bool(self._surname_groups()),
             }
@@ -13005,16 +14045,26 @@ class _SiteBuilder:
         self._copy_assets()
         for sid in sorted(self.source_pages):
             self.build_source_page(sid)
+        if self._recordings_without_ffmpeg:
+            self.messages.append(
+                f'NOTE: {self._recordings_without_ffmpeg} recording(s) were left off the '
+                'shareable site because ffmpeg is not installed. Install ffmpeg (it comes '
+                'with ffprobe), then run fha site again.')
         for pid in sorted(self.person_pages):
             self.build_person_page(pid)
         for lid in sorted(self.place_pages):
             self.build_place_page(lid)
         self.build_graves_page()
+        self.build_map_page()
         self.build_discoveries_page()
         if self.show_whats_new:
             self.build_whats_new_page()
+        if self.show_questions:
+            self.build_questions_page()
         self.build_surname_pages()
         self.build_index_page()
+        if self._wall_calendar_on():
+            self.build_wall_calendar_page()
         if self.show_search:
             self.build_search_page()
         if self.show_statistics:
@@ -13035,7 +14085,11 @@ class _SiteBuilder:
         return [self.persons_dir, self.sources_dir, self.places_dir,
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
-                self.out_dir / 'graves.html',
+                self.out_dir / 'graves.html', self.out_dir / 'map.html',
+                self.out_dir / 'questions.html',
+                # Listed whether the calendar is on or off, so switching it
+                # off, or a person becoming private, removes the old page.
+                self.out_dir / 'calendar.html',
                 # Listed whether "What's new" is on or off, so switching it off
                 # removes the old page.
                 self.out_dir / 'whats-new.html',

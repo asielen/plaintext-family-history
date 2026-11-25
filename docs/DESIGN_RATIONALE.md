@@ -30,7 +30,10 @@ Contents:
 20. The tree fades a weak line, from the tie outward
 21. Importing a newer download of the same tree
 22. Surname pages: feminine forms join only when the masculine form is there
-23. A family in the tree data is its parent pair
+23. A recording plays on the shared site only on an explicit yes
+24. The family map draws its own outline
+25. A journey stop sits at the middle of its date
+26. A family in the tree data is its parent pair
 
 ---
 
@@ -486,6 +489,18 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
 
+## 23. A recording plays on the shared site only on an explicit yes
+
+**The rule.** A recording plays on the shared site only when the owner wrote `rights: recording_ok: true` on its source, everyone heard on it is listed in `speakers:` and has died, and nobody else the source names is living, unknown or private. Anything else shows "a recording, kept in the archive", with no file name. The site plays a copy ffmpeg makes with every tag dropped, never the original.
+
+**Why.** A name on a page can be left out; a voice on a tape cannot. An hour-long interview with a grandfather names his living children and grandchildren, their towns and their troubles, and no tool can hear which minutes are safe. So the deceased-speaker test is not enough by itself: the owner has listened, and says so per source. A file name such as `margaret-1998.m4a` names the person interviewed, so a recording held back is not named either. A phone writes the place and the device into a recording, as a camera does into a photo, so only a stripped copy leaves.
+
+**Rejected.**
+
+- **Playing every recording whose speakers have died.** It would publish what they said about the living.
+- **Cutting the living out of a recording.** No tool can find every mention by ear, and a cut tape misleads.
+- **Copying the original file.** It carries the phone's location and device tags.
+
 ---
 
 ## 22. Surname pages: feminine forms join only when the masculine form is there
@@ -500,9 +515,36 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
 - **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
 
+## 24. The family map draws its own outline
+
+**The rule.** The family map (`map.html`) draws Natural Earth's 1:110m country outline, shipped with the tools as `vendor/fha-world.js`, with the vendored D3 and topojson-client. It fetches nothing, so it works from a USB stick. Pins go only where a registered place has coordinates, its own or those of the place it is `within:`; a place without them is listed under the map. A claim places only the people it is about.
+
+**Why.** The site's promise is that it opens from a disk with no internet, and a map that goes blank offline breaks it. Street detail is one click away: each pin's panel links to the place page, which has the OpenStreetMap link. A guessed position (the middle of a county, a geocoder's best match) looks exactly like a checked one once it is a dot on a map, so the map shows only what was registered. A child named on his father's census line is not placed there by that line in his own right.
+
+**Rejected.**
+
+- **Map tiles (Leaflet with OpenStreetMap).** They need the network, and OpenStreetMap's tile policy expects a referring web address that a page opened from disk does not send.
+- **The 1:50m outline.** Seven times the size in every copy of the site, for a coastline sharper than pins placed by town need.
+- **US state outlines.** A second data file, left until a family needs it.
+- **The outline as a separate JSON file.** Browsers refuse to fetch a file from disk, so it ships as a script.
+
 ---
 
-## 23. A family in the tree data is its parent pair
+## 25. A journey stop sits at the middle of its date
+
+**The rule.** On the family map, each stop on a person's journey line is ordered and labelled by the middle of its date: "about 1840" is 1840, "186X" is 1865, "1870/1880" is 1875, and an open-ended date ("before 1895") uses the year it names. Records on the same date keep the timeline's order. Only people whose record says `living: false` have a line, and a record the shared site withholds is not a stop.
+
+**Why.** The index widens a vague date both ways, so "about 1840" starts in 1839. Ordered by its first day, a burial "about 1901" would come before a death on 30 December 1900, and the line would visit the cemetery before the deathbed. The middle is where a vague date most likely falls, and ordering and labelling by the same year keeps the numbers along a line from running backwards. A line drawn through a withheld record would show where it was, so the line runs straight past it.
+
+**Rejected.**
+
+- **The timeline's order (first day).** It keeps a vague date's earliest edge, which suits a list read top to bottom and misleads on a route drawn across a map.
+- **Drawing undated records somewhere.** A guessed position in time looks like a known one once it is a line, so they are counted under the map instead.
+- **Lines for living people in the private preview.** A drawn route of everywhere a living relative has lived is the most revealing thing the map could show, and a preview is often read over someone's shoulder.
+
+---
+
+## 26. A family in the tree data is its parent pair
 
 **The rule.** Every parent, child and spouse tie in the tree data names the family it belongs to: `fam:` and the parents' ids, sorted. A child's birth parents are one family. A step or adoptive parent joins the parent they married. A spouse tie names the couple, children or not. On the shared site a co-parent the site does not show is left out of the key.
 

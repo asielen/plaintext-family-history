@@ -200,6 +200,8 @@ Build always-current summary pages from your records.
   fha views draft-queue <p-id>     Accepted facts not yet written into the bio
   fha views places                 One note per place, for Obsidian
                                    (only with links: obsidian in fha.yaml)
+  fha views canvas [p-id]          An Obsidian canvas per direct-line family
+                                   (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
   fha views register <p-id>        A printable book-style register of a person's descendants
@@ -309,6 +311,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | Argument | What it does |
 |---|---|
 | `--dry-run` | Show what would be written, removed and re-pointed, without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views canvas`
+
+Write an Obsidian canvas per direct-line family (links: obsidian only).
+
+```text
+With links: obsidian in fha.yaml, write one Obsidian canvas per direct-line
+couple folder into notes/obsidian/canvas/: the couple in the middle, their
+parents above, their children below, each card the person's own note.
+Give a p-id for one canvas centred on that person and their spouses.
+A canvas is rebuilt each run (a card you moved is put back) and holds no
+data, so deleting one loses nothing. A file there that this tool did not
+write is never touched. With links: id nothing is written.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `[p-id]` | Make one canvas for this person and their family. |
+| `--dry-run` | Show what would be written or removed, without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha views brackets`
@@ -635,6 +658,9 @@ What happened in the family this month, or on this day?
   fha calendar --include-suggested
                                Count suggested claims too, each marked
   fha calendar --json          The same answer as machine-readable JSON
+  fha calendar --birthdays     Living relatives' birthdays in the next 30 days
+                               (private: for you only, never in a shared copy)
+  fha calendar --birthdays --days 60
   fha calendar --format html   A printable wall calendar for this year
   fha calendar --format html --year 2027
                                The same, for another year
@@ -649,6 +675,8 @@ living relatives, so keep it to yourself.
 | `[WHEN ...]` | A month or a day (default: this month) |
 | `--week` | The week starting on the day given (default: today) |
 | `--include-suggested` | Count suggested claims as well as accepted ones; each line resting only on suggested claims is marked |
+| `--birthdays` | Living relatives' coming birthdays (private; for you only) |
+| `--days` `N` | With --birthdays: how many days ahead (1 to 366, default 30) |
 | `--json` | Machine-readable JSON output |
 | `--format` `{text,html}` | text (default), or html for a printable twelve-month wall calendar under generated/views/ |
 | `--year` `YYYY` | With --format html: the year to print (default: this year) |
