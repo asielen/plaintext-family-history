@@ -21,6 +21,10 @@
     <a href="{{ root_prefix }}/index.html">Home</a>
     <a href="{{ root_prefix }}/index.html#people">People</a>
     <a href="{{ root_prefix }}/index.html#places">Places</a>
+    {#- The family map (map.html), built only when a place has a pin. #}
+    {%- if has_map %}
+    <a href="{{ root_prefix }}/map.html">Map</a>
+    {%- endif %}
     <a href="{{ root_prefix }}/index.html#sources">Sources</a>
     {%- if show_surnames %}
     <a href="{{ root_prefix }}/surnames/index.html">Surnames</a>
