@@ -276,6 +276,49 @@ class TimelineTagTests(_ViewsHtmlBase):
         self.assertIn('[low confidence]', text)
 
 
+class TimelinePlaceHistoryViewTests(_ViewsHtmlBase):
+    """The timeline view says, on one line marked `place history`, when a
+    place the person lived at changed government during their stay."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / 'places').mkdir()
+        (self.root / 'places' / 'places.yaml').write_text(
+            '- id: L-cccccccccc\n  name: Fairview\n'
+            '  hierarchy: Fairview, Breton Co., Kansas, USA\n'
+            '  history:\n'
+            '    - period: "1858/1861"\n'
+            '      hierarchy: Fairview, Kansas Territory\n', encoding='utf-8')
+        claims = ''.join(
+            f'- value: "Cur Hartley lived in Fairview {y}"\n  id: C-{n}{n}{n}{n}{n}{n}{n}{n}{n}{n}\n'
+            f'  type: residence\n  persons: [{PID}]\n  date: {y}\n  place: L-cccccccccc\n'
+            '  status: accepted\n  reviewed: 2026-01-01\n  confidence: medium\n'
+            '  information: primary\n  evidence: direct\n  notes: x.\n'
+            for n, y in ((4, 1856), (5, 1875)))
+        src = self.root / 'sources' / 'census' / f'test-census_{SID}.md'
+        src.write_text(src.read_text(encoding='utf-8').replace('```\n', claims + '```\n', 1),
+                       encoding='utf-8')
+        self._reindex()
+
+    def test_one_place_history_line_between_the_visits(self):
+        res = views.run_timeline(self.root, person_id=PID)
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        lines = [ln for ln in text.splitlines() if 'place history:' in ln]
+        self.assertEqual(len(lines), 2, text)
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', lines[0])
+        self.assertIn('From 1862, Fairview was in Breton Co., Kansas, USA.', lines[1])
+        # A period written to the year prints the year, not a made-up day.
+        self.assertIn('1858 - place history:', lines[0])
+        self.assertNotIn('1858-01-01', text)
+        self.assertLess(text.index('lived in Fairview 1856'), text.index('place history:'))
+        self.assertLess(text.rindex('place history:'), text.index('lived in Fairview 1875'))
+
+    def test_html_twin_carries_the_same_lines(self):
+        res = views.run_timeline(self.root, person_id=PID, fmt='html')
+        text = Path(res.changed[0]).read_text(encoding='utf-8')
+        self.assertIn('place history: From 1858, Fairview was in Kansas Territory.', text)
+
+
 class HtmlFormatMatrixTests(_ViewsHtmlBase):
     def test_html_lands_under_generated_views_with_marker_before_doctype(self):
         for runner, kind in self._runners():
@@ -734,3 +777,119 @@ class TreeHtmlRefusalTests(_ViewsHtmlBase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+FATHER = 'P-ffffffffff'
+
+_FAMILY_CLAIMS = f"""- value: "Cur Hartley born 1871"
+  id: C-b000000001
+  type: birth
+  persons: [{PID}]
+  date: 1871
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: medium
+  notes: x.
+- value: "Cur Hartley worked as a clerk"
+  id: C-b000000002
+  type: occupation
+  persons: [{PID}]
+  date: 1893
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: medium
+  notes: x.
+- value: "Caleb Hartley died"
+  id: C-b000000003
+  type: death
+  persons: [{FATHER}]
+  roles: {{deceased: {FATHER}}}
+  date: 1877
+  place_text: Easton
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: medium
+  notes: x.
+- value: "Cur is Caleb's child"
+  id: C-b000000004
+  type: relationship
+  persons: [{PID}, {FATHER}]
+  roles: {{child: [{PID}], parent: [{FATHER}]}}
+  status: accepted
+  reviewed: 2026-01-01
+  confidence: medium
+  notes: x.
+- value: "Stub Hartley died, maybe"
+  id: C-b000000005
+  type: death
+  persons: [{STUB}]
+  roles: {{deceased: {STUB}}}
+  date: 1880
+  status: suggested
+  notes: x.
+- value: "Cur is Stub's sibling, maybe"
+  id: C-b000000006
+  type: relationship
+  persons: [{PID}, {STUB}]
+  roles: {{child: [{PID}], parent: [{STUB}]}}
+  status: suggested
+  notes: Never reviewed, so it stays out of another person's timeline.
+"""
+
+
+class TimelineFamilyRowsViewTests(_ViewsHtmlBase):
+    """The timeline file Claude reads before drafting a biography lists the
+    family events and ages too, so a draft can say "her father died when she
+    was six" with the right source. Mirrors the site's family rows
+    (`_lib.family_life_events`), in a private view that shows living people."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        (self.root / 'sources' / 'census' / f'test-census_{SID}.md').write_text(
+            f'---\nid: {SID}\ntitle: Family record\nsource_type: census\n---\n\n'
+            f'## Claims\n```yaml\n{_FAMILY_CLAIMS}```\n', encoding='utf-8')
+        (self.root / 'people' / 'stubs' / f'hartley__caleb_{FATHER}.md').write_text(
+            f'---\nid: {FATHER}\nname: Caleb Hartley\nsex: M\nliving: true\n'
+            f'tier: stub\n---\n\n# Caleb Hartley\n', encoding='utf-8')
+        self._reindex()
+
+    def _timeline(self, fmt: str = 'md') -> str:
+        res = views.run_timeline(self.root, person_id=PID, fmt=fmt)
+        return Path(res.changed[0]).read_text(encoding='utf-8')
+
+    def test_md_timeline_lists_the_fathers_death_with_the_age(self):
+        text = self._timeline()
+        line = next(ln for ln in text.splitlines() if '- family: father' in ln)
+        self.assertIn(f'1877 - family: father [[{FATHER.lower()}|Caleb Hartley]] died', line)
+        self.assertIn(' @ Easton ', line)
+        self.assertIn('[[s-1111111111]]', line)
+        self.assertIn('(Cur aged 5 or 6)', line)
+
+    def test_html_twin_carries_the_same_line(self):
+        html_text = self._timeline('html')
+        self.assertIn('family: father', html_text)
+        self.assertIn('Caleb Hartley', html_text)
+        self.assertIn('(Cur aged 5 or 6)', html_text)
+
+    def test_a_living_parent_still_appears_in_the_private_view(self):
+        self.assertIn('family: father', self._timeline())
+
+    def test_a_never_reviewed_relative_claim_does_not_appear(self):
+        text = self._timeline()
+        self.assertNotIn('1880 - family', text)
+        self.assertNotIn('family: parent', text)
+
+    def test_own_lines_carry_the_age_but_the_birth_does_not(self):
+        text = self._timeline()
+        birth = next(ln for ln in text.splitlines() if 'Cur Hartley born 1871' in ln)
+        clerk = next(ln for ln in text.splitlines() if 'worked as a clerk' in ln)
+        self.assertNotIn('(aged', birth)
+        self.assertIn('(aged 21 or 22)', clerk)
+        # The age ends the line, ahead of any tag.
+        self.assertLess(clerk.index('[[s-'), clerk.index('(aged'))
+
+    def test_family_line_sorts_between_own_lines_and_twice_is_identical(self):
+        text = self._timeline()
+        self.assertLess(text.index('Cur Hartley born 1871'), text.index('family: father'))
+        self.assertLess(text.index('family: father'), text.index('worked as a clerk'))
+        self.assertEqual(self._timeline(), text)

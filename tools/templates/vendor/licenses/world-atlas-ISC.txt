@@ -1,0 +1,27 @@
+world-atlas 2.0.2, https://github.com/topojson/world-atlas (tag v2.0.2)
+From the npm package, countries-110m.json, sha256 2516c915867c7baf18ddec727aec46c315541a07cfb3d79a6559b05d5e94eee8
+Shipped as vendor/fha-world.js, sha256 94f23c905e51a19753ec6b8f6e2349ec25092d9c0de70a5100ebed98440d6b34
+fha-world.js is that JSON file, unchanged apart from its final newline, set as
+window.FHA_WORLD after a comment saying where it came from, so a page opened
+from disk can load it with a <script> tag.
+
+The map data is Natural Earth 4.1.0 (Admin 0 countries, 1:110m),
+https://www.naturalearthdata.com. Natural Earth states: "All versions of
+Natural Earth raster + vector map data found on this website are in the
+public domain." (https://www.naturalearthdata.com/about/terms-of-use/)
+
+world-atlas, the TopoJSON conversion:
+
+Copyright 2013-2019 Michael Bostock
+
+Permission to use, copy, modify, and/or distribute this software for any purpose
+with or without fee is hereby granted, provided that the above copyright notice
+and this permission notice appear in all copies.
+
+THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH
+REGARD TO THIS SOFTWARE INCLUDING ALL IMPLIED WARRANTIES OF MERCHANTABILITY AND
+FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
+INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS
+OF USE, DATA OR PROFITS, WHETHER IN AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER
+TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE OF
+THIS SOFTWARE.

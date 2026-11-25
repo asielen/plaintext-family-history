@@ -103,6 +103,9 @@ of `fha process`/`fha stubs` (and a per-file inbox path would be wrong for a
 #    _plan_update: turn a mapped plan into "only what changed"
 #    _reimport_question_block: the questions.md entry a changed statement gets
 #
+#  Dates that cannot all be true (plan only)
+#    _plan_plausibility: the file's own statements through `_lib`'s date rules
+#
 #  Rendering
 #    _person_stub_text / _person_filename
 #    _render_source_record / _render_claim / _render_audit_csv
@@ -190,6 +193,11 @@ from _lib import (
     sqlite_readonly_uri,
     through_survivors,
     yaml_inline,
+    # Dates that cannot all be true: lint's own rules, read off the plan.
+    family_problems,
+    one_person_problems,
+    plausibility_input_from_claims,
+    plausibility_message,
 )
 
 import yaml
@@ -1120,6 +1128,10 @@ class ImportPlan:
     placed: list[tuple[str, str, str, str]] = field(default_factory=list)
     known_names: dict[str, str] = field(default_factory=dict)    # their records' names, by id
     known_stems: dict[str, str] = field(default_factory=dict)    # file stems of records on file (Obsidian links)
+    # "Margaret Cole is recorded as born 1871, but her mother Ann Cole died
+    # 1869": dates in the file that cannot all be true, one plain sentence
+    # each (TOOLING §3's W163-W170 rules, read off the file's own statements).
+    plausibility: list[str] = field(default_factory=list)
 
 
 # ── Mapping ───────────────────────────────────────────────────────────────────
@@ -1724,6 +1736,7 @@ class _OldFact:
     # is not planned as a second claim.
     now_key: tuple | None = None
     raw_date: str = ''             # the filed copy's unread date wording
+    disputed: bool = False         # he marked the claim disputed (still live)
 
 
 @dataclass(eq=False)
@@ -1805,6 +1818,9 @@ class _Fact:
     named_text: str = ''
     # Parents of a tie he rejected or deleted, left out of the planned tie.
     turned_down: frozenset[str] = frozenset()
+    # Repeats what the archive says only in claims he marked disputed: he has
+    # already questioned it, so the plan does not list it as a date conflict.
+    doubted: bool = False
 
 
 @dataclass(eq=False)
@@ -2313,7 +2329,7 @@ def _old_fact(claim: dict, alias_map, labels: dict[str, list[str]],
     return _OldFact(
         kind=kind, key=key, text=text, date=str(claim.get('date') or '').strip(),
         place=str(claim.get('place_text') or '').strip(),
-        live=status not in _SETTLED_STATUSES,
+        live=status not in _SETTLED_STATUSES, disputed=status == 'disputed',
         cid=normalize_id(str(claim.get('id') or '')), people=people, value=value,
         parents=parents, orig_parents=orig_parents, joined=source is not None,
         orig_key=orig_key, now_key=now_key,
@@ -2891,6 +2907,8 @@ def _plan_update(plan: ImportPlan, incoming: list[_Incoming], lineage: list[_Pri
             parents_now[fact.key] = parents_now.get(fact.key, frozenset()) | fact.parents
     for fact in facts:
         _judge(fact, olds.get(fact.key, []), parents_now.get(fact.key, frozenset()))
+        live = [o for o in olds.get(fact.key, []) if o.live]
+        fact.doubted = fact.outcome == 'same' and bool(live) and all(o.disputed for o in live)
         if fact.turned_down and fact.outcome != 'decided':
             # The tie is planned with only the parents he has not turned down.
             claim = fact.claim
@@ -3777,7 +3795,68 @@ def build_plan(archive_root: Path, fha_config: dict, ged_path: Path, *,
     plan.photo_catalog = _match_photo_links(archive_root, fha_config, plan.photo_links,
                                             ged_path.parent)
     plan.unread_lines, plan.unread_top = _count_unread(records, consumed)
+    plan.plausibility = _plan_plausibility(plan, incoming)
     return plan
+
+
+# ── Dates that cannot all be true (plan only) ─────────────────────────────────
+
+def _plan_plausibility(plan: ImportPlan, incoming: list[_Incoming]) -> list[str]:
+    """"Margaret Cole is recorded as born 1871 (line 14), but her mother Ann
+    Cole died 1869 (line 7)": the dates in this file that cannot all be true,
+    so he knows before he imports what his review will turn up. Nothing in the
+    import changes because of them; the claims go in as they are.
+
+    The rules are `fha lint`'s own (`_lib.one_person_problems` and
+    `_lib.family_problems`, TOOLING §3 W163-W170), run on the file's
+    statements, which are all `suggested`: lint reads accepted claims only, so
+    it names these once he has accepted them. A newer download is judged as a
+    whole tree (every statement of a matched or new person, not only those to
+    be added), so a new child is read against the death the file gives a
+    mother already in the archive. W173 is not run: the import decides
+    `living:` itself.
+
+    The plan's person ids include `new:@I11@` placeholders that are not ids at
+    all, so every person is read through a stand-in id and named back by the
+    file's name and record number; a claim is pointed at by its line in the
+    file."""
+    if plan.mode == 'update':
+        # A statement he already rejected, replaced, deleted or disputed is
+        # not his to settle again here (lint skips disputed claims too).
+        claims = [fact.claim for fact in plan.facts
+                  if fact.outcome != 'decided' and not fact.doubted]
+        sex_of = {person.xref: person.sex for person in incoming}
+        people = {m.pid: (m.person.label, xref, sex_of.get(xref, ''))
+                  for xref, m in plan.matches.items() if m.person.state == 'present'}
+    else:
+        claims, people = plan.claims, {}
+    for stub in plan.stubs:
+        people[stub.pid] = (stub.name or '(no name)', stub.xref, stub.sex)
+
+    stand_in: dict[str, str] = {}
+
+    def stand(pid: str) -> str:
+        return stand_in.setdefault(pid, f'P-{len(stand_in) + 1:010d}')
+
+    records = []
+    anchors: dict[str, str] = {}
+    for claim in claims:
+        roles = {role: ([stand(p) for p in who] if isinstance(who, list) else stand(who))
+                 for role, who in (claim.roles or {}).items()}
+        records.append({
+            'id': claim.cid, 'type': claim.claim_type, 'status': 'suggested',
+            'persons': [stand(p) for p in claim.persons], 'roles': roles or None,
+            'date': claim.date, 'subtype': claim.subtype})
+        anchors[normalize_id(claim.cid)] = claim.anchor
+    persons = {stand(pid): {'sex': sex} for pid, (_name, _xref, sex) in people.items()}
+    names = {normalize_id(stand(pid)): f'{name} ({xref})'
+             for pid, (name, xref, _sex) in people.items()}
+
+    data = plausibility_input_from_claims(records, persons, {}, statuses=('suggested',))
+    return [plausibility_message(problem,
+                                 lambda p: names.get(p, 'someone in the file'),
+                                 lambda c: anchors.get(normalize_id(c), 'the file'))
+            for problem in one_person_problems(data) + family_problems(data)]
 
 
 # ── Rendering ─────────────────────────────────────────────────────────────────
@@ -4095,6 +4174,19 @@ def _file_note_lines(plan: ImportPlan, capped: bool) -> list[str]:
     dates typed loosely, lines joined or cleaned, and tags not read."""
     cap = _PLAN_DETAIL_CAP if capped else sys.maxsize
     lines: list[str] = []
+    if plan.plausibility:
+        # Shown before he imports, so review holds no surprise; nothing in
+        # the import changes because of it.
+        lines.append('')
+        lines.append(f'  Dates that cannot all be true ({len(plan.plausibility):,}): '
+                     "these people's records in this file disagree with each other, "
+                     'often because the wrong person is linked. They are imported as '
+                     'they are, to check when you review them; once accepted, fha lint '
+                     'keeps pointing at any that are still there.')
+        lines.extend(f'    {p}' for p in plan.plausibility[:cap])
+        if len(plan.plausibility) > cap:
+            lines.append(f'    ... and {len(plan.plausibility) - cap:,} more '
+                         '(use --plan-out FILE to write the full plan)')
     if plan.loose_dates:
         # Three examples on screen; --plan-out (capped=False) lists every one.
         reads = plan.loose_date_reads if not capped else plan.loose_date_reads[:3]
@@ -4826,6 +4918,7 @@ def run_import(archive_root: Path, fha_config: dict, ged_path: Path, *,
             'claims': len(plan.claims),
             'cited_sources': len(plan.cited_sources),
             'duplicates': list(plan.duplicates),
+            'plausibility': list(plan.plausibility),
             'warnings': list(plan.warnings),
             'source_id': plan.sid,
             'audit_csv': str(plan.archive_root / _AUDIT_DIR / f'{plan.ged_hash[:12]}.csv'),

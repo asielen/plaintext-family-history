@@ -38,6 +38,7 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
    | A page to print for a relative without a computer (a couple, their parents, their children, each fact numbered to its record) | `fha views family-sheet <p-id> [--spouse <p-id>] --format html` (open it in a browser and print or Save as PDF) |
    | A printed list of someone's ancestors, numbered the way genealogy books do it (1 the person, 2 the father, 3 the mother…) | `fha views ahnentafel <p-id> [--generations N] --format html` |
    | A printed list of everyone descended from one ancestor, numbered 1, 1.1, 1.1.1 so a reader can find any branch | `fha views descendants <p-id> [--generations N] --format html` |
+   | A printed book-style list of everyone descended from one ancestor, as genealogy journals print it (each family a short paragraph, children with Roman numerals) | `fha views register <p-id> [--generations N] --format html` |
    | Browsing on a computer, a USB stick, or "the family website" | `fha site --standalone` |
    | Publishing one ancestor's profile publicly | `fha wikitree <p-id> [--out FILE]` |
    | A safety copy, nothing leaves home | `fha backup` |
@@ -48,6 +49,7 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
    - **family-sheet**: "This is a printed page for a relative. Anyone still living, or not yet recorded as having died, is never named: a living parent or spouse shows as 'Living Person' and a living child is only counted ('and 2 living children'). Anything private stays out and isn't counted. Every date and place has a little number that points to the record it came from, listed at the bottom. It's made only for someone who has passed away." If the person is living the tool declines; say why in plain words, and offer `fha person set-living <p-id> false` only if they have in fact died.
    - **ahnentafel**: "Same rules as the family sheet: anyone still living, or not yet recorded as having died, shows only as 'A living relative (not named)', and anything private stays out, along with everyone above it. Unlike the family sheet, it can be made for someone living, yourself included: number 1 is then that label and the ancestors who have died follow. It follows birth parents only."
    - **descendants**: "Same rules as the family sheet: anyone still living, or not yet recorded as having died, is only counted under their parent ('and 2 living children'), and nobody below them is listed or counted at all. Anything private stays out. It's made only for someone who has passed away."
+   - **register**: "Same rules as the family sheet: it can only be made for someone who has died. Living descendants are only counted under their parent ('and 2 living children (not named)'), never named, and their own children are left out. Anything private stays out."
    - **gedcom**: "Living people go in as 'Living', with their dates and details withheld, so the shape of the tree survives but their information stays home. Anything private or DNA-backed is left out entirely, and there's no switch to include it."
    - **gedcom --basic** (a DNA site): "A DNA site only needs names, birth, death and marriage dates and places, and who is whose parent, to compare your matches. This version sends just that: none of your source titles, notes or the archive's own reference numbers go with it, and living people are still 'Living'." Use `--basic` for every DNA-site upload, without waiting to be asked: a full export carries every source's title, and a title such as an interview or a cousin's letter can name a living relative the export otherwise hides.
    - **site --standalone**: "This build leaves out private and living people's details, so it's safe to hand to family or carry on a drive. (There's also a `--linked` preview that shows everything, but that one is only for checking your own work on this computer. Don't share it.)"
@@ -61,6 +63,25 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
 4. **Confirm, then run the real command, and echo it first.** State the exact command you're about to run (§8 execution hygiene) before running it, so nothing happens the human didn't see coming. Unless the human names their own destination, steer file output to `out/` by convention. `packet` already defaults there; suggest an `out/…` path for `gedcom --out` and `wikitree --out` too (e.g. `out/family.ged`, `out/thomas-hartley.wiki`) rather than leaving a file at the archive root or in stdout history.
 
 5. **Report where it landed and what's in and out.** Give the exact path (`out/packet_…zip`, `out/family.ged`, `generated/site/`, the backup zip's folder), a one-breath contents summary (how many people, sources, photos), and restate the exclusions as reassurance rather than as an error: *"Your uncle is in there as 'Living' with no dates. That's the privacy setting doing its job."* End with one concrete next step: how to hand it over (email, USB, upload), or "Want a backup too, since a copy is about to leave the house?"
+
+6. **After a `fha site` build for the family, offer the invite note once.** Ask: "Would you like a short note to send with it, asking for photos and stories?" On a yes, fill in and show this note, and let him edit it before he sends it himself (this skill sends nothing):
+
+   ```
+   Hello everyone,
+
+   I've been putting our family history together, and I've made a small website of it that you can open on your own computer: [how you're sharing it: the attached folder, a USB stick, or a link].
+
+   If you have old photos, letters or papers, or you remember a story about someone in it, I would love to hear about it. Each person's page has a "Tell me what you know" link that starts an email to me with that person's name already filled in. You can also just reply to this email.
+
+   If someone in the family tells a good story, record it on your phone and send me the recording. Their voice is worth keeping too.
+
+   Nothing you send changes anything by itself. I look at everything first.
+
+   Thank you,
+   [your name]
+   ```
+
+   The middle paragraph about the link is kept only when `site: contact_email` is set in `fha.yaml`; otherwise it reads "You can reply to this email with anything you know." When it is not set, mention once that `contact_email` would add the link to every page (`docs/CUSTOMIZING_SITE.md`). A reply that comes back is saved into `inbox/` as a `.notes.md` file and goes to `process-source`.
 
 ## Guardrails
 
@@ -79,4 +100,5 @@ Any of: "export this for my aunt", "share the tree with my family", "send grandm
 - A dry-run or stdout preview precedes every write; the final report names the artifact's path and restates what was excluded and why.
 - No override flag (`--include-restricted`, `--include-dna`, `--include-living`, `--linked`) appears in any transcript unless the human asked for it by name or clear intent; `restricted: by-request` is never overridden.
 - An "import my tree" request is met with a hand-off, not an export.
+- The invite note is offered once after a site build for the family, and never sent by the skill.
 - `fha lint --root example-archive` still exits 1 with only the documented baseline warnings (`_STANDARD.md` §9). Export artifacts land under `out/` or `generated/`, outside the record trees, so nothing new is flagged.

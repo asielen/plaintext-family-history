@@ -4373,6 +4373,68 @@ class FileOpeningLinkTargetTests(_Base):
         self.assertTrue(checked, 'the standalone build emitted no file links to check')
 
 
+class TimelinePlaceHistoryTests(_Base):
+    """A reader sees, in grey, when the place a person lived at changed
+    government while they lived there: background, not a family record."""
+
+    def _seed(self, years, *, history=None):
+        self._seed_person('p-aaaaaaaaaa', 'Jane Doe')
+        self._seed_source('s-1111111111', 'Census')
+        self.conn.execute(
+            'INSERT INTO places(id, name, hierarchy) VALUES (?,?,?)',
+            ('l-1111111111', 'Fairview', 'Fairview, Breton Co., Kansas, USA'))
+        for dmin, dmax, hier in history or (
+                ('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),
+                ('1861-01-29', '1889-12-31', 'Fairview, Breton Co., Kansas, USA'),
+                ('1890-01-01', '1899-12-31', 'Fairview, Kansas')):
+            self.conn.execute(
+                'INSERT INTO place_history(place_id, period_edtf, date_min, date_max, hierarchy) '
+                'VALUES (?,?,?,?,?)', ('l-1111111111', f'{dmin}/{dmax}', dmin, dmax, hier))
+        for n, y in enumerate(years):
+            cid = f'c-{n + 1:010d}'
+            self.conn.execute(
+                'INSERT INTO claims(id, source_id, type, value, status, place_id, date_edtf, '
+                'date_min, date_max) VALUES (?,?,?,?,?,?,?,?,?)',
+                (cid, 's-1111111111', 'residence', f'Lived in Fairview {y}', 'accepted',
+                 'l-1111111111', str(y), f'{y}-01-01', f'{y}-12-31'))
+            self.conn.execute(
+                'INSERT INTO claim_persons(claim_id, person_id, position) VALUES (?,?,0)',
+                (cid, 'p-aaaaaaaaaa'))
+
+    def test_changes_inside_the_stay_appear_labelled(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertIn('class="tl-context"', page)
+        self.assertEqual(page.count('class="tl-context"'), 2)   # 1858 and 1861, not 1890
+        self.assertIn('From 1858, Fairview was in Kansas Territory.', page.replace(
+            '<a href="../places/l-1111111111.html">Fairview</a>', 'Fairview'))
+        self.assertIn('From 1861, ', page)
+        self.assertIn('Place history', page)
+        self.assertIn('background about the places', page)
+
+    def test_a_single_visit_after_the_changes_gets_none(self):
+        self._seed((1871,), history=(('1858-01-01', '1861-01-28', 'Fairview, Kansas Territory'),))
+        self._run(linked=True)
+        self.assertNotIn('tl-context', self._read('persons/p-aaaaaaaaaa.html'))
+
+    def test_context_rows_sit_between_own_rows(self):
+        self._seed((1856, 1875))
+        self._run(linked=True)
+        page = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertLess(page.index('1856 - residence'), page.index('From 1858'))
+        self.assertLess(page.index('From 1861'), page.index('1875 - residence'))
+
+    def test_shared_site_shows_them_too_and_stays_the_same_build_to_build(self):
+        # Place history names no people, so a shared page may carry it.
+        self._seed((1856, 1875))
+        self._run()
+        first = self._read('persons/p-aaaaaaaaaa.html')
+        self.assertEqual(first.count('class="tl-context"'), 2)
+        self._run()
+        self.assertEqual(first, self._read('persons/p-aaaaaaaaaa.html'))
+
+
 class PlacePageTests(_Base):
     def _seed_place(self, lid, name, *, hierarchy=None, within=None, lat=None, lon=None,
                     alt_names=(), history=()):
@@ -5014,7 +5076,8 @@ _XML_NAMESPACE_LITERALS = re.compile(
     r'(["\'])http://www\.w3\.org/(?:2000/svg|1999/xhtml|1999/xlink|2000/xmlns/'
     r'|XML/1998/namespace)\1')
 # A vendored library's licence banner on its first line names its home page.
-_BANNER_HOME_PAGE = re.compile(r'\A// https://d3js\.org v[0-9.]+ ')
+_BANNER_HOME_PAGE = re.compile(
+    r'\A// https://(?:d3js\.org|github\.com/topojson/topojson-client) v[0-9.]+ ')
 
 
 def _remote_urls_in_vendor_js(text):
@@ -5094,7 +5157,7 @@ class TreeTests(_Base):
         self.assertIn('fha-tree-data', gus_page)
         self.assertIn('vendor/fha-tree.js', gus_page)
         self.assertIn('vendor/tree-adapter.js', gus_page)
-        self.assertIn('See descendants of Grandparent Gus', gus_page)
+        self.assertIn("See Grandparent Gus's family", gus_page)
         home = self._read('index.html')
         self.assertNotIn('fha-tree-data', home)
         self.assertNotIn('vendor/tree-adapter.js', home)   # only the descendant pipeline needs the adapter
@@ -5107,7 +5170,7 @@ class TreeTests(_Base):
         self._run(linked=True)
         carl_page = self._read('persons/p-aaaaaaaaaa.html')
         self.assertNotIn('fha-tree-data', carl_page)
-        self.assertNotIn('See descendants of', carl_page)
+        self.assertNotIn('fha-tree-explorer', carl_page)
 
     def test_person_ancestor_pedigree(self):
         self._seed_rels_chain()
@@ -5502,6 +5565,944 @@ class TreeJsonConfidenceTests(_Base):
         names = {n['name'] for n in self._tree('p-cccccccccc')['nodes']}
         self.assertEqual(names, {'Grandparent Gus', 'Parent Pat', 'Child Carl',
                                  'Minor Mina', 'Uncle Umberto'})
+
+
+    def test_a_private_card_and_its_ties_say_nothing_about_their_evidence(self):
+        # Every parent tie is a family story. Umberto, dead, is Gus's son on
+        # his own story and fades. Carl, dead, sits under Private Pat: the
+        # only ties linking him to Gus name Pat, a living woman, so they
+        # count as unrated and he is not faded. A faded Carl would tell a
+        # visitor that Pat's own parentage rests on a family story.
+        self._seed_living_family()
+        self.conn.execute("UPDATE claims SET confidence = 'low' WHERE id LIKE 'c-p%'")
+        self._run(linked=False)
+        tree = self._tree('p-cccccccccc')
+        nodes = {n['p_id']: n for n in tree['nodes']}
+        self.assertIsNone(nodes['private-1']['line_confidence'])
+        for e in tree['edges']:
+            if 'private-1' in (e['from'], e['to']):
+                self.assertIsNone(e['confidence'], e)
+        self.assertIsNone(nodes['p-aaaaaaaaaa']['line_confidence'])
+        self.assertEqual(nodes['p-dddddddddd']['line_confidence'], 'low')
+
+    def test_nobody_behind_a_private_card_fades_for_her_ties(self):
+        # Only Pat's tie to her father Gus is a family story. On dead Carl's
+        # page, Gus sits behind Private Pat on the family chart and the fan;
+        # on Gus's page, Carl sits under her in the explorer. Fading either,
+        # or printing the key, would say Pat's parentage is weak.
+        self._seed_living_family()
+        self.conn.execute(
+            "UPDATE claims SET confidence = 'low' WHERE id IN (SELECT claim_id FROM relationships"
+            " WHERE person_id = 'p-bbbbbbbbbb' AND other_id = 'p-cccccccccc')")
+        self._run(linked=False)
+        for pid in ('p-aaaaaaaaaa', 'p-cccccccccc'):
+            page = (self.out_dir / 'persons' / f'{pid}.html').read_text(encoding='utf-8')
+            self.assertIn('Private', page, pid)
+            for word in ('ped-weak', 'fan-seg-weak', 'low-confidence record'):
+                self.assertNotIn(word, page, f'{word!r} on {pid}')
+
+    def test_the_explorer_page_says_what_fading_means_only_when_someone_is_faded(self):
+        self._gus_and_pat()
+        self._parent('p-bbbbbbbbbb', 'p-cccccccccc', 'low')
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertIn('low-confidence record', page)
+        self.conn.execute("UPDATE claims SET confidence = 'high'")
+        self._run(linked=False)
+        page = (self.out_dir / 'persons' / 'p-cccccccccc.html').read_text(encoding='utf-8')
+        self.assertNotIn('low-confidence record', page)
+
+
+class TreeFamilyKeyTests(_Base):
+    """The explorer's data says which couple each child belongs to, so the
+    explorer can keep the children of a man's first and second marriages
+    under the right wife (chart plan 08-8). The shared site names only
+    couples a visitor may see: a withheld partner is never in a key, a
+    sealed marriage never pairs anyone, and a living adult is a Private
+    placeholder there as everywhere else in the tree."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _case(self, name):
+        self.tearDown()
+        self.setUp()
+        return chart_cases.build_case(self.conn, self.archive_root, name)
+
+    def _tree(self, seed):
+        path = self.out_dir / 'data' / f'tree_{seed}_descendants.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    @staticmethod
+    def _keys(tree):
+        return {(e['type'], e['from'], e['to']): e.get('family') for e in tree['edges']}
+
+    def test_the_site_and_fha_views_name_the_same_families_in_every_case(self):
+        # One contract, two writers: the explorer and `fha views tree` must
+        # agree on every family, or a chart drawn from one disagrees with
+        # the other.
+        import views
+        for name in chart_cases.CASE_NAMES:
+            with self.subTest(case=name):
+                case = self._case(name)
+                self._run(linked=True)
+                path = self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json"
+                if not path.exists():
+                    continue   # no children: no explorer
+                tree = json.loads(path.read_text(encoding='utf-8'))
+                nodes, edges = views._traverse_tree(self.conn, case['seed'], 'descendants', None)
+                want = json.loads(views._tree_to_json(case['seed'], 'descendants', nodes, edges))
+                self.assertEqual(self._keys(tree), self._keys(want))
+                self.assertEqual({n['p_id'] for n in tree['nodes']},
+                                 {n['p_id'] for n in want['nodes']})
+                # Every field a chart draws by agrees too, not just the keys.
+                fields = ('subtype', 'genetic', 'kind', 'confidence')
+                self.assertEqual(
+                    {(e['type'], e['from'], e['to']): tuple(e[f] for f in fields)
+                     for e in tree['edges']},
+                    {(e['type'], e['from'], e['to']): tuple(e[f] for f in fields)
+                     for e in want['edges']})
+                self.assertEqual({n['p_id']: n['line_confidence'] for n in tree['nodes']},
+                                 {n['p_id']: n['line_confidence'] for n in want['nodes']})
+
+    def test_each_child_hangs_under_its_mothers_family_c1(self):
+        case = self._case('C1')
+        p = case['people']
+        self._run(linked=False)
+        keys = self._keys(self._tree(case['seed']))
+        for kid, mother in (('kid1a', 'wife1'), ('kid2', 'wife2'), ('kid4', 'wife4')):
+            fam = 'fam:' + '+'.join(sorted((p['husband'], p[mother])))
+            self.assertEqual(keys[('child', p['husband'], p[kid])], fam)
+            self.assertEqual(keys[('child', p[mother], p[kid])], fam)
+        # The two childless marriages are families too.
+        for wife in ('wife3', 'wife5'):
+            self.assertEqual(keys[('spouse', p['husband'], p[wife])],
+                             'fam:' + '+'.join(sorted((p['husband'], p[wife]))))
+        spouse = next(e for e in self._tree(case['seed'])['edges']
+                      if e['type'] == 'spouse' and e['to'] == p['wife2'])
+        self.assertEqual(spouse['dates']['start'], '1920-01-01')
+
+    def test_a_private_couple_is_two_placeholders_with_no_wedding_date_c13(self):
+        case = self._case('C13')
+        p = case['people']
+        self._run(linked=False)
+        tree = self._tree(case['seed'])
+        keys = self._keys(tree)
+        self.assertEqual(keys[('child', 'private-1', p['grandchild'])], 'fam:private-1+private-2')
+        self.assertEqual(keys[('child', 'private-2', p['grandchild'])], 'fam:private-1+private-2')
+        couple = [e for e in tree['edges'] if e['type'] == 'spouse']
+        # Her husband is a one-hop leaf, so the tie is listed from her side.
+        self.assertEqual([(e['from'], e['to']) for e in couple], [('private-1', 'private-2')])
+        for edge in couple:
+            # Nothing about a living couple's marriage: no date, no record id,
+            # no word on how well the record proves it.
+            self.assertEqual(edge['dates'], {'start': None, 'end': None})
+            self.assertIsNone(edge['claim_id'])
+            self.assertIsNone(edge['confidence'])
+            self.assertEqual(edge['family'], 'fam:private-1+private-2')
+        text = (self.out_dir / 'data' / f"tree_{case['seed']}_descendants.json").read_text(
+            encoding='utf-8')
+        self.assertNotIn('1985', text)
+        for pid in case['living']:
+            self.assertNotIn(pid, text)
+
+    def test_no_tie_to_a_private_card_names_a_record_or_a_rating_c13(self):
+        # Owner decision (08-8 review): a living person's ties stay home. A
+        # parent or child tie to a Private card still draws, but carries no
+        # record id, date or confidence, so a relative cannot look up the
+        # record or learn how well it proves a living person's parentage.
+        case = self._case('C13')
+        self._run(linked=False)
+        tree = self._tree(case['seed'])
+        touching = [e for e in tree['edges']
+                    if e['from'].startswith('private-') or e['to'].startswith('private-')]
+        self.assertEqual({e['type'] for e in touching}, {'child', 'spouse'})
+        for edge in touching:
+            with self.subTest(edge=(edge['type'], edge['from'], edge['to'])):
+                self.assertIsNone(edge['claim_id'])
+                self.assertIsNone(edge['confidence'])
+                self.assertEqual(edge['dates'], {'start': None, 'end': None})
+                self.assertTrue(edge['family'])
+        nodes = {n['p_id']: n for n in tree['nodes']}
+        self.assertIsNone(nodes['private-1']['line_confidence'])
+        self.assertIsNone(nodes['private-2']['line_confidence'])
+        # Their ties count as unrated (#518): their dead daughter's descent
+        # runs only through them, so it carries no rating either, and her
+        # card can never hint at how well her living parents are proven.
+        self.assertIsNone(nodes[case['people']['grandchild']]['line_confidence'])
+        claims = {r[0] for r in self.conn.execute(
+            "SELECT DISTINCT claim_id FROM relationships WHERE claim_id IS NOT NULL "
+            "AND (person_id IN ({0}) OR other_id IN ({0}))".format(
+                ','.join('?' * len(case['living']))), list(case['living']) * 2)}
+        self.assertTrue(claims)
+        for path in self.out_dir.rglob('*'):
+            if path.suffix in ('.html', '.json', '.js'):
+                text = path.read_text(encoding='utf-8')
+                for cid in claims:
+                    self.assertNotIn(cid, text, f'{cid} leaked into {path.name}')
+        # The linked preview still names them.
+        self._run(linked=True)
+        self.assertTrue(any(e['claim_id'] for e in self._tree(case['seed'])['edges']
+                            if e['type'] == 'child'))
+
+    def _weak_grandson(self):
+        # Thomas Hartley's son Samuel is on a birth record (high). Samuel's
+        # son Gus rests on one family story (low). Gus's mother Ann, Samuel's
+        # wife, is on Gus's birth record (high).
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        people = {'tom': 'p-aaaaaaaaaa', 'sam': 'p-bbbbbbbbbb',
+                  'ann': 'p-cccccccccc', 'gus': 'p-dddddddddd'}
+        for key, name, sex in (('tom', 'Thomas Hartley', 'M'), ('sam', 'Samuel Hartley', 'M'),
+                               ('ann', 'Ann Hartley', 'F'), ('gus', 'Gus Hartley', 'M')):
+            self._seed_person(people[key], name, surname='Hartley', sex=sex)
+        for n, (child, parent, conf) in enumerate((('sam', 'tom', 'high'),
+                                                   ('gus', 'sam', 'low'),
+                                                   ('gus', 'ann', 'high')), 1):
+            cid = f'c-p{n:09d}'
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                             confidence=conf, persons=(people[child], people[parent]),
+                             roles={people[child]: 'child', people[parent]: 'parent'})
+            self._seed_rel(people[child], 'parent', people[parent], claim_id=cid)
+            self._seed_rel(people[parent], 'child', people[child], claim_id=cid)
+        self._seed_claim('c-m000000001', 's-1111111111', 'marriage', 'married',
+                         confidence='high', persons=(people['sam'], people['ann']))
+        for a, b in (('sam', 'ann'), ('ann', 'sam')):
+            self._seed_rel(people[a], 'spouse', people[b], claim_id='c-m000000001')
+        return people
+
+    def test_a_wife_does_not_lift_her_husbands_weak_line_to_his_son(self):
+        # Thomas's tree must still show that Gus's descent from Thomas rests
+        # on a family story: the strong tie Gus has to his mother, who
+        # married in, is not a route from Thomas.
+        import views
+        p = self._weak_grandson()
+        for linked in (False, True):
+            with self.subTest(linked=linked):
+                self._run(linked=linked)
+                lines = {n['p_id']: n['line_confidence']
+                         for n in self._tree(p['tom'])['nodes']}
+                self.assertEqual(lines[p['gus']], 'low')
+                self.assertEqual(lines[p['sam']], 'high')
+                # The wife takes the line of the man she married.
+                self.assertEqual(lines[p['ann']], 'high')
+        nodes, edges = views._traverse_tree(self.conn, p['tom'], 'descendants', None)
+        want = json.loads(views._tree_to_json(p['tom'], 'descendants', nodes, edges))
+        self.assertEqual({n['p_id']: n['line_confidence'] for n in want['nodes']}, lines)
+
+    def test_a_marriage_on_a_stepmother_record_is_a_plain_marriage(self):
+        # One record says Ann is Gus's stepmother and Samuel's wife. Its
+        # "step" describes her tie to Gus, not the marriage, so the site and
+        # `fha views tree` both give the marriage no subtype.
+        import views
+        p = self._weak_grandson()
+        self._seed_claim('c-s000000001', 's-1111111111', 'relationship', 'stepmother',
+                         confidence='high', subtype='step',
+                         persons=(p['gus'], p['ann'], p['sam']),
+                         roles={p['gus']: 'child', p['ann']: 'parent', p['sam']: 'spouse'})
+        self.conn.execute("DELETE FROM relationships WHERE rel = 'spouse'")
+        self._seed_rel(p['gus'], 'parent', p['ann'], claim_id='c-s000000001')
+        self._seed_rel(p['ann'], 'child', p['gus'], claim_id='c-s000000001')
+        for a, b in (('sam', 'ann'), ('ann', 'sam')):
+            self._seed_rel(p[a], 'spouse', p[b], claim_id='c-s000000001')
+        self._run(linked=True)
+        spouse = [(e['from'], e['to'], e['subtype'], e['genetic'], e['kind'])
+                  for e in self._tree(p['tom'])['edges'] if e['type'] == 'spouse']
+        nodes, edges = views._traverse_tree(self.conn, p['tom'], 'descendants', None)
+        want = [(e['from'], e['to'], e['subtype'], e['genetic'], e['kind'])
+                for e in json.loads(views._tree_to_json(p['tom'], 'descendants', nodes, edges))['edges']
+                if e['type'] == 'spouse']
+        self.assertEqual(spouse, [(p['sam'], p['ann'], None, True, 'genetic')])
+        self.assertEqual(spouse, want)
+
+    def _tom_and_partners(self):
+        # Tom (dead) has a son by Ann and a daughter by Bea; both women are
+        # restricted. Cleo, dead, married Tom in a sealed record and is
+        # stepmother to the daughter on the shared record.
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._seed_source('s-2222222222', 'Sealed record', source_type='vital', restricted=1)
+        # The records naming the two withheld women are their own.
+        self._seed_source('s-3333333333', 'Birth record', source_type='vital')
+        self._seed_person('p-aaaaaaaaaa', 'Tom Webb', surname='Webb')
+        self._seed_person('p-bbbbbbbbbb', 'Ann Secret', surname='Secret', sex='F',
+                          frontmatter_extra='restricted: true')
+        self._seed_person('p-cccccccccc', 'Bea Hidden', surname='Hidden', sex='F',
+                          frontmatter_extra='restricted: true')
+        self._seed_person('p-dddddddddd', 'Sam Webb', surname='Webb')
+        self._seed_person('p-eeeeeeeeee', 'Sue Webb', surname='Webb', sex='F')
+        self._seed_person('p-ffffffffff', 'Cleo Ford', surname='Ford', sex='F')
+        n = 0
+        for child, parent, subtype in (('p-dddddddddd', 'p-aaaaaaaaaa', None),
+                                       ('p-dddddddddd', 'p-bbbbbbbbbb', None),
+                                       ('p-eeeeeeeeee', 'p-aaaaaaaaaa', None),
+                                       ('p-eeeeeeeeee', 'p-cccccccccc', None),
+                                       ('p-eeeeeeeeee', 'p-ffffffffff', 'step')):
+            n += 1
+            cid = f'c-p{n:09d}'
+            source = ('s-3333333333' if parent in ('p-bbbbbbbbbb', 'p-cccccccccc')
+                      else 's-1111111111')
+            self._seed_claim(cid, source, 'relationship', 'parent of',
+                             confidence='high', subtype=subtype, persons=(child, parent),
+                             roles={child: 'child', parent: 'parent'})
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+            self._seed_rel(parent, 'child', child, claim_id=cid)
+        self._seed_claim('c-m000000001', 's-2222222222', 'marriage', 'married',
+                         confidence='high', date_edtf='1950',
+                         persons=('p-aaaaaaaaaa', 'p-ffffffffff'))
+        for a, b in (('p-aaaaaaaaaa', 'p-ffffffffff'), ('p-ffffffffff', 'p-aaaaaaaaaa')):
+            self.conn.execute(
+                'INSERT INTO relationships(person_id, rel, other_id, claim_id, date_start) '
+                "VALUES (?,'spouse',?,'c-m000000001','1950-01-01')", (a, b))
+
+    def test_a_withheld_partner_is_never_in_a_key(self):
+        self._tom_and_partners()
+        self._run(linked=False)
+        tree = self._tree('p-aaaaaaaaaa')
+        keys = self._keys(tree)
+        # Both children sit in Tom's own family: nothing hints that each
+        # had a different mother the site does not show.
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-dddddddddd')], 'fam:p-aaaaaaaaaa')
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-eeeeeeeeee')], 'fam:p-aaaaaaaaaa')
+        # The sealed marriage neither shows nor pairs the stepmother with Tom.
+        self.assertEqual(keys[('child', 'p-ffffffffff', 'p-eeeeeeeeee')], 'fam:p-ffffffffff')
+        self.assertNotIn('spouse', {e['type'] for e in tree['edges']})
+        for path in self.out_dir.rglob('*'):
+            if path.suffix in ('.html', '.json'):
+                text = path.read_text(encoding='utf-8')
+                for word in ('p-bbbbbbbbbb', 'p-cccccccccc', 'c-m000000001'):
+                    self.assertNotIn(word, text, f'{word} leaked into {path.name}')
+
+    def test_the_preview_names_every_partner(self):
+        self._tom_and_partners()
+        self._run(linked=True)
+        keys = self._keys(self._tree('p-aaaaaaaaaa'))
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-dddddddddd')],
+                         'fam:p-aaaaaaaaaa+p-bbbbbbbbbb')
+        self.assertEqual(keys[('child', 'p-aaaaaaaaaa', 'p-eeeeeeeeee')],
+                         'fam:p-aaaaaaaaaa+p-cccccccccc')
+        self.assertEqual(keys[('child', 'p-ffffffffff', 'p-eeeeeeeeee')],
+                         'fam:p-aaaaaaaaaa+p-ffffffffff')
+
+    def test_a_wife_but_no_children_still_gives_no_explorer(self):
+        # The descendant explorer is for people with descendants; a recorded
+        # marriage alone must not add an empty one to the page.
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._seed_person('p-aaaaaaaaaa', 'Tom Webb', surname='Webb')
+        self._seed_person('p-bbbbbbbbbb', 'Nell Webb', surname='Webb', sex='F')
+        self._seed_claim('c-m000000001', 's-1111111111', 'marriage', 'married',
+                         confidence='high', persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        for a, b in (('p-aaaaaaaaaa', 'p-bbbbbbbbbb'), ('p-bbbbbbbbbb', 'p-aaaaaaaaaa')):
+            self._seed_rel(a, 'spouse', b, claim_id='c-m000000001')
+        self._run(linked=True)
+        self.assertFalse((self.out_dir / 'data' / 'tree_p-aaaaaaaaaa_descendants.json').exists())
+        self.assertNotIn('fha-tree-data', self._read('persons/p-aaaaaaaaaa.html'))
+
+
+_NODE = shutil.which('node')
+_TREE_HARNESS = ROOT / 'tests' / 'js' / 'tree_harness.js'
+
+
+class TreeExplorerCouplesTests(_Base):
+    """The family explorer draws a husband and wife side by side, a later
+    marriage beside the first with a dotted link, each child under their own
+    mother and father, and a person met twice as a small "already in the
+    tree" card (chart plan 08-9). The explorer runs in the reader's browser,
+    so most of these run the real scripts under node with
+    tests/js/tree_harness.js; CI has no node and skips them, so run them by
+    hand before changing tree-adapter.js or fha-tree.js. The tests that read
+    the built page run everywhere."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def _case(self, name, *, linked=True):
+        self.tearDown()
+        self.setUp()
+        case = chart_cases.build_case(self.conn, self.archive_root, name)
+        self._run(linked=linked)
+        return case
+
+    def _tree(self, seed):
+        path = self.out_dir / 'data' / f'tree_{seed}_descendants.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def _explore(self, tree, options=None):
+        import subprocess
+        path = self.archive_root / 'tree-under-test.json'
+        path.write_text(json.dumps(tree), encoding='utf-8')
+        args = [_NODE, str(_TREE_HARNESS), str(path)]
+        if options is not None:
+            args.append(json.dumps(options))
+        r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=60)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        return json.loads(r.stdout)
+
+    @staticmethod
+    def _units(model):
+        out = []
+
+        def walk(u, parent):
+            out.append((u, parent))
+            for c in u['children']:
+                walk(c, u)
+        walk(model, None)
+        return out
+
+    @staticmethod
+    def _ids(unit):
+        return [c['id'] for c in unit['people']]
+
+    @staticmethod
+    def _first_ids(units):
+        return [u['people'][0]['id'] for u in units]
+
+    def _unit_headed_by(self, model, pid):
+        for u, _ in self._units(model):
+            if (u['kind'] in ('family', 'single') and u['main'] >= 0
+                    and u['people'][u['main']]['id'] == pid):
+                return u
+        self.fail(f'no unit headed by {pid}')
+
+    # - couples (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_five_wives_are_one_couple_then_four_later_marriages_in_order_c1(self):
+        case = self._case('C1')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        # Ezra heads five families, so a hidden holder carries them side by side.
+        self.assertEqual(model['kind'], 'root')
+        fams = model['children']
+        self.assertEqual([u['kind'] for u in fams], ['family'] * 5)
+        self.assertEqual([u['extra'] for u in fams], [False, True, True, True, True])
+        # First marriage: Ezra on the right of his first wife, so each later
+        # wife lines up beside him.
+        self.assertEqual(self._ids(fams[0]), [p['wife1'], p['husband']])
+        self.assertEqual([self._ids(u) for u in fams[1:]],
+                         [[p[f'wife{n}']] for n in (2, 3, 4, 5)])
+        kids = [sorted(self._first_ids(u['children'])) for u in fams]
+        self.assertEqual(kids, [sorted([p['kid1a'], p['kid1b']]), [p['kid2']], [],
+                                [p['kid4']], []])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_half_siblings_hang_under_their_own_mothers_c15(self):
+        case = self._case('C15')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        first, later = model['children']
+        self.assertEqual(self._ids(first), [p['wife1'], p['father']])
+        self.assertEqual(self._ids(later), [p['wife2']])
+        self.assertEqual(self._first_ids(first['children']), [p['half1']])
+        self.assertEqual(self._first_ids(later['children']), [p['half2']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_cousin_marriage_draws_each_person_once_c16(self):
+        case = self._case('C16')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        units = [u for u, _ in self._units(model)]
+        # Yvonne is drawn beside Xavier; met again as her mother's daughter
+        # she is a small card pointing back at that couple, and their son
+        # Kit is drawn once, not under both of his grandmothers.
+        xav = self._unit_headed_by(model, p['x'])
+        self.assertEqual(self._ids(xav), [p['x'], p['y']])
+        repeats = [u for u in units if u['kind'] == 'repeat']
+        self.assertEqual([(u['people'][0]['id'], u['seeKey']) for u in repeats],
+                         [(p['y'], xav['key'])])
+        shown = [c['id'] for u in units if u['kind'] != 'repeat' for c in u['people']]
+        self.assertEqual(len(shown), len(set(shown)), shown)
+        self.assertEqual(shown.count(p['k']), 1)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_person_who_is_their_own_ancestor_ends_in_a_repeat_card_c12(self):
+        case = self._case('C12')
+        model = self._explore(self._tree(case['seed']))['model']
+        repeats = [u for u, _ in self._units(model) if u['kind'] == 'repeat']
+        self.assertEqual([u['people'][0]['id'] for u in repeats], [case['seed']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_step_children_show_under_their_own_parents_and_again_as_a_repeat_c2(self):
+        case = self._case('C2')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        first, joint = model['children']
+        self.assertEqual(self._ids(first), [p['late_wife'], p['widower']])
+        self.assertEqual(self._ids(joint), [p['widow']])
+        self.assertEqual(sorted(self._first_ids(first['children'])),
+                         sorted(p[f'webb{n}'] for n in (1, 2, 3)))
+        under_joint = {c['people'][0]['id']: c for c in joint['children']}
+        for n in (1, 2):
+            self.assertEqual(under_joint[p[f'joint{n}']]['edgeKind'], 'genetic')
+            # Ada's daughters by Walter are Tom's step-daughters: a long-dash tie.
+            self.assertEqual(under_joint[p[f'cole{n}']]['edgeKind'], 'legal')
+        for n in (1, 2, 3):
+            again = under_joint[p[f'webb{n}']]
+            self.assertEqual((again['kind'], again['edgeKind']), ('repeat', 'legal'))
+            self.assertEqual(again['seeKey'], p[f'webb{n}'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_children_go_by_birth_then_the_undated_ones_c8(self):
+        case = self._case('C8')
+        p = case['people']
+        model = self._explore(self._tree(case['seed']))['model']
+        dated = [p[f'kid{n:02d}'] for n in range(9, 0, -1)]     # born 1851, 1853, ...
+        undated = sorted(p[f'kid{n:02d}'] for n in (10, 11, 12))
+        self.assertEqual(self._first_ids(model['children']), dated + undated)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_old_tree_data_without_families_still_draws_one_person_per_card(self):
+        case = self._case('C1')
+        p = case['people']
+        tree = self._tree(case['seed'])
+        tree.pop('version', None)
+        for e in tree['edges']:
+            e.pop('family', None)
+        model = self._explore(tree)['model']
+        self.assertEqual((model['kind'], self._ids(model)), ('single', [p['husband']]))
+        self.assertEqual(sorted(self._first_ids(model['children'])),
+                         sorted(p[k] for k in ('kid1a', 'kid1b', 'kid2', 'kid4')))
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_no_two_families_overlap_and_children_sit_below(self):
+        for name in ('C1', 'C2', 'C8', 'C16'):
+            with self.subTest(case=name):
+                case = self._case(name)
+                out = self._explore(self._tree(case['seed']))
+                self.assertEqual(out['layout'], out['layout2'])   # same data, same picture
+                rows = {}
+                for u in out['layout']:
+                    rows.setdefault(u['y'], []).append(u)
+                for row in rows.values():
+                    row.sort(key=lambda u: u['x'])
+                    for a, b in zip(row, row[1:]):
+                        gap = (b['x'] - b['w'] / 2) - (a['x'] + a['w'] / 2)
+                        self.assertGreaterEqual(gap, 20, (a['key'], b['key']))
+                at = {u['key']: u for u in out['layout']}
+                for u, parent in self._units(out['model']):
+                    if parent is None or parent['kind'] == 'root':
+                        continue
+                    self.assertGreater(at[u['key']]['y'], at[parent['key']]['y'], u['key'])
+
+    # - drawing (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_couples_are_joined_and_a_later_marriage_is_dotted(self):
+        case = self._case('C15')
+        classes = [d['cls'] for d in self._explore(self._tree(case['seed']))['drawn']]
+        self.assertEqual(classes.count('fha-tree-couple'), 1)
+        self.assertEqual(classes.count('fha-tree-couple fha-tree-couple-later'), 1)
+        self.assertEqual(classes.count('fha-tree-edge'), 2)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_repeat_card_is_a_button_that_jumps_to_the_first(self):
+        case = self._case('C16')
+        drawn = self._explore(self._tree(case['seed']))['drawn']
+        self.assertEqual(len([d for d in drawn if 'fha-node-repeat' in d['cls']]), 1)
+        self.assertEqual(len([d for d in drawn if d['cls'] == 'fha-repeat-link']), 1)
+        self.assertIn('Already in the tree', ''.join(d['text'] for d in drawn))
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_weak_line_keeps_its_faded_card_and_thin_tie(self):
+        # The fields chart plan 08-7 draws by: a child linked only through a
+        # family story is faded, and the tie to them is thin.
+        tree = {'version': 2, 'seed': 'p-aaaaaaaaaa', 'mode': 'descendants',
+                'nodes': [{'p_id': 'p-aaaaaaaaaa', 'name': 'Tom Webb', 'vitals': {},
+                           'url': None, 'line_confidence': None},
+                          {'p_id': 'p-bbbbbbbbbb', 'name': 'Sam Webb', 'vitals': {},
+                           'url': None, 'line_confidence': 'low'}],
+                'edges': [{'type': 'child', 'from': 'p-aaaaaaaaaa', 'to': 'p-bbbbbbbbbb',
+                           'kind': 'genetic', 'confidence': 'low',
+                           'family': 'fam:p-aaaaaaaaaa'}]}
+        out = self._explore(tree)
+        sam = out['model']['children'][0]
+        self.assertTrue(sam['people'][0]['weak'])
+        self.assertTrue(sam['edgeWeak'])
+        classes = [d['cls'] for d in out['drawn']]
+        self.assertIn('fha-tree-edge fha-tree-edge-weak', classes)
+        self.assertIn('fha-node fha-node-nolink fha-node-weak', classes)
+
+    # - privacy (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_private_couple_is_two_blank_cards_c13(self):
+        case = self._case('C13', linked=False)
+        out = self._explore(self._tree(case['seed']), {'initialDepth': 4})
+        couple = [u for u, _ in self._units(out['model'])
+                  if any(c['private'] for c in u['people'])]
+        self.assertEqual(len(couple), 1)
+        for c in couple[0]['people']:
+            self.assertEqual((c['name'], c['dates'], c['url'], c['photo'], c['weak']),
+                             ('Private', '', None, None, False))
+        private = [d for d in out['drawn'] if 'fha-node-private' in d['cls']]
+        self.assertEqual(len(private), 2)
+        for d in private:
+            # No line colour and no tooltip on a Private card.
+            self.assertNotIn('data-branch', d['attrs'])
+            self.assertNotIn('title', d['attrs'])
+        text = ''.join(d['text'] + json.dumps(d['attrs']) for d in out['drawn'])
+        for pid in case['living']:
+            self.assertNotIn(pid, text)
+        for word in ('Jessamy', 'Fenwick', '1985'):
+            self.assertNotIn(word, text)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_withheld_partner_leaves_no_card_and_no_gap(self):
+        TreeFamilyKeyTests._tom_and_partners(self)
+        self._run(linked=False)
+        out = self._explore(self._tree('p-aaaaaaaaaa'))
+        model = out['model']
+        # Tom's children by the two withheld women hang straight from his
+        # own card: no partner card, no blank, no "unknown" placeholder.
+        self.assertEqual((model['kind'], self._ids(model)), ('family', ['p-aaaaaaaaaa']))
+        self.assertEqual(sorted(self._first_ids(model['children'])),
+                         ['p-dddddddddd', 'p-eeeeeeeeee'])
+        cards = {c['id'] for u, _ in self._units(model) for c in u['people']}
+        self.assertEqual(cards, {'p-aaaaaaaaaa', 'p-dddddddddd', 'p-eeeeeeeeee'})
+        self.assertEqual(len([d for d in out['drawn'] if d['tag'] == 'foreignObject']), 3)
+        self.assertNotIn('fha-tree-couple', [d['cls'] for d in out['drawn']])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_our_vendor_scripts_parse(self):
+        import subprocess
+        for name in ('fha-tree.js', 'tree-adapter.js', 'd3-flextree.js'):
+            r = subprocess.run([_NODE, '--check', str(ROOT / 'tools' / 'templates' / 'vendor' / name)],
+                               capture_output=True, text=True)
+            self.assertEqual(r.returncode, 0, name + ': ' + r.stderr)
+
+    # - the built page (runs everywhere) -
+
+    def test_the_tree_page_loads_d3_before_the_tree(self):
+        case = self._case('C15')
+        page = self._read(f"persons/{case['seed']}.html")
+        order = [page.index(f'vendor/{name}"') for name in
+                 ('d3.min.js', 'd3-flextree.js', 'fha-tree.js', 'tree-adapter.js')]
+        self.assertEqual(order, sorted(order))
+        self.assertEqual(page.count('vendor/d3.min.js"'), 1)
+
+    def test_a_page_with_no_explorer_loads_no_d3(self):
+        case = self._case('C6')
+        self.assertNotIn('d3.min.js', self._read(f"persons/{case['seed']}.html"))
+
+
+class WeakLineDrawingTests(unittest.TestCase):
+    """Chart plan 08-7: a person linked to the subject only through a low
+    tie is drawn faded, with a broken outline so it does not rest on colour
+    alone, and a plain sentence says what that means."""
+
+    @staticmethod
+    def _labels(weak=(2, 4, 5), private_weak=()):
+        # Chart case C18: the father tie is a family story, so his whole
+        # side (slots 2, 4, 5) rests on it; the mother's side (3, 6, 7) does not.
+        labels = {1: {'name': 'Subject', 'url': None}}
+        for num in range(2, 8):
+            labels[num] = {'name': f'Person {num}', 'url': None,
+                           'line_confidence': 'low' if num in weak else 'high'}
+        for num in private_weak:
+            labels[num] = {'private': True, 'line_confidence': 'low'}
+        return labels
+
+    def test_fan_fades_the_weak_side_only(self):
+        svg = site._render_fan_svg(self._labels(), 3)
+        self.assertEqual(svg.count('fan-seg-weak'), 3)
+        for num in (2, 4, 5):
+            self.assertIn(f'Person {num}. {site._WEAK_LINE_TITLE}', svg)
+        for num in (3, 6, 7):
+            self.assertNotIn(f'Person {num}. ', svg)
+
+    def test_fan_never_fades_a_private_card(self):
+        svg = site._render_fan_svg(self._labels(weak=(), private_weak=(3,)), 3)
+        self.assertNotIn('fan-seg-weak', svg)
+
+    def test_pedigree_fades_the_weak_side_only(self):
+        svg = site._render_pedigree_svg(self._labels())
+        self.assertEqual(svg.count('ped-weak'), 3)
+        self.assertIn(site._WEAK_LINE_TITLE, svg)
+
+    def test_pedigree_never_fades_a_private_card(self):
+        svg = site._render_pedigree_svg(self._labels(weak=(), private_weak=(3,)))
+        self.assertNotIn('ped-weak', svg)
+
+    def test_the_key_is_wanted_only_when_a_drawn_cell_is_faded(self):
+        self.assertTrue(site._any_weak_slot(self._labels(), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=()), 3))
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(4,)), 1), 'slot 4 is not drawn')
+        self.assertFalse(site._any_weak_slot(self._labels(weak=(), private_weak=(3,)), 3))
+
+    def test_the_key_sentence_explains_the_fade_in_plain_words(self):
+        self.assertIn('Faded', site._WEAK_LINE_KEY)
+        self.assertIn('low-confidence record', site._WEAK_LINE_KEY)
+        self.assertIn('dashed', site._WEAK_LINE_KEY)
+
+    def test_the_explorer_files_draw_faded_cards_and_thin_broken_edges(self):
+        vendor = ROOT / 'tools' / 'templates' / 'vendor'
+        js = (vendor / 'fha-tree.js').read_text(encoding='utf-8')
+        adapter = (vendor / 'tree-adapter.js').read_text(encoding='utf-8')
+        self.assertIn('fha-node-weak', js)
+        self.assertIn('fha-tree-edge-weak', js)
+        self.assertIn("line_confidence === 'low'", adapter)
+        self.assertIn("confidence === 'low'", adapter)
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        for rule in ('.fha-tree-edge-weak', '.fha-node.fha-node-weak',
+                     '.ped-node.ped-weak', '.fan-seg-weak'):
+            self.assertIn(rule, css)
+        self.assertRegex(css, r'\.fha-tree-edge-weak[^}]*stroke-dasharray')
+        self.assertRegex(css, r'\.fan-seg-weak[^}]*stroke-dasharray')
+
+
+class TreeHourglassTests(_Base):
+    """On a person's page the family explorer shows where they came from
+    above them and who came after them below, in one picture (chart plan
+    08-10): his grandparents' couple sits over his parents' couple, which
+    sits over him and his wife, with their children below. The node tests
+    run the real scripts (tests/js/tree_harness.js); CI has no node and
+    skips them."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    _case = TreeExplorerCouplesTests._case
+    _explore = TreeExplorerCouplesTests._explore
+    _units = staticmethod(TreeExplorerCouplesTests._units)
+    _ids = staticmethod(TreeExplorerCouplesTests._ids)
+
+    def _tree(self, seed, mode='hourglass'):
+        path = self.out_dir / 'data' / f'tree_{seed}_{mode}.json'
+        return json.loads(path.read_text(encoding='utf-8'))
+
+    def _up(self, model):
+        """Every ancestor unit, with the unit drawn below it (None for the
+        ones directly over the seed)."""
+        out = []
+
+        def walk(u, below):
+            out.append((u, below))
+            for c in u['children']:
+                walk(c, u)
+        for u in model.get('up') or []:
+            walk(u, None)
+        return out
+
+    def _private_line(self):
+        """Wren, dead, with a dead son Kit; her parents are living (Private
+        on the shared site); her mother's father Calvin is dead and shown;
+        Calvin's father Silas is tied to him only by a sealed record, so
+        Silas and his father Abel stay off the shared site."""
+        self.tearDown()
+        self.setUp()
+        c = chart_cases._Case(self.conn, self.archive_root, 'C90')
+        c.person('abel', 'Abel Hartley')
+        c.person('silas', 'Silas Hartley')
+        c.person('calvin', 'Calvin Hartley')
+        c.person('jess', 'Jessamy Hartley', 'F', living=True)
+        c.person('fen', 'Fenwick Ford', living=True)
+        c.person('wren', 'Wren Ford', 'F')
+        c.person('kit', 'Kit Ford')
+        c.parent('silas', 'abel')
+        c.parent('calvin', 'silas')
+        c.parent('jess', 'calvin')
+        c.marry('jess', 'fen', '1985')
+        c.parents('wren', 'jess', 'fen')
+        c.parent('kit', 'wren')
+        sealed_rel = 'sources/vital/src_s-0000000002.md'
+        (self.archive_root / sealed_rel).write_text(
+            '---\nid: s-0000000002\ntitle: Sealed record\nsource_type: vital\n'
+            'restricted: true\ncitation: "A sealed record."\n---\n\n## Claims\n',
+            encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO sources(id, title, source_type, restricted, publication_ok, status, path) '
+            "VALUES ('s-0000000002','Sealed record','vital',1,NULL,'active',?)", (sealed_rel,))
+        sealed = self.conn.execute(
+            "SELECT claim_id FROM relationships WHERE person_id = ? AND rel = 'parent' "
+            "AND other_id = ?", (c.people['calvin'], c.people['silas'])).fetchone()[0]
+        self.conn.execute("UPDATE claims SET source_id = 's-0000000002' WHERE id = ?", (sealed,))
+        (self.archive_root / 'fha.yaml').write_text(
+            f"roots: {{}}\nroot_person: {c.people['wren'].replace('p-', 'P-', 1)}\n",
+            encoding='utf-8')
+        return c.result('wren')
+
+    # - the built page (runs everywhere) -
+
+    def test_the_person_page_opens_his_family_with_both_tree_files(self):
+        case = self._case('C16')
+        p = case['people']
+        page = self._read(f"persons/{p['a']}.html")
+        self.assertIn("See Alan Hartley's family", page)
+        self.assertNotIn('See descendants of', page)
+        self.assertIn('"mode": "hourglass"', page)
+        tree = self._tree(p['a'])
+        ids = {n['p_id'] for n in tree['nodes']}
+        self.assertLessEqual({p['gf'], p['gm'], p['x'], p['k']}, ids)
+        self.assertNotIn(p['b'], ids)   # his sister is not on his hourglass
+        # The descendants file is still written, for anything that reads it.
+        self.assertEqual(self._tree(p['a'], 'descendants')['mode'], 'descendants')
+
+    def test_a_person_with_no_children_gets_no_explorer(self):
+        case = self._case('C16')
+        k = case['people']['k']
+        self.assertFalse((self.out_dir / 'data' / f'tree_{k}_hourglass.json').exists())
+        self.assertNotIn('d3.min.js', self._read(f'persons/{k}.html'))
+
+    def test_the_shared_site_never_names_the_living_or_the_sealed_line(self):
+        case = self._private_line()
+        self._run(linked=False)
+        p = case['people']
+        tree = self._tree(p['wren'])
+        page = self._read(f"persons/{p['wren']}.html")
+        shown = json.dumps(tree) + page
+        for word in ('Jessamy', 'Fenwick', 'Silas', 'Abel', '1985'):
+            self.assertNotIn(word, shown)
+        for who in ('jess', 'fen', 'silas', 'abel'):
+            self.assertNotIn(p[who], shown)
+        ids = [n['p_id'] for n in tree['nodes']]
+        # The walk passes through her living parents to her grandfather.
+        self.assertIn(p['calvin'], ids)
+        self.assertIn(p['kit'], ids)
+        self.assertEqual(sorted(i for i in ids if i.startswith('private-')),
+                         ['private-1', 'private-2'])
+        self.assertEqual(len(ids), 5)
+
+    # - the drawing (node) -
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_his_parents_sit_over_him_and_his_children_below_c16(self):
+        case = self._case('C16')
+        p = case['people']
+        out = self._explore(self._tree(p['a']))
+        model = out['model']
+        self.assertEqual(self._ids(model), [p['a'], p['a_wife']])
+        (parents, below), = [x for x in self._up(model) if x[1] is None]
+        self.assertEqual(self._ids(parents), [p['gf'], p['gm']])
+        self.assertEqual(parents['children'], [])
+        self.assertEqual(out['layout'], out['layout2'])
+        at = {u['key']: u for u in out['layout']}
+        seed, up = at[model['key']], at[parents['key']]
+        self.assertLess(up['y'], seed['y'])
+        # The grandparents' couple is centred over Alan's own card.
+        alan_x = seed['x'] - seed['w'] / 2 + 100
+        self.assertAlmostEqual(up['x'], alan_x)
+        self.assertGreater(at[model['children'][0]['key']]['y'], seed['y'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_no_two_units_overlap_on_either_side_of_him(self):
+        for name, role in (('C16', 'a'), ('C4', 'x'), ('C10', 'man1'), ('C1', 'husband'),
+                           ('C17', 'mother')):
+            with self.subTest(case=name):
+                case = self._case(name)
+                out = self._explore(self._tree(case['people'][role]))
+                rows = {}
+                for u in out['layout']:
+                    rows.setdefault(u['y'], []).append(u)
+                for row in rows.values():
+                    row.sort(key=lambda u: u['x'])
+                    for a, b in zip(row, row[1:]):
+                        gap = (b['x'] - b['w'] / 2) - (a['x'] + a['w'] / 2)
+                        self.assertGreaterEqual(gap, 20, (a['key'], b['key']))
+                at = {u['key']: u for u in out['layout']}
+                for u, below in self._up(out['model']):
+                    if below is not None:
+                        self.assertLess(at[u['key']]['y'], at[below['key']]['y'], u['key'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_shared_grandparents_are_drawn_once_then_pointed_at_c4(self):
+        # Kit's parents are first cousins: Calvin and Edith are his
+        # grandfather's parents and his grandmother's parents too.
+        case = self._case('C4')
+        p = case['people']
+        out = self._explore(self._tree_of_seed_with_children(case), {'initialAncestorDepth': 9})
+        ups = [u for u, _ in self._up(out['model'])]
+        gf = [u for u in ups if u['kind'] == 'family' and self._ids(u) == [p['gf'], p['gm']]]
+        self.assertEqual(len(gf), 1)
+        repeats = [u for u in ups if u['kind'] == 'repeat']
+        self.assertEqual([(u['people'][0]['id'], u['seeKey']) for u in repeats],
+                         [(p['gf'], gf[0]['key'])])
+        self.assertEqual(len([d for d in out['drawn'] if 'fha-node-repeat' in d['cls']]), 1)
+
+    def _tree_of_seed_with_children(self, case):
+        # Kit has no children, so no explorer of his own: give him a son.
+        p = case['people']
+        self.conn.execute(
+            'INSERT INTO persons(id, name, surname, sex, living, tier, status, path) '
+            "VALUES ('p-0000004999','Sam Hartley','Hartley','M','false','curated','active',"
+            "'people/hartley__test_p-0000004999.md')")
+        (self.archive_root / 'people' / 'hartley__test_p-0000004999.md').write_text(
+            '---\nid: p-0000004999\nname: Sam Hartley\n---\n# Sam Hartley\n', encoding='utf-8')
+        self.conn.execute(
+            'INSERT INTO claims(id, source_id, type, value, status, confidence, negated) '
+            "VALUES ('c-0000004999','s-0000000001','relationship','parent','accepted','high',0)")
+        for pid, role in (('p-0000004999', 'child'), (p['k'], 'parent')):
+            self.conn.execute('INSERT INTO claim_persons(claim_id, person_id, position, role) '
+                              "VALUES ('c-0000004999', ?, 0, ?)", (pid, role))
+        self.conn.execute("INSERT INTO relationships(person_id, rel, other_id, claim_id) "
+                          "VALUES ('p-0000004999','parent',?,'c-0000004999')", (p['k'],))
+        self.conn.execute("INSERT INTO relationships(person_id, rel, other_id, claim_id) "
+                          "VALUES (?,'child','p-0000004999','c-0000004999')", (p['k'],))
+        self._run(linked=True)
+        return self._tree(p['k'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_stepfather_stands_beside_the_birth_parents_with_a_long_dash_c17(self):
+        case = self._case('C17')
+        p = case['people']
+        # Kit has no children of his own, so no page explorer: draw his
+        # hourglass from `fha views tree`, the same contract.
+        import views
+        nodes, edges = views._traverse_tree(self.conn, p['child'], 'hourglass', None)
+        tree = json.loads(views._tree_to_json(p['child'], 'hourglass', nodes, edges))
+        model = self._explore(tree)['model']
+        tops = [u for u, below in self._up(model) if below is None]
+        self.assertEqual([self._ids(u) for u in tops], [[p['father'], p['mother']],
+                                                        [p['stepfather']]])
+        self.assertEqual([u['edgeKind'] for u in tops], ['genetic', 'legal'])
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_a_person_who_is_their_own_ancestor_still_draws_c12(self):
+        case = self._case('C12')
+        model = self._explore(self._tree(case['seed']))['model']
+        repeats = [u for u, _ in self._up(model) if u['kind'] == 'repeat']
+        self.assertEqual(len(repeats), 1)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_two_generations_of_ancestors_open_at_first_c10(self):
+        case = self._case('C10')
+        p = case['people']
+        drawn = self._explore(self._tree(p['man1']))['drawn']
+        text = ''.join(d['text'] for d in drawn)
+        for shown in ('Man2', 'Wife2', 'Man3', 'Wife3'):
+            self.assertIn(shown, text)
+        for hidden in ('Man4', 'Wife4'):
+            self.assertNotIn(hidden, text)
+        # Each ancestor couple has a line down to the child they are parents of.
+        edges = [d for d in drawn if d['cls'].startswith('fha-tree-edge')]
+        self.assertEqual(len(edges), 3)   # Man1 to Kit, Man2's couple to Man1, Man3's to Man2
+        labels = [d['attrs'].get('aria-label') for d in drawn if d['cls'] == 'fha-toggle']
+        self.assertIn('Show their parents', labels)
+
+    @unittest.skipUnless(_NODE, 'node is not installed')
+    def test_living_parents_are_blank_cards_above_her_c90(self):
+        case = self._private_line()
+        self._run(linked=False)
+        out = self._explore(self._tree(case['people']['wren']))
+        (parents, _), = [x for x in self._up(out['model']) if x[1] is None]
+        self.assertEqual([c['name'] for c in parents['people']], ['Private', 'Private'])
+        self.assertEqual(len([d for d in out['drawn'] if 'fha-node-private' in d['cls']]), 2)
+        text = ''.join(d['text'] + json.dumps(d['attrs']) for d in out['drawn'])
+        self.assertIn('Calvin Hartley', text)
+        for word in ('Jessamy', 'Fenwick', 'Silas', 'Abel'):
+            self.assertNotIn(word, text)
 
 
 class PedigreeGeometryGuardTests(unittest.TestCase):
@@ -11152,6 +12153,12 @@ def _fan_full_labels(depth, *, dates=None, name=None):
     return labels
 
 
+def _fan_cell_count(svg):
+    """Ancestor cells in a fan SVG: not the hub, not a Private card. A cell may
+    carry a side or repeat class beside `fan-seg`."""
+    return len(re.findall(r'<path class="fan-seg(?: fan-(?:line|seg-repeat)[a-z-]*)*"', svg))
+
+
 def _fan_line_length(d):
     """Length of a straight label path `M x,y L x,y`."""
     m = re.fullmatch(r'M([-0-9.]+),([-0-9.]+) L([-0-9.]+),([-0-9.]+)', d)
@@ -11363,7 +12370,7 @@ class FanChartGeometryTests(unittest.TestCase):
         labels = _fan_full_labels(5)
         labels[32] = {'name': '', 'url': None, 'redacted': True}
         svg = site._render_fan_svg(labels, 5)
-        self.assertEqual(svg.count('class="fan-seg"'), 62)
+        self.assertEqual(_fan_cell_count(svg), 62)
         self.assertEqual(len(_fan_labels(svg)), 61)
         self.assertNotIn('Anc32', svg)
 
@@ -11408,7 +12415,7 @@ class FanChartDepthTests(_Base):
         self._seed_full_tree(6)
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 6 - 2)
         for num in range(32, 64):
             self.assertIn(f'<title>Anc{num} Hartley</title>', fan)
         self.assertNotIn('Anc64 Hartley', fan)
@@ -11448,7 +12455,7 @@ class FanPosterGeometryTests(unittest.TestCase):
         return site._render_fan_svg(_fan_full_labels(depth, **kw), depth, span_deg=span_deg)
 
     def _segs(self, svg):
-        return re.findall(r'<path class="fan-seg" style="[^"]*" d="([^"]+)"/>', svg)
+        return re.findall(r'<path class="fan-seg(?: fan-(?:line|seg-repeat)[a-z-]*)*" style="[^"]*" d="([^"]+)"/>', svg)
 
     def test_a_fan_of_any_other_angle_is_refused(self):
         with self.assertRaises(ValueError):
@@ -11654,21 +12661,21 @@ class FanPosterSettingsTests(_Base):
         self.assertEqual(self._fan_warnings(res), [])
         fan = self._fan()
         self.assertIn('<circle class="fan-seg fan-seg-subject"', fan)
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 7 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 7 - 2)
 
     def test_270_degrees_with_fewer_generations(self):
         self._seed_full_tree(6)
         self._config('  fan_degrees: 270\n  fan_generations: 3\n')
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 4 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 4 - 2)
         self.assertNotIn('<circle', fan)
 
     def test_the_default_is_a_half_fan_of_five_generations(self):
         self._seed_full_tree(6)
         self._run()
         fan = self._fan()
-        self.assertEqual(fan.count('class="fan-seg"'), 2 ** 6 - 2)
+        self.assertEqual(_fan_cell_count(fan), 2 ** 6 - 2)
         self.assertNotIn('<circle', fan)
 
     def test_a_quoted_number_is_read_as_that_number(self):
@@ -11695,7 +12702,7 @@ class FanPosterSettingsTests(_Base):
                 self.assertEqual(len(warned), 1, warned)
                 self.assertIn(key, warned[0])
                 self.assertIn('default', warned[0])
-                self.assertEqual(self._fan().count('class="fan-seg"'), 2 ** 6 - 2)
+                self.assertEqual(_fan_cell_count(self._fan()), 2 ** 6 - 2)
 
 
 class FanPrivateCardTests(_Base):
@@ -11815,6 +12822,178 @@ class FanPrivateCardTests(_Base):
         self.assertIn('Fenwick Ford', self._fan('p-wren000000'))
         self.assertIn('Tobias Webb', self._fan('p-kitt000000'))
         self.assertNotIn('Private</textPath>', self._fan('p-wren000000'))
+
+
+class FanRepeatTests(_Base):
+    """When cousins married, one great-grandfather fills two places in the
+    ancestor fan. A relative should see that at a glance: both places share a
+    colour, a dashed edge and a lettered badge (so colour is never the only
+    clue), and each tooltip names the other place. A switch above the fan
+    lights the father's or the mother's side. Nothing here may reveal a living
+    person: a Private card is never grouped or coloured, and a repeat that is
+    only visible through one is not shown."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._claims = 0
+
+    def _parent(self, child, parent):
+        self._claims += 1
+        cid = f'c-p{self._claims:09d}'
+        self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                         persons=(child, parent), roles={child: 'child', parent: 'parent'})
+        self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    @staticmethod
+    def _pid(key):
+        return f'p-{key:0<10}'
+
+    def _seed_cousins(self, *, mother_sex='F', mum_father_living=False, repeat=True):
+        # Wren's father Dan (slot 2) and mother Mia (slot 3). Zed is Dan's
+        # father's father (slot 8) and Mia's father's father (slot 12).
+        people = {'wren': ('Wren Hartley', 'F'), 'dad0': ('Dan Hartley', 'M'),
+                  'mum0': ('Mia Reed', mother_sex), 'gdad': ('Gus Hartley', 'M'),
+                  'mdad': ('Ned Reed', 'M'), 'zed0': ('Zed Hartley', 'M'),
+                  'zpar': ('Ira Hartley', 'M')}
+        for key, (name, sex) in people.items():
+            kw = {'surname': name.split()[1], 'sex': sex}
+            if key == 'mdad' and mum_father_living:
+                kw['living'] = 'true'
+            self._seed_person(self._pid(key), name, **kw)
+        ties = [('wren', 'dad0'), ('wren', 'mum0'), ('dad0', 'gdad'), ('gdad', 'zed0'),
+                ('mum0', 'mdad'), ('zed0', 'zpar')]
+        if repeat:
+            ties.append(('mdad', 'zed0'))
+        for child, parent in ties:
+            self._parent(self._pid(child), self._pid(parent))
+        if mum_father_living:
+            self._seed_claim('c-born00001', 's-1111111111', 'birth', 'born',
+                             date_edtf='1950-01-01', persons=(self._pid('mdad'),),
+                             roles={self._pid('mdad'): 'child'})
+
+    def _fan(self):
+        page = self._read('persons/p-wren000000.html')
+        return re.search(r'<svg class="fan-chart.*?</svg>', page, re.S).group(0)
+
+    def _cells(self, fan):
+        return re.findall(r'<path class="([^"]*fan-seg[^"]*)" style="([^"]*)"', fan)
+
+    def test_an_ancestor_in_two_places_is_marked_in_both(self):
+        self._seed_cousins()
+        self._run()
+        fan = self._fan()
+        zed = re.findall(r'<title>(Zed Hartley[^<]*)</title>', fan)
+        self.assertEqual(len(zed), 2)
+        self.assertIn('Also appears elsewhere on this chart (badge A)', zed[0])
+        self.assertNotIn('their ancestors', zed[0])
+        self.assertIn('Also appears elsewhere on this chart (badge A); their ancestors are drawn at the first place', zed[1])
+        repeat = [(c, st) for c, st in self._cells(fan) if 'fan-seg-repeat' in c]
+        self.assertEqual(len(repeat), 2)
+        self.assertEqual(repeat[0][1], repeat[1][1], 'the same colour in both places')
+        self.assertEqual(fan.count('class="fan-repeat-mark"'), 2, 'a badge in both places')
+        self.assertEqual(len(re.findall(r'>A</text>', fan)), 2)
+        # His father is drawn once, behind the lower slot.
+        self.assertEqual(fan.count('<title>Ira Hartley'), 1)
+
+    def test_no_repeat_means_no_marks(self):
+        self._seed_cousins(repeat=False)
+        self._run()
+        fan = self._fan()
+        self.assertNotIn('fan-seg-repeat', fan)
+        self.assertNotIn('fan-repeat-mark', fan)
+
+    def test_a_repeat_seen_only_through_a_private_card_is_not_shown(self):
+        # Mia's father is a living adult: a Private card. Zed behind him is
+        # the same Zed as at slot 8, but saying so would tell a relative that
+        # the Private card descends from Zed.
+        self._seed_cousins(mum_father_living=True)
+        self._run()
+        fan = self._fan()
+        self.assertEqual(fan.count('>Private</textPath>'), 1)
+        self.assertNotIn('fan-seg-repeat', fan)
+        self.assertNotIn('Also appears', fan)
+        self.assertNotIn('Ned Reed', fan)
+
+    def test_the_preview_shows_the_repeat_through_everyone(self):
+        self._seed_cousins(mum_father_living=True)
+        self._run(linked=True)
+        self.assertIn('Also appears elsewhere on this chart', self._fan())
+
+    def test_the_switch_lights_a_side_with_no_script(self):
+        self._seed_cousins()
+        self._run()
+        page = self._read('persons/p-wren000000.html')
+        fan = self._fan()
+        self.assertEqual(fan.count('fan-seg fan-line-paternal'), 3, 'slots 2, 4, 8')
+        self.assertEqual(fan.count('fan-seg fan-line-maternal'), 1, 'slot 3 only')
+        radios = re.findall(r'<input type="radio" class="fan-mode"[^>]*>', page)
+        self.assertEqual(len(radios), 3)
+        self.assertIn('checked', radios[0])
+        for r in radios[1:]:
+            self.assertNotIn('checked', r)
+        # The radios sit before .chart-body so `~` reaches the chart.
+        self.assertLess(page.index('id="fan-mode-maternal"'),
+                        page.index('<div class="chart-body"><div class="fan-wrap"'))
+
+    def test_a_parent_placed_by_guesswork_claims_no_side(self):
+        self._seed_cousins(mother_sex='')
+        self._run()
+        fan = self._fan()
+        self.assertNotIn('fan-line-maternal', fan)
+        self.assertIn('fan-line-paternal', fan)
+
+    def test_no_side_known_means_no_switch(self):
+        self._seed_cousins(mother_sex='')
+        self.conn.execute("UPDATE persons SET sex = '' WHERE id = ?", (self._pid('dad0'),))
+        self._run()
+        self.assertNotIn('fan-mode', self._read('persons/p-wren000000.html'))
+
+    def test_a_private_card_is_never_coloured_by_side_or_repeat(self):
+        self._seed_cousins(mum_father_living=True)
+        self._run()
+        cells = self._cells(self._fan())
+        private = [c for c, _ in cells if 'fan-seg-private' in c]
+        self.assertEqual(private, ['fan-seg fan-seg-private'])
+
+    def test_the_line_switch_does_not_dim_a_private_card(self):
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        self.assertRegex(css, r'fan-mode-paternal:checked ~ \.chart-body \.fan-seg'
+                              r'(:not\([^)]*\))*:not\(\.fan-seg-private\)')
+
+    def test_the_switch_stays_off_the_printed_page(self):
+        css = (ROOT / 'design' / 'styles.css').read_text(encoding='utf-8')
+        self.assertIn('.fan-mode + label { display: none; }', css[css.index('@media print'):])
+
+    def test_builds_are_identical(self):
+        self._seed_cousins()
+        self._run()
+        first = self._fan()
+        self._run()
+        self.assertEqual(first, self._fan())
+
+    def test_the_repeat_shows_at_every_fan_width(self):
+        for deg in (180, 270, 360):
+            labels = _fan_full_labels(4)
+            labels[8]['pid'] = labels[12]['pid'] = 'p-zed0000000'
+            svg = site._render_fan_svg(labels, 4, span_deg=deg)
+            with self.subTest(span=deg):
+                self.assertEqual(svg.count('fan-seg-repeat'), 2)
+                self.assertEqual(svg.count('class="fan-repeat-mark"'), 2)
+
+    def test_a_private_cell_and_a_blank_are_never_grouped(self):
+        labels = _fan_full_labels(3)
+        for num in (4, 6):
+            labels[num].update({'private': True, 'pid': 'p-same000000'})
+        for num in (5, 7):
+            labels[num].update({'redacted': True, 'name': '', 'pid': 'p-blank00000'})
+        self.assertNotIn('fan-seg-repeat', site._render_fan_svg(labels, 3))
 
 
 class KnownAdultTests(_Base):
@@ -11980,7 +13159,7 @@ class VendoredLibraryTests(_Base):
     LICENCES = VENDOR / 'licenses'
     # The project's own vendored code (MIT, part of Plaintext Family History)
     # needs no third-party licence file.
-    OWN_CODE = {'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
+    OWN_CODE = {'fha-map.js', 'fha-save-chart.js', 'fha-search.js', 'fha-site.js', 'fha-tree.js', 'tree-adapter.js'}
 
     def _readme_entries(self):
         # Lines of licenses/README.txt that name a vendored file and its licence,
@@ -12014,6 +13193,32 @@ class VendoredLibraryTests(_Base):
         digest = hashlib.sha256((self.VENDOR / 'd3.min.js').read_bytes()).hexdigest()
         self.assertEqual(m.group(1), digest,
                          'd3.min.js does not match the sha256 pinned in d3-ISC.txt')
+
+    def test_flextree_is_vendored_with_its_licence(self):
+        # The explorer's couple layout (chart plan 08-9): d3-flextree 2.1.2,
+        # WTFPL, ported from its source file to load from a script tag. It
+        # must not bundle a second, older D3 (the published build does).
+        js = (self.VENDOR / 'd3-flextree.js').read_text(encoding='utf-8')
+        self.assertIn('af196220927218bbe7ac6cad8e059f56430befb6', js)
+        self.assertIn("var version = '2.1.2';", js)
+        self.assertIn('global.d3.hierarchy', js)
+        self.assertIsNone(re.search(r'^\s*(import|export)\b', js, flags=re.MULTILINE))
+        self.assertEqual(self._readme_entries().get('d3-flextree.js'), 'd3-flextree-WTFPL.txt')
+        licence = (self.LICENCES / 'd3-flextree-WTFPL.txt').read_text(encoding='utf-8')
+        self.assertIn('Version 2, December 2004', licence)
+        self.assertIn('Changed for Plaintext Family History', licence)
+
+    def test_every_licence_records_the_checksum_of_the_file_it_covers(self):
+        # A notice says "Shipped as vendor/NAME, ... sha256 HEX"; the shipped
+        # file must still be those bytes, so nobody edits a pinned copy unseen.
+        for name, notice in sorted(self._readme_entries().items()):
+            with self.subTest(name):
+                text = (self.LICENCES / notice).read_text(encoding='utf-8')
+                m = re.search(r'Shipped as vendor/' + re.escape(name)
+                              + r',[^\n]*?sha256 ([0-9a-f]{64})', text)
+                self.assertIsNotNone(m, f'{notice} must record the sha256 of {name}')
+                digest = hashlib.sha256((self.VENDOR / name).read_bytes()).hexdigest()
+                self.assertEqual(m.group(1), digest, f'{name} does not match {notice}')
 
     def test_a_site_build_carries_d3_and_its_licence(self):
         self._seed_person('p-aaaaaaaaaa', 'Solo')
@@ -12077,6 +13282,394 @@ class FanChartStyleTests(unittest.TestCase):
         m = re.search(r'^\.fan-chart\s*\{([^}]*)\}', css, re.M)
         self.assertIsNotNone(m, '.fan-chart rule not found in design/styles.css')
         self.assertIn('font-size', m.group(1))
+
+
+class TimelineFamilyRowsTests(_Base):
+    """Margaret's page says her father died when she was 5 or 6 and when her
+    daughter was born, in lighter lines between her own records, and each of
+    her own records says how old she was. A living, unknown or restricted
+    relative gives no row at all on the shared site (SPEC §21)."""
+
+    M, F, E, B = 'p-m000000001', 'p-f000000001', 'p-e000000001', 'p-b000000001'
+
+    def _family(self, *, margaret_sex='F', death=True, father_source_restricted=0,
+                father_claim_restricted=False, tie_source_restricted=0,
+                father_death_status='accepted', father_death_reviewed=None):
+        M, F, E = self.M, self.F, self.E
+        self._seed_person(M, 'Margaret Cole', surname='Cole', sex=margaret_sex)
+        self._seed_person(F, 'Caleb Comstock Hartley', surname='Hartley', sex='M')
+        self._seed_person(E, 'Ethel Cole', surname='Cole2', sex='F')
+        self._seed_source('s-1111111111', 'Margaret vital records', source_type='vital-record')
+        self._seed_claim('c-mb0000001', 's-1111111111', 'birth', 'Margaret born',
+                         date_edtf='1871', persons=[M], roles={M: 'child'})
+        if death:
+            self._seed_claim('c-md0000001', 's-1111111111', 'death', 'Margaret died',
+                             date_edtf='1923', persons=[M], roles={M: 'deceased'})
+        self._seed_claim('c-mm0000001', 's-1111111111', 'residence', 'lived in Fairview',
+                         date_edtf='1893', persons=[M])
+        fm = None
+        if father_claim_restricted:
+            fm = ('---\nid: s-2222222222\ntitle: Caleb death\nsource_type: vital-record\n'
+                  'citation: "A citation."\n---\n\n## Claims\n```yaml\n'
+                  '- id: c-fd0000001\n  type: death\n  value: "private"\n'
+                  '  status: accepted\n  restricted: true\n```\n')
+        self._seed_source('s-2222222222', 'Caleb death', source_type='vital-record',
+                          restricted=father_source_restricted, frontmatter=fm)
+        self._seed_claim('c-fd0000001', 's-2222222222', 'death', 'Caleb died',
+                         date_edtf='1877', place_text='Easton', persons=[F],
+                         roles={F: 'deceased'}, status=father_death_status,
+                         reviewed=father_death_reviewed)
+        self._seed_source('s-3333333333', 'Family bible', source_type='vital-record',
+                          restricted=tie_source_restricted)
+        self._seed_claim('c-rel000001', 's-3333333333', 'relationship', 'Caleb is her father',
+                         persons=[M, F], roles={M: 'child', F: 'parent'})
+        self._seed_rel(M, 'parent', F, claim_id='c-rel000001')
+        self._seed_rel(F, 'child', M, claim_id='c-rel000001')
+        self._seed_source('s-4444444444', 'Ethel birth', source_type='vital-record')
+        self._seed_claim('c-eb0000001', 's-4444444444', 'birth', 'Ethel birth entry',
+                         date_edtf='1902', place_text='Fairview', persons=[E, M],
+                         roles={E: 'child', M: 'parent'})
+        self._seed_rel(E, 'parent', M, claim_id='c-eb0000001')
+        self._seed_rel(M, 'child', E, claim_id='c-eb0000001')
+
+    def _brother(self, *, living='false', born='1875'):
+        B, F = self.B, self.F
+        self._seed_person(B, 'Benjamin Hartley', surname='Hartley2', sex='M', living=living)
+        self._seed_source('s-5555555555', 'Benjamin birth', source_type='vital-record')
+        self._seed_claim('c-bb0000001', 's-5555555555', 'birth', 'Benjamin born',
+                         date_edtf=born, persons=[B], roles={B: 'child'})
+        self._seed_claim('c-brel00001', 's-5555555555', 'relationship', 'Caleb is his father',
+                         persons=[B, F], roles={B: 'child', F: 'parent'})
+        self._seed_rel(B, 'parent', F, claim_id='c-brel00001')
+        self._seed_rel(F, 'child', B, claim_id='c-brel00001')
+
+    def _timeline(self, *, linked=False):
+        self._run(linked=linked)
+        page = self._read(f'persons/{self.M}.html')
+        start = page.index('<h2>Timeline</h2>')
+        return page[start:page.index('</div>', page.index('class="timeline"', start))]
+
+    def test_parent_death_shows_with_age(self):
+        self._family()
+        tl = self._timeline()
+        self.assertIn('class="tl-family"', tl)
+        self.assertRegex(tl, r'Her father <a [^>]*>Caleb Comstock Hartley</a> died at Easton\.')
+        self.assertIn('She was 5 or 6.', tl)
+
+    def test_child_birth_appears_once_as_family_row(self):
+        self._family()
+        tl = self._timeline()
+        self.assertNotIn('Ethel birth entry', tl)
+        rows = re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+        ethel = [r for r in rows if 'Ethel Cole' in r]
+        self.assertEqual(len(ethel), 1)
+        self.assertIn('Her daughter', ethel[0])
+        self.assertIn('was born at Fairview.', ethel[0])
+        self.assertIn('She was 30 or 31.', ethel[0])
+        self.assertEqual(tl.count('Ethel Cole'), 1)
+
+    def test_child_birth_in_two_sources_appears_once(self):
+        # Ethel's birth written in the register and again in the family
+        # bible is one birth: one labelled row, no bare "birth" line with
+        # her mother's age on it.
+        self._family()
+        self._seed_source('s-7777777777', 'Cole family bible', source_type='document')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel born (bible)',
+                         date_edtf='1902', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'})
+        tl = self._timeline()
+        self.assertNotIn('Ethel born (bible)', tl)
+        rows = re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+        self.assertEqual(len([r for r in rows if 'Ethel Cole' in r]), 1)
+
+    def test_informant_line_carries_no_age_of_hers(self):
+        # Margaret informed on her grandfather's death: the line is his
+        # death, so "aged 18 or 19" must not follow "Josiah died, aged 82".
+        self._family()
+        G = 'p-g000000001'
+        self._seed_person(G, 'Josiah Hartley', surname='Hartley5', sex='M')
+        self._seed_source('s-6666666666', 'Josiah death certificate', source_type='vital-record')
+        self._seed_claim('c-gd0000001', 's-6666666666', 'death', 'Josiah Hartley died, aged 82',
+                         date_edtf='1890-04-02', persons=[G, self.M],
+                         roles={G: 'deceased', self.M: 'informant'})
+        tl = self._timeline()
+        line = re.search(r'<li>1890-04-02 - death:.*?</li>', tl, re.S).group(0)
+        self.assertNotIn('tl-age', line)
+        # Her own residence line still says how old she was.
+        self.assertRegex(tl, r'lived in Fairview.*?aged 21 or 22')
+
+    def test_father_death_with_about_birth_gives_no_age(self):
+        # Born "about 1871", father died 1870: he may have died before she
+        # was born, so the row must not say "She was under a year old".
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf='1871~', date_min='1870-01-01', "
+                          "date_max='1872-12-31' WHERE id='c-mb0000001'")
+        self.conn.execute("UPDATE claims SET date_edtf='1870', date_min='1870-01-01', "
+                          "date_max='1870-12-31' WHERE id='c-fd0000001'")
+        tl = self._timeline()
+        father = re.search(r'<li class="tl-family">(?:(?!</li>).)*Her father.*?</li>', tl, re.S).group(0)
+        self.assertIn('died at Easton.', father)
+        self.assertNotIn('She was', father)
+
+    def test_living_relative_gives_no_row(self):
+        self._family()
+        self._brother(living='true')
+        tl = self._timeline()
+        self.assertNotIn('Her brother', tl)
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('Living Person', tl)
+        # The private preview shows him.
+        self.assertIn('Her brother', self._timeline(linked=True))
+
+    def test_unknown_relative_gives_no_row(self):
+        self._family()
+        self._brother(living='unknown')
+        self.assertNotIn('Benjamin', self._timeline())
+
+    def test_event_outside_lifespan_left_out(self):
+        self._family()
+        self._brother(born='1930')
+        self.assertNotIn('Benjamin', self._timeline())
+
+    def test_no_death_does_not_project_forward(self):
+        self._family(death=False)
+        self._brother(born='1875')
+        self._seed_claim('c-bd0000001', 's-5555555555', 'death', 'Benjamin died',
+                         date_edtf='1950', persons=[self.B], roles={self.B: 'deceased'})
+        tl = self._timeline()
+        self.assertIn('Benjamin Hartley</a> was born', tl)      # 1875, inside her life
+        self.assertNotIn('Benjamin Hartley</a> died', tl)        # 1950, after her last record
+
+    def test_restricted_claim_gives_no_row(self):
+        self._family(father_claim_restricted=True)
+        self.assertNotIn('Her father', self._timeline())
+        self.assertIn('Her father', self._timeline(linked=True))
+
+    def test_hard_restricted_source_gives_no_row(self):
+        self._family(father_source_restricted=1)
+        self.assertNotIn('Her father', self._timeline())
+        self.assertIn('Her father', self._timeline(linked=True))
+
+    def test_tie_on_restricted_source_gives_no_row(self):
+        # The only record that he is her father is restricted (a DNA match,
+        # say): the shared page does not say "her father" on its strength.
+        self._family(tie_source_restricted=1)
+        self.assertNotIn('Her father', self._timeline())
+
+    def test_parked_relative_claim_linked_only(self):
+        self._family(father_death_status='suggested', father_death_reviewed='2026-01-01')
+        self.assertNotIn('Her father', self._timeline())
+        tl = self._timeline(linked=True)
+        self.assertRegex(tl, r'Her father .*?unconfirmed - parked 2026-01-01')
+
+    def test_accepted_record_beats_more_exact_parked_one_in_preview(self):
+        # In his private preview, Ethel's birth he accepted (the bible, year
+        # only) must not vanish behind a parked register entry with a day:
+        # the family row rests on the accepted record.
+        self._family()
+        self._seed_source('s-7777777777', 'Fairview register', source_type='vital-record')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel register entry',
+                         date_edtf='1902-05-04', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'},
+                         status='suggested', reviewed='2026-01-01')
+        tl = self._timeline(linked=True)
+        ethel = [r for r in re.findall(r'<li class="tl-family">.*?</li>', tl, re.S)
+                 if 'Ethel Cole' in r]
+        self.assertEqual(len(ethel), 1)
+        self.assertNotIn('unconfirmed', ethel[0])
+        self.assertTrue(ethel[0].startswith('<li class="tl-family">1902 - '), ethel[0])
+
+    def test_undated_accepted_record_does_not_hide_dated_family_row(self):
+        # An accepted bible entry with no date cannot place Ethel's birth on
+        # the timeline; the dated parked register entry still gives the
+        # labelled row (flagged), not two bare "birth" lines.
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf=NULL, date_min=NULL, date_max=NULL "
+                          "WHERE id='c-eb0000001'")
+        self._seed_source('s-7777777777', 'Fairview register', source_type='vital-record')
+        self._seed_claim('c-eb0000002', 's-7777777777', 'birth', 'Ethel register entry',
+                         date_edtf='1902-05-04', persons=[self.E, self.M],
+                         roles={self.E: 'child', self.M: 'parent'},
+                         status='suggested', reviewed='2026-01-01')
+        tl = self._timeline(linked=True)
+        self.assertRegex(tl, r'Her daughter .*?unconfirmed')
+        self.assertNotIn('Ethel register entry', tl)
+        # The bible entry he accepted (with its place) is not hidden behind
+        # the unconfirmed row.
+        self.assertIn('Ethel birth entry', tl)
+
+    def test_undated_death_does_not_hide_dated_burial(self):
+        # A will calls him "the late Caleb" (a death with no date); the
+        # burial register dates him 1877. Her page still says he was buried.
+        self._family()
+        self.conn.execute("UPDATE claims SET date_edtf=NULL, date_min=NULL, date_max=NULL "
+                          "WHERE id='c-fd0000001'")
+        self._seed_claim('c-fbu000001', 's-2222222222', 'burial', 'Caleb buried',
+                         date_edtf='1877-06-01', place_text='Easton', persons=[self.F],
+                         roles={self.F: 'deceased'})
+        tl = self._timeline()
+        self.assertRegex(tl, r'Her father <a [^>]*>Caleb Comstock Hartley</a> was buried at Easton\.')
+
+    def test_marriage_to_living_person_dropped(self):
+        self._family()
+        self._brother()
+        self._seed_person('p-w000000001', 'Ada Moore', surname='Moore', sex='F', living='true')
+        self._seed_claim('c-bm0000001', 's-5555555555', 'marriage', 'Benjamin married Ada',
+                         date_edtf='1900', persons=[self.B, 'p-w000000001'],
+                         roles={self.B: 'spouse', 'p-w000000001': 'spouse'})
+        tl = self._timeline()
+        self.assertNotIn('married', tl)
+        self.assertNotIn('Ada', tl)
+        self.assertIn('Ada Moore', self._timeline(linked=True))
+
+    def test_sibling_marriage_to_deceased_person_shown(self):
+        self._family()
+        self._brother()
+        self._seed_person('p-w000000001', 'Ada Moore', surname='Moore', sex='F')
+        self._seed_claim('c-bm0000001', 's-5555555555', 'marriage', 'Benjamin married Ada',
+                         date_edtf='1900', persons=[self.B, 'p-w000000001'],
+                         roles={self.B: 'spouse', 'p-w000000001': 'spouse'})
+        self.assertRegex(self._timeline(),
+                         r'Her brother <a [^>]*>Benjamin Hartley</a> married '
+                         r'<a [^>]*>Ada Moore</a>\. She was 28 or 29\.')
+
+    def test_record_naming_a_living_witness_still_gives_the_row(self):
+        # SPEC §21: a record about the dead that also names a living person
+        # keeps its fact; the row names only the relative, never the witness.
+        self._family()
+        self._seed_person('p-x000000001', 'Walter Living', surname='Living', sex='M',
+                          living='true')
+        self.conn.execute(
+            'INSERT INTO claim_persons(claim_id, person_id, position, role) VALUES (?,?,?,?)',
+            ('c-fd0000001', 'p-x000000001', 5, 'informant'))
+        tl = self._timeline()
+        self.assertIn('Her father', tl)
+        self.assertNotIn('Walter', tl)
+        self.assertNotIn('Living Person', tl)
+
+    def test_own_row_age(self):
+        self._family()
+        tl = self._timeline()
+        self.assertRegex(tl, r'lived in Fairview.*?<span class="tl-age">aged 21 or 22</span>')
+        own_birth = re.search(r'<li>1871 - birth:.*?</li>', tl, re.S).group(0)
+        self.assertNotIn('tl-age', own_birth)
+
+    def test_half_sibling_word(self):
+        self._family()
+        self._brother()
+        tl = self._timeline()
+        self.assertIn('Her brother', tl)       # his mother unrecorded: plain
+        self._seed_person('p-mo00000001', 'Ann Cole', surname='Cole3', sex='F')
+        self._seed_person('p-mo00000002', 'Sarah Lane', surname='Lane', sex='F')
+        self._seed_claim('c-mrel00001', 's-3333333333', 'relationship', 'Ann is her mother',
+                         persons=[self.M, 'p-mo00000001'],
+                         roles={self.M: 'child', 'p-mo00000001': 'parent'})
+        self._seed_rel(self.M, 'parent', 'p-mo00000001', claim_id='c-mrel00001')
+        self._seed_rel('p-mo00000001', 'child', self.M, claim_id='c-mrel00001')
+        self._seed_claim('c-brel00002', 's-5555555555', 'relationship', 'Sarah is his mother',
+                         persons=[self.B, 'p-mo00000002'],
+                         roles={self.B: 'child', 'p-mo00000002': 'parent'})
+        self._seed_rel(self.B, 'parent', 'p-mo00000002', claim_id='c-brel00002')
+        self._seed_rel('p-mo00000002', 'child', self.B, claim_id='c-brel00002')
+        self.assertIn('Her half-brother', self._timeline())
+
+    def test_by_request_relative_gives_no_row_anywhere_on_the_page(self):
+        # A brother who asked to be left out (SPEC §19 by-request): no row,
+        # no name, no date, and his marriage gives nothing either.
+        self._family()
+        self._seed_person(self.B, 'Benjamin Hartley', surname='Hartley2', sex='M',
+                          frontmatter_extra='restricted: by-request')
+        self._seed_source('s-5555555555', 'Benjamin birth', source_type='vital-record')
+        self._seed_claim('c-bb0000001', 's-5555555555', 'birth', 'Benjamin born',
+                         date_edtf='1875', persons=[self.B], roles={self.B: 'child'})
+        self._seed_rel(self.B, 'parent', self.F, claim_id='c-rel000001')
+        self._seed_rel(self.F, 'child', self.B, claim_id='c-rel000001')
+        tl = self._timeline()
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('1875', tl)
+        self.assertNotIn('Her brother', tl)
+
+    def test_restricted_parent_is_no_route_to_a_sibling(self):
+        # The only tie between Margaret and Benjamin runs through a father
+        # marked restricted: the shared page says nothing of either.
+        self._family()
+        self._brother()
+        meta = self.archive_root / 'people'
+        caleb = next(meta.glob(f'*{self.F}.md'))
+        caleb.write_text(caleb.read_text(encoding='utf-8').replace(
+            'name: Caleb', 'restricted: true\nname: Caleb'), encoding='utf-8')
+        tl = self._timeline()
+        self.assertNotIn('Benjamin', tl)
+        self.assertNotIn('Caleb', tl)
+
+    def test_sibling_through_a_living_parent_shows_without_naming_the_parent(self):
+        # Owner decision D16: a tie may pass through a living or unknown
+        # person, who is never named. Her father left at living: unknown
+        # still makes Benjamin her brother; the father gets no row.
+        self._family()
+        self._brother()
+        self.conn.execute("UPDATE persons SET living = 'unknown' WHERE id = ?", (self.F,))
+        tl = self._timeline()
+        self.assertIn('Her brother', tl)
+        self.assertNotIn('Caleb', tl)
+        self.assertNotIn('Living Person', tl)
+
+    def test_half_brother_when_his_other_parent_is_living(self):
+        # "Half" rests on both other parents being recorded and different,
+        # the rule fha relate uses; a living mother of his still counts,
+        # and is never named.
+        self._family()
+        self._brother()
+        self._seed_person('p-mo00000001', 'Ann Cole', surname='Cole3', sex='F')
+        self._seed_person('p-mo00000002', 'Sarah Lane', surname='Lane', sex='F',
+                          living='true')
+        self._seed_claim('c-mrel00001', 's-3333333333', 'relationship', 'Ann is her mother',
+                         persons=[self.M, 'p-mo00000001'],
+                         roles={self.M: 'child', 'p-mo00000001': 'parent'})
+        self._seed_rel(self.M, 'parent', 'p-mo00000001', claim_id='c-mrel00001')
+        self._seed_rel('p-mo00000001', 'child', self.M, claim_id='c-mrel00001')
+        self._seed_claim('c-brel00002', 's-5555555555', 'relationship', 'Sarah is his mother',
+                         persons=[self.B, 'p-mo00000002'],
+                         roles={self.B: 'child', 'p-mo00000002': 'parent'})
+        self._seed_rel(self.B, 'parent', 'p-mo00000002', claim_id='c-brel00002')
+        self._seed_rel('p-mo00000002', 'child', self.B, claim_id='c-brel00002')
+        tl = self._timeline()
+        self.assertIn('Her half-brother', tl)
+        self.assertNotIn('Sarah', tl)
+
+    def test_shared_death_record_stays_her_own_line(self):
+        # One record of a house fire names Margaret and her son as deceased:
+        # her own death line stays, and her daughter's death is a family row.
+        self._family(death=False)
+        self._seed_claim('c-ed0000001', 's-4444444444', 'death', 'Both died in the fire',
+                         date_edtf='1920', persons=[self.M, self.E],
+                         roles={self.M: 'deceased', self.E: 'deceased'})
+        tl = self._timeline()
+        self.assertIn('Both died in the fire', tl)
+        self.assertRegex(tl, r'Her daughter <a [^>]*>Ethel Cole</a> died')
+
+    def test_unknown_sex_uses_name(self):
+        self._family(margaret_sex='')
+        tl = self._timeline()
+        self.assertIn("Margaret's father", tl)
+        self.assertIn('Margaret was 5 or 6.', tl)
+
+    def test_legend_only_with_family_rows(self):
+        self._family()
+        self.assertIn('timeline-legend', self._read_page_after_run())
+        self.conn.execute('DELETE FROM relationships')
+        self.assertNotIn('timeline-legend', self._read_page_after_run())
+
+    def _read_page_after_run(self):
+        self._run()
+        return self._read(f'persons/{self.M}.html')
+
+    def test_build_is_byte_identical(self):
+        self._family()
+        self._brother()
+        first = self._read_page_after_run()
+        second = self._read_page_after_run()
+        self.assertEqual(first, second)
 
 
 class CommittedShowcaseAssetTests(unittest.TestCase):
@@ -13053,8 +14646,8 @@ class ChartCaseTests(_Base):
         fan = self._fan_svg(case)
         # Slots 2 to 7 plus 14 and 15, and the subject.
         self.assertEqual(fan.count('class="fan-seg'), 9)
-        self.assertEqual(fan.count('<title>Calvin Hartley</title>'), 2)
-        self.assertEqual(fan.count('<title>Edith Cole</title>'), 2)
+        self.assertEqual(len(re.findall(r'<title>Calvin Hartley[^<]*</title>', fan)), 2)
+        self.assertEqual(len(re.findall(r'<title>Edith Cole[^<]*</title>', fan)), 2)
 
     def test_a_person_who_is_their_own_ancestor_still_gets_a_finished_site(self):
         # C12: A's parent is B, B's parent is C, C's parent is A. The walks
@@ -13281,7 +14874,11 @@ class GravesTests(_Base):
         self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
         without = self._run()['pages']
         self._seed_burial('c-1111111111', 'p-aaaaaaaaaa', place_id='l-2222222222')
-        self.assertEqual(self._run()['pages'], without + 1)
+        # The cemetery has coordinates, so the burial also puts a pin on the
+        # family map: graves.html and map.html are both new.
+        self.assertEqual(self._run()['pages'], without + 2)
+        self.assertTrue((self.out_dir / 'graves.html').is_file())
+        self.assertTrue((self.out_dir / 'map.html').is_file())
 
     def test_two_builds_are_byte_identical(self):
         self._seed_person('p-aaaaaaaaaa', 'Ada Hartley')
@@ -13330,6 +14927,676 @@ class GravesTests(_Base):
         graves = self._read('graves.html')
         self.assertIn('Ada Hartley was buried beside her husband', graves)
         self.assertNotIn('buried Ada Hartley', graves)
+
+
+class PersonKinshipLineTests(_Base):
+    """Under each person's name: how they are related to the home person
+    ("Thomas Hartley's great-grandmother") and, for a direct-line ancestor,
+    their family-tree number. A shared page never rests either on a tie the
+    site may not show, and never names a person it hides (owner decision D16)."""
+
+    H, F, GF, GGM = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc', 'p-dddddddddd'
+
+    def _seed_line(self, *, gf_ggm_source=None, gf_ggm_status='accepted',
+                   hub_living='false', father_extra='', father_living='false'):
+        """H -> F -> GF -> GGM, each edge on its own claim and source.
+        GGM is H's father's father's mother: number 9."""
+        self._seed_person(self.H, 'Hubert Hartley', living=hub_living, surname='Hartley')
+        self._seed_person(self.F, 'Frank Hartley', living=father_living, surname='Hartley',
+                          frontmatter_extra=father_extra)
+        self._seed_person(self.GF, 'George Hartley', surname='Hartley')
+        self._seed_person(self.GGM, 'Gertrude Hartley', surname='Hartley', sex='F')
+        edges = [(self.H, self.F, 'c-1111111111', 's-1111111111'),
+                 (self.F, self.GF, 'c-2222222222', 's-2222222222'),
+                 (self.GF, self.GGM, 'c-3333333333', 's-3333333333')]
+        for child, parent, cid, sid in edges:
+            kwargs = {}
+            status = 'accepted'
+            if (child, parent) == (self.GF, self.GGM):
+                kwargs = gf_ggm_source or {}
+                status = gf_ggm_status
+            self._seed_source(sid, f'Source {sid}', **kwargs)
+            self._seed_claim(cid, sid, 'relationship', 'parent', status=status,
+                             persons=(child, parent),
+                             reviewed='2026-01-01' if status != 'accepted' else None)
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+            self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _fha(self, *, home=None, extra=''):
+        home_line = f'site:\n  home_person: {home}\n' if home else ''
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\n{extra}{home_line}', encoding='utf-8')
+
+    def _page(self, pid):
+        return self._read(f'persons/{pid}.html')
+
+    def _assert_nowhere(self, needle):
+        for p in self.out_dir.rglob('*'):
+            if p.is_file():
+                self.assertNotIn(needle, p.read_bytes(), p.name)
+
+    def _kin(self, pid):
+        m = re.search(r'<p class="kin-line">(.*?)</p>', self._page(pid), re.S)
+        return m.group(1) if m else None
+
+    def test_great_grandmother_line_and_number(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("great-grandmother", kin)
+        self.assertIn('<a href="p-aaaaaaaaaa.html">Hubert Hartley</a>', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_the_home_person_gets_no_line(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.H))
+
+    def test_root_generation_children_shifts_the_number(self):
+        self._seed_line()
+        self._fha(extra='root_generation: children\n')
+        self._run()
+        self.assertIn('ancestor no. 17', self._kin(self.GGM))
+
+    def test_home_person_sets_both_the_words_and_the_number(self):
+        # The sentence and the number must not disagree: "Frank Hartley's
+        # grandmother" is Frank's no. 5, not the root person's no. 9.
+        self._seed_line()
+        self._fha(home='P-bbbbbbbbbb')
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("Frank Hartley</a>'s grandmother", kin)
+        self.assertIn('ancestor no. 5', kin)
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
+        self.assertIsNone(self._kin(self.F))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+
+    def test_workbench_names_the_anchor_when_root_person_is_missing(self):
+        # A mistyped root_person: the line is relative to the home person,
+        # so it must name them, not say "Your".
+        self._seed_line()
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-zzzzzzzzzz\nsite:\n  home_person: P-bbbbbbbbbb\n',
+            encoding='utf-8')
+        self._run(linked=True, workbench=True)
+        kin = self._kin(self.GGM)
+        self.assertNotIn('Your', kin)
+        self.assertIn('grandmother', kin)
+        self.assertIn('Frank Hartley', kin)
+
+    def test_workbench_says_your(self):
+        self._seed_line()
+        self._fha()
+        self._run(linked=True, workbench=True)
+        self.assertIn('Your great-grandmother', self._kin(self.GGM))
+
+    def test_living_hub_hands_off_and_is_never_named(self):
+        self._seed_line(hub_living='true')
+        self._fha()
+        self._run()
+        self.assertIn("Frank Hartley</a>'s grandmother", self._kin(self.GGM))
+        self.assertIn("Frank Hartley</a>'s father", self._kin(self.GF))
+        # The number follows the person the sentence names, so it never
+        # counts generations from the hidden living hub.
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
+        self._assert_nowhere(b'Hubert')
+
+    def test_a_living_person_on_the_walk_is_passed_through_never_named(self):
+        # D16: the tie runs through a living father; his name stays off the site.
+        self._seed_line(father_living='true')
+        self._fha(home='P-aaaaaaaaaa')
+        self._run()
+        self.assertIn("great-grandmother", self._kin(self.GGM))
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+        self._assert_nowhere(b'Frank')
+
+    def test_a_by_request_person_on_the_walk_cuts_the_tie(self):
+        self._seed_line(father_extra='restricted: by-request')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GF))
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+
+    def test_restricted_source_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_source={'restricted': 1})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        kin = self._kin(self.GGM)
+        self.assertIn('great-grandmother', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_dna_source_tie_is_not_used(self):
+        self._seed_line(gf_ggm_source={'source_type': 'dna'})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+
+    def test_unaccepted_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_status='suggested')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+    def test_unrelated_person_has_no_line(self):
+        self._seed_line()
+        self._seed_person('p-eeeeeeeeee', 'Ellis Elsewhere', surname='Elsewhere')
+        self._fha()
+        self._run()
+        self.assertNotIn('kin-line', self._page('p-eeeeeeeeee'))
+
+    def test_bad_root_generation_warns_once_and_drops_numbers_only(self):
+        self._seed_line()
+        self._fha(extra='root_generation: child\n')
+        res = self._run()
+        warned = [m for m in res['messages'] if 'family-tree numbers' in m]
+        self.assertEqual(len(warned), 1)
+        self.assertNotIn('ancestor no.', self._page(self.GGM))
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+
+class AhnentafelEdgeFilterTests(_Base):
+    """build_ahnentafel_map(edge_ok=...): a tie the caller refuses is not
+    walked, so a number is never worked out through it."""
+
+    def _chain(self):
+        from _lib import build_ahnentafel_map
+        self.build = build_ahnentafel_map
+        for pid, sex in (('p-aaaaaaaaaa', 'M'), ('p-bbbbbbbbbb', 'M'), ('p-cccccccccc', 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-bbbbbbbbbb', 'p-cccccccccc')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+
+    def test_allow_everything_matches_the_unfiltered_map(self):
+        self._chain()
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa', edge_ok=lambda r: True),
+                         self.build(self.conn, 'p-aaaaaaaaaa'))
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa'),
+                         {'p-aaaaaaaaaa': 1, 'p-bbbbbbbbbb': 2, 'p-cccccccccc': 5})
+
+    def test_a_refused_tie_drops_that_parent_and_everyone_above(self):
+        self._chain()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1})
+
+    def test_refusing_the_father_leaves_an_unsexed_mother_in_her_own_slot(self):
+        # The shared site must give her the same number as the folders (3),
+        # not the father's number (2) just because his tie is hidden.
+        from _lib import build_ahnentafel_map
+        self._seed_person('p-aaaaaaaaaa', 'p-aaaaaaaaaa', sex='M')
+        self._seed_person('p-bbbbbbbbbb', 'p-bbbbbbbbbb', sex='M')
+        self._seed_person('p-cccccccccc', 'p-cccccccccc', sex='U')
+        self._seed_person('p-dddddddddd', 'p-dddddddddd', sex='F')
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-aaaaaaaaaa', 'p-cccccccccc'),
+                                   ('c-3333333333', 'p-cccccccccc', 'p-dddddddddd')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        full = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa')
+        got = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa',
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(full['p-cccccccccc'], 3)
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1, 'p-cccccccccc': 3, 'p-dddddddddd': 7})
+
+    def test_a_hidden_second_father_does_not_take_the_shown_fathers_number(self):
+        # A DNA-only second father must not cost the legal father (and his
+        # whole line) their numbers on the shared site.
+        from _lib import build_ahnentafel_map
+        H, DAN, FRANK, MARY, GRETA = ('p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-ffffffffff',
+                                      'p-gggggggggg', 'p-hhhhhhhhhh')
+        for pid, sex in ((H, 'M'), (DAN, 'M'), (FRANK, 'M'), (MARY, 'F'), (GRETA, 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', H, DAN), ('c-2222222222', H, FRANK),
+                                   ('c-3333333333', H, MARY), ('c-4444444444', FRANK, GRETA)):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        got = build_ahnentafel_map(self.conn, H,
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {H: 1, FRANK: 2, MARY: 3, GRETA: 5})
+
+    def test_a_hidden_second_father_does_not_push_the_shown_father_to_a_mothers_number(self):
+        # No mother recorded: the legal father must still read no. 2, not 3,
+        # or the number hints that a hidden father holds no. 2.
+        from _lib import build_ahnentafel_map
+        H, DAN, FRANK, GRETA = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-ffffffffff', 'p-hhhhhhhhhh'
+        for pid, sex in ((H, 'M'), (DAN, 'M'), (FRANK, 'M'), (GRETA, 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', H, DAN), ('c-2222222222', H, FRANK),
+                                   ('c-4444444444', FRANK, GRETA)):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        got = build_ahnentafel_map(self.conn, H,
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {H: 1, FRANK: 2, GRETA: 5})
+
+    def test_one_allowed_claim_keeps_the_parent(self):
+        self._chain()
+        self._seed_claim('c-9999999999', 's-1111111111', 'relationship', 'parent',
+                         persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-9999999999')
+        self.conn.commit()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] == 'c-9999999999')
+        self.assertEqual(got['p-bbbbbbbbbb'], 2)
+
+class HeritageChartTests(_Base):
+    """"Where the family came from" on a person page (chart plan 08-12): for
+    each generation back, which countries the ancestors were born in, from
+    accepted birth claims and registered places only. Someone whose birthplace
+    is not recorded is "Birthplace unknown", an empty place is "Not traced",
+    and a living parent adds no country in any build."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-eng0000000', 'Dunmow', 'Dunmow, Essex, England')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-wal0000000', 'Brecon', 'Brecon, Powys, Wales')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-kan0000000', 'Topeka', 'Topeka, Shawnee County, Kansas')")
+        self.conn.execute("INSERT INTO places(id, name) VALUES ('l-nohier0000', 'Nowhere')")
+
+    def _person(self, pid, name, *, born_at=None, living='false', sex='M', year='1850'):
+        self._seed_person(pid, name, surname=name.split()[-1], living=living, sex=sex)
+        if born_at:
+            self._n += 1
+            cid = f'c-b{self._n:09d}'
+            self._seed_claim(cid, 's-1111111111', 'birth', 'born', date_edtf=year,
+                             persons=(pid,), roles={pid: 'child'})
+            self.conn.execute('UPDATE claims SET place_id = ? WHERE id = ?', (born_at, cid))
+
+    def _parent(self, child, parent):
+        self._n += 1
+        cid = f'c-p{self._n:09d}'
+        self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                         persons=(child, parent), roles={child: 'child', parent: 'parent'})
+        self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _rows(self, seed, linked=False):
+        self.conn.commit()
+        builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir, linked=linked)
+        builder.prepare()
+        ahnen, _ = builder._build_ahnentafel(seed, 5, self.out_dir / 'persons',
+                                             private_cards=True)
+        return builder._heritage_rows(ahnen, 5)
+
+    def _family(self):
+        # Kit's father Hugh (England) and mother Kate (Kansas). Hugh's father
+        # Abel was born in a registered place with no country, his mother
+        # Bea in Wales; Kate's parents are not recorded.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-hugh000000', 'Hugh Hartley', born_at='l-eng0000000')
+        self._person('p-kate000000', 'Kate Cole', born_at='l-kan0000000', sex='F')
+        self._person('p-abel000000', 'Abel Hartley', born_at='l-nohier0000')
+        self._person('p-bea0000000', 'Bea Reed', born_at='l-wal0000000', sex='F')
+        self._parent('p-kit0000000', 'p-hugh000000')
+        self._parent('p-kit0000000', 'p-kate000000')
+        self._parent('p-hugh000000', 'p-abel000000')
+        self._parent('p-hugh000000', 'p-bea0000000')
+
+    def _hugh_birth_claims(self):
+        return ("SELECT c.id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = 'p-hugh000000' AND c.type = 'birth'")
+
+    def test_each_generation_counts_its_countries_and_every_row_adds_up(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual([r['label'] for r in rows], ['Parents', 'Grandparents'])
+        self.assertEqual(rows[0]['counts'], {'England': 1, 'United States': 1})
+        self.assertEqual(rows[1]['counts'], {
+            'Birthplace unknown': 1, 'Wales': 1, 'Not traced': 2})
+        for row in rows:
+            self.assertAlmostEqual(
+                sum(n / row['slots'] for n in row['counts'].values()), 1.0, places=9)
+
+    def test_a_us_state_folds_to_the_country_and_a_place_with_no_country_is_unknown(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertIn('United States', rows[0]['counts'])
+        self.assertNotIn('Kansas', rows[0]['counts'])
+        self.assertEqual(rows[1]['counts']['Birthplace unknown'], 1)
+
+    def test_a_person_with_no_birthplace_is_unknown_never_guessed(self):
+        self._family()
+        self.conn.execute(f'UPDATE claims SET place_id = NULL WHERE id IN ({self._hugh_birth_claims()})')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[0]['counts'], {'Birthplace unknown': 1, 'United States': 1})
+
+    def test_a_suggested_birthplace_is_not_used(self):
+        self._family()
+        self.conn.execute(f"UPDATE claims SET status = 'suggested' WHERE id IN ({self._hugh_birth_claims()})")
+        self.assertEqual(self._rows('p-kit0000000')[0]['counts'],
+                         {'Birthplace unknown': 1, 'United States': 1})
+
+    def _siblings_who_married(self):
+        # Alan and Dora are brother and sister, children of Calvin (England)
+        # and Edith (Wales); Kit is their child, so Kit's four grandparent
+        # places are Calvin, Edith, Calvin, Edith.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-alan000000', 'Alan Hartley', born_at='l-eng0000000')
+        self._person('p-dora000000', 'Dora Hartley', born_at='l-eng0000000', sex='F')
+        self._person('p-calv000000', 'Calvin Hartley', born_at='l-eng0000000')
+        self._person('p-edit000000', 'Edith Cole', born_at='l-wal0000000', sex='F')
+        for child in ('p-alan000000', 'p-dora000000'):
+            self._parent(child, 'p-calv000000')
+            self._parent(child, 'p-edit000000')
+        self._parent('p-kit0000000', 'p-alan000000')
+        self._parent('p-kit0000000', 'p-dora000000')
+
+    def test_a_repeated_ancestor_counts_in_every_place_they_fill(self):
+        self._siblings_who_married()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[1]['slots'], 4)
+        self.assertEqual(rows[1]['counts'], {'England': 2, 'Wales': 2})
+
+    def test_a_repeat_also_brings_its_own_parents_into_the_next_row(self):
+        self._siblings_who_married()
+        self._person('p-greg000000', 'Greg Hartley', born_at='l-kan0000000')
+        self._parent('p-calv000000', 'p-greg000000')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[2]['slots'], 8)
+        self.assertEqual(rows[2]['counts']['United States'], 2)
+
+    def test_a_living_parent_is_not_traced_in_the_site_and_the_preview(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        for linked in (False, True):
+            rows = self._rows('p-kit0000000', linked=linked)
+            self.assertEqual(rows[0]['counts'], {'England': 1, 'Not traced': 1}, linked)
+
+    def test_the_shared_page_never_names_a_living_parents_country(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn('Where the family came from', page)
+        self.assertNotIn('United States', page)
+        self.assertNotIn('Kansas', page)
+
+    def test_the_section_is_left_off_when_no_country_is_known(self):
+        self._family()
+        self.conn.execute('UPDATE claims SET place_id = NULL')
+        self._run()
+        self.assertNotIn('Where the family came from', self._read('persons/p-kit0000000.html'))
+
+    def test_the_chart_is_text_labelled_deterministic_and_dash_free(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        svg = re.search(r'<svg class="heritage-chart.*?</svg>', page, re.S).group(0)
+        self.assertIn('<title>England: 1 of 2 parents</title>', svg)
+        self.assertIn('role="img"', svg)
+        self.assertIn('aria-label="Where the family came from.', svg)
+        legend = re.search(r'<ul class="heritage-legend">.*?</ul>', page, re.S).group(0)
+        for name in ('England', 'United States', 'Wales', 'Birthplace unknown', 'Not traced'):
+            self.assertIn(name, legend)
+        self.assertNotIn('–', svg + legend)
+        self.assertNotIn('—', svg + legend)
+        self.assertIn(' data-fha-chart="kit-hartley-heritage"', svg)   # a reader can save it
+        self.assertEqual(svg.replace(' data-fha-chart="kit-hartley-heritage"', '') + legend,
+                         site._render_heritage_svg(self._rows('p-kit0000000')))
+
+    def test_the_chart_says_countries_are_todays_borders(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn("by today's borders", page)
+
+    def test_countries_draw_biggest_share_first_then_by_name(self):
+        rows = [{'label': 'Parents', 'slots': 2, 'counts': {'Wales': 1, 'England': 1}},
+                {'label': 'Grandparents', 'slots': 4, 'counts': {'Wales': 2, 'Ireland': 1,
+                                                                 'Not traced': 1}}]
+        self.assertEqual(site._heritage_country_order(rows), ['Wales', 'England', 'Ireland'])
+def _lifespan_row(name, role, birth=None, death=None, *, first=None, last=None,
+                  living=False, years=''):
+    return {'name': name, 'role': role, 'birth': birth, 'death': death,
+            'first': first, 'last': last, 'living': living, 'years': years}
+
+
+class LifespanChartRenderTests(unittest.TestCase):
+    """The "Who overlapped" chart: a bar per person from birth to death on one
+    shared year axis, so a relative can see who lived at the same time. An
+    uncertain end is drawn faded and hatched, never as a confident bar."""
+
+    ROWS = [
+        _lifespan_row('Thomas Hartley', 'father', (1810, 1810), (1880, 1880), years='1810-1880'),
+        _lifespan_row('Calvin Hartley', 'subject', (1839, 1841), (1920, 1920),
+                      years='abt. 1840-1920'),
+        _lifespan_row('Walter Hartley', 'son', (1868, 1868), None, last=1900,
+                      years='b. 1868'),
+    ]
+
+    def _svg(self, rows=None):
+        return site._render_lifespan_svg(self.ROWS if rows is None else rows)
+
+    @staticmethod
+    def _row(svg, role):
+        return re.search(r'<g class="lifespan-row" data-role="%s">.*?</g>' % role,
+                         svg, re.S).group(0)
+
+    def _px_per_year(self, svg):
+        ticks = [(float(x), int(y)) for x, y in
+                 re.findall(r'<text class="lifespan-tick" x="([\d.]+)"[^>]*>(\d+)</text>', svg)]
+        (x0, y0), (x1, y1) = ticks[0], ticks[1]
+        return (x1 - x0) / (y1 - y0)
+
+    def test_rows_draw_in_the_order_given_top_to_bottom(self):
+        svg = self._svg()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', svg)
+        self.assertEqual(names, ['Thomas Hartley', 'Calvin Hartley', 'Walter Hartley'])
+
+    def test_an_approximate_birth_draws_a_faded_cap_over_its_whole_range(self):
+        svg = self._svg()
+        calvin = self._row(svg, 'subject')
+        caps = re.findall(r'<rect class="lifespan-cap"[^>]*>', calvin)
+        self.assertEqual(len(caps), 1)          # birth end only: the death is exact
+        width = float(re.search(r' width="([\d.]+)"', caps[0]).group(1))
+        # Two years of uncertainty is two years of the axis, no more.
+        self.assertAlmostEqual(width, 2 * self._px_per_year(svg), places=1)
+
+    def test_an_unrecorded_death_is_a_faded_tail_labelled_not_recorded(self):
+        walter = self._row(self._svg(), 'son')
+        self.assertIn('lifespan-cap', walter)
+        self.assertIn('death not recorded', walter)
+        self.assertRegex(walter, r'<title>[^<]*death not recorded')
+
+    def test_the_axis_covers_every_bar_and_ticks_every_ten_years(self):
+        svg = self._svg()
+        ticks = [int(t) for t in re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', svg)]
+        self.assertEqual(ticks[0], 1810)
+        self.assertGreaterEqual(ticks[-1], 1920)
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {10})
+        width = float(re.search(r'viewBox="0 0 ([\d.]+) ', svg).group(1))
+        for x, w in re.findall(
+                r'<rect class="lifespan-(?:bar|cap)" x="([\d.]+)"[^>]*? width="([\d.]+)"', svg):
+            self.assertLessEqual(float(x) + float(w), width)
+
+    def test_a_long_span_ticks_every_twenty_years(self):
+        rows = [_lifespan_row('Old One', 'father', (1650, 1650), (1700, 1700)),
+                _lifespan_row('Young One', 'son', (1990, 1990), (2010, 2010))]
+        ticks = [int(t) for t in
+                 re.findall(r'class="lifespan-tick"[^>]*>(\d+)<', self._svg(rows))]
+        self.assertEqual({b - a for a, b in zip(ticks, ticks[1:])}, {20})
+
+    def test_the_subject_birth_and_death_get_a_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 2)
+
+    def test_an_approximate_birth_gets_no_sharp_guide_line(self):
+        rows = [_lifespan_row('Calvin Hartley', 'subject', (1830, 1850), (1920, 1920)),
+                _lifespan_row('Ada Hartley', 'mother', (1800, 1800), (1890, 1890))]
+        self.assertEqual(len(re.findall(r'class="lifespan-mark"', self._svg(rows))), 1)
+
+    def test_a_screen_reader_label_names_every_person(self):
+        label = re.search(r'aria-label="([^"]*)"', self._svg()).group(1)
+        self.assertIn('Calvin Hartley', label)
+        self.assertIn('subject', label)
+
+    def test_a_person_with_no_birth_starts_at_the_first_dated_record_faded(self):
+        rows = [_lifespan_row('Ada Hartley', 'mother', None, (1890, 1890), first=1860),
+                _lifespan_row('Calvin Hartley', 'subject', (1840, 1840), (1920, 1920))]
+        ada = self._row(self._svg(rows), 'mother')
+        self.assertIn('lifespan-cap', ada)
+        self.assertIn('birth not recorded', ada)
+
+    def test_the_chart_is_deterministic_and_has_no_dashes(self):
+        a, b = self._svg(), self._svg()
+        self.assertEqual(a, b)
+        self.assertNotIn('–', a)
+        self.assertNotIn('—', a)
+
+    def test_vague_dates_read_as_a_range_of_years_never_a_point(self):
+        years = site._lifespan_years
+        self.assertEqual(years('1840'), (1840, 1840))
+        self.assertEqual(years('1840-05-03'), (1840, 1840))
+        self.assertEqual(years('1840~'), (1839, 1841))
+        self.assertEqual(years('1840/1845'), (1840, 1845))
+        self.assertEqual(years('185X'), (1850, 1859))
+        lo, hi = years('[..1900]')
+        self.assertEqual(hi, 1900)
+        self.assertLess(lo, 1900)           # open start: a faded stretch before
+        lo, hi = years('[1900..]')
+        self.assertEqual(lo, 1900)
+        self.assertGreater(hi, 1900)        # open end: a faded stretch after
+        self.assertIsNone(years('not a date'))
+        self.assertIsNone(years(None))
+
+    def test_the_chart_is_not_colour_only(self):
+        svg = self._svg()
+        self.assertIn('<pattern id="fha-lifespan-hatch"', svg)
+        self.assertIn('role="img"', svg)
+
+
+class LifespanChartPageTests(_Base):
+    """On a person's page: who lived at the same time as the person. A shared
+    site draws no bar, name or count for anyone it does not show."""
+
+    def setUp(self):
+        super().setUp()
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+
+    def _claim(self, pid, ctype, date):
+        self._n += 1
+        self._seed_claim(f'c-l{self._n:09d}', 's-1111111111', ctype, ctype,
+                         date_edtf=date, persons=(pid,))
+
+    def _life(self, pid, birth, death=None):
+        if birth:
+            self._claim(pid, 'birth', birth)
+        if death:
+            self._claim(pid, 'death', death)
+
+    def _seed_family(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._seed_person('p-thom000000', 'Thomas Hartley', surname='Hartley')
+        self._seed_person('p-adah000000', 'Ada Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-ethe000000', 'Ethel Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-fran000000', 'Frances Hartley', surname='Hartley', sex='F')
+        self._seed_person('p-walt000000', 'Walter Hartley', surname='Hartley')
+        self._seed_person('p-nobo000000', 'Nora Hartley', surname='Hartley', sex='F')
+        self._life('p-calv000000', '1840~', '1920')
+        self._life('p-thom000000', '1810', '1880')
+        self._life('p-adah000000', '1815', '1890')
+        self._life('p-ethe000000', '1845', '1930')
+        self._life('p-fran000000', '1872', '1950')
+        self._life('p-walt000000', '1868')
+        self._claim('p-walt000000', 'residence', '1900')
+        for parent in ('p-thom000000', 'p-adah000000'):
+            self._seed_rel('p-calv000000', 'parent', parent)
+            self._seed_rel(parent, 'child', 'p-calv000000')
+        self._seed_rel('p-calv000000', 'spouse', 'p-ethe000000')
+        self._seed_rel('p-ethe000000', 'spouse', 'p-calv000000')
+        for child in ('p-fran000000', 'p-walt000000', 'p-nobo000000'):
+            self._seed_rel('p-calv000000', 'child', child)
+            self._seed_rel(child, 'parent', 'p-calv000000')
+
+    def _chart(self, **kw):
+        self._run(**kw)
+        page = self._read('persons/p-calv000000.html')
+        m = re.search(r'<details class="chart lifespan">.*?</details>', page, re.S)
+        return m.group(0) if m else ''
+
+    def test_rows_run_parents_then_person_then_spouse_then_children(self):
+        self._seed_family()
+        names = re.findall(r'class="lifespan-name"[^>]*>([^<]+)<', self._chart())
+        self.assertEqual(names, ['Thomas Hartley', 'Ada Hartley', 'Calvin Hartley',
+                                 'Ethel Hartley', 'Walter Hartley', 'Frances Hartley'])
+
+    def test_a_person_with_no_dates_is_counted_in_a_note_not_drawn(self):
+        self._seed_family()
+        chart = self._chart()
+        self.assertNotIn('Nora Hartley', chart.split('</svg>')[0])
+        self.assertIn('1 person without dates is not shown.', chart)
+
+    def test_a_shared_site_draws_nothing_for_a_living_or_unknown_relative(self):
+        self._seed_family()
+        self._seed_person('p-pip0000000', 'Pip Hartley', surname='Hartley', living='true')
+        self._life('p-pip0000000', '1990-03-04')
+        self._seed_person('p-unkn000000', 'Una Hartley', surname='Hartley', living='unknown')
+        self._life('p-unkn000000', '1985')
+        for kid in ('p-pip0000000', 'p-unkn000000'):
+            self._seed_rel('p-calv000000', 'child', kid)
+            self._seed_rel(kid, 'parent', 'p-calv000000')
+        chart = self._chart()
+        for text in ('Pip', 'Una', '1990', '1985', 'Living'):
+            self.assertNotIn(text, chart)
+        # The note counts only people the page shows, so it hints at nobody.
+        self.assertIn('1 person without dates is not shown.', chart)
+        # The preview on his own machine draws everyone.
+        self.assertIn('Pip Hartley', self._chart(linked=True))
+
+    def test_a_restricted_spouse_is_left_off_the_chart(self):
+        self._seed_family()
+        with unittest.mock.patch.object(
+                site._SiteBuilder, '_person_is_redacted',
+                lambda s, row: row['id'] == 'p-ethe000000'):
+            chart = self._chart()
+        self.assertNotIn('Ethel', chart)
+
+    def test_a_person_with_nobody_dated_beside_them_gets_no_chart(self):
+        self._seed_person('p-calv000000', 'Calvin Hartley', surname='Hartley')
+        self._life('p-calv000000', '1840', '1920')
+        self.assertEqual(self._chart(), '')
+
+    def test_the_page_builds_the_same_chart_twice(self):
+        self._seed_family()
+        first = self._chart()
+        self.assertEqual(first, self._chart())
+        self.assertIn('lifespan-chart', first)
 
 
 if __name__ == '__main__':

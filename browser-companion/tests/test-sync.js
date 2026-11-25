@@ -303,6 +303,20 @@ test('content.js Internet Archive page reader is a verbatim copy of lib/archiveo
   assert.strictEqual(copy, canon);
 });
 
+test('content.js WikiTree readers are a verbatim copy of lib/wikitree-record.js', () => {
+  // The file rule (wtOriginalUrlOk) and the no-login API request decide what
+  // is fetched: a drift there could send the tab's reader somewhere it must not.
+  const lib = fs.readFileSync(
+    path.join(__dirname, '..', 'src', 'lib', 'wikitree-record.js'), 'utf8');
+  const begin = '// FHA-SYNC-BEGIN wikitree\n';
+  const end = '// FHA-SYNC-END wikitree';
+  const canon = lib.slice(lib.indexOf(begin) + begin.length, lib.indexOf(end));
+  assert.ok(canon.length > 500 && canon.includes('function wtOriginalUrlOk'), 'lib sync markers not found');
+  const copy = extractBlock(/\/\/ FHA-SYNC-BEGIN wikitree\n/, '  ' + end)
+    .split('\n').map((l) => l.replace(/^ {2}/, '')).join('\n');
+  assert.strictEqual(copy, canon);
+});
+
 test('lib/findagrave.js (the panel) takes photos only from the hosts lib/findagrave-record.js allows', () => {
   // The panel downloads the photos; the page lists them. One rule, two
   // copies (the panel is a classic script), so drive both through one battery.

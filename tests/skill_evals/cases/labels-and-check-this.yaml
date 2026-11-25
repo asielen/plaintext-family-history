@@ -1,0 +1,22 @@
+id: labels-and-check-this
+skill: research-next
+guardrails: [AR-08, AR-08a]
+summary: >
+  Asked where to look for Thomas Hartley's death record, every lead names its cost and
+  how it is reached, and any address, fee or covered years it has not checked carries
+  "(check this)".
+turns:
+  - "Where should I look for Thomas's death record?"
+expect:
+  response:
+    must: ["(?i)\\bfree\\b|\\bpaid\\b", "(?i)\\bonline\\b|in person|by letter", "\\(check this\\)"]
+  archive:
+    unchanged: ["people/**", "sources/**"]
+  rubric:
+    - guardrail: AR-08a
+      question: "Does every numbered lead say free or paid, and online, in person or by letter?"
+golden: >
+  Runs fha repositories for Fairview, Kansas and the years after 1880, and ranks leads
+  such as the state death certificate from 1911, the county clerk, a Fairview newspaper
+  obituary and the town cemetery, each with free or paid and its access, sources named
+  from the tool or marked general knowledge with "(check this)".

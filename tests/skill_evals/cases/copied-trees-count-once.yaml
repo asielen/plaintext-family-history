@@ -1,0 +1,27 @@
+id: copied-trees-count-once
+skill: review-claims
+guardrails: [AR-05]
+summary: >
+  Two online trees give Edith Louise Hartley the same birth date, 14 August 1931, with
+  no source. When he accepts both, the assistant does not link them as corroborating
+  each other: two trees agreeing is usually one tree copying the other.
+overlay: two-copied-trees
+turns:
+  - "Review the birth claims for Edith Louise Hartley from the two online trees."
+  - "Accept both."
+expect:
+  response:
+    must: ["(?i)cop(y|ied)|counts? as one|one piece of evidence|independent"]
+    must_not: ["--as corroborates"]
+  archive:
+    file_regex:
+      path: "sources/other/online-tree-*"
+      must_not: ["corroborates:"]
+  rubric:
+    - guardrail: AR-05
+      question: "Did it say the two trees likely share one origin and so count as one piece of evidence, rather than as two witnesses?"
+golden: >
+  Shows both claims with their pages, notes neither tree cites a record, accepts both on
+  his say-so, and when it comes to cross-checking says the two trees agree because one
+  probably copied the other, so they count as one. Offers to look for Edith's birth
+  record instead of linking them as corroborating.

@@ -344,6 +344,7 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #    is_valid_id               - syntactic validity check
 #    id_type_of                - extract P/S/C/L/H type prefix
 #    fmt_id_display            - the one written/shown ID form: all lowercase (P-XXX → p-xxx)
+#    contribution_mailto       - the "Tell me what you know" mailto: link for one person (site, TOOLING §12)
 #    contradiction_question_heading - value:-quoting ## Q: heading for a
 #                              contradicts: pair, shared by lint.py's
 #                              --spawn-questions and confirm.py's xref write
@@ -508,6 +509,14 @@ except ModuleNotFoundError:  # pragma: no cover - exercised by fha.py import-pat
 #                                 (survivors= also asks "could these be one person?")
 #    one_person_problems       - W163 out of order, W164 over 120 years, W165 life after death
 #    plausibility_message      - the plain sentence, with caller-supplied name and claim refs
+#
+#  Family rows and ages (fha site timeline; TOOLING §12): "her father died when
+#  she was 5 or 6", worked out from accepted claims, never stored
+#    age_between               - birth EDTF + event EDTF -> (youngest, oldest) whole years, or None
+#    age_phrase                - (5, 6) -> "5 or 6", (0, 0) -> "under a year old"
+#    family_life_events        - the births, marriages and deaths of parents, spouses,
+#                                 children and siblings inside one person's recorded life;
+#                                 privacy through the caller's person_ok/claim_ok/edge_ok
 #
 #  Alias resolution / publication guards
 #    person_alias_mirror       : the names a person's aliases: carries: name + public other names
@@ -766,7 +775,7 @@ def weaker_confidence(a: str | None, b: str | None) -> str | None:
     return _CONFIDENCE_WORD.get(min(ra, rb))
 
 
-def line_confidence(seed: str, edges) -> dict[str, str | None]:
+def line_confidence(seed: str, edges, leaf_ties=()) -> dict[str, str | None]:
     """For each person reachable from `seed`, the weakest rated parent or
     child tie on their strongest route from the seed: 'low' | 'medium' |
     'high', or None when no rated tie lies on that route (the seed itself, or
@@ -785,7 +794,13 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
     topola's propagateConfidence (https://github.com/PeWu/topola,
     src/confidence.ts, Apache-2.0); this is a fresh implementation.
     Deterministic: ties between equal values go by person id, and the result
-    is sorted by person id."""
+    is sorted by person id.
+
+    `leaf_ties` holds (leaf, person, confidence) for a parent or child tie
+    that brings in a one-hop leaf (a grandson's mother, who married in): it
+    gives the leaf a line, the weaker of the person's and the tie's, but is
+    never a route onward, so a wife's strong tie to her son cannot hide that
+    his descent from the seed rests on a family story."""
     adjacency: dict[str, list[tuple[str, int]]] = {}
     for a, b, etype, conf in edges:
         if etype == 'spouse':
@@ -809,7 +824,49 @@ def line_confidence(seed: str, edges) -> dict[str, str | None]:
             if nxt not in settled and value > best.get(nxt, 0):
                 best[nxt] = value
                 heapq.heappush(heap, (-value, nxt))
+    for leaf, pid, conf in leaf_ties:
+        if pid in settled:
+            value = min(best[pid], CONFIDENCE_RANK.get(conf or '', _UNRATED))
+            if value > best.get(leaf, 0):
+                best[leaf] = value
     return {pid: _CONFIDENCE_WORD.get(best[pid]) for pid in sorted(best)}
+
+
+def family_key(parent_ids) -> str:
+    """The name of one family in the tree data, so a chart keeps the children
+    of a man's first and second marriages under the right wife: 'fam:' and
+    the parents' ids, sorted, joined by '+' (`fam:p-aaa+p-bbb`, or `fam:p-aaa`
+    for a single parent). It names the parent pair, not a marriage record, so
+    a couple who never married, or whose wedding was never found, is still a
+    family, and a reader can work the key out by hand (TOOLING §7)."""
+    return 'fam:' + '+'.join(sorted(parent_ids))
+
+
+def family_keys(parents: dict, spouse_pairs) -> dict[str, str]:
+    """Which family each of one child's parent ties belongs to: {parent id:
+    family key}. `parents` maps each parent the chart may show to whether the
+    tie is genetic (SPEC §12.2); `spouse_pairs` holds frozenset({a, b}) for
+    each spouse tie the chart may show among them.
+
+    - The genetic parents form one family. Three or more genetic parents is
+      a conflict still being worked out, so each gets a family of their own
+      rather than a guessed pairing.
+    - A step, adoptive or other non-genetic parent forms a family with the
+      one parent of the child they married; with none, or more than one, they
+      stand alone.
+    - A parent the chart leaves out is not passed in, so it never appears in
+      a key and the child sits in the family of the parent who is shown. The
+      key then gives away nothing about a withheld partner."""
+    genetic = sorted(p for p, g in parents.items() if g)
+    keys: dict[str, str] = {}
+    if len(genetic) <= 2:
+        keys.update((p, family_key(genetic)) for p in genetic)
+    else:
+        keys.update((p, family_key([p])) for p in genetic)
+    for n in sorted(p for p, g in parents.items() if not g):
+        partners = [s for s in parents if s != n and frozenset((n, s)) in spouse_pairs]
+        keys[n] = family_key([n, partners[0]] if len(partners) == 1 else [n])
+    return keys
 
 
 def nonbirth_bracket_label(subtype: Any) -> str | None:
@@ -7803,7 +7860,7 @@ QUESTION_REFS_RE = re.compile(r'^- refs:\s*\[(.*?)\]', re.M)
 # an indented `context:` finding that happens to say "guess:" is never read.
 _QUESTION_FIELD_RES = {
     name: re.compile(rf'^- {name}:[ \t]*(.*)$', re.M)
-    for name in ('origin', 'id', 'guess', 'basis', 'verify')
+    for name in ('origin', 'id', 'guess', 'basis', 'verify', 'share')
 }
 # Where one entry's own field lines end: the next `#`/`##` heading of any
 # kind. The last question in a research file is followed by other sections
@@ -7855,7 +7912,9 @@ def parse_question_blocks(text: str) -> dict[str, dict]:
     heading of any kind - so a field line in a later section is never taken
     for this question's. `id` is the working answer's normalized `h-` id
     (SPEC §17a step 2), '' when the question has no guess yet; `guess`,
-    `basis`, `verify` and `origin` are the field text, '' when absent.
+    `basis`, `verify`, `origin` and `share` (SPEC §17b: `family` puts the
+    question on the shared site's questions page) are the field text, ''
+    when absent.
     """
     out: dict[str, dict] = {}
     blocks = re.split(r'(?=^## Q:)', text, flags=re.M)
@@ -8687,6 +8746,51 @@ def normalize_date(s: str | None) -> str | None:
     return None
 
 
+def _chart_year(edtf) -> str:
+    """The year a chart prints for a date, keeping what the date means: a
+    death recorded "before 1920" must not read as a death in 1920. Charts show
+    years only; the person's page carries the full date. Owner decision
+    (2026-11-22) on the short forms:
+
+    - a plain or exact date, or an uncertain one: the year ('1840-03-02' and
+      '1840?' are both '1840');
+    - before `[..1920]`: 'bef. 1920'; on or after `[1920..]`: 'aft. 1920';
+    - about `1850~` (or `%`, or a whole date marked `1850-05-20~`): 'abt. 1850';
+    - a decade `185X`: '1850s'; a century `18XX`: '1800s';
+    - an interval `1918/1920`: '1918–1920', or the one year when both ends
+      fall in it.
+
+    Anything else falls back to the first four-digit run, or '' when there is
+    none. Used by the fan and the family chart alike."""
+    if not edtf:
+        return ''
+    s = str(edtf).strip()
+    if '/' in s:
+        ends = [_chart_bare_year(part) for part in s.split('/', 1)]
+        if ends[0] and ends[1]:
+            return ends[0] if ends[0] == ends[1] else f'{ends[0]}–{ends[1]}'
+        return ends[0] or ends[1]
+    m = re.fullmatch(r'\[\.\.(\d{4})[-\d]*\]', s)
+    if m:
+        return f'bef. {m.group(1)}'
+    m = re.fullmatch(r'\[(\d{4})[-\d]*\.\.\]', s)
+    if m:
+        return f'aft. {m.group(1)}'
+    m = re.fullmatch(r'(\d{2})(\d)X|(\d{2})XX', s)
+    if m:
+        return f'{m.group(1)}{m.group(2)}0s' if m.group(1) else f'{m.group(3)}00s'
+    m = re.fullmatch(r'(\d{4})[~%]|(\d{4})-\d{2}-\d{2}[~%]', s)
+    if m:
+        return f'abt. {m.group(1) or m.group(2)}'
+    return _chart_bare_year(s)
+
+
+def _chart_bare_year(s: str) -> str:
+    """The first four-digit run of a date's text, or ''."""
+    m = re.search(r'\d{4}', s)
+    return m.group(0) if m else ''
+
+
 def edtf_bounds(s: str | None) -> tuple[str, str]:
     """
     Return (date_min, date_max) ISO strings for an EDTF date.
@@ -9259,6 +9363,43 @@ def fmt_id_display(id_str: str) -> str:
     if len(id_str) > 1 and id_str[1] == '-' and id_str[0].upper() in ID_TYPES:
         return id_str[0].lower() + id_str[1:]
     return id_str
+
+
+_CONTRIBUTION_BODY = (
+    'About: {name} ({pid})\r\n'
+    '\r\n'
+    'What do you know about {name}?\r\n'
+    '(A story, a correction, a date or a place, or who else might know)\r\n'
+    '\r\n'
+    'How do you know it?\r\n'
+    '(You were there, someone told you, or you have a letter, photo or paper)\r\n'
+    '\r\n'
+    'About when?\r\n'
+    '(A year, a decade or a guess is fine)\r\n'
+    '\r\n'
+    'Do you have a photo or a paper to share?\r\n'
+    "(Attach it to this email. Please don't rename the file.)\r\n"
+    '\r\n'
+    "Your name, and how you're related:\r\n"
+)
+
+
+def contribution_mailto(email: str, name: str, pid: str) -> str:
+    """The link behind "Tell me what you know" on a person's page of the
+    shared site: a relative clicks it and a ready-written email opens,
+    addressed to the keeper, with the person's name and record number in the
+    subject and the same questions the inbox notes form asks in the body. The
+    keeper pastes the reply into `inbox/{anything}.notes.md`; its first line,
+    `About: Name (p-...)`, says who it is about.
+
+    Pure: the same inputs give the same text. The body uses CRLF line ends so
+    mail programs keep the blank lines."""
+    shown = fmt_id_display(pid)
+    subject = f'[{shown}] {name}'
+    body = _CONTRIBUTION_BODY.format(name=name, pid=shown)
+    return (f"mailto:{urllib.parse.quote(email, safe='@')}"
+            f"?subject={urllib.parse.quote(subject, safe='')}"
+            f"&body={urllib.parse.quote(body, safe='')}")
 
 
 def contradiction_question_heading(cid: str, cval: str | None, tid: str, tval: str | None) -> str:
@@ -11531,6 +11672,32 @@ def link_field_refs(value: Any) -> list[str]:
         if target:
             refs.append(target)
     return refs
+
+
+# A claim's `anchor:` on a recording's transcript says the minute it was said
+# (SPEC §8.4): "00:14:32", "14:32", or "cars-whisper, 00:14:32" when the
+# source has several transcripts. "page 3" or "line 40" give no time.
+_ANCHOR_TIME_RE = re.compile(
+    r'^\s*(?:(?P<label>[^,]+?)\s*,\s*)?(?:(?P<h>\d{1,2}):)?(?P<m>\d{1,2}):(?P<s>\d{2})\s*$')
+
+
+def anchor_seconds(anchor: object) -> tuple[str | None, int] | None:
+    """So a family member can hear the very minute a fact was said, the time
+    in a claim's `anchor:` as (label or None, seconds from the start).
+
+    None when the anchor gives no time in a recording (a page or line
+    anchor, or a time that cannot be one, such as 14:75)."""
+    if not isinstance(anchor, str):
+        return None
+    m = _ANCHOR_TIME_RE.match(anchor)
+    if not m:
+        return None
+    hours = int(m['h'] or 0)
+    minutes, seconds = int(m['m']), int(m['s'])
+    if seconds >= 60 or (m['h'] is not None and minutes >= 60):
+        return None
+    label = m['label'].strip() if m['label'] else None
+    return (label or None), hours * 3600 + minutes * 60 + seconds
 
 
 # ── relationships: entries - one per person and role (SPEC §9) ────────────────
@@ -19628,8 +19795,20 @@ def build_ahnentafel_map(
     conn: sqlite3.Connection, root_pid: str,
     sex_gaps: list[dict] | None = None,
     root_position: int = 1,
+    *, edge_ok: Callable[[dict], bool] | None = None,
 ) -> dict[str, int]:
     """BFS from root_pid to build {person_id -> Ahnentafel position} from the index.
+
+    `edge_ok(row) -> bool`, when given, is asked once per parent edge (a dict
+    with person_id, rel, other_id, claim_id, source_id, status, subtype - the
+    same row `kin_graph` hands its filter) and a False edge is not walked, so
+    a shared page's family-tree number is never worked out through a tie the
+    page may not show. A parent kept by one allowed claim still counts when
+    another claim for the same tie is refused. A shown parent keeps the slot
+    the unfiltered walk gives them when it fits their recorded sex (a hidden
+    father does not push an unsexed mother into no. 2); otherwise (a hidden
+    DNA father outranked the legal one) they take the slot the shown parents
+    alone give them. None (the default) walks every edge, exactly as before.
 
     Seed: root_pid -> root_position (default 1).  Parents of person at position N:
       sex='M' -> 2N (father's slot), sex='F' -> 2N+1 (mother's slot).
@@ -19683,72 +19862,125 @@ def build_ahnentafel_map(
     pid_to_pos: dict[str, int] = {root_pid: root_position}
     queue: deque[tuple[str, int]] = deque([(root_pid, root_position)])
 
+    def _slots(edges: list[tuple[str, str]], n: int) -> list[tuple[str, str, int, bool]]:
+        """(pid, sex, position, only_parent) for the parents of the person at n."""
+        if len(edges) == 1:
+            p_pid, p_sex = edges[0]
+            return [(p_pid, p_sex, 2 * n if p_sex != 'F' else 2 * n + 1, True)]
+        # Two or more genetic parent edges - assisted reproduction (a
+        # donor-egg mother plus a surrogate-genetic mother plus a
+        # donor-sperm father), or a co-valid biological/surrogate-genetic
+        # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
+        # exactly one contributor per slot: the father slot is 2n, the
+        # mother slot 2n+1. Taking the first two SQL rows would let two
+        # female contributors land in both slots and drop the sperm
+        # contributor entirely, and the choice would swing with row order.
+        #
+        # TOOLING 7 fixes the rule: "The parent with sex: M takes position
+        # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
+        # first-encountered parent (by P-id, deterministic) takes the lower
+        # slot. Where two genetic contributors share a role ... the genetic
+        # contributor anchors the number and the other is shown beside it."
+        # So we rank every contributor for each slot by (sex-fitness, P-id):
+        # the father slot prefers M, then U, then F; the mother slot prefers
+        # F, then U, then M; P-id breaks every tie so runs always agree.
+        # The father-slot winner is chosen first and removed, then the
+        # mother-slot winner from the rest. Extra contributors beyond the two
+        # slots are intentionally left unnumbered here - `fha views brackets`
+        # lists them beside the couple. This reproduces the old two-parent
+        # behaviour exactly for every sex combination while staying
+        # deterministic for three or more contributors.
+        def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
+
+        def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
+            pid_, sex_ = edge
+            return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
+
+        sex_of = dict(edges)
+        father = min(edges, key=_father_rank)[0]
+        remaining = [e for e in edges if e[0] != father]
+        mother = min(remaining, key=_mother_rank)[0]
+        return [(father, sex_of[father], 2 * n, False),
+                (mother, sex_of[mother], 2 * n + 1, False)]
+
     while queue:
         pid, n = queue.popleft()
-        parent_rows = conn.execute(
-            f"""
-            SELECT DISTINCT r.other_id AS pid, p.sex
-            FROM relationships r
-            JOIN persons p ON r.other_id = p.id
-            LEFT JOIN claims c ON r.claim_id = c.id
-            WHERE r.person_id = ? AND r.rel = 'parent'
-              AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
-            ORDER BY r.other_id
-            """,
-            (pid, *social),
-        ).fetchall()
-
-        parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        allowed: set[str] | None = None
+        if edge_ok is None:
+            parent_rows = conn.execute(
+                f"""
+                SELECT DISTINCT r.other_id AS pid, p.sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id
+                """,
+                (pid, *social),
+            ).fetchall()
+            parents = [(r['pid'], r['sex'] or 'U') for r in parent_rows]
+        else:
+            cur = conn.execute(
+                f"""
+                SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id,
+                       r.claim_id AS claim_id, c.source_id AS source_id,
+                       c.status AS status, c.subtype AS subtype, p.sex AS sex
+                FROM relationships r
+                JOIN persons p ON r.other_id = p.id
+                LEFT JOIN claims c ON r.claim_id = c.id
+                WHERE r.person_id = ? AND r.rel = 'parent'
+                  AND COALESCE(LOWER(c.subtype), '') NOT IN ({social_ph})
+                ORDER BY r.other_id, r.claim_id
+                """,
+                (pid, *social),
+            )
+            # A hidden tie still holds its slot: a mother whose sex is unset
+            # keeps the number the folders give her (3) when only the father's
+            # tie is refused, instead of sliding into his slot (2). Slots are
+            # chosen over every genetic parent; only allowed ones are walked.
+            cols = [d[0] for d in cur.description]
+            every: dict[str, str] = {}
+            allowed = set()
+            for raw in cur.fetchall():
+                row = dict(zip(cols, tuple(raw.values()) if isinstance(raw, dict) else tuple(raw)))
+                every.setdefault(row['other_id'], row['sex'] or 'U')
+                if edge_ok(row):
+                    allowed.add(row['other_id'])
+            parents = sorted(every.items())
         if not parents:
             continue
 
-        if len(parents) == 1:
-            p_pid, p_sex = parents[0]
-            pos = 2 * n if p_sex != 'F' else 2 * n + 1
+        slots = _slots(parents, n)
+        if allowed is not None:
+            # A shown parent keeps the slot the full walk gives them when it
+            # fits their own recorded sex, so a hidden father never pushes an
+            # unsexed mother into his number. Otherwise (a hidden DNA father
+            # outranked the legal one, or pushed him into the mother's number)
+            # they take the slot the shown parents alone would give them. The
+            # folders' number wins where the two pull apart (an unsexed parent
+            # beside a hidden father keeps no. 3), so a rare mix of three or
+            # more genetic parents can still number differently from a tree
+            # without the hidden one.
+            def _fits(e: tuple[str, str, int, bool]) -> bool:
+                return {'M': e[2] % 2 == 0, 'F': e[2] % 2 == 1}.get(e[1], True)
+            kept = [e for e in slots if e[0] in allowed and _fits(e)]
+            taken = {e[2] for e in kept}
+            have = {e[0] for e in kept}
+            for e in _slots([e for e in parents if e[0] in allowed], n) if allowed else []:
+                if e[0] not in have and e[2] not in taken:
+                    kept.append(e)
+                    taken.add(e[2])
+                    have.add(e[0])
+            slots = kept
+        for p_pid, p_sex, pos, only_parent in slots:
             if p_pid not in pid_to_pos:
                 pid_to_pos[p_pid] = pos
                 queue.append((p_pid, pos))
-                if sex_gaps is not None and sex_slot_is_defaulted(p_sex):
+                if only_parent and sex_gaps is not None and sex_slot_is_defaulted(p_sex):
                     sex_gaps.append({'pid': p_pid, 'pos': pos, 'sex': p_sex})
-        else:
-            # Two or more genetic parent edges - assisted reproduction (a
-            # donor-egg mother plus a surrogate-genetic mother plus a
-            # donor-sperm father), or a co-valid biological/surrogate-genetic
-            # pair. The two-slot Ahnentafel model (SPEC 12.2, TOOLING 7) numbers
-            # exactly one contributor per slot: the father slot is 2n, the
-            # mother slot 2n+1. Taking the first two SQL rows would let two
-            # female contributors land in both slots and drop the sperm
-            # contributor entirely, and the choice would swing with row order.
-            #
-            # TOOLING 7 fixes the rule: "The parent with sex: M takes position
-            # 2n, sex: F takes 2n+1; for same-sex or sex: U pairs the
-            # first-encountered parent (by P-id, deterministic) takes the lower
-            # slot. Where two genetic contributors share a role ... the genetic
-            # contributor anchors the number and the other is shown beside it."
-            # So we rank every contributor for each slot by (sex-fitness, P-id):
-            # the father slot prefers M, then U, then F; the mother slot prefers
-            # F, then U, then M; P-id breaks every tie so runs always agree.
-            # The father-slot winner is chosen first and removed, then the
-            # mother-slot winner from the rest. Extra contributors beyond the two
-            # slots are intentionally left unnumbered here - `fha views brackets`
-            # lists them beside the couple. This reproduces the old two-parent
-            # behaviour exactly for every sex combination while staying
-            # deterministic for three or more contributors.
-            def _father_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'M': 0, 'U': 1, 'F': 2}.get(sex_, 1), pid_)
-
-            def _mother_rank(edge: tuple[str, str]) -> tuple[int, str]:
-                pid_, sex_ = edge
-                return ({'F': 0, 'U': 1, 'M': 2}.get(sex_, 1), pid_)
-
-            father = min(parents, key=_father_rank)[0]
-            remaining = [e for e in parents if e[0] != father]
-            mother = min(remaining, key=_mother_rank)[0]
-            for pp, pos in [(father, 2 * n), (mother, 2 * n + 1)]:
-                if pp not in pid_to_pos:
-                    pid_to_pos[pp] = pos
-                    queue.append((pp, pos))
 
     return pid_to_pos
 
@@ -21359,6 +21591,140 @@ def place_hierarchy_in_year(
     if year is None:
         return (None, None)
     return place_hierarchy_at(conn, place_id, year, year)
+
+
+def place_history_context(
+    conn: sqlite3.Connection, visits: dict[str, tuple[str, str]],
+) -> list[dict]:
+    """Background lines for a person's timeline: when a place they lived at
+    changed hands, the timeline says so, between their first and last record
+    there, so a place left in childhood does not narrate its later history.
+
+    `visits` is {place_id: (first_iso, last_iso)}: the earliest and latest
+    known dates of the person's own rows at that place
+    (`place_visits_from_rows`). A place reached through `within:` (a house
+    inside Fairview) counts as a visit to the containing place too, one hop
+    only (SPEC A.9).
+
+    The days the government can change are each `history:` entry's first day
+    and the day after its last (open ends make none). On a day a period
+    begins, that period is what the place became, even when the one before it
+    was written to end the same year (`1855/1861` then `1861/1889`: Fairview
+    became a state in 1861, not 1862). On any other day `place_hierarchy_at`
+    says what held (the one period helper, SPEC A.9), or the place's present
+    `hierarchy:` when no period covers it. A day whose wording is the same as
+    the one before it is no change and makes no line. A line is kept only
+    inside the person's window at that place. Returns
+    [{'kind': 'context', 'place_id', 'name', 'date_iso', 'year', 'hierarchy',
+      'sort_key': (0, date_iso, 2, place_id, date_iso)}].
+    """
+    windows: dict[str, tuple[str, str]] = dict(visits)
+    for pid, (lo, hi) in visits.items():
+        up = conn.execute('SELECT within FROM places WHERE id = ?', (pid,)).fetchone()
+        outer = up[0] if up and up[0] else None
+        if outer and outer != pid:
+            cur = windows.get(outer)
+            windows[outer] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
+    out: list[dict] = []
+    for pid in sorted(windows):
+        lo, hi = windows[pid]
+        place = conn.execute('SELECT name, hierarchy FROM places WHERE id = ?', (pid,)).fetchone()
+        if place is None:
+            continue
+        days: set[str] = set()
+        starts: dict[str, list[str]] = {}
+        for r in conn.execute(
+                'SELECT date_min, date_max, hierarchy FROM place_history '
+                'WHERE place_id = ? ORDER BY rowid', (pid,)).fetchall():
+            elo, ehi = _date_edge(r[0], False), _date_edge(r[1], True)
+            if elo is not None and elo > '0001-12-31':
+                days.add(elo)
+                if r[2]:
+                    starts.setdefault(elo, []).append(str(r[2]))
+            if ehi is not None and ehi < '9999-01-01':
+                days.add((datetime.date.fromisoformat(ehi) + datetime.timedelta(days=1)).isoformat())
+        prev: str | None = None
+        for iso in sorted(days):
+            held = place_hierarchy_at(conn, pid, iso, iso)[0]
+            begun = starts.get(iso)
+            if begun and held not in begun:
+                held = begun[0]
+            hier = str(held or place[1] or '')
+            if hier and hier != prev and lo <= iso <= hi:
+                out.append({'kind': 'context', 'place_id': pid, 'name': place[0] or '',
+                            'date_iso': iso, 'year': int(iso[:4]), 'hierarchy': hier,
+                            'sort_key': (0, iso, 2, pid, iso)})
+            prev = hier
+    out.sort(key=lambda r: r['sort_key'])
+    return out
+
+
+# A burial back home says nothing about living there, so it does not stretch
+# her stay: a woman buried in her birthplace after sixty years away would
+# otherwise get every change of those sixty years on her timeline.
+_NOT_A_STAY_TYPES = frozenset({'burial'})
+
+
+def _row_known_bounds(r) -> tuple[str | None, str | None]:
+    """A timeline row's (first, last) known day, with the index's open-end
+    floor and ceiling (0001-01-01 for "by 1895", 9999-12-31 for "from 1883
+    on") read as unknown: an open end falls back to the known one."""
+    lo = _date_edge(r['date_min'], False)
+    hi = _date_edge(r['date_max'], True)
+    if lo is not None and lo <= '0001-12-31':
+        lo = None
+    if hi is not None and hi >= '9999-01-01':
+        hi = None
+    return (lo or hi, hi or lo)
+
+
+def place_visits_from_rows(rows, keep=None) -> dict[str, tuple[str, str]]:
+    """{place_id: (first_iso, last_iso)} from a person's own dated timeline
+    rows (each with place_id, type, date_min, date_max). A burial is not a
+    stay, and an open end ("by 1895", "from 1883 on") does not stretch it to
+    year 1 or 9999. `keep(place_id)` limits it to places that may be named
+    (the shared site: only places with a page)."""
+    visits: dict[str, tuple[str, str]] = {}
+    for r in rows:
+        pid = r['place_id']
+        if not pid or (r['type'] or '') in _NOT_A_STAY_TYPES:
+            continue
+        lo, hi = _row_known_bounds(r)
+        if lo is None or hi is None or (keep is not None and not keep(pid)):
+            continue
+        hi = max(hi, lo)
+        cur = visits.get(pid)
+        visits[pid] = (min(lo, cur[0]), max(hi, cur[1])) if cur else (lo, hi)
+    return visits
+
+
+def insert_context_rows(rows: list, context: list[dict]) -> list:
+    """The person's own rows (already in date order) with each place-history
+    row put just before the first own row that sorts later, so a context line
+    never jumps ahead of a record from the same day. A row sorts by the same
+    known bound as `claim_date_order_sql` ("by 1895" by 1895)."""
+    out = list(rows)
+    for c in context:
+        at = len(out)
+        for i, r in enumerate(out):
+            if isinstance(r, dict):
+                continue
+            lo = _row_known_bounds(r)[0]
+            if lo is None or lo > c['date_iso']:
+                at = i
+                break
+        out.insert(at, c)
+    return out
+
+
+def place_history_phrase(row: dict) -> str:
+    """The one sentence the site and the timeline view both print for a
+    place-history row: "From 1861, Fairview was in Breton Co., Kansas, USA."
+    """
+    hier, name = row['hierarchy'], row['name']
+    if name and hier.startswith(f'{name}, '):
+        return f"From {row['year']}, {name} was in {hier[len(name) + 2:]}."
+    return f"From {row['year']}, this place was recorded as {hier}."
 
 
 REPOSITORIES_PATH = Path(__file__).resolve().parent / 'repositories.json'
@@ -24316,6 +24682,433 @@ def plausibility_message(problem: PlausibilityProblem, who, ref) -> str:
     raise ValueError(f'unknown plausibility problem kind {kind!r}')
 
 
+# ── Family rows and ages (fha site timeline; TOOLING §12) ────────────────────
+#
+# A cousin reading Margaret's page should see, between her own records, that
+# her father died when she was 5 or 6 and when each of her children was born,
+# and how old she was at each of her own records. Nothing here is stored: every
+# row is worked out from accepted claims (and parked ones, for the private
+# preview) each time a page is built. Privacy is the caller's: the shared site
+# and the private views draw the line in different places, so they hand in
+# their own person_ok / claim_ok / edge_ok tests.
+
+_AGE_OPEN_BOUNDS = (_EDTF_FLOOR, _EDTF_CEILING)
+
+
+def age_between(birth_edtf: str | None, event_edtf: str | None) -> tuple[int, int] | None:
+    """How old someone born on `birth_edtf` was at `event_edtf`, as (youngest,
+    oldest) whole years, or None when the records cannot say closely enough.
+
+    Both dates are read through `edtf_bounds`. None when either date is
+    missing, open-ended ("before 1871") or unreadable, when the event ends
+    before the birth begins, or when the two ages differ by more than one year:
+    "between 8 and 11" tells a reader nothing they can use, and a vague age
+    reads as fact, so the page shows no age at all rather than a loose one.
+    A year-only birth and a year-only event give two ages ("5 or 6"), which is
+    honest: the records do not say which side of the birthday it fell."""
+    if not birth_edtf or not event_edtf:
+        return None
+    try:
+        b_min, b_max = edtf_bounds(birth_edtf)
+        e_min, e_max = edtf_bounds(event_edtf)
+        if any(v in _AGE_OPEN_BOUNDS for v in (b_min, b_max, e_min, e_max)):
+            return None
+        if e_max < b_min:
+            return None
+        lo = _whole_years_between(b_max, e_min)
+        hi = _whole_years_between(b_min, e_max)
+    except (ValueError, TypeError):
+        return None
+    # The one-year test reads the spread before a "not yet born" end is
+    # clamped to 0: for an "about 1871" birth, a father's death in 1870 may
+    # have come before she was born, and "She was under a year old" would
+    # state as fact what the records leave open.
+    if hi < 0 or hi - lo > 1:
+        return None
+    return (max(lo, 0), hi)
+
+
+def age_phrase(age: tuple[int, int]) -> str:
+    """An age from `age_between` in words: (0, 0) -> 'under a year old',
+    (0, 1) -> 'not yet 2', (6, 6) -> '6', (5, 6) -> '5 or 6'. Callers add the
+    verb ('She was 5 or 6', 'aged 5 or 6')."""
+    lo, hi = age
+    if hi == 0:
+        return 'under a year old'
+    if lo == 0:
+        return f'not yet {hi + 1}'
+    if lo == hi:
+        return str(lo)
+    return f'{lo} or {hi}'
+
+
+# The order a relative reached two ways is kept in: a sister who is also a
+# child (a cousin marriage) reads as the nearer of the two.
+_FAMILY_RELATION_RANK = {'parent': 0, 'spouse': 1, 'child': 2, 'sibling': 3}
+
+# The events each kind of relative contributes to the person's timeline.
+_FAMILY_EVENT_TYPES = {
+    'parent': ('death', 'marriage'),
+    'spouse': ('death',),
+    'child': ('birth', 'death', 'marriage'),
+    'sibling': ('birth', 'death', 'marriage'),
+}
+
+_FAMILY_WORDS = {
+    # relation kind -> (male, female, neutral)
+    'parent': ('father', 'mother', 'parent'),
+    'child': ('son', 'daughter', 'child'),
+    'spouse': ('husband', 'wife', 'spouse'),
+}
+
+# A parent or child tie that is not by birth names its nature, the way a
+# family says it: "stepfather", "adopted daughter", "foster son".
+_FAMILY_NATURE_WORDS = {
+    ('parent', 'adoptive'): ('adoptive father', 'adoptive mother', 'adoptive parent'),
+    ('parent', 'step'): ('stepfather', 'stepmother', 'step-parent'),
+    ('parent', 'foster'): ('foster father', 'foster mother', 'foster parent'),
+    ('parent', 'guardian'): ('guardian', 'guardian', 'guardian'),
+    ('child', 'adoptive'): ('adopted son', 'adopted daughter', 'adopted child'),
+    ('child', 'step'): ('stepson', 'stepdaughter', 'stepchild'),
+    ('child', 'foster'): ('foster son', 'foster daughter', 'foster child'),
+    ('child', 'guardian'): ('ward', 'ward', 'ward'),
+}
+
+
+def _family_word(kind: str, sex: str, nature: str | None = None) -> str:
+    words = _FAMILY_NATURE_WORDS.get((kind, nature or '')) or _FAMILY_WORDS[kind]
+    return {'M': words[0], 'F': words[1]}.get((sex or '').strip().upper(), words[2])
+
+
+def _family_dicts(cur) -> list[dict]:
+    """Rows as dicts whatever the connection's row_factory is."""
+    cols = [d[0] for d in cur.description]
+    return [dict(zip(cols, tuple(r.values()) if isinstance(r, dict) else tuple(r)))
+            for r in cur.fetchall()]
+
+
+def _family_bound(row: dict) -> str | None:
+    """The day a claim sorts on, as `claim_date_order_sql` does: its known end
+    for "before 1895", else its start. None for an undated claim."""
+    if not row.get('date_min'):
+        return None
+    if str(row.get('date_edtf') or '').startswith('[..'):
+        return row.get('date_max') or None
+    return row['date_min']
+
+
+def _family_natures(rows: list[dict]) -> dict[str, str | None]:
+    """other_id -> None for a tie by birth, else its nature ('step', ...).
+    One tie backed by both a birth record and a step record reads as by birth."""
+    out: dict[str, str | None] = {}
+    for r in rows:
+        nature = (None if is_genetic_parent_subtype(r['subtype'])
+                  else str(r['subtype']).strip().lower())
+        if r['other_id'] not in out:
+            out[r['other_id']] = nature
+        elif nature is None:
+            out[r['other_id']] = None
+    return out
+
+
+def family_life_events(
+    conn: sqlite3.Connection, pid: str, *,
+    include_parked: bool = False,
+    person_ok: Callable[[str], bool] | None = None,
+    claim_ok: Callable[[dict], bool] | None = None,
+    edge_ok: Callable[[str, str, str, Any], bool] | None = None,
+    cache: dict | None = None,
+    kin: KinshipGraph | None = None,
+) -> dict:
+    """The person's own birth and death, and the births, marriages and deaths
+    of their close family that fall inside the person's recorded life.
+
+    Read only. Only accepted, non-negated claims count (plus parked ones when
+    `include_parked`). Privacy is the caller's, through three tests, each
+    None for "everyone": `person_ok(pid)` for a relative (a relative it
+    refuses gives no row at all, and is no route to a sibling), `claim_ok(row)`
+    for every claim used (row has id, source_id, status, type), and
+    `edge_ok(person_id, rel, other_id, claim_id)` for every `relationships`
+    row a tie rests on. `cache` is handed to `claim_is_own_vital`. `kin` is
+    the KinshipGraph the "half-brother" word is read from (`blood_answer`,
+    the rule `fha relate` uses); a caller building many pages passes one
+    built once with the same edge test, else one is built here.
+
+    A tie may pass through a parent `person_ok` refuses (living or unknown):
+    her brother is still her brother, and that parent is never named. A
+    parent the caller must not even route through (restricted, by-request)
+    is the caller's `edge_ok` to refuse.
+
+    The life runs from the own birth (else the earliest of the person's own
+    dated records) to the own death or burial (else the latest own record).
+    Nothing is projected past the last record: a woman with no recorded death
+    gets no family rows after the last thing we know about her.
+
+    Returns {'birth': row | None, 'death': row | None, 'window': (lo, hi) |
+    None, 'events': [...]}. Each event: kind 'family', claim_id, source_id,
+    type (birth, death, burial, marriage), date_edtf, date_min, date_max,
+    place_id, place_text, relative_id, relation (the word: 'father',
+    'half-sister'), relation_kind (parent, spouse, child, sibling), other_id
+    (the relative's spouse on a marriage, else None), status, confidence,
+    reviewed, age (the person's age at it, from `age_between`, or None) and
+    sort_key. Sorted by sort_key, which ends in the source, claim and person
+    ids, so two builds list them in the same order."""
+    pid = normalize_id(str(pid))
+    status_sql = (f"(c.status = 'accepted' OR {PARKED_CLAIM_SQL})" if include_parked
+                  else "c.status = 'accepted'")
+
+    def _claims_naming(person: str, types: tuple[str, ...] | None) -> list[dict]:
+        type_sql = (f"AND c.type IN ({', '.join('?' for _ in types)}) " if types else '')
+        rows = _family_dicts(conn.execute(
+            'SELECT DISTINCT c.id AS id, c.source_id AS source_id, c.status AS status, '
+            'c.type AS type, c.date_edtf AS date_edtf, c.place_id AS place_id, '
+            'c.place_text AS place_text, c.confidence AS confidence, c.reviewed AS reviewed '
+            'FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id '
+            f'WHERE cp.person_id = ? AND {status_sql} AND COALESCE(c.negated, 0) = 0 '
+            f'{type_sql}ORDER BY c.id',
+            (person, *(types or ()))))
+        out = []
+        for r in rows:
+            # Bounds from the claim's own date, the same `fha index` stores.
+            r['date_min'] = r['date_max'] = None
+            if r['date_edtf']:
+                try:
+                    r['date_min'], r['date_max'] = edtf_bounds(r['date_edtf'])
+                except ValueError:
+                    pass
+                if (r['date_min'], r['date_max']) == _AGE_OPEN_BOUNDS:
+                    r['date_min'] = r['date_max'] = None
+            if claim_ok is not None and not claim_ok(r):
+                continue
+            out.append(r)
+        return out
+
+    # A dated record he accepted is picked over a parked one, however exact
+    # the parked date: in his private preview the birth he accepted must not
+    # hide behind an "unconfirmed" row. A dated record still comes first of
+    # all, because an undated one cannot place the event or give an age.
+    def _own(person: str, ctype: str, rows: list[dict]) -> list[dict]:
+        return sorted((r for r in rows if r['type'] == ctype
+                       and claim_is_own_vital(conn, person, r['id'], ctype, cache)),
+                      key=lambda r: (_family_bound(r) is None, r['status'] != 'accepted',
+                                     vital_pick_key(r)))
+
+    # A will's "the late Caleb" is a death with no date; the burial register
+    # that dates him 1877 still gives her page "Her father was buried".
+    def _own_end(person: str, rows: list[dict]) -> list[dict]:
+        deaths = _own(person, 'death', rows)
+        if deaths and _family_bound(deaths[0]) is not None:
+            return deaths
+        return [r for r in _own(person, 'burial', rows)
+                if _family_bound(r) is not None] or deaths
+
+    own_rows = _claims_naming(pid, None)
+    births = _own(pid, 'birth', own_rows)
+    deaths = _own_end(pid, own_rows)
+    birth = births[0] if births else None
+    death = deaths[0] if deaths else None
+    result: dict = {'birth': birth, 'death': death, 'window': None, 'events': []}
+
+    dated = [r for r in own_rows if _family_bound(r)]
+    lo = birth['date_min'] if birth and birth['date_min'] not in (None, '0001-01-01') else None
+    if lo is None and dated:
+        lo = min(_family_bound(r) for r in dated)
+    hi = death['date_max'] if death and death['date_max'] not in (None, '9999-12-31') else None
+    if hi is None and dated:
+        hi = max((r['date_max'] if r['date_max'] and r['date_max'] != '9999-12-31'
+                  else _family_bound(r)) for r in dated)
+    if lo is None or hi is None:
+        return result
+    result['window'] = (lo, hi)
+
+    def _edges(person: str, rel: str, other: str | None = None) -> list[dict]:
+        sql = ('SELECT r.person_id AS person_id, r.rel AS rel, r.other_id AS other_id, '
+               'r.claim_id AS claim_id, c.subtype AS subtype '
+               'FROM relationships r LEFT JOIN claims c ON r.claim_id = c.id '
+               'WHERE r.person_id = ? AND r.rel = ?')
+        params: tuple = (person, rel)
+        if other is not None:
+            sql += ' AND r.other_id = ?'
+            params = (person, rel, other)
+        rows = _family_dicts(conn.execute(sql + ' ORDER BY r.other_id, r.claim_id', params))
+        return [r for r in rows if r['other_id'] and r['other_id'] != person
+                and (edge_ok is None
+                     or edge_ok(r['person_id'], r['rel'], r['other_id'], r['claim_id']))]
+
+    def _person_passes(other: str) -> bool:
+        return person_ok is None or person_ok(other)
+
+    sexes = {r['id']: (r['sex'] or '').strip() for r in _family_dicts(
+        conn.execute('SELECT id, sex FROM persons'))}
+    relatives: dict[str, tuple[int, str, str]] = {}   # id -> (rank, kind, word)
+
+    def _add(other: str, kind: str, word: str) -> None:
+        rank = _FAMILY_RELATION_RANK[kind]
+        if other == pid or not _person_passes(other):
+            return
+        if other not in relatives or rank < relatives[other][0]:
+            relatives[other] = (rank, kind, word)
+
+    parent_natures = _family_natures(_edges(pid, 'parent'))
+    for other, nature in sorted(parent_natures.items()):
+        _add(other, 'parent', _family_word('parent', sexes.get(other, ''), nature))
+    for other in sorted({r['other_id'] for r in _edges(pid, 'spouse')}):
+        _add(other, 'spouse', _family_word('spouse', sexes.get(other, '')))
+    for other, nature in sorted(_family_natures(_edges(pid, 'child')).items()):
+        _add(other, 'child', _family_word('child', sexes.get(other, ''), nature))
+
+    # Siblings: the other children of each parent the person's own tie to is
+    # kept, each through a tie of their own to that parent that is kept too.
+    # "Half" only on a firm basis, read from the kinship engine `fha relate`
+    # uses (`blood_answer`): a source that says so, or one shared parent and
+    # a different other parent recorded on each side. One parent unrecorded
+    # stays a plain brother or sister.
+    if kin is None:
+        kin = kin_graph(conn, edge_ok=None if edge_ok is None else (
+            lambda row: edge_ok(row['person_id'], row['rel'], row['other_id'],
+                                row['claim_id'])))
+    sibling_ties: dict[str, dict[str, str | None]] = {}   # sib -> {parent: sib's nature}
+    for parent in sorted(parent_natures):
+        for kid_edge in _edges(parent, 'child'):
+            kid = kid_edge['other_id']
+            if kid == pid:
+                continue
+            back = _edges(kid, 'parent', parent)
+            if back:
+                sibling_ties.setdefault(kid, {})[parent] = _family_natures(back)[parent]
+    my_genetic = {p for p, n in parent_natures.items() if n is None}
+    for sib, ties in sorted(sibling_ties.items()):
+        sex = sexes.get(sib, '')
+        if any(n is None and p in my_genetic for p, n in ties.items()):
+            answer = blood_answer(kin, sib, pid)
+            word = (answer['relationship']
+                    if answer and (answer['gens_a'], answer['gens_b']) == (1, 1)
+                    else kinship_word(1, 1, sex))
+        else:
+            # Tied only through a parent one of them has by marriage or
+            # fostering: a stepbrother, a foster sister. An adopted child of
+            # the same parents is a plain brother or sister.
+            natures = {parent_natures.get(p) for p in ties} | set(ties.values())
+            base = kinship_word(1, 1, sex)
+            if 'step' in natures:
+                word = 'step-sibling' if base == 'sibling' else f'step{base}'
+            elif 'foster' in natures:
+                word = f'foster {base}'
+            else:
+                word = base
+        _add(sib, 'sibling', word)
+
+    events: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    seen_marriages: set[str] = set()
+    for rel_id in sorted(relatives):
+        _rank, kind, word = relatives[rel_id]
+        types = _FAMILY_EVENT_TYPES[kind]
+        rows = _claims_naming(rel_id, types + (('burial',) if 'death' in types else ()))
+        picked: list[tuple[dict, str | None]] = []
+        if 'birth' in types:
+            best = _own(rel_id, 'birth', rows)
+            if best:
+                picked.append((best[0], None))
+        if 'death' in types:
+            best = _own_end(rel_id, rows)
+            if best:
+                picked.append((best[0], None))
+        if 'marriage' in types:
+            for r in _own(rel_id, 'marriage', rows):
+                people = claim_role_pairs((p, role) for p, role in conn.execute(
+                    'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+                    'ORDER BY position', (r['id'],)).fetchall())
+                parties = [normalize_id(str(p)) for p in spouse_parties(people)]
+                if pid in parties:
+                    continue          # the person's own marriage is their own row
+                others = [p for p in parties if p != rel_id]
+                other = others[0] if others else None
+                if other is not None and not _person_passes(other):
+                    continue
+                picked.append((r, other))
+        for r, other in picked:
+            bound = _family_bound(r)
+            if bound is None or not (lo <= bound <= hi):
+                continue
+            key = (r['id'], rel_id)
+            if key in seen:
+                continue
+            if r['type'] == 'marriage':
+                # Her parents marrying after she was born is one event, not
+                # one per parent.
+                if r['id'] in seen_marriages:
+                    continue
+                seen_marriages.add(r['id'])
+            seen.add(key)
+            events.append({
+                'kind': 'family', 'claim_id': r['id'], 'source_id': r['source_id'],
+                'type': r['type'], 'date_edtf': r['date_edtf'],
+                'date_min': r['date_min'], 'date_max': r['date_max'],
+                'place_id': r['place_id'], 'place_text': r['place_text'],
+                'relative_id': rel_id, 'relation': word, 'relation_kind': kind,
+                'other_id': other, 'status': r['status'], 'confidence': r['confidence'],
+                'reviewed': r['reviewed'],
+                'age': age_between(birth['date_edtf'], r['date_edtf']) if birth else None,
+                'sort_key': (0, bound, 1, str(r['source_id'] or ''), str(r['id']), rel_id),
+            })
+    events.sort(key=lambda e: e['sort_key'])
+    result['events'] = events
+    return result
+
+
+def repeats_family_event(conn: sqlite3.Connection, row, events: list[dict],
+                         cache: dict | None = None) -> bool:
+    """True when one of the person's own timeline lines only repeats a family
+    row: Ethel's birth written in both the register and the family bible shows
+    once on her mother's timeline, as the labelled family row, not again as a
+    bare "birth" line. `row` needs status, type and id. A birth, death or
+    burial happens once, and a marriage is the same when it is to the same
+    spouse. The other record still sits in the person's Sources. A record
+    accepted is never hidden behind a family row that is still unconfirmed
+    (the private preview and views). Shared by the site and `fha views
+    timeline`, so the two cannot disagree about which lines are repeats."""
+    for ev in events:
+        if row['status'] == 'accepted' and ev['status'] != 'accepted':
+            continue
+        if ev['type'] != row['type'] or not claim_is_own_vital(
+                conn, ev['relative_id'], row['id'], row['type'], cache):
+            continue
+        if row['type'] == 'marriage' and (ev['other_id'] is None or not claim_is_own_vital(
+                conn, ev['other_id'], row['id'], 'marriage', cache)):
+            continue
+        return True
+    return False
+
+
+def own_line_age_text(conn: sqlite3.Connection, pid: str, row,
+                      own_birth: dict | None, own_death: dict | None,
+                      cache: dict | None = None) -> str:
+    """"aged 21 or 22" for one of the person's own timeline lines, or ''.
+
+    `row` needs id, type, date_edtf and date_min. Empty on their own birth,
+    with no recorded birth, when the dates are too loose to say within a year
+    (`age_between`), on a record that is not their own birth, death or
+    marriage (the informant on her grandfather's death is not 82), and on a
+    record dated after their death (a will proved years later is not something
+    they did at 60). Shared by the site and `fha views timeline`."""
+    if own_birth is None or not row['date_edtf']:
+        return ''
+    if row['type'] == 'birth' and claim_is_own_vital(conn, pid, row['id'], 'birth', cache):
+        return ''
+    if row['type'] in VITAL_SUBJECT_ROLES and not claim_is_own_vital(
+            conn, pid, row['id'], row['type'], cache):
+        return ''
+    if (own_death is not None and own_death['date_max'] and row['date_min']
+            and row['date_min'] > own_death['date_max']):
+        return ''
+    age = age_between(own_birth['date_edtf'], row['date_edtf'])
+    if age is None:
+        return ''
+    phrase = age_phrase(age)
+    return phrase if age[0] == 0 else f'aged {phrase}'
+
+
 # ── "Probably not living" (fha lint W173; TOOLING §3) ────────────────────────
 #
 # "Thomas Hartley shows as Living Person on the family site, but his son was
@@ -24866,6 +25659,86 @@ def calendar_years_ago_phrase(years_ago: int) -> str:
     if years_ago == 1:
         return '1 year ago'
     return f'{years_ago} years ago'
+
+
+def living_birthdays(conn: sqlite3.Connection, today: datetime.date, days: int = 30
+                     ) -> dict:
+    """The owner's own list of living relatives' coming birthdays, so he can
+    send a card in time. PRIVATE: read only by `fha calendar --birthdays` in
+    his terminal. No shared output (site, packet, GEDCOM, WikiTree, search,
+    tree JSON, printed report) may call this or print what it returns; a
+    living person's birthday, even day and month without the year, is exactly
+    what SPEC §21 keeps off every shared copy.
+
+    Returns {'upcoming': [...], 'too_old': [...], 'inexact': n}. Each entry:
+    {id, name, birth_date, birthday (ISO date of the next one), age (turned),
+    days_away, feb29 (bool: born 29 February, celebrated 28 February)}.
+
+    People are living or unknown (`person_is_living`, merges followed; a
+    merged tombstone is skipped). The birth date is the person's own best
+    accepted, non-negated birth claim (`claim_is_own_vital`, `vital_pick_key`);
+    only a plain date recorded to the day counts, since "June 1946" has no
+    day to celebrate (`inexact` counts those people), and such a date is
+    preferred over a surer but qualified one. Someone born more than
+    `LIVING_CUTOFF_YEARS` years before this year goes in `too_old`: probably
+    dead, but the record does not say so."""
+    rows = conn.execute(
+        """SELECT c.id, c.date_edtf, c.date_min, c.date_max, c.confidence,
+                  cp.person_id
+           FROM claims c JOIN claim_persons cp ON cp.claim_id = c.id
+           WHERE LOWER(c.type) = 'birth' AND c.status = 'accepted'
+             AND COALESCE(c.negated, 0) = 0""").fetchall()
+    # A date exact to the day ranks ahead of everything else, so a cousin
+    # with a plain "1946-06-14" is still listed when a higher-confidence
+    # "1946-06-14?" sits beside it; within each group the headline pick holds.
+    def _rank(claim: Any) -> tuple:
+        parts = calendar_date_parts(claim['date_edtf'])
+        return (0 if parts is not None and parts[2] is not None else 1,
+                vital_pick_key(claim))
+    best: dict[str, Any] = {}
+    cache: dict[str, list[str] | None] = {}
+    for r in rows:
+        pid = normalize_id(str(r['person_id']))
+        if not claim_is_own_vital(conn, pid, r['id'], 'birth', cache):
+            continue
+        if pid not in best or _rank(r) < _rank(best[pid]):
+            best[pid] = r
+    names = {r['id']: (r['name'], r['status']) for r in conn.execute(
+        'SELECT id, name, status FROM persons')}
+    upcoming: list[dict] = []
+    too_old: list[dict] = []
+    inexact = 0
+    for pid, claim in best.items():
+        if pid not in names or (names[pid][1] or '') == 'merged':
+            continue
+        if not person_is_living(conn, pid):
+            continue
+        parts = calendar_date_parts(claim['date_edtf'])
+        if parts is None or parts[2] is None:
+            inexact += 1
+            continue
+        year, month, day = parts
+        entry = {'id': pid, 'name': names[pid][0],
+                 'birth_date': str(claim['date_edtf']).strip()}
+        if today.year - year > LIVING_CUTOFF_YEARS:
+            too_old.append(entry)
+            continue
+        feb29 = (month, day) == (2, 29)
+
+        def _on(y: int) -> datetime.date:
+            if feb29 and not calendar.isleap(y):
+                return datetime.date(y, 2, 28)
+            return datetime.date(y, month, day)
+        nxt = _on(today.year)
+        if nxt < today:
+            nxt = _on(today.year + 1)
+        away = (nxt - today).days
+        if away < days:
+            upcoming.append({**entry, 'birthday': nxt.isoformat(), 'age': nxt.year - year,
+                             'days_away': away, 'feb29': feb29})
+    upcoming.sort(key=lambda e: (e['birthday'], e['name'] or '', e['id']))
+    too_old.sort(key=lambda e: (e['name'] or '', e['id']))
+    return {'upcoming': upcoming, 'too_old': too_old, 'inexact': inexact}
 
 
 def couple_folder_dirs(archive_root: str | Path) -> list[Path]:

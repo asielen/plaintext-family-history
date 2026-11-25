@@ -29,6 +29,12 @@ Contents:
 19. Calendar conversion is a tool
 20. The tree fades a weak line, from the tie outward
 21. Importing a newer download of the same tree
+22. Surname pages: feminine forms join only when the masculine form is there
+23. A recording plays on the shared site only on an explicit yes
+24. The family map draws its own outline
+25. A journey stop sits at the middle of its date
+26. A family in the tree data is its parent pair
+27. The explorer keeps its own renderer on a flextree layout
 
 ---
 
@@ -190,6 +196,14 @@ The same ordering guides which problems get fixed first: a confident wrong answe
 **Why.** Accepted-only is the standard view because it matches what the archive has settled, and SPEC's own vital completeness reads it that way. The include-suggested view exists because a score that only rises when claims are accepted rewards accepting, which is the habit the review contract exists to slow down. Both views come from one engine, so neither can drift from the other. Past 130 years there is no doubt a person has died, so a missing death is a real gap; short of that, a missing death may be a living person, and asking for it would fill the list with people nobody can do anything about. `living: false` is the owner saying the person has died, so their death is owed at any age, the same rule lint W101 applies; one archive must not get two answers to that question. The census rule is deliberately simple: a person is in one census on a census night, so each year is asked only in the country their latest dated record places them in, and an emigrant is not sent back to search the country he left. Only a record that says when moves someone: a stay abroad nothing dates still shows as a gap the owner can see and judge, because a confident wrong "complete" is the worst thing this check can say, and an unknown death year means later censuses may still be out there. A move to a country with no census table does not end the old country's years, since a place ending in an abbreviation ("KS") or a name left out on purpose cannot be told from a foreign country. A place whose hierarchy stops at a U.S. state or Canadian province still names its country, read from a fixed list of full names; a name that is also a foreign country or province (Georgia, Florida, Maine, Maryland, Montana) or was its own country during the table's years (Hawaii, Newfoundland) is left off it, because each could put a census in the wrong country's table. Where records disagree, the safer reading wins: the latest of birth readings that roughly agree decides whether a death is owed (someone who may be 126 may be living), and the best-dated death decides which censuses they lived through (an exact date over a recollected one).
 
 **Rejected.** A `living_confirmed:` date on the person record, so an owner could record when someone was last known alive. It would be a new field to maintain for a check that the 130-year rule answers without one. Inferring a person's country from free-text places: the census check reads only the place registry, and says "can't tell" rather than guess. Modelling migration beyond the dated records (reading an immigration claim's arrival, or a gap between two countries' records, as the date of a move): every rule for arrivals, returns and deaths abroad opens a new way to hide a real gap behind a "complete", and none of them can be stated in a sentence. A dated record of where the person was is evidence of that night; an inferred move date is not.
+
+### Family rows and ages
+
+**The rule.** A person page's timeline shows the births, marriages and deaths of parents, spouses, children and siblings that fall inside the person's recorded life, and each line says how old the person was. Nothing is stored: every row is worked out from accepted claims at build time. An age is shown only when the records pin it within one year ("5 or 6"); a wider range shows no age.
+
+**Why.** "Her father died when she was 6" is the line a reader remembers, and the claims already hold it. Storing it would make a second copy that can go stale when a date is corrected. A vague age reads as fact: "about 9" from an "about 1840" birth is a guess wearing a number, so the page says nothing instead. The life stops at the last record, because a woman whose death nobody found did not live to 100.
+
+**Rejected.** Using a baptism as the birth for ages (wrong for an adult baptism). Showing a living relative as a "Living Person" row: the tie itself is personal.
 
 ---
 
@@ -463,6 +477,8 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Rating spouse ties.** It fades a wife for a doubtful wedding record, which says nothing about whose child she is.
 - **Averaging or counting claims.** Ten copies of one family story are still one story; the best claim decides a tie.
 
+**How it is drawn.** Only `low` fades (medium is the ordinary single-source case, and fading it would fade most of most trees). Fading alone cannot be the signal: a faded card prints as a grey one and is lost to a colour-blind reader, so the faded card also gets a dotted outline, and the tie is thin and dash-dot (the explorer already uses solid, long dash and dots for the kinds of tie). A key sentence under the chart says what it means, and appears only when something is faded. A Private card is never faded, and its ties count as unrated, so nobody behind it fades because of them: either would tell a visitor something about a living person's records.
+
 ---
 
 ## 21. Importing a newer download of the same tree
@@ -481,3 +497,84 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Matching by name and birth year alone.** Two cousins of one name are common in a family tree; the result would be a silent wrong merge.
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
+
+## 23. A recording plays on the shared site only on an explicit yes
+
+**The rule.** A recording plays on the shared site only when the owner wrote `rights: recording_ok: true` on its source, everyone heard on it is listed in `speakers:` and has died, and nobody else the source names is living, unknown or private. Anything else shows "a recording, kept in the archive", with no file name. The site plays a copy ffmpeg makes with every tag dropped, never the original.
+
+**Why.** A name on a page can be left out; a voice on a tape cannot. An hour-long interview with a grandfather names his living children and grandchildren, their towns and their troubles, and no tool can hear which minutes are safe. So the deceased-speaker test is not enough by itself: the owner has listened, and says so per source. A file name such as `margaret-1998.m4a` names the person interviewed, so a recording held back is not named either. A phone writes the place and the device into a recording, as a camera does into a photo, so only a stripped copy leaves.
+
+**Rejected.**
+
+- **Playing every recording whose speakers have died.** It would publish what they said about the living.
+- **Cutting the living out of a recording.** No tool can find every mention by ear, and a cut tape misleads.
+- **Copying the original file.** It carries the phone's location and device tags.
+
+---
+
+## 22. Surname pages: feminine forms join only when the masculine form is there
+
+**The rule.** The family site gives each family name a page. Accent and case spellings share one page (Müller, Muller). A Polish feminine form (Kowalska, Wiśniewska) or a Czech one (Nováková) joins the masculine page only when the masculine form is also carried by someone the site shows. A note's `also:` list merges any other spelling.
+
+**Why.** Kowalska and Kowalski are one family name in two grammatical forms, so a relative looking for the family wants both on one page. But a tree that holds only Kowalskas should not have its page renamed after a man who is not in it, and a guess about which spellings are "the same" stays out of the rule: anything else is merged by hand, in the human's own note. A name carried only by people the shared site hides gets no page at all, because an empty page would tell visitors the name exists, and so that a living person carries it.
+
+**Rejected.**
+
+- **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
+- **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
+- **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
+
+## 24. The family map draws its own outline
+
+**The rule.** The family map (`map.html`) draws Natural Earth's 1:110m country outline, shipped with the tools as `vendor/fha-world.js`, with the vendored D3 and topojson-client. It fetches nothing, so it works from a USB stick. Pins go only where a registered place has coordinates, its own or those of the place it is `within:`; a place without them is listed under the map. A claim places only the people it is about.
+
+**Why.** The site's promise is that it opens from a disk with no internet, and a map that goes blank offline breaks it. Street detail is one click away: each pin's panel links to the place page, which has the OpenStreetMap link. A guessed position (the middle of a county, a geocoder's best match) looks exactly like a checked one once it is a dot on a map, so the map shows only what was registered. A child named on his father's census line is not placed there by that line in his own right.
+
+**Rejected.**
+
+- **Map tiles (Leaflet with OpenStreetMap).** They need the network, and OpenStreetMap's tile policy expects a referring web address that a page opened from disk does not send.
+- **The 1:50m outline.** Seven times the size in every copy of the site, for a coastline sharper than pins placed by town need.
+- **US state outlines.** A second data file, left until a family needs it.
+- **The outline as a separate JSON file.** Browsers refuse to fetch a file from disk, so it ships as a script.
+
+---
+
+## 25. A journey stop sits at the middle of its date
+
+**The rule.** On the family map, each stop on a person's journey line is ordered and labelled by the middle of its date: "about 1840" is 1840, "186X" is 1865, "1870/1880" is 1875, and an open-ended date ("before 1895") uses the year it names. Records on the same date keep the timeline's order. Only people whose record says `living: false` have a line, and a record the shared site withholds is not a stop.
+
+**Why.** The index widens a vague date both ways, so "about 1840" starts in 1839. Ordered by its first day, a burial "about 1901" would come before a death on 30 December 1900, and the line would visit the cemetery before the deathbed. The middle is where a vague date most likely falls, and ordering and labelling by the same year keeps the numbers along a line from running backwards. A line drawn through a withheld record would show where it was, so the line runs straight past it.
+
+**Rejected.**
+
+- **The timeline's order (first day).** It keeps a vague date's earliest edge, which suits a list read top to bottom and misleads on a route drawn across a map.
+- **Drawing undated records somewhere.** A guessed position in time looks like a known one once it is a line, so they are counted under the map instead.
+- **Lines for living people in the private preview.** A drawn route of everywhere a living relative has lived is the most revealing thing the map could show, and a preview is often read over someone's shoulder.
+
+---
+
+## 26. A family in the tree data is its parent pair
+
+**The rule.** Every parent, child and spouse tie in the tree data names the family it belongs to: `fam:` and the parents' ids, sorted. A child's birth parents are one family. A step or adoptive parent joins the parent they married. A spouse tie names the couple, children or not. On the shared site a co-parent the site does not show is left out of the key.
+
+**Why.** A man with three wives has children by two of them, and a chart has to know which child goes under which wife. A marriage record cannot say: plenty of couples never married, and plenty of weddings were never found, yet their children are still theirs. The parent pair is in every child's record already, so the key needs nothing new, comes out the same from `fha views tree` and the site, and a reader can work it out by hand. Leaving a withheld partner out of the key, instead of writing a blank or a count, means the child simply sits in the shown parent's family, so the key never tells a visitor that someone is missing.
+
+**Rejected.**
+
+- **Keying on the marriage claim.** It loses every unmarried couple and every wedding not yet found, and splits one couple into two families when two marriage records disagree.
+- **Guessing a pairing when three birth parents are recorded.** That is a conflict still under review; each parent stands alone until it is settled.
+- **A placeholder for a withheld co-parent** ("unknown partner 1"). It tells a visitor there is a partner the site is keeping back, which is the thing being withheld.
+
+---
+
+## 27. The explorer keeps its own renderer on a flextree layout
+
+**The rule.** The family explorer is drawn by the archive's own `fha-tree.js`, fed by `tree-adapter.js`. It lays out couples with D3's `hierarchy` and d3-flextree (a tidy-tree layout whose nodes each have their own width), both vendored. A couple is one unit, later marriages sit beside the first, and a person met twice is a pointer card, never a second copy of their branch.
+
+**Why.** The explorer has to draw two parents per child, a second wife beside the first, a step-child under both families, and genetic, legal and other ties with different lines. Our own renderer already draws our cards (portrait, line colours, Private cards), pan and zoom, Home and Fit; what it needs from outside is a layout that gives a couple the room of two cards. d3-flextree is that layout, about 11 KB of source, and it needs nothing from D3 beyond `hierarchy`. Its published build bundles its own old copy of d3-hierarchy, so the source file is wrapped by hand instead, pinned by sha256 like D3. A withheld partner gets no placeholder card: the children hang from the parent shown, as on the family chart, so the explorer never hints that someone is missing.
+
+**Rejected.**
+
+- **family-chart.** It needs every person's sex (ours is often unknown, and a Private card has none), allows only two parents per child (a birth father and an adoptive father cannot both show), carries no kind or rating on a tie, and is an editing tool at heart, with add and remove forms we would ship switched off.
+- **topola.** The best family layouts, built on the same d3-flextree, but published only as CommonJS, so using it means owning a bundling step forever, and its renderers expect GEDCOM-shaped data.
+- **A placeholder "unknown partner" card.** On the shared site it tells a visitor there is a partner being kept back.
