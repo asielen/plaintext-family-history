@@ -150,6 +150,8 @@ CODE MAP
     _site_switch               - an on/off fha.yaml `site:` setting (the two
                                  optional panels, off unless it says yes; search,
                                  on unless it says no)
+    _site_contact_email        - fha.yaml `site: contact_email`: the address behind
+                                 each person page's "Tell me what you know" link
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -355,6 +357,7 @@ from _lib import (
     FhaConfigError,
     place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
+    contribution_mailto,
     kin_graph,
     kin_relationship,
     person_life_dates,
@@ -2627,6 +2630,24 @@ def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool,
         return False, None
     return False, (f'WARNING: fha.yaml site.{key} {raw!r} is not true or false; '
                    f'leaving it off. Write `{key}: true` to turn it on.')
+
+
+def _site_contact_email(site_cfg: dict) -> tuple[str | None, str | None]:
+    """fha.yaml `site: contact_email`: the address a relative's "Tell me what
+    you know" email goes to. Left out means no link and no warning. Something
+    that does not look like an address leaves the link off with a warning,
+    because a link that opens a mail to nowhere is worse than none.
+
+    Returns (address or None, warning or None)."""
+    raw = site_cfg.get('contact_email')
+    if raw is None:
+        return None, None
+    value = str(raw).strip() if isinstance(raw, str) else ''
+    if re.fullmatch(r'[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+', value):
+        return value, None
+    return None, (f'WARNING: fha.yaml site.contact_email {raw!r} does not look like an email '
+                  f'address, so the "Tell me what you know" link is left off. '
+                  f'Write it like  contact_email: name@example.com')
 
 
 def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
@@ -5043,6 +5064,9 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "Tell me what you know" mailto at the foot of each person page of
+        # the shared build; never the linked preview or the workbench.
+        self.contact_email, contact_warning = _site_contact_email(site_cfg)
         # The "Questions for the family" page: off unless fha.yaml says
         # `questions_page: true`, and only in a shared (standalone) build -
         # the working views already show open questions on person pages.
@@ -5058,7 +5082,7 @@ class _SiteBuilder:
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
                                              surname_warning, statistics_warning, whats_new_warning,
-                                             questions_warning) if w]
+                                             questions_warning, contact_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -7630,6 +7654,8 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            'contribute_href': (contribution_mailto(self.contact_email, name, pid)
+                                if self.contact_email and not self.linked else None),
             **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
