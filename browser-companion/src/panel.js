@@ -128,6 +128,9 @@
     fagPhotos: {},
     // A West Virginia Archives view page: Capture saves its image and citation.
     wvImage: false,
+    // A WikiTree profile or free-space page: Capture saves what WikiTree says,
+    // its text, its cited sources as a list and the files WikiTree holds for them.
+    wtPage: false,
     // Internet Archive: a page of a book (Capture saves the page image, its
     // OCR text, the book's details and a citation).
     iaPage: false,
@@ -788,13 +791,14 @@
   const FILE_PREFILL_KEYS = ['imageUrl', 'pdfUrl', 'ancestryImageViewer', 'ancestryRecord', 'ancestryPhoto',
     'ancestryMediaId', 'ancestryPhotoShown', 'ancestryPhotoNotReady',
     'familysearchRecord', 'familysearchImageViewer', 'familysearchImagePage', 'familysearchImageId', 'findagraveMemorial',
-    'wvcultureImagePage', 'archiveorgPage', 'newspapers', 'iiif'];
+    'wvcultureImagePage', 'wikitreePage', 'archiveorgPage', 'newspapers', 'iiif'];
 
   // Pages whose record file is fetched without her: there the "File address
   // on the page" box has no job, and is hidden (the drop zone stays).
   function autoFilePage(prefill) {
     return !!(prefill.ancestryImageViewer || prefill.ancestryRecord || prefill.ancestryPhoto || prefill.familysearchRecord ||
       prefill.familysearchImageViewer || prefill.findagraveMemorial || prefill.wvcultureImagePage || prefill.archiveorgPage ||
+      prefill.wikitreePage ||
       prefill.iiif ||
       prefill.newspapers);
   }
@@ -838,6 +842,7 @@
     state.fsImagePage = !!prefill.familysearchImagePage && state.fsImage;
     state.fagRecord = !!prefill.findagraveMemorial;
     state.wvImage = !!prefill.wvcultureImagePage;
+    state.wtPage = !!prefill.wikitreePage;
     state.iaPage = !!prefill.archiveorgPage;
     if ($('ia-note')) $('ia-note').style.display = state.iaPage ? 'block' : 'none';
     // Pre-fill the evidence url box with the best-guess image/PDF the page
@@ -1520,6 +1525,81 @@
       } catch (e) {
         done({});
       }
+    });
+  }
+
+  // A deed or will on an unindexed film often runs onto the next image. When
+  // he captures a film image, the sources the archive already holds within
+  // FILM_NEIGHBOUR_SPAN images of it on the same film, as Seen It knows them
+  // (fsfilm:{DGS}:{n}): [{ source: 's-…', imageNumber }], nearest first, one
+  // per source. Only a filed source with its id counts (one still waiting in
+  // the inbox has no source to add to yet), and never this image itself.
+  // Empty when the film or image number is not known, or Seen It is absent,
+  // off, slow or knows none: then nothing is asked.
+  const FILM_NEIGHBOUR_SPAN = 2;
+  async function filmNeighbours(info) {
+    const dgs = String((info && info.dgs) || '');
+    const n = info && info.imageNumber;
+    if (!/^[0-9]+$/.test(dgs) || !Number.isInteger(n) || n < 1) return [];
+    const numbers = [];
+    for (let d = 1; d <= FILM_NEIGHBOUR_SPAN; d++) {
+      for (const m of [n - d, n + d]) {
+        if (m >= 1 && !(Number.isInteger(info.imageCount) && m > info.imageCount)) numbers.push(m);
+      }
+    }
+    const key = (m) => 'fsfilm:' + dgs + ':' + m;
+    const held = await seenItHeld(numbers.map(key));
+    const out = [];
+    for (const m of numbers) {
+      const h = held[key(m)];
+      const source = h && h.where === 'archive' && h.source ? h.source.toLowerCase() : null;
+      if (source && !out.some((o) => o.source === source)) out.push({ source, imageNumber: m });
+    }
+    return out;
+  }
+
+  // Ask him whether this film image belongs with a source he already holds
+  // (filmNeighbours), and wait for his answer: the source id he chose, or
+  // null for "No, it's a separate record". Two images are one source only
+  // when he says so (a wrong yes would merge two records into one), so
+  // nothing is chosen for him: the "No" button is the one in focus, and the
+  // capture waits until he presses one.
+  function askAttach(neighbours, imageNumber) {
+    return new Promise((resolve) => {
+      const box = $('attach-ask');
+      const choices = $('attach-ask-choices');
+      const one = neighbours.length === 1;
+      $('attach-ask-text').textContent = one
+        ? 'You already have image ' + neighbours[0].imageNumber + ' of this film as ' + neighbours[0].source +
+          '. Add this image (' + imageNumber + ') to it?'
+        : 'You already have ' + neighbours.map((nb) => 'image ' + nb.imageNumber + ' (' + nb.source + ')')
+          .join(' and ') + ' of this film. Add this image (' + imageNumber + ') to one of them?';
+      choices.textContent = '';
+      // The tab moving on while he decides leaves the question up; his
+      // answer then meets checkTabStillOn, which saves nothing and says the
+      // page changed. It is never taken as a "No".
+      const answer = (source) => {
+        box.hidden = true;
+        choices.textContent = '';
+        resolve(source);
+      };
+      const button = (label, cls, source) => {
+        const b = document.createElement('button');
+        b.type = 'button';
+        b.className = cls;
+        b.textContent = label;
+        b.addEventListener('click', () => answer(source));
+        choices.appendChild(b);
+        return b;
+      };
+      for (const nb of neighbours) {
+        button(one ? 'Yes, add it to ' + nb.source : 'Add it to ' + nb.source + ' (image ' + nb.imageNumber + ')',
+          'ghost', nb.source);
+      }
+      const no = button('No, it’s a separate record', 'primary', null);
+      box.hidden = false;
+      setStageResult('Waiting for your answer above. Nothing is saved until you choose.', '');
+      if (typeof no.focus === 'function') no.focus();
     });
   }
 
@@ -2276,6 +2356,11 @@
     const info = got.info;
     const imageId = info.imageId;
     notQueued(opts, 'fsimg:' + imageId, 'FamilySearch image ' + imageId);
+    // The next image of a deed he already holds: ask him, before anything
+    // is fetched, whether it belongs with that source. A batch never stops
+    // to ask, so it files a new source as before.
+    const near = opts.forceDownload ? [] : await filmNeighbours(info);
+    const attachTo = near.length ? await askAttach(near, info.imageNumber) : null;
     await checkTabStillOn(recordUrl, ['3:1:' + imageId]);
     const dropped = form.dropped;
     const provisional = !!dropped && form.provisional;
@@ -2341,6 +2426,7 @@
       people: form.people,
       notes,
       recipeHint: 'familysearch',
+      attachTo,
       assets: assets.map((a) => ({ file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional })),
     };
     const cap = captureJson.build(fields);
@@ -2350,6 +2436,10 @@
       got.warning ? 'FamilySearch: ' + got.warning + '. The citation names the image and its link only.' : null,
       forcedCopy ? 'A copy of the web page was kept too: with no image, it is what this image’s film and citation are filed with.' : null]
       .filter(Boolean).join('\n') || null);
+    if (attachTo) {
+      $('stage-result').textContent += '\nWhen you file it, this image goes into ' + attachTo +
+        ', the source you said it belongs with.';
+    }
     return {
       key: 'fsimg:' + imageId,
       // An image, not an indexed record: no fsId, so the record-only batch
@@ -2448,6 +2538,217 @@
       record: { filmNumber: rec.filmNumber, imageNumber: rec.imageNumber },
       bundle: st.bundle, where: st.where,
       partial: false, slowDown: false, note: null,
+    };
+  }
+
+  // ── WikiTree profiles and free-space pages ──────────────────────────────────
+  // A WikiTree profile is saved with its ID and last edit, its family as data
+  // and its cited sources as a list he can tick through; a scan, a document or
+  // a transcription someone put on WikiTree as one of those sources comes
+  // along as a file of its own, tied to the source that cites it. Bundle:
+  // page.md (the biography as the page writes it, role transcript: the page's
+  // own words, not a machine reading), photo-N (the profile's photos),
+  // source-N (each file WikiTree holds that a cited source points to, its
+  // original bytes; a free-space page's text as source-N.md), record-data.json
+  // (role site-data) and the page copy when she ticked it. The content script
+  // reads WikiTree (no login); this side downloads the files (lib/wikitree-record.js, FHA.wikitree).
+  // Files held on other sites are never fetched: they stay links in the list.
+  async function captureWikiTreePage(pageHtml, wantPageCopy, form, recordUrl, opts = {}) {
+    const accessed = captureJson.accessedDate();
+    const info = await autoFetch('WikiTree page details', { action: 'wikitreeInfo', today: accessed }, { recordUrl });
+    if (!info || !info.ok) throw new Error((info && info.error) || 'could not read the WikiTree page');
+    const rec = info.record;
+    notQueued(opts, 'wt:' + info.key, 'WikiTree page ' + info.key);
+    // The page was read from the tab: it must still be this page.
+    const want = (/\/wiki\/([^/?#]+)/.exec(String(recordUrl || '')) || [])[1];
+    let wantKey = null;
+    try {
+      wantKey = want ? decodeURIComponent(want).replace(/ /g, '_').replace(/^Profile:/i, '') : null;
+    } catch (e) {
+      wantKey = null;
+    }
+    if (!wantKey || wantKey.toLowerCase() !== String(info.key).toLowerCase()) {
+      throw new TabMoved('the page in the tab changed while this WikiTree page was being saved, so nothing was ' +
+        'saved. The panel is reading the new page now - check it is the page you mean, then press Capture again');
+    }
+    await checkTabStillOn(recordUrl);
+    const dropped = form.dropped;
+    const provisional = !!dropped && form.provisional;
+    const pageCopy = await recordPageCopy('early', !!wantPageCopy, recordUrl);
+
+    // What to download: each held file first (they are evidence), then the
+    // photos that are not one of those files, at most FHA.wikitree.WT_MAX_PHOTOS.
+    const hosted = (info.hosted || []).map((h) => Object.assign({}, h, { file: null }));
+    const heldNames = new Set(hosted.filter((h) => h.fileName).map((h) => h.fileName.toLowerCase()));
+    const photosAll = (info.photos || []).filter((p) => !(p.imageName && heldNames.has(p.imageName.toLowerCase())));
+    const photos = photosAll.slice(0, FHA.wikitree.WT_MAX_PHOTOS).map((p) => Object.assign({}, p, { file: null }));
+    const photosLeft = Math.max(0, (info.photosTotal != null ? info.photosTotal - (info.photos || []).length : 0)) +
+      (photosAll.length - photos.length);
+    const hostedLeft = Math.max(0, (info.hostedTotal || 0) - hosted.length);
+
+    const assets = [];
+    // WikiTree may already have said "slow down" while its files' pages were read.
+    let slowDown = !!info.slowDown;
+    let first = true;
+    const download = async (url, label) => {
+      if (slowDown) return { ok: false, error: 'not tried: WikiTree asked us to slow down' };
+      if (!first) await sleep(FHA.wikitree.pauseMs());
+      first = false;
+      setStageResult('Downloading ' + label + ' from WikiTree…', '');
+      const row = autoRow('WikiTree ' + label);
+      const got = await FHA.wikitree.wtFetchFile(url, (u, init) => window.fetch(u, init));
+      row(got.ok, got.ok ? Math.max(1, Math.round(got.blob.size / 1024)) + ' KB' : got.error);
+      if (got.slowDown) slowDown = true;
+      return got;
+    };
+    for (const h of hosted) {
+      if (h.error) continue;
+      if (h.kind === 'space') {
+        h.file = 'source-' + h.n + '.md';
+        const text = '# ' + (h.caption || h.spaceName) + '\n\nThe text of the WikiTree free-space page ' + h.pageUrl +
+          ' as it read on ' + accessed + '. A cited source on ' + rec.name + '’s page; a copy of whatever it ' +
+          'transcribes, not the original.\n\n' + (h.text || '') + '\n';
+        assets.push({ filename: h.file, blob: new Blob([text], { type: 'text/markdown' }), role: 'source-' + h.n,
+          mode: 'wikitree-source' });
+        continue;
+      }
+      const got = await download(h.originalUrl, 'cited file ' + h.fileName);
+      if (got.ok) {
+        h.file = 'source-' + h.n + '.' + got.ext;
+        assets.push({ filename: h.file, blob: got.blob, role: 'source-' + h.n, mode: 'wikitree-source' });
+      } else {
+        h.error = got.error;
+      }
+    }
+    let photoN = 0;
+    for (const p of photos) {
+      const got = await download(p.originalUrl, 'photo ' + (p.imageName || ''));
+      if (got.ok) {
+        photoN++;
+        p.file = 'photo-' + photoN + '.' + got.ext;
+        assets.push({ filename: p.file, blob: got.blob, role: 'photo-' + photoN, mode: 'wikitree-photo' });
+      } else {
+        p.error = got.error;
+      }
+    }
+
+    // The page's own text, filed as the source's words (searchable).
+    let pageText = null;
+    if (info.bioText && info.bioText.trim()) {
+      pageText = {
+        filename: 'page.md',
+        blob: new Blob(['# ' + rec.name + (rec.wikitreeId ? ' (WikiTree ' + rec.wikitreeId + ')' : '') + '\n\n' +
+          'The text of ' + rec.pageUrl + ' as WikiTree showed it on ' + accessed + '.\n\n' + info.bioText.trim() + '\n'],
+        { type: 'text/markdown' }),
+        role: 'transcript',
+        mode: 'wikitree-text',
+      };
+      assets.unshift(pageText);
+    }
+    if (dropped) {
+      assets.push({ filename: 'record.' + dropped.ext, blob: dropped.blob, role: 'record', mode: 'manual', provisional });
+    }
+    if (pageCopy) assets.unshift({ filename: pageCopy.filename, blob: pageCopy.blob, role: 'webpage', mode: 'singlefile' });
+    // The main file is the page itself: its copy when kept, else its text.
+    const lead = pageCopy ? assets[0] : pageText;
+    if (lead) lead.primary = true;
+
+    const savedHosted = {};
+    for (const h of hosted) if (h.file) savedHosted[h.n] = { file: h.file, caption: h.caption, pageUrl: h.pageUrl };
+    const data = {
+      note: 'Captured from WikiTree by the archive capture extension. "record" is what WikiTree says about the page - ' +
+        'a compiled tree page written by its members, not an original record. "sources" lists its cited sources ' +
+        'as written ("linked": false is one to find). "hosted" lists the files WikiTree holds that a cited source ' +
+        'points to: "file" is what this capture saved it as, or null with "error"; "entries" are the sources that ' +
+        'cite it. "photos" are the profile\'s own photos.',
+      via: info.via,
+      record: rec,
+      citation: info.citation,
+      sources: info.sources || [],
+      hosted: hosted.map((h) => ({ n: h.n, kind: h.kind, fileName: h.fileName, spaceName: h.spaceName, pageUrl: h.pageUrl,
+        originalUrl: h.originalUrl || null, caption: h.caption || null, entries: h.entries, file: h.file,
+        error: h.error || null })),
+      hostedTotal: info.hostedTotal || 0,
+      photos: photos.map((p) => ({ imageName: p.imageName, caption: p.caption, date: p.date, place: p.place,
+        pageUrl: p.pageUrl, originalUrl: p.originalUrl, file: p.file, error: p.error || null })),
+      photosTotal: info.photosTotal,
+    };
+    if (info.bioWiki) data.biographyWikiText = info.bioWiki;
+    assets.push({
+      filename: 'record-data.json',
+      blob: new Blob([JSON.stringify(data, null, 2) + '\n'], { type: 'application/json' }),
+      role: 'site-data',
+      mode: 'wikitree-data',
+    });
+
+    const plural = (n, one) => n + ' ' + one + (n === 1 ? '' : 's');
+    const hostedFailed = hosted.filter((h) => !h.file);
+    const photosFailed = photos.filter((p) => !p.file);
+    const lines = [];
+    if (hostedFailed.length) {
+      lines.push(plural(hostedFailed.length, 'cited file') + ' WikiTree holds could not be saved (' +
+        hostedFailed.map((h) => (h.fileName || h.spaceName) + ': ' + h.error).join('; ') + '). They stay in the list ' +
+        'below as links; press Capture again later to try again.');
+    }
+    if (hostedLeft) {
+      lines.push(plural(hostedLeft, 'more cited file') + ' WikiTree holds ' + (hostedLeft === 1 ? 'was' : 'were') +
+        ' not saved (at most ' + FHA.wikitree.WT_MAX_HOSTED + ' in one capture). They stay in the list below as links to open.');
+    }
+    if (photosFailed.length) {
+      lines.push(plural(photosFailed.length, 'photo') + ' could not be saved (' +
+        photosFailed.map((p) => (p.imageName || 'photo') + ': ' + p.error).join('; ') + ').');
+    }
+    if (photosLeft) {
+      lines.push(plural(photosLeft, 'more photo') + ' on the profile ' + (photosLeft === 1 ? 'was' : 'were') +
+        ' not saved (at most ' + FHA.wikitree.WT_MAX_PHOTOS + ' in one capture).');
+    }
+    if (info.photosError) lines.push('The profile’s photos were not saved: ' + info.photosError + '.');
+    const warning = lines.join('\n') || null;
+    const viaNote = info.via === 'page'
+      ? 'WikiTree’s public data service did not answer for this page (' + (info.apiError || 'no reason given') +
+        '), so what is saved was read from the page itself.'
+      : info.via === 'api+page' ? 'WikiTree did not share the biography through its data service; its text and ' +
+        'sources were read from the page itself.' : '';
+    const saved = [
+      hosted.filter((h) => h.file).length ? plural(hosted.filter((h) => h.file).length, 'cited file') +
+        ' WikiTree holds saved (' + hosted.filter((h) => h.file).map((h) => h.file).join(', ') + ').' : '',
+      photoN ? plural(photoN, 'photo') + ' saved from the profile.' : '',
+    ];
+    const title = (form.edited.has('f-title') && form.title) || info.title;
+    const notes = [
+      gatherNotes(provisional, form.notes),
+      'WikiTree citation: ' + info.citation,
+      viaNote,
+    ].concat(saved, [warning ? 'Not saved: ' + warning : '',
+      FHA.wikitree.wtCitedSourcesNotes(info.sources || [], hosted, savedHosted)])
+      .filter((t) => t && t.trim()).join('\n\n');
+    const fields = {
+      url: rec.pageUrl,
+      title,
+      accessed,
+      sourceDate: form.date || '',
+      // A compiled tree page: a website, and derivative whatever it cites.
+      sourceType: form.type || 'website',
+      sourceClass: 'derivative',
+      repository: form.edited.has('f-repo') && form.repo ? form.repo : 'WikiTree',
+      people: form.people,
+      citation: info.citation,
+      notes,
+      recipeHint: 'wikitree',
+      assets: assets.map((a) => ({
+        file: a.filename, role: a.role, mode: a.mode, provisional: !!a.provisional, primary: !!a.primary,
+      })),
+    };
+    const cap = captureJson.build(fields);
+    const st = await stageBundle(captureJson.bundleName(title), pageHtml, cap, assets, opts);
+    reportStaged(st.where, st.viaHost, null, [warning, st.hostWarning].filter(Boolean).join('\n') || null);
+    return {
+      key: 'wt:' + info.key,
+      record: { key: info.key, name: rec.name || null },
+      bundle: st.bundle, where: st.where,
+      partial: hostedFailed.length > 0 || photosFailed.length > 0,
+      slowDown,
+      note: plural(hosted.filter((h) => h.file).length, 'cited file') + ' and ' + plural(photoN, 'photo') + ' saved',
     };
   }
 
@@ -3050,7 +3351,7 @@
     // full record on Capture, so "Yes" is satisfied with no dropped file or URL.
     // A dropped file or a typed URL still takes precedence (manual override).
     if (state.ancestryViewer || state.ancRecord || state.ancPhoto || state.fsRecord || state.fsImage || state.fagRecord ||
-        state.wvImage || state.iaPage || state.iiif) return true;
+        state.wvImage || state.wtPage || state.iaPage || state.iiif) return true;
     if (npActive() && !state.droppedAsset) return state.npSelected.size > 0;
     return !!(state.droppedAsset || evidenceUrl());
   }
@@ -3106,6 +3407,9 @@
             'description can be read on Ancestry from that address'));
       } else if (state.wvImage) {
         parts.push('Record file: the image on this page (West Virginia Archives, auto)');
+      } else if (state.wtPage) {
+        parts.push('Record files: the page’s text, its cited sources as a list + the files WikiTree holds for them ' +
+          '(WikiTree, auto)');
       } else if (state.fagRecord) {
         parts.push('Record files: the memorial’s facts and citation + its photos at full size (Find a Grave, auto)');
       } else if (state.iaPage) {
@@ -3524,7 +3828,7 @@
     }
     if (wantEvidence && !state.droppedAsset && !evidenceUrl()
         && !state.ancestryViewer && !state.ancRecord && !state.ancPhoto && !state.fsRecord && !state.fsImage
-        && !state.fagRecord && !state.wvImage && !state.iaPage && !state.iiif && !npActive()) {
+        && !state.fagRecord && !state.wvImage && !state.wtPage && !state.iaPage && !state.iiif && !npActive()) {
       if (state.npPage) {
         return refuse('Newspapers.com: ' + npUnavailableReason(), null, npUnavailableCause());
       }
@@ -3535,7 +3839,7 @@
     const recordUrl = state.prefilledUrl;
     const recordCapture = wantEvidence && !evidenceUrl() &&
       ((npActive() && !state.droppedAsset) || state.ancRecord || state.ancPhoto || state.fsRecord || state.fagRecord ||
-        state.wvImage || state.iaPage);
+        state.wvImage || state.wtPage || state.iaPage);
     // A batch saves a record page's own files only, never a file dropped
     // into the panel meanwhile or a page that is not a record.
     if (opts.batch && state.droppedAsset) {
@@ -3643,6 +3947,15 @@
         const got = await captureWvcultureImage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
         resetForNext();
         outcome = Object.assign({ ok: true, site: 'wvculture' }, got);
+        return outcome;
+      }
+
+      // A WikiTree profile or free-space page: what WikiTree says, its text,
+      // its cited sources as a list and the files WikiTree holds for them.
+      if (wantEvidence && state.wtPage && !evidenceUrl()) {
+        const got = await captureWikiTreePage(pageResp.html, wantPageCopy, form, recordUrl, siteOpts);
+        resetForNext();
+        outcome = Object.assign({ ok: true, site: 'wikitree' }, got);
         return outcome;
       }
 

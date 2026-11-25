@@ -491,3 +491,17 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Matching by name and birth year alone.** Two cousins of one name are common in a family tree; the result would be a silent wrong merge.
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
+
+---
+
+## 22. Surname pages: feminine forms join only when the masculine form is there
+
+**The rule.** The family site gives each family name a page. Accent and case spellings share one page (Müller, Muller). A Polish feminine form (Kowalska, Wiśniewska) or a Czech one (Nováková) joins the masculine page only when the masculine form is also carried by someone the site shows. A note's `also:` list merges any other spelling.
+
+**Why.** Kowalska and Kowalski are one family name in two grammatical forms, so a relative looking for the family wants both on one page. But a tree that holds only Kowalskas should not have its page renamed after a man who is not in it, and a guess about which spellings are "the same" stays out of the rule: anything else is merged by hand, in the human's own note. A name carried only by people the shared site hides gets no page at all, because an empty page would tell visitors the name exists, and so that a living person carries it.
+
+**Rejected.**
+
+- **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
+- **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
+- **"N more people with this name are not shown".** It tells a visitor that living people carry the name.

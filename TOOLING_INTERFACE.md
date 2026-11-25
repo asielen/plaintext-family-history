@@ -2,7 +2,7 @@
 
 **Who this is for:** developers building or extending the *AI-interface* side of the archive: the workbench harness configuration and the workflow skills that turn `fha` tools into a genealogy-aware research assistant. To use the archive, start with [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md).
 
-**Version 2.33, companion to SPEC.md v2.33 and TOOLING.md v2.33 (versions track the SPEC).**
+**Version 2.44, companion to SPEC.md v2.44 and TOOLING.md v2.44 (versions track the SPEC).**
 
 This document expands one layer that [`TOOLING.md`](TOOLING.md) only sketches: the harness and skills that sit *on top of* the deterministic `fha` tool suite. TOOLING.md specifies the tools (schemas, algorithms, command shapes). This document specifies what drives them: the workbench configuration that makes any conforming harness genealogy-aware, the browser workbench, and the workflow skills that combine `fha` calls with model judgment into the everyday research loop.
 
@@ -133,6 +133,8 @@ Both skills work ahead of `fha process` for audio and video, as `import-notes` d
 ## 3. Build status
 
 The workflow skills are authored: `.claude/skills/` holds `_STANDARD.md` (the authoring contract) plus all twenty SKILL.md files. Each skill's status is in [`.claude/skills/README.md`](.claude/skills/README.md); the tests that show this layer is done are in TOOLING.md §15.
+
+**Skill evals.** A skill that loses one of its rules would steer every later session wrong without any test noticing, so the rules are checked two ways ([`tests/skill_evals/README.md`](tests/skill_evals/README.md)). `tests/skill_evals/guardrails.yaml` pins each rule by a short phrase and the files that must carry it (AGENTS.md, `_STANDARD.md`, the skills), and `tests/test_skill_evals_static.py` fails in CI when one goes missing; the same test checks every case file's shape, offline and with no model call. `tests/skill_evals/run_skill_evals.py` is the live layer: it installs the tools into a temp folder, lays the example archive and a case's overlay over it, drives an agent CLI through the case's turns in one session (any harness that reads a turn on stdin, since §1 keeps the harness replaceable), and checks what it said and what changed in the archive. It runs by hand or from the `skill-evals` workflow (`workflow_dispatch` only, since it needs credentials and costs API credit), never on a pull request.
 
 The workbench harness configuration (§1) is documentation plus a few committed conventions (`AGENTS.md`, `CLAUDE.md`, the `--add-dir` launch script). Its maintenance is keeping those files accurate as harnesses change.
 
