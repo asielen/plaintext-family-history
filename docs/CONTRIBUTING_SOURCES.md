@@ -12,7 +12,7 @@ Anything you think might be useful: a photo of a relative, a house or a grave; a
 
 ---
 
-## Two ways to send it
+## Three ways to send it
 
 ### Method A: a file plus a notes file (preferred)
 
@@ -44,16 +44,14 @@ grandma-rose-portrait/
 └── notes.md          ← a copy of _TEMPLATE.notes.md, renamed to notes.md
 ```
 
----
-
 ### Method C: email
 
-On the family website, each person's page has a "Tell me what you know" link. It starts an email with the right name already in it. Answer the questions in your own words, attach any photos, and send it. You don't need the inbox folder for this.
+If the family website has a "Tell me what you know" link at the bottom of a person's page, use it. It starts an email with the right name already in it. Answer the questions in your own words, attach any photos, and send it. You don't need the inbox folder for this.
 
 ---
 
 ## Send it back
 
-Zip the `inbox` folder back up (Windows: right-click, then "Send to", then "Compressed folder"; Mac: right-click, then "Compress") and email it to me.
+For Method A or B, zip the `inbox` folder back up (Windows: right-click, then "Send to", then "Compressed folder"; Mac: right-click, then "Compress") and email it to me.
 
 I'll look at what you sent and add it to the archive. Anything you wrote in a note becomes a *suggestion* I review. Nothing becomes a permanent record until I accept it, and I'll follow up if I have questions.
