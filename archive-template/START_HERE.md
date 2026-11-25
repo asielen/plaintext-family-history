@@ -31,9 +31,9 @@ The top of the file, between two `---` lines, is a short list of facts about the
 
 ## How to read a source record
 
-A source record (`sources/{kind}/a-short-name_s-xxxxxxxxxx.md`) describes one piece of evidence. Its top part says what it is: `title:`, `source_type:` (census, letter, photo …), `source_date:` (when it was made), `citation:` (a sentence saying exactly what it is), `people:` and `places:` (who and where it is about), and `files:`, the list of the actual scans, photos or recordings. The file marked `is_primary: true` is the one to open first.
+A source record (`sources/{kind}/a-short-name_s-xxxxxxxxxx.md`) describes one piece of evidence. Its top part says what it is: `title:`, `source_type:` (census, letter, photo …), `source_date:` (when it was made), `citation:` (a sentence saying exactly what it is), `people:` and `places:` (who and where it is about), and `files:`, the list of the actual scans, photos or recordings. The file marked `is_primary: true` is the one to open first. A recording's record may also have `speakers:`, the codes of the people heard on it, and `quotes:`, a few of their own words with the time they are said.
 
-Under `## Claims` is a list of facts the source states, one block per fact. `## Stories` holds longer passages (often from interviews) and `## Notes` holds anything else.
+Under `## Claims` is a list of facts the source states, one block per fact. `## Stories` holds longer passages (often from interviews) and `## Notes` holds anything else. A record in `sources/proofs/` is different: it was written in the archive, and sets out the reasoning behind one conclusion where the records disagree or none says it outright.
 
 ## What the codes mean
 
@@ -84,7 +84,7 @@ Here `photos/1880/portrait.jpg` is the file `D:/Family Photos/1880/portrait.jpg`
 ## The other folders
 
 - `places/places.yaml`: every place, with its `l-` code and, where known, its map position.
-- `notes/`: research notes. `notes/questions.md` holds open questions and working answers; `notes/research-log.md` lists searches already made, including the ones that found nothing.
+- `notes/`: research notes. `notes/questions.md` holds open questions and working answers; `notes/research-log.md` lists searches already made, including the ones that found nothing; `notes/surnames/`, where present, holds notes about a family name.
 - `inbox/`: new material waiting to be filed.
 - `docs/`: the manual. `docs/GETTING_STARTED.md` is the keeper's guide, `docs/CHEATSHEET.md` the one-page summary, and `docs/SPEC.md` the full rules this archive follows.
 - `AGENTS.md`, `CLAUDE.md`, `fha`, `fha.cmd`, `serve.cmd`, and the hidden `.fha/` folder: the tools and their instructions. The archive does not need them to be read.

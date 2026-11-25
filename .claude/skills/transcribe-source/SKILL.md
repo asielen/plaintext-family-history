@@ -199,7 +199,7 @@ It reuses the archive's existing marker pair: the same `<!-- AI-DRAFT … -->` /
 
 **The marker is the only record of review.** The source's `ai_passes:` entry says a pass happened and nothing about review. The file travels (into a packet, onto a USB stick, out of the archive entirely) and must state its own status without its record, and it is the file whose text the index already holds.
 
-**Flipping it is a gap, and this skill blocks on it** (`_STANDARD.md` §6). `fha confirm draft` takes a `<p-id>` and edits a person profile; no verb flips a marker in a source's companion file, and a skill never hand-edits a marker. So every AI transcript stays *unreviewed*, which is a true statement about it. The wanted verb and what it must do are recorded in [`GAP.md`](GAP.md). Tell the human plainly: "I can write out what it says, but there is no way yet for you to sign off that you have checked it, so searches will keep flagging this text as unchecked."
+**Flipping it is a gap, and this skill blocks on it** (`_STANDARD.md` §6). `fha confirm draft` takes a person or a source id and flips the markers in that profile or source record only; no verb flips a marker in a source's companion file, and a skill never hand-edits a marker. So every AI transcript stays *unreviewed*, which is a true statement about it. The wanted verb and what it must do are recorded in [`GAP.md`](GAP.md). Tell the human plainly: "I can write out what it says, but there is no way yet for you to sign off that you have checked it, so searches will keep flagging this text as unchecked."
 
 ## Backfill (the batch case)
 
