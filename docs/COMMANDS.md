@@ -202,6 +202,7 @@ Build always-current summary pages from your records.
                                    (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
+  fha views register <p-id>        A printable book-style register of a person's descendants
   fha views ahnentafel <p-id>      A printable numbered list of a person's ancestors
   fha views descendants <p-id>     A printable numbered list of a person's descendants
 
@@ -339,7 +340,7 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | `p-id` | Seed person for traversal. |
 | `--mode` `{ancestors,descendants,fan}` | ancestors: pedigree BFS; descendants: all descendants + in-law spouses; fan: all edge types (default 2 hops). |
 | `--generations` `N` | Maximum generations / hops (default: unlimited; fan default: 2). |
-| `--format` `{json,dot,html}` | Output format (default: json). html is not available here; run `fha site` for a browsable tree. |
+| `--format` `{json,dot,html}` | Output format (default: json). dot is a family chart for Graphviz: each family a union point and a sibling bar, adopted or step ties dashed, friends dotted. Both formats name everyone, living people included (private research use); to share a tree use `fha site`, `fha packet` or `fha gedcom`. html is not available here; run `fha site` for a browsable tree. |
 | `--out` `FILE` | Write output to FILE instead of stdout. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -359,6 +360,26 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 |---|---|
 | `p-id` | A deceased person; the sheet is for them and a spouse. |
 | `--spouse` `p-id` | Only the sheet for this spouse (default: one sheet per spouse). |
+| `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views register`
+
+Print a book-style register of a person's descendants, each fact with its source.
+
+```text
+Write a printed register report to generated/views/: the person is
+1, each descendant who has children gets the next number (generation by
+generation) and a short paragraph, and children are listed with Roman
+numerals. Living descendants are counted under their parent, never
+named, and their own children are left out; private records are left out.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `p-id` | A deceased person; everyone descended from them is listed. |
+| `--generations` `N` | How many generations to print, the person being the first (default 4, most 10). |
 | `--format` `{md,html}` | md (default) or html: a page to print or save as PDF. Both go under generated/views/. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
@@ -524,6 +545,8 @@ Show how two people are related.
   fha relate "Ada Hart" P-B   Either person by full name instead of ID (a name
                               two people share is listed so you can pick one)
   fha relate P-A P-B --json   Same answer, as machine-readable JSON
+  fha relate P-A --all        Everyone related to one person: blood relatives
+                              nearest first, then those related by marriage
   fha relate P-A P-B --cm 450 Does 450 cM of shared DNA fit their recorded tie?
   fha relate --cm 450         Which relationships 450 cM fits (no people needed)
 
@@ -534,6 +557,7 @@ A read-only view over accepted relationship claims: nothing is written.
 |---|---|
 | `[P-A]` | First person: ID or full name |
 | `[P-B]` | Second person: ID or full name |
+| `--all` | List everyone related to one person, by blood or by marriage |
 | `--cm` `CM` | Shared DNA in centimorgans from a match; shows the relationships it fits |
 | `--root` `PATH` | Archive root (overrides auto-detection) |
 | `--json` | Machine-readable JSON output |
@@ -1325,7 +1349,7 @@ hand-edit right after minting. Preview any change first with --dry-run.
 
 ## `fha confirm`
 
-Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/draft/merge)
+Write back a decision the human made (xref/cooccur/dismiss/undismiss/place/discovery/search/draft/merge)
 
 ```text
 Write down a suggestion you've decided to accept.
@@ -1336,6 +1360,7 @@ Write down a suggestion you've decided to accept.
   fha confirm undismiss <p-a> <p-b> [--not-same-person]   (or: --list)
   fha confirm place <c-id...> (--name NAME | --into <l-id>)
   fha confirm discovery "<text>"
+  fha confirm search <p-id> --repository NAME --result nil|partial|found|unavailable
   fha confirm draft <p-id>
   fha confirm merge <p-merged> --into <p-survivor> --reason "<why>"
 
@@ -1422,6 +1447,24 @@ Append a dated entry to notes/discoveries.md
 | `TEXT` | What was discovered. |
 | `--refs` `IDS` | Comma-separated S-/P-/C-/L-/H- refs. |
 | `--dry-run` | Preview the change without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha confirm search`
+
+Log a search you ran for one person in notes/research-log.md
+
+| Argument | What it does |
+|---|---|
+| `p-id` | The person you searched for. |
+| `--repository` `NAME` | Where you searched, e.g. FamilySearch. |
+| `--result` `RESULT` | nil (nothing found), partial, found or unavailable. |
+| `--terms` `TEXT` | What you typed in, e.g. "Thomas Hartley, born about 1840". |
+| `--collection` `TEXT` | The collection or index searched. |
+| `--years` `EDTF` | The years of records it covered, like 1875 or 1911/1925. |
+| `--source` `s-id` | The source the search found (--result found). |
+| `--note` `TEXT` | What was not covered (partial) or why it could not be searched (unavailable). |
+| `--date` `YYYY-MM-DD` | The day you searched (default: today). |
+| `--dry-run` | Preview the entry without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha confirm draft`

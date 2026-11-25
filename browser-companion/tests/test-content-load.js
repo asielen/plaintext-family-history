@@ -931,3 +931,134 @@ test('PR #258 review: on a shared photo, the form starts from its Details - link
   assert.strictEqual(r.prefill.sourceDate, '1925~');
   assert.deepStrictEqual(r.prefill.people, ['Thomas Hartley', 'Margaret Hartley']);
 });
+
+// ── WikiTree ──────────────────────────────────────────────────────────────────
+const WT_API = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'tests', 'fixtures',
+  'capture-samples', 'wikitree-api.json'), 'utf8'));
+const WT_PROFILE = 'https://www.wikitree.com/wiki/Hartley-6084';
+
+// WikiTree as the fixtures answer it: `profile` is the getProfile answer for
+// the page, `files` the held files' own pages by address.
+function wikitree({ profile = WT_API.profile, photos = WT_API.photos, files = {}, apiDown = false } = {}) {
+  return async (url) => {
+    const j = (x) => ({ ok: true, status: 200, text: async () => JSON.stringify(x) });
+    if (url.startsWith('https://api.wikitree.com/')) {
+      if (apiDown) throw new TypeError('Failed to fetch');
+      const q = new URL(url).searchParams;
+      if (q.get('action') === 'getPhotos') return j(photos);
+      if (/^Space:/.test(q.get('key'))) return j(WT_API.space);
+      return j(profile);
+    }
+    if (files[url]) return { ok: true, status: 200, text: async () => files[url] };
+    return { ok: false, status: 404, text: async () => '' };
+  };
+}
+
+test('a WikiTree profile is read from WikiTree\'s public data service, once, with no login', async () => {
+  const page = loadPage({ url: WT_PROFILE, cookie: 'wikitree_session=SECRET-WT', tree: parse(SAMPLE('wikitree-profile')),
+    fetch: wikitree() });
+  const r = await page.ask({ action: 'prefill' });
+  assert.strictEqual(r.prefill.wikitreePage, true);
+  assert.strictEqual(r.prefill.recipeHint, 'wikitree');
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.via, 'api');
+  assert.strictEqual(info.record.wikitreeId, 'Hartley-6084');
+  assert.strictEqual(info.sources.length, 4);
+  assert.strictEqual(info.citation, 'WikiTree, "Calvin Hartley (Hartley-6084)," (' + WT_PROFILE +
+    ' : last edited 2023-05-26; accessed 2026-11-24).');
+  // The page shows no photos (data-photo-total="0"), so they are not asked for.
+  assert.deepStrictEqual(page.calls.map((c) => new URL(c.url).searchParams.get('action')), ['getProfile']);
+  for (const c of page.calls) {
+    assert.strictEqual(c.init.credentials, 'omit');
+    assert.strictEqual(c.auth, false);
+  }
+});
+
+test('when WikiTree\'s data service does not answer, or refuses, the page itself is read', async () => {
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')), fetch: wikitree({ apiDown: true }) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.via, 'page');
+  assert.match(info.apiError, /did not answer/);
+  assert.strictEqual(info.record.name, 'Calvin Hartley');
+  assert.deepStrictEqual(info.record.spouses.map((s) => s.wikitreeId), ['Cole-1234', 'Reed-12']);
+  assert.strictEqual(info.sources.length, 4);
+  const refused = await loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: wikitree({ profile: WT_API.refused }) }).ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(refused.via, 'page');
+  assert.match(refused.apiError, /Permission denied/);
+});
+
+test('each file WikiTree holds for a cited source: its own page read once, a Space page by the API, nothing off-site', async () => {
+  const profile = JSON.parse(JSON.stringify(WT_API.profile));
+  profile[0].profile.bio = [
+    '== Sources ==',
+    '* Marriage: [https://www.wikitree.com/photo/jpg/Hartley-6084-2 image]',
+    '* Bible: [[Space:Hartley_Family_Bible]]',
+    '* Probate: https://www.ancestry.com/discoveryui-content/view/123:9071',
+    '* Deed: https://www.wikitree.com/photo/pdf/Hartley-Deed-1',
+  ].join('\n');
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: wikitree({ profile, files: { 'https://www.wikitree.com/photo/jpg/Hartley-6084-2': SAMPLE('wikitree-photo-page') } }) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.deepStrictEqual(info.hosted.map((h) => [h.n, h.kind, h.caption, h.originalUrl, h.error || null]), [
+    [1, 'file', 'Hartley-Cole marriage record, Fairview', 'https://www.wikitree.com/photo.php/7/7a/Hartley-6084-2.jpg', null],
+    [2, 'space', 'Hartley Family Bible', null, null],
+    [3, 'file', null, null, 'WikiTree did not show the file’s page (HTTP 404)'],
+  ]);
+  assert.match(info.hosted[1].text, /Calvin Hartley born 12 March 1842/);
+  const asked = page.calls.map((c) => c.url);
+  assert.ok(!asked.some((u) => /ancestry\.com/.test(u)), 'a source on another site is never fetched');
+  assert.deepStrictEqual(asked.filter((u) => /www\.wikitree\.com/.test(u)), [
+    'https://www.wikitree.com/photo/jpg/Hartley-6084-2', 'https://www.wikitree.com/photo/pdf/Hartley-Deed-1']);
+  for (const c of page.calls) assert.strictEqual(c.init.credentials, 'omit');
+});
+
+test('more than 10 files WikiTree holds: only the first 10 are read, and the total is said', async () => {
+  const profile = JSON.parse(JSON.stringify(WT_API.profile));
+  profile[0].profile.bio = '== Sources ==\n' + Array.from({ length: 13 }, (_, i) =>
+    '* https://www.wikitree.com/photo/jpg/Hartley-Ledger-' + (i + 1)).join('\n');
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')), fetch: wikitree({ profile }) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.hosted.length, 10);
+  assert.strictEqual(info.hostedTotal, 13);
+  assert.strictEqual(page.calls.filter((c) => /\/photo\/jpg\//.test(c.url)).length, 10);
+});
+
+test('a WikiTree page that is not a profile or free-space page is refused before any request', async () => {
+  const page = loadPage({ url: 'https://www.wikitree.com/wiki/Category:Fairview', fetch: wikitree() });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, false);
+  assert.strictEqual(page.calls.length, 0);
+});
+
+// Review of #512: when WikiTree says "slow down" on one cited file's page, the
+// rest are not asked for, and the panel is told so it backs off too.
+test('a "slow down" from WikiTree on a cited file stops the rest and is passed on', async () => {
+  const profile = JSON.parse(JSON.stringify(WT_API.profile));
+  profile[0].profile.bio = '== Sources ==\n' + Array.from({ length: 5 }, (_, i) =>
+    '* https://www.wikitree.com/photo/jpg/Hartley-Ledger-' + (i + 1)).join('\n');
+  const inner = wikitree({ profile });
+  const busy = { ok: false, status: 429, text: async () => '' };
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: async (url, init) => (/\/photo\/jpg\//.test(url) ? busy : inner(url, init)) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.slowDown, true);
+  assert.strictEqual(page.calls.filter((c) => /\/photo\/jpg\//.test(c.url)).length, 1);
+  assert.strictEqual(info.hosted.length, 5);
+  assert.match(info.hosted[0].error, /HTTP 429/);
+  assert.ok(info.hosted.slice(1).every((h) => /slow down/.test(h.error)), JSON.stringify(info.hosted));
+});
+
+test('a "slow down" on the profile itself: the page is read instead, nothing more is asked, and the panel is told', async () => {
+  const page = loadPage({ url: WT_PROFILE, tree: parse(SAMPLE('wikitree-profile')),
+    fetch: async () => ({ ok: false, status: 429, text: async () => '' }) });
+  const info = await page.ask({ action: 'wikitreeInfo', today: '2026-11-24' });
+  assert.strictEqual(info.ok, true, info.error);
+  assert.strictEqual(info.via, 'page');
+  assert.strictEqual(info.slowDown, true);
+  assert.strictEqual(page.calls.length, 1);
+});

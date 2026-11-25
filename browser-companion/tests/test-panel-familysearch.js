@@ -692,6 +692,118 @@ test('a viewer opened from a record is still captured as that record, not as a b
   assert.deepStrictEqual(Object.keys(await recordData(p.written[0])).slice(0, 2), ['note', 'record']);
 });
 
+// ── the next image of a deed he already holds (11-3) ─────────────────────────
+// The fixture film image is image 11 of DGS 8129459. Seen It knows the
+// archive's film images by where they sit: fsfilm:{DGS}:{image number}.
+
+const filmKey = (n) => 'fsfilm:8129459:' + n;
+const SID = 'S-a1b2c3d4e5';
+
+// Press Capture and stop where the panel asks; `answer` presses the button
+// whose words match, and the capture runs on to the end.
+async function captureAsked(p) {
+  const pressed = p.$('btn-capture').fire('click');
+  await settle();
+  const ask = p.$('attach-ask');
+  const shown = ask.hidden === false;
+  return {
+    shown,
+    text: p.$('attach-ask-text').textContent,
+    buttons: p.$('attach-ask-choices').children.map((b) => b.textContent),
+    async answer(re) {
+      const b = p.$('attach-ask-choices').children.find((x) => re.test(x.textContent));
+      assert.ok(b, 'no button matching ' + re);
+      await b.fire('click');
+      await pressed;
+      await settle();
+    },
+    done: pressed,
+  };
+}
+
+test('a film image next to one the archive holds asks first; Yes files it into that source', async () => {
+  const p = await open(FILM_IMAGE, { seenIt: { [filmKey(10)]: { state: 'filed', sid: SID } } });
+  const q = await captureAsked(p);
+  assert.ok(q.shown, 'the question is shown');
+  assert.strictEqual(p.written.length, 0, 'nothing is saved before he answers');
+  assert.match(q.text, /You already have image 10 of this film as s-a1b2c3d4e5\. Add this image \(11\) to it\?/);
+  assert.deepStrictEqual(q.buttons, ['Yes, add it to s-a1b2c3d4e5', 'No, it’s a separate record']);
+  // Seen It was asked about the two images either side, nearest first, and
+  // never about this image itself.
+  const asked = p.external.find((e) => e.msg.keys && e.msg.keys.some((k) => k.startsWith('fsfilm:')));
+  assert.deepStrictEqual(asked.msg.keys, [filmKey(10), filmKey(12), filmKey(9), filmKey(13)]);
+  await q.answer(/^Yes/);
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.strictEqual(p.written[0].captureJson.attach_to, 's-a1b2c3d4e5');
+  assert.match(p.result(), /goes into s-a1b2c3d4e5/);
+  assert.notStrictEqual(p.$('attach-ask').hidden, false, 'the question is put away');
+});
+
+test('No, or the default button, files the neighbouring image as a new source, as before', async () => {
+  const p = await open(FILM_IMAGE, { seenIt: { [filmKey(12)]: { state: 'filed', sid: SID } } });
+  const q = await captureAsked(p);
+  assert.ok(q.shown);
+  await q.answer(/separate record/);
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.ok(!('attach_to' in p.written[0].captureJson));
+  assert.strictEqual(p.written[0].captureJson.title, 'Deeds, 1785-1851, image 11');
+});
+
+test('no question when nothing the archive holds is within two images on the same film', async () => {
+  const cases = [
+    undefined, // Seen It not installed
+    {}, // Seen It knows nothing near
+    { [filmKey(14)]: { state: 'filed', sid: SID } }, // three images away
+    { [filmKey(1)]: { state: 'filed', sid: SID } }, // ten images away
+    { 'fsfilm:8000011:10': { state: 'filed', sid: SID } }, // another film
+    { [filmKey(11)]: { state: 'filed', sid: SID } }, // this very image: not a neighbour
+    { [filmKey(10)]: 'captured' }, // waiting in the inbox: no source to add it to yet
+    { [filmKey(10)]: 'filed' }, // filed, but Seen It does not say which source
+  ];
+  for (const seenIt of cases) {
+    const p = await open(FILM_IMAGE, { seenIt });
+    await p.capture();
+    assert.notStrictEqual(p.$('attach-ask').hidden, false, JSON.stringify(seenIt));
+    assert.strictEqual(p.written.length, 1, p.result());
+    assert.ok(!('attach_to' in p.written[0].captureJson), JSON.stringify(seenIt));
+  }
+});
+
+test('two sources either side: one button for each, nearest first, and nothing chosen for him', async () => {
+  const other = 'S-f6g7h8j9k0';
+  const p = await open(FILM_IMAGE, { seenIt: {
+    [filmKey(13)]: { state: 'filed', sid: other },
+    [filmKey(10)]: { state: 'filed', sid: SID },
+    [filmKey(9)]: { state: 'filed', sid: SID }, // the same source again: one button
+  } });
+  const q = await captureAsked(p);
+  assert.match(q.text, /image 10 \(s-a1b2c3d4e5\) and image 13 \(s-f6g7h8j9k0\)/);
+  assert.deepStrictEqual(q.buttons, ['Add it to s-a1b2c3d4e5 (image 10)', 'Add it to s-f6g7h8j9k0 (image 13)',
+    'No, it’s a separate record']);
+  await q.answer(/s-f6g7h8j9k0/);
+  assert.strictEqual(p.written[0].captureJson.attach_to, 's-f6g7h8j9k0');
+});
+
+test('the tab moving to another record while he decides saves nothing, whatever he then presses', async () => {
+  for (const re of [/^Yes/, /separate record/]) {
+    const p = await open(FILM_IMAGE, { seenIt: { [filmKey(10)]: { state: 'filed', sid: SID } } });
+    const q = await captureAsked(p);
+    assert.ok(q.shown);
+    await p.navigate(CALVIN);
+    await q.answer(re);
+    assert.strictEqual(p.written.length, 0, p.result());
+    assert.match(p.result(), /page in the tab changed/);
+  }
+});
+
+test('a film image whose image number FamilySearch did not give asks nothing', async () => {
+  const p = await open(FILM_IMAGE, { over: { '/filmdatainfo/': 503 }, seenIt: { [filmKey(10)]: { state: 'filed', sid: SID } } });
+  await p.capture();
+  assert.strictEqual(p.written.length, 1, p.result());
+  assert.ok(!p.external.some((e) => e.msg.keys && e.msg.keys.some((k) => k.startsWith('fsfilm:'))));
+  assert.ok(!('attach_to' in p.written[0].captureJson));
+});
+
 // ── Full-Text transcription (11-2) ───────────────────────────────────────────
 
 test('a film image whose Full-Text panel is open saves FamilySearch\'s machine reading, marked unchecked', async () => {
