@@ -498,18 +498,6 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **A question for every place that gained a county.** A winter of tidying place names would raise hundreds. A place that only gains parts is more detail, the same as a date that becomes exact.
 - **Writing record numbers into `external_ids:`.** A record number is a handle inside one file, and another program may reuse it for someone else.
 
-## 23. A recording plays on the shared site only on an explicit yes
-
-**The rule.** A recording plays on the shared site only when the owner wrote `rights: recording_ok: true` on its source, everyone heard on it is listed in `speakers:` and has died, and nobody else the source names is living, unknown or private. Anything else shows "a recording, kept in the archive", with no file name. The site plays a copy ffmpeg makes with every tag dropped, never the original.
-
-**Why.** A name on a page can be left out; a voice on a tape cannot. An hour-long interview with a grandfather names his living children and grandchildren, their towns and their troubles, and no tool can hear which minutes are safe. So the deceased-speaker test is not enough by itself: the owner has listened, and says so per source. A file name such as `margaret-1998.m4a` names the person interviewed, so a recording held back is not named either. A phone writes the place and the device into a recording, as a camera does into a photo, so only a stripped copy leaves.
-
-**Rejected.**
-
-- **Playing every recording whose speakers have died.** It would publish what they said about the living.
-- **Cutting the living out of a recording.** No tool can find every mention by ear, and a cut tape misleads.
-- **Copying the original file.** It carries the phone's location and device tags.
-
 ---
 
 ## 22. Surname pages: feminine forms join only when the masculine form is there
@@ -523,6 +511,22 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
 - **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
 - **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
+
+---
+
+## 23. A recording plays on the shared site only on an explicit yes
+
+**The rule.** A recording plays on the shared site only when the owner wrote `rights: recording_ok: true` on its source, everyone heard on it is listed in `speakers:` and has died, and nobody else the source names is living, unknown or private. Anything else shows "a recording, kept in the archive", with no file name. The site plays a copy ffmpeg makes with every tag dropped, never the original.
+
+**Why.** A name on a page can be left out; a voice on a tape cannot. An hour-long interview with a grandfather names his living children and grandchildren, their towns and their troubles, and no tool can hear which minutes are safe. So the deceased-speaker test is not enough by itself: the owner has listened, and says so per source. A file name such as `margaret-1998.m4a` names the person interviewed, so a recording held back is not named either. A phone writes the place and the device into a recording, as a camera does into a photo, so only a stripped copy leaves.
+
+**Rejected.**
+
+- **Playing every recording whose speakers have died.** It would publish what they said about the living.
+- **Cutting the living out of a recording.** No tool can find every mention by ear, and a cut tape misleads.
+- **Copying the original file.** It carries the phone's location and device tags.
+
+---
 
 ## 24. The family map draws its own outline
 

@@ -553,6 +553,7 @@ _DERIVATIVE_MAX_PX = 1200
 # Profile photos are shown small (a person-page plate, a tree square), so their
 # derivative is kept light - crisp at portrait size, tiny for the tree thumbnail.
 _PROFILE_MAX_PX = 512
+_FACE_MAX_PX = 128   # a face crop is portrait-sized at most (calendar, trees)
 
 # Saved web pictures (`_DerivativeCache`). Making a derivative means decoding the
 # full-size original - a 100 MB TIFF scan takes seconds - and the result depends
@@ -2455,9 +2456,39 @@ def _place_leading_name_end(place_label: str) -> int | None:
 
 # ── Image derivatives ─────────────────────────────────────────────────────────
 
-def _picture_bytes(src: Path, max_px: int, suffix: str) -> bytes | None:
+# Exif Orientation value -> the turn that makes the stored pixels upright.
+_EXIF_UPRIGHT = ({2: Image.FLIP_LEFT_RIGHT, 3: Image.ROTATE_180, 4: Image.FLIP_TOP_BOTTOM,
+                  5: Image.TRANSPOSE, 6: Image.ROTATE_270, 7: Image.TRANSVERSE,
+                  8: Image.ROTATE_90} if _PIL_AVAILABLE else {})
+_FACE_WIDEN = 1.3   # a face crop shows a little hair and shoulder, not just the face
+
+
+def _face_box(area: tuple[float, float, float, float], size: tuple[int, int]) -> tuple[int, int, int, int]:
+    """The square, in pixels, that a face region is cut to, so a relative sees
+    the face with a margin rather than a tight box.
+
+    `area` is a photo tool's face region as fractions of the picture: centre
+    x, centre y, width, height (MWG `Area`, `unit: normalized`). The box is
+    the region widened by 30% each way, made square on its longer side and
+    slid back inside the picture when it overhangs an edge (shrunk only when
+    the picture is smaller than the square)."""
+    cx, cy, w, h = area
+    width, height = size
+    side = max(w * width, h * height) * _FACE_WIDEN
+    side = max(1, min(round(side), width, height))
+    left = min(max(round(cx * width - side / 2), 0), width - side)
+    top = min(max(round(cy * height - side / 2), 0), height - side)
+    return left, top, left + side, top + side
+
+
+def _picture_bytes(src: Path, max_px: int, suffix: str,
+                   crop: tuple[float, float, float, float] | None = None) -> bytes | None:
     """The web picture of `src`: resized, EXIF-stripped, encoded for a file
     ending in `suffix`. None when it cannot be made.
+
+    With `crop` (a face region, see `_face_box`) the picture is that face cut
+    out of the photo on its stored pixels (the MWG rule for regions), then
+    turned upright.
 
     Standalone snapshots must carry their own image derivatives so no full-res
     original - and none of its EXIF (camera, GPS, timestamps that could leak a
@@ -2477,6 +2508,13 @@ def _picture_bytes(src: Path, max_px: int, suffix: str) -> bytes | None:
     """
     try:
         with Image.open(src) as im:
+            if crop is not None:
+                # MWG Guidelines 2.0 5.9: regions are relative to the stored
+                # pixels, before Exif Orientation - cut first, then turn upright.
+                turn = _EXIF_UPRIGHT.get(im.getexif().get(0x0112))
+                im = im.crop(_face_box(crop, im.size))
+                if turn is not None:
+                    im = im.transpose(turn)
             im = im.convert('RGB') if im.mode not in ('RGB', 'L') else im
             im.thumbnail((max_px, max_px))
             buf = io.BytesIO()
@@ -2487,11 +2525,12 @@ def _picture_bytes(src: Path, max_px: int, suffix: str) -> bytes | None:
         return None
 
 
-def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
+def _make_derivative(src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX,
+                     crop: tuple[float, float, float, float] | None = None) -> bool:
     """Write the web picture of `src` (`_picture_bytes`) to `dest`, in this
     process. True on success; False, with nothing written, when it cannot be
     made or saved."""
-    data = _picture_bytes(src, max_px, dest.suffix)
+    data = _picture_bytes(src, max_px, dest.suffix, crop)
     if data is None:
         return False
     try:
@@ -2913,10 +2952,14 @@ class _DerivativeCache:
         self._locations[str(src)] = found
         return found
 
-    def entry_fields(self, src: Path, st: os.stat_result, max_px: int, suffix: str) -> dict:
-        """Everything a derivative's bytes depend on, as recorded in its note."""
+    def entry_fields(self, src: Path, st: os.stat_result, max_px: int, suffix: str,
+                     crop: tuple[float, float, float, float] | None = None) -> dict:
+        """Everything a derivative's bytes depend on, as recorded in its note.
+        A face crop adds `crop`, so two faces cut from one photo are two
+        entries; a whole picture has no such field, so every note made before
+        face crops still reads as it did."""
         root, path = self.location(src)
-        return {
+        fields = {
             'recipe': _DERIVATIVE_RECIPE_VERSION,
             'pillow': _PIL_VERSION,
             'root': root,
@@ -2926,6 +2969,9 @@ class _DerivativeCache:
             'max_px': max_px,
             'format': suffix.lower(),
         }
+        if crop is not None:
+            fields['crop'] = ','.join(f'{v:.5f}' for v in crop)
+        return fields
 
     @staticmethod
     def entry_key(fields: dict) -> str:
@@ -3034,6 +3080,11 @@ class _DerivativeCache:
         """Is `fields` exactly the shape `entry_fields` makes (see `_read_note`)?
         Or, given `_LEGACY_NOTE_FIELD_TYPES`, the shape a pre-#240 build made."""
         shape = _NOTE_FIELD_TYPES if shape is None else shape
+        if type(fields) is dict and shape is _NOTE_FIELD_TYPES and 'crop' in fields:
+            # A face crop's note: the usual fields plus the region it was cut to.
+            if type(fields['crop']) is not str or not fields['crop']:
+                return False
+            fields = {k: v for k, v in fields.items() if k != 'crop'}
         if type(fields) is not dict or set(fields) != shape.keys():
             return False
         if any(type(fields[k]) is not t for k, t in shape.items()):
@@ -5366,6 +5417,10 @@ class _SiteBuilder:
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
         self._profile_photo_cache: dict[str, Path | None] = {}
+        # Who shows a face cut from a group photo, and which photo's source
+        # to name under it (`_resolve_face_photo`).
+        self._face_photo_source: dict[str, str | None] = {}
+        self._face_name_maps: tuple[dict, dict] | None = None
         # `_provisional_vital` is asked up to four times per person page
         # (birth/death x date/place - PROVISIONAL_VITAL_FIELDS) and each ask
         # used to independently re-read and re-parse the same record file
@@ -7162,7 +7217,8 @@ class _SiteBuilder:
         digest = hashlib.sha1(norm.encode('utf-8')).hexdigest()[:8]
         return self.media_dir / subdir / f'{Path(norm).stem}_{digest}.jpg'
 
-    def _derive(self, src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX) -> bool:
+    def _derive(self, src: Path, dest: Path, max_px: int = _DERIVATIVE_MAX_PX,
+                crop: tuple[float, float, float, float] | None = None) -> bool:
         """Put the web picture of `src` at `dest` (in media/), reusing a saved
         copy when the original has not changed. True on success, exactly as
         `_make_derivative` answers - callers keep their own warnings.
@@ -7186,20 +7242,20 @@ class _SiteBuilder:
         scan that can never be made, never needs that second pass."""
         cache = self.derivative_cache
         if cache is None:
-            return _make_derivative(src, dest, max_px)
+            return _make_derivative(src, dest, max_px, crop)
         self._collect_pictures()   # write out whatever the workers have finished
         try:
             st = os.stat(src)
         except OSError:
             self._collect_pictures(dest)
-            return _make_derivative(src, dest, max_px)
-        fields = cache.entry_fields(src, st, max_px, dest.suffix)
+            return _make_derivative(src, dest, max_px, crop)
+        fields = cache.entry_fields(src, st, max_px, dest.suffix, crop)
         key = cache.entry_key(fields)
         if self._derived_dests.get(dest) == key:
             return True
         data = cache.fetch(key, fields)
         if data is None:
-            data = cache.fetch_legacy(src, st, max_px, dest.suffix)
+            data = (cache.fetch_legacy(src, st, max_px, dest.suffix) if crop is None else None)
             if data is not None:
                 cache.save(key, fields, data)   # under its new name, for next time
         if data is not None:
@@ -7208,14 +7264,15 @@ class _SiteBuilder:
                 dest.parent.mkdir(parents=True, exist_ok=True)
                 dest.write_bytes(data)
             except OSError:
-                return _make_derivative(src, dest, max_px)
+                return _make_derivative(src, dest, max_px, crop)
             self._derived_dests[dest] = key
             return True
-        if self._queue_picture(src, dest, max_px, key, fields, st):
+        # A face crop is small and few: it is made here, never sent to a worker.
+        if crop is None and self._queue_picture(src, dest, max_px, key, fields, st):
             self._derived_dests[dest] = key
             return True
         self._collect_pictures(dest)
-        if not _make_derivative(src, dest, max_px):
+        if not _make_derivative(src, dest, max_px, crop):
             self._note_failure(src, st, key, fields)
             return False
         self._derived_dests[dest] = key
@@ -7730,6 +7787,7 @@ class _SiteBuilder:
             'display_id': fmt_id_display(pid), 'name': name,
             'alt_names': alt_names, 'tags': tags,
             'portrait': self._profile_photo_href(pid, page_dir),
+            'portrait_note': self._portrait_note(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
             'kinship': self._person_kinship(pid),
             'pedigree': pedigree,
@@ -10088,8 +10146,133 @@ class _SiteBuilder:
         None when unset, unresolvable, or withheld. Resolved once per person and
         reused across their page and every tree node they appear in."""
         if pid not in self._profile_photo_cache:
-            self._profile_photo_cache[pid] = self._resolve_profile_photo(pid)
+            chosen = self._resolve_profile_photo(pid)
+            if chosen is None:
+                chosen = self._resolve_face_photo(pid)
+            self._profile_photo_cache[pid] = chosen
         return self._profile_photo_cache[pid]
+
+    def _face_names(self) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+        """(face tag -> people, name or variant -> people), read once from the
+        index: how a name written on a photo's face region finds its person,
+        as `photoindex._resolve_photo_people` does."""
+        if self._face_name_maps is None:
+            tags: dict[str, set[str]] = {}
+            names: dict[str, set[str]] = {}
+            try:
+                for tag, pid in self.conn.execute('SELECT tag, person_id FROM person_face_tags'):
+                    tags.setdefault(tag, set()).add(pid)
+                for name, pid in self.conn.execute('SELECT name, id FROM persons'):
+                    if name:
+                        names.setdefault(name, set()).add(pid)
+                for name, pid in self.conn.execute('SELECT variant, person_id FROM person_variants'):
+                    if name:
+                        names.setdefault(name, set()).add(pid)
+            except sqlite3.DatabaseError:
+                pass
+            self._face_name_maps = (tags, names)
+        return self._face_name_maps
+
+    def _region_is_person(self, region_name: str, pid: str) -> bool:
+        """Does a face region's written name mean exactly this person? A tag
+        wins; only without one is the plain name tried; either must name one
+        person, never a guess between two."""
+        tags, names = self._face_names()
+        hit = tags.get(region_name) or names.get(region_name)
+        return bool(hit) and hit == {pid}
+
+    def _resolve_face_photo(self, pid: str) -> Path | None:
+        """Great-aunt Ada has no portrait chosen, but a photo names her face:
+        her portrait is that face, cut out of the photo. Used wherever a
+        portrait shows (her page, the trees, the wall calendar).
+
+        The photo must pass every gate a photo-strip photo passes - its source
+        published, nobody living, withheld or unknown tagged anywhere in its
+        group - even though a crop shows one face: a crop of a living
+        person's photo is still person's photo. Needs a fresh photo catalog and
+        Pillow, and is left out of a linked preview (which makes no pictures);
+        with none of those, nothing is shown and nothing is said. Of the
+        photos that name her, the group's primary comes first, then the
+        biggest face, then the path."""
+        if self.photos_conn is None or self.linked or not _PIL_AVAILABLE:
+            return None   # a linked preview makes no pictures (TOOLING §12)
+        meta = self.person_meta.get(pid)
+        if meta is None or self._person_is_redacted(meta):
+            return None
+        try:
+            rows = self.photos_conn.execute(
+                'SELECT ph.path, ph.is_primary, ph.source_id, fr.name, fr.area_json '
+                'FROM photo_people pp JOIN photos ph ON ph.path = pp.path '
+                'JOIN photo_face_regions fr ON fr.path = pp.path '
+                "WHERE pp.person_ref = ? AND pp.via = 'face-tag' AND ph.path NOT LIKE ?",
+                (pid, f'{_MISSING_PREFIX}%')).fetchall()
+        except sqlite3.DatabaseError:
+            return None
+        found = []
+        for r in rows:
+            if not self._region_is_person(r['name'], pid):
+                continue
+            try:
+                area = json.loads(r['area_json'] or '')
+                box = tuple(float(area[k]) for k in ('X', 'Y', 'W', 'H'))
+            except (ValueError, TypeError, KeyError):
+                continue
+            if (str(area.get('Unit', 'normalized')).lower() != 'normalized'
+                    or not (0 <= box[0] <= 1 and 0 <= box[1] <= 1 and 0 < box[2] <= 1 and 0 < box[3] <= 1)):
+                continue
+            found.append((0 if r['is_primary'] else 1, -box[2] * box[3], r['path'], box, r['source_id']))
+        faces_in: dict[str, list[tuple[float, float]]] = {}
+        for r in rows:   # every named face in each photo, to keep a neighbour out of a crop
+            try:
+                a = json.loads(r['area_json'] or '')
+                faces_in.setdefault(r['path'], []).append((float(a['X']), float(a['Y']), float(a['W']), float(a['H'])))
+            except (ValueError, TypeError, KeyError):
+                continue
+        for _primary, _area, path, box, source_id in sorted(found):
+            if not self._photo_is_public(path) or self._photo_row_has_withheld_source(path):
+                continue
+            try:
+                src = resolve_path(path, self.fha_config, self.archive_root)
+            except Exception:  # noqa: BLE001 - an unresolvable row publishes nothing
+                continue
+            if not src.is_file() or self._crop_holds_a_neighbour(src, box, faces_in.get(path, [])):
+                continue
+            dest = self._media_dest(f'{path}@{pid}', 'faces')
+            if self._derive(src, dest, max_px=_FACE_MAX_PX, crop=box):
+                self._face_photo_source[pid] = source_id.lower() if source_id else None
+                return dest
+        return None
+
+    @staticmethod
+    def _crop_holds_a_neighbour(src: Path, box: tuple, faces: list) -> bool:
+        """Would the face crop take in another person's face? Packed shoulder
+        to shoulder, a neighbour's face lands in the margin, and that neighbour
+        was not asked about. True when another face's centre falls inside the
+        square (or the picture cannot be measured)."""
+        try:
+            with Image.open(src) as im:
+                size = im.size
+        except Exception:  # noqa: BLE001
+            return True
+        left, top, right, bottom = _face_box(box, size)
+        for x, y, w, h in faces:
+            if (x, y, w, h) == box:
+                continue
+            if (x * size[0] - w * size[0] / 2 < right and x * size[0] + w * size[0] / 2 > left
+                    and y * size[1] - h * size[1] / 2 < bottom and y * size[1] + h * size[1] / 2 > top):
+                return True
+        return False
+
+    def _portrait_note(self, pid: str, page_dir: Path):
+        """Under a face cut from a group photo, say so, and link the photo's
+        source page when it has one. Empty when the portrait is a chosen one."""
+        if self._profile_photo_file(pid) is None or pid not in self._face_photo_source:
+            return self._markup('')
+        sid = self._face_photo_source[pid]
+        if sid and sid in {s.lower() for s in self.source_pages}:
+            href = html.escape(_rel_href(self.sources_dir / _page_filename(sid), page_dir), quote=True)
+            return self._markup(f'From a <a href="{href}">group photo</a>.')
+        return self._markup('From a group photo.')
 
     def _profile_photo_href(self, pid: str, page_dir: Path) -> str | None:
         f = self._profile_photo_file(pid)
