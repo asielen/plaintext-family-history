@@ -3421,6 +3421,47 @@ def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: fl
     return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
+def _fan_repeats(labels: dict, n: int) -> dict:
+    """Which fan cells hold the same ancestor twice (cousins married), so a
+    relative sees where the two lines meet. {slot: {'k', 'letter', 'others',
+    'first', 'later'}}: `k` numbers the repeated people by their lowest slot
+    (colour and badge letter follow it), `others` are the person's other
+    slots, `later` is true for every slot but the lowest (the walk shows the
+    ancestors once, at the lowest). Only a label carrying a `pid` counts, and
+    the walk gives none to a Private card or to anyone reached through one, so
+    a repeat that only a hidden person explains never shows."""
+    slots: dict[str, list[int]] = {}
+    for num in sorted(labels):
+        info = labels[num]
+        g = num.bit_length() - 1
+        if g < 1 or g > n or info.get('private') or info.get('redacted') or info.get('behind_private') or not info.get('pid'):
+            continue
+        slots.setdefault(info['pid'], []).append(num)
+    out: dict[int, dict] = {}
+    groups = sorted((v for v in slots.values() if len(v) > 1), key=lambda v: v[0])
+    for k, group in enumerate(groups, 1):
+        letter = chr(ord('A') + k - 1) if k <= 26 else ''
+        for num in group:
+            out[num] = {'k': k, 'letter': letter, 'first': group[0], 'later': num != group[0],
+                        'others': [m for m in group if m != num]}
+    return out
+
+
+def _fan_line_class(num: int, info: dict) -> str:
+    """`fan-line-paternal` for the father's-father line (slots 2, 4, 8, ...) or
+    `fan-line-maternal` for the mother's-mother line (3, 7, 15, ...), only when
+    every step back to the subject was placed by a recorded sex. A slot placed
+    by guesswork never claims a side. A Private card gets no class: the switch
+    never colours it."""
+    if num < 2 or info.get('private') or info.get('redacted') or not info.get('line_ok', False):
+        return ''
+    if num & (num - 1) == 0:
+        return 'fan-line-paternal'
+    if (num + 1) & num == 0:
+        return 'fan-line-maternal'
+    return ''
+
+
 # Heritage chart (`_render_heritage_svg`): the two buckets that are not a
 # country. "Birthplace unknown" is a person the tree shows whose birthplace is
 # not recorded or not registered; "Not traced" is a place in the tree nobody
@@ -3599,6 +3640,7 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
     defs: list[str] = []      # one <path> per label line; text rides it via <textPath>
     body: list[str] = []
     lid = 0
+    repeats = _fan_repeats(labels, n)
 
     for num in sorted(labels):
         g = num.bit_length() - 1
@@ -3627,8 +3669,23 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                          f'--gen-fade:{min((g - 2) * 15, 55)}%')
             else:
                 style = '--seg-color:var(--surface-sunken); --gen-fade:0%'
-            seg_cls = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
-            body.append(f'<path class="{seg_cls}" style="{style}" d="{d}"/>')
+            classes = 'fan-seg fan-seg-weak' if _weak_slot(info) else 'fan-seg'
+            rep = repeats.get(num)
+            if rep:
+                # The same ancestor in two places: one colour for both, a
+                # dashed edge and a lettered badge, so a reader who cannot
+                # tell the colours apart still sees it (and a black-and-white
+                # print keeps it).
+                classes += ' fan-seg-repeat'
+                style = f'--seg-color:var(--branch-{(rep["k"] - 1) % 7 + 1}); --gen-fade:45%'
+            line = _fan_line_class(num, info)
+            if line:
+                classes += f' {line}'
+            body.append(f'<path class="{classes}" style="{style}" d="{d}"/>')
+            if rep and rep['letter']:
+                bx, by = xy(r_out - 7.5, mid)
+                body.append(f'<g class="fan-repeat-mark"><circle cx="{bx:.1f}" cy="{by:.1f}" r="6"/>'
+                            f'<text x="{bx:.1f}" y="{by:.1f}">{rep["letter"]}</text></g>')
 
         if private:
             name, surname, years = 'Private', None, ''
@@ -3704,6 +3761,12 @@ def _render_fan_svg(labels: dict, max_gen: int, r0: float = _FAN_R0, *,
                 body.append(f'<g class="fan-private">{text}</g>')
             continue
         full = name + (f', {years}' if years else '')
+        rep = repeats.get(num)
+        if rep:
+            mark = f'badge {rep["letter"]}' if rep['letter'] else 'the same colour and dashed edge'
+            full += f'. Also appears elsewhere on this chart ({mark})'
+            if rep['later']:
+                full += '; their ancestors are drawn at the first place'
         if _weak_slot(info):
             full += f'. {_WEAK_LINE_TITLE}'
         title = f'<title>{html.escape(full)}</title>'
@@ -7181,6 +7244,10 @@ class _SiteBuilder:
             'chart_title': chart_title,
             'chart_weak_key': chart_weak_key,
             'fan': fan,
+            # The switch only earns its place once a side runs past the
+            # parent, otherwise it would fade nothing but one other parent.
+            'fan_modes': bool(fan and (fan.count('fan-line-paternal') > 1
+                                       or fan.count('fan-line-maternal') > 1)),
             'heritage': heritage, 'heritage_repeats': heritage_repeats,
             'heritage_chart': _chart_name(name, 'heritage') if heritage else None,
             'lifespan': lifespan,
@@ -11115,7 +11182,7 @@ class _SiteBuilder:
         # surname lets the fan put given names and surname on two lines.
         return {'name': meta['name'] or fmt_id_display(pid), 'url': url,
                 'redacted': False, 'surname': meta['surname'],
-                'dates': self._person_vitals(pid)}
+                'dates': self._person_vitals(pid), 'pid': pid}
 
     def _ancestor_couple_evidence(self, pid1: str, pid2: str) -> str | None:
         """Marriage evidence between two ancestors, for `_build_ahnentafel`'s
@@ -11346,6 +11413,14 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = entry_for(ppid, page_dir)
+                # The fan marks an ancestor who fills two places (cousins
+                # married). It may only say so from ties the page shows: a
+                # Private card, or anyone reached through one, is never
+                # grouped, so a repeat can't give away that two blanks are
+                # one living person or that a hidden person links the lines.
+                behind_private = bool(labels[num].get('private')
+                                      or labels[num].get('behind_private'))
+                labels[slot_num]['behind_private'] = behind_private
                 if not labels[slot_num].get('redacted'):
                     labels[slot_num]['pid'] = ppid     # never set on a withheld person
                 # How well this ancestor is tied to the subject (chart plan
@@ -11366,6 +11441,11 @@ class _SiteBuilder:
                 # which line is paternal (`_render_pedigree_svg`'s tint rule).
                 labels[slot_num]['sex_derived'] = (
                     sex_derived and not labels[slot_num].get('private'))
+                # A father's or mother's line may be followed through a
+                # Private card (their slot already says which side they are
+                # on); only a slot placed by guesswork breaks it.
+                labels[slot_num]['line_ok'] = bool(
+                    sex_derived and labels[num].get('line_ok', True))
                 if ppid in hyp_parents:
                     labels[slot_num]['hypothesis'] = True
                 if ppid not in seen:          # pedigree collapse: show, don't re-walk

@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "bbd99325a102b5432315fbae28ce374f29c4e08290ed4526a8e19feade276538",
+      "sha256": "ff2ab12ac42961a0e3ea69e78376c4a6d71f5c888f05c15958de5f4a6f4f6c52",
       "spec_version": "2.44",
       "src": "design/styles.css"
     },
@@ -686,7 +686,7 @@
     {
       "path": ".fha/docs/DESIGN.md",
       "category": "operating",
-      "sha256": "90d270a107592df682675075c2d6093d68c79c76915a4fe5c73c645bce912b3c",
+      "sha256": "bac777f3967bebfdb0bca8dc88ee6447c258e0ec6f377953e598c7f3df129b93",
       "spec_version": "2.44",
       "src": "docs/DESIGN.md"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "194246051270dc8fd11c2888714e38c6841d4476c0723b0da31157a000a76e35",
+      "sha256": "f34781e99a81fcf12d419aa738f992279d025e124ed53edd72b9b5688c605f04",
       "spec_version": "2.44",
       "src": "tools/site.py"
     },
@@ -1302,7 +1302,7 @@
     {
       "path": ".fha/tools/templates/person.html",
       "category": "operating",
-      "sha256": "42db4d864171b6f7696b1714b30193a53c167552f1640ccd7cadc5058fa284ed",
+      "sha256": "1301c648df951d148b1ee9660e2d93b5d6199e042cd49228d80b424ff6133f0f",
       "spec_version": "2.44",
       "src": "tools/templates/person.html"
     },
@@ -1549,7 +1549,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "eb7fc052580866a6279186c6d299bd09c69a6c30223c48a2dcd7ecbef7c5ea81",
+      "sha256": "97b36bb11f001029433cc6e041104d031ece14d4d903f0c49fc17ca1f2949488",
       "spec_version": "2.44"
     },
     {
@@ -1604,7 +1604,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "dc8dac64cd66fbfb5f420be15b31077c1bca6f649f3d3d88acafb048466fa6ea",
+      "sha256": "f4fbfde835f8553cc37896760b5694cbaef2015de6ab4802d1cb27e038e8c935",
       "spec_version": "2.44",
       "src": "TOOLING.md"
     },

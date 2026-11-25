@@ -519,6 +519,24 @@ ul.leaders .ct  { font-variant-numeric: tabular-nums lining-nums; color: var(--m
 .fan-years { font-family: var(--font-sans); fill: var(--muted);
              text-anchor: middle; dominant-baseline: middle; }
 a.fan-link, a.fan-link:hover { text-decoration: none; }
+/* The same ancestor in two places (cousins married): one shared colour, a
+   dashed edge, and a lettered badge so colour is never the only signal. */
+.fan-seg-repeat { stroke: var(--ink); stroke-dasharray: 3 2; }
+.fan-repeat-mark circle { fill: var(--paper); stroke: var(--ink); stroke-width: 1; }
+.fan-repeat-mark text { font-family: var(--font-sans); font-size: 8px; font-weight: 700;
+                        fill: var(--ink); text-anchor: middle; dominant-baseline: central; }
+/* The fan's line switch: radios placed before .chart-body, so no script is
+   needed and the printed page shows the view that was chosen. */
+.fan-mode { position: absolute; opacity: 0; width: 1px; height: 1px; }
+.fan-mode + label { display: inline-block; margin: var(--space-2) var(--space-2) 0 0;
+                    padding: var(--space-1) var(--space-3); border: 1px solid var(--rule-strong);
+                    border-radius: 999px; cursor: pointer; font-family: var(--font-sans);
+                    font-size: .9rem; color: var(--ink); background: var(--paper); }
+.fan-mode:checked + label { background: var(--ink); color: var(--paper); border-color: var(--ink); }
+.fan-mode:focus-visible + label { outline: 2px solid var(--accent); outline-offset: 2px; }
+#fan-mode-paternal:checked ~ .chart-body .fan-seg:not(.fan-line-paternal):not(.fan-seg-subject):not(.fan-seg-private),
+#fan-mode-maternal:checked ~ .chart-body .fan-seg:not(.fan-line-maternal):not(.fan-seg-subject):not(.fan-seg-private) {
+  opacity: .25; }
 /* Heritage chart on a person page: one bar per generation, a segment per
    country. The colour is set inline as --seg-color (a --branch-N token); the
    segment's own name and tooltip carry the meaning too. */
@@ -731,6 +749,7 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   .fha-tree-viewport, .fha-tree-viewport svg,
   .pedigree-home-wrap { height: auto !important; overflow: visible !important; }
   svg.pedigree, svg.fan-chart, svg.lifespan-chart { max-width: 100%; height: auto; }
+  .fan-mode, .fan-mode + label { display: none; }
   h2, h3, summary.chart-title { break-after: avoid; }
   figure, table tr, .ped-node, details.chart, .family-calendar-events li { break-inside: avoid; }
   .pedigree, .fan-chart, .lifespan-chart, .ped-node { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
