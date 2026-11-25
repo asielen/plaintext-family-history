@@ -392,7 +392,7 @@
     {
       "path": ".fha/browser-companion/manifest.json",
       "category": "operating",
-      "sha256": "95f67b2e08c2c85121ca600fa16587699c4efbe1eaa7cbae55883dca39505fbd",
+      "sha256": "f2ee705613747c67286f1ff79713313c1af01d3d029e40df4b0c74ca953ed997",
       "spec_version": "2.41",
       "src": "browser-companion/manifest.json"
     },
@@ -413,7 +413,7 @@
     {
       "path": ".fha/browser-companion/src/content.js",
       "category": "operating",
-      "sha256": "1dd3ea280278a24731ecc283d3b30305809d7df579a546a9f5ccd72a6637f30d",
+      "sha256": "b3c7ac13de5c26d0a3c38f45194d5e4de84eece2e248b8875f5ecdde7c14770c",
       "spec_version": "2.41",
       "src": "browser-companion/src/content.js"
     },
@@ -544,6 +544,13 @@
       "src": "browser-companion/src/lib/srcset.js"
     },
     {
+      "path": ".fha/browser-companion/src/lib/wikitree-record.js",
+      "category": "operating",
+      "sha256": "8c2e308c4963f8cf25e1882c4066507aec49980cea202097b34dac8cb6b0de08",
+      "spec_version": "2.41",
+      "src": "browser-companion/src/lib/wikitree-record.js"
+    },
+    {
       "path": ".fha/browser-companion/src/lib/wvculture-record.js",
       "category": "operating",
       "sha256": "f8ea5f9c8617dd72e30fda3dedf419c3e8d9f9d739dc4af74f6eff8b51908476",
@@ -567,14 +574,14 @@
     {
       "path": ".fha/browser-companion/src/panel.html",
       "category": "operating",
-      "sha256": "999edb7746e9df7ca3742dde7bb239a2fb3072455a5c1a44064f18ef7ec15e38",
+      "sha256": "7aaa6270b88d4370ae8f7d6c92e00fcd7e59bb0a5febf5318d291f906991f080",
       "spec_version": "2.41",
       "src": "browser-companion/src/panel.html"
     },
     {
       "path": ".fha/browser-companion/src/panel.js",
       "category": "operating",
-      "sha256": "fe3dc2320d13c51ef53a918f6e93c8aa39ee405e71a1d671b4999ad5e868eefe",
+      "sha256": "403d280a4d603c671017c953c5ec0753d1496e0212e9e8a74a0ce21f1a81457a",
       "spec_version": "2.41",
       "src": "browser-companion/src/panel.js"
     },
@@ -766,6 +773,13 @@
       "sha256": "88f7135f90771f39f42855be6420073d601449ffd14c0e23e0d573e1299da72d",
       "spec_version": "2.41",
       "src": "tools/capture_recipes/newspapers.py"
+    },
+    {
+      "path": ".fha/tools/capture_recipes/wikitree.py",
+      "category": "operating",
+      "sha256": "dc4bfd623e79d0a121bf8a6d532dc4bdc9b36ba91cdc138eda78f865389d0a7e",
+      "spec_version": "2.41",
+      "src": "tools/capture_recipes/wikitree.py"
     },
     {
       "path": ".fha/tools/capture_recipes/wvculture.py",
