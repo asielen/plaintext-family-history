@@ -150,14 +150,17 @@ plaintext-family-history/
 ├── AGENTS.md            the rules the AI assistant follows (Codex reads it; CLAUDE.md points Claude Code here)
 ├── .claude/skills/      the assistant's workflow skills (archives also get them in .agents/skills/ for Codex)
 ├── docs/                the owner's manual, copied into every archive
+│   ├── README.md            the manual's index: every guide below and what it is for
 │   ├── GETTING_STARTED.md   the first-day guide
 │   ├── CHEATSHEET.md        one printable page
 │   ├── COMMANDS.md          every fha command and its options
+│   ├── CUSTOMIZING_SITE.md  the family website's settings and optional pages
+│   ├── UPDATING.md          taking a newer version of the tools
 │   ├── TROUBLESHOOTING.md
-│   ├── SETUP_FROM_ZIP.md
 │   ├── GLOSSARY.md
 │   ├── FAQ.md
-│   └── DESIGN_RATIONALE.md
+│   ├── DESIGN_RATIONALE.md
+│   └── …                    setup from a zip, Obsidian, the filing cabinet, sending documents
 ├── archive-template/    the starting archive fha install copies
 ├── example-archive/     a small fictional archive, also the test fixture and the example site
 ├── quickstart-template/ a blank archive to fill in by hand, no tools needed
