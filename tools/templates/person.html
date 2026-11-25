@@ -23,6 +23,9 @@
   {% if person.kinship %}
   <p class="kin-line">{% if person.kinship.lead_html %}{{ person.kinship.lead_html }}{% endif %}{% if person.kinship.ahnentafel %} <span class="ahnentafel-no" title="In the family numbering each father is twice his child's number and each mother is twice plus one.">ancestor no. {{ person.kinship.ahnentafel }}</span>{% endif %}{% if person.kinship.note %} <span class="note">({{ person.kinship.note }})</span>{% endif %}</p>
   {% endif %}
+  {% if person.quote %}
+  <blockquote class="voice-quote">"{{ person.quote.text }}" {{ person.quote.source_html }}{% if person.quote.play %} <a class="play-from" href="{{ person.quote.play.href }}"{% if person.quote.play.audio_id %} data-audio="{{ person.quote.play.audio_id }}" data-t="{{ person.quote.play.seconds }}"{% endif %}>hear it</a>{% endif %}</blockquote>
+  {% endif %}
   {% if workbench and person.open_review_count %}
   <p class="wb-pointer">{{ person.open_review_count }} open review item{{ 's' if person.open_review_count != 1 else '' }} involve{{ '' if person.open_review_count != 1 else 's' }} this person -
     <a href="{{ root_prefix }}/review">open the review queue</a>.</p>
@@ -255,7 +258,7 @@
         {% elif e.kind == 'family' %}
         <li class="tl-family">{{ e.date }} - {{ e.sentence }} {{ e.source_html }}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% else %}
-        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.age_text %} <span class="tl-age">{{ e.age_text }}</span>{% endif %}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
+        <li>{{ e.date }} - {{ e.type }}: {{ e.value }}{% if e.place and not e.place_redundant %} at {{ e.place }}{% endif %} {{ e.source_html }}{% if e.age_text %} <span class="tl-age">{{ e.age_text }}</span>{% endif %}{% if e.listen %} <a class="play-from" href="{{ e.listen.href }}"{% if e.listen.audio_id %} data-audio="{{ e.listen.audio_id }}" data-t="{{ e.listen.seconds }}"{% endif %}>listen</a>{% endif %}{% if e.unconfirmed %} <span class="claim-flag flag-unconfirmed">unconfirmed{% if e.parked %} - parked {{ e.parked }}{% endif %}</span>{% elif e.confidence == 'low' %} <span class="claim-flag flag-low">low confidence</span>{% endif %}</li>
         {% endif %}
         {% endfor %}
       </ul>
@@ -272,7 +275,14 @@
     <span class="wb-later">timeline entries are claims - the form asks which source it comes from.</span></p>
   {% endif %}
 
-  {% if person.photos %}
+  {% if person.recordings -%}
+  <h2>Recordings</h2>
+  <p class="note">{{ person.name }} can be heard on {{ 'this recording' if person.recordings|length == 1 else 'these recordings' }}.</p>
+  {% for r in person.recordings %}
+  <figure class="recording"><audio id="{{ r.audio_id }}" controls preload="none"><source src="{{ r.audio_href }}" type="{{ r.audio_type }}">Your browser cannot play this recording. <a href="{{ r.audio_href }}">Download it</a>.</audio>
+  <figcaption>{{ r.title_html }}{% if r.date %}, {{ r.date }}{% endif %}</figcaption></figure>
+  {% endfor %}
+  {% endif %}{% if person.photos %}
   <h2>Photographs</h2>
   <div class="photo-strip">
     {% for p in person.photos %}
@@ -373,5 +383,6 @@
   {%- if person.contribute_href %}
   <aside class="contribute"><p>Do you have a story, a photo or a correction for {{ person.name }}? <a href="{{ person.contribute_href }}">Tell me what you know</a>.</p></aside>
   {%- endif %}
-</article>
+</article>{% if person.has_play %}
+{% include "_recording_script.html" %}{% endif %}
 {% endblock %}
