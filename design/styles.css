@@ -722,6 +722,20 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
 
 .print-only { display: none; }
 
+/* The wall calendar page (calendar.html): the same grid markup as the private
+   printed calendar, in the site's colours. */
+.wall-calendar { max-width: none; }
+.wall-month-block { margin-bottom: var(--space-6); }
+.wall-month { width: 100%; table-layout: fixed; border-collapse: collapse; }
+.wall-month th { font-size: var(--text-xs); font-weight: 600; text-align: left; padding: 2px 4px; }
+.wall-month td { height: 6.5rem; vertical-align: top; border: 1px solid var(--rule);
+                 font-size: var(--text-xs); padding: 2px 4px; overflow: hidden; }
+.wall-month .day-num { font-weight: 600; }
+.wall-month .wall-line { display: block; line-height: 1.25; }
+.wall-legend, .wall-more { font-size: var(--text-xs); margin: var(--space-2) 0; }
+.wall-face { width: 28px; height: 28px; object-fit: cover; vertical-align: middle;
+             border: 1px solid var(--rule-strong); background: var(--surface-sunken); }
+
 @media print {
   @page { margin: 1.5cm; }
   :root { --paper: #fff; --surface: #fff; }
@@ -744,4 +758,6 @@ details.chart[open] > summary.chart-title::before { transform: rotate(90deg); }
   figure, table tr, .ped-node, details.chart, .family-calendar-events li { break-inside: avoid; }
   .pedigree, .fan-chart, .lifespan-chart, .ped-node { print-color-adjust: exact; -webkit-print-color-adjust: exact; }
   .print-only { display: block !important; }
+  .wall-month-block { break-after: page; break-inside: avoid; margin-bottom: 0; }
+  .wall-month td { height: 4rem; }
 }

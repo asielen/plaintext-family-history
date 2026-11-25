@@ -200,6 +200,8 @@ Build always-current summary pages from your records.
   fha views draft-queue <p-id>     Accepted facts not yet written into the bio
   fha views places                 One note per place, for Obsidian
                                    (only with links: obsidian in fha.yaml)
+  fha views canvas [p-id]          An Obsidian canvas per direct-line family
+                                   (only with links: obsidian in fha.yaml)
   fha views refresh                Rebuild every view for all curated people
   fha views family-sheet <p-id>    A printable family group sheet for a couple
   fha views register <p-id>        A printable book-style register of a person's descendants
@@ -309,6 +311,27 @@ Requires a fresh .cache/index.sqlite (run `fha index` first).
 | Argument | What it does |
 |---|---|
 | `--dry-run` | Show what would be written, removed and re-pointed, without writing. |
+| `--root` `PATH` | Archive root (auto-detected if omitted). |
+
+### `fha views canvas`
+
+Write an Obsidian canvas per direct-line family (links: obsidian only).
+
+```text
+With links: obsidian in fha.yaml, write one Obsidian canvas per direct-line
+couple folder into notes/obsidian/canvas/: the couple in the middle, their
+parents above, their children below, each card the person's own note.
+Give a p-id for one canvas centred on that person and their spouses.
+A canvas is rebuilt each run (a card you moved is put back) and holds no
+data, so deleting one loses nothing. A file there that this tool did not
+write is never touched. With links: id nothing is written.
+Requires a fresh .cache/index.sqlite (run `fha index` first).
+```
+
+| Argument | What it does |
+|---|---|
+| `[p-id]` | Make one canvas for this person and their family. |
+| `--dry-run` | Show what would be written or removed, without writing. |
 | `--root` `PATH` | Archive root (auto-detected if omitted). |
 
 ### `fha views brackets`

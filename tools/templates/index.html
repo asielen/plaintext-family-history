@@ -73,6 +73,8 @@
   <h2 id="this-month">This month in the family</h2>
   <p class="note" id="cal-note">Showing {{ calendar.current.name }}, the month this copy of the site was made.</p>
   <div id="cal-current">{{ cal_month(calendar.current) }}</div>
+  {% if wall_calendar %}<p><a href="calendar.html">See the whole year as a wall calendar.</a></p>
+  {% endif %}
   <details class="cal-all">
     <summary>All months</summary>
     {% for m in calendar.months %}<div class="cal-month" id="cal-month-{{ m.num }}">{{ cal_month(m) }}</div>
