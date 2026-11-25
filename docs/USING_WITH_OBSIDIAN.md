@@ -68,6 +68,12 @@ With `links: obsidian`, the first `fha views places` or `fha views refresh` also
 
 A table holds nothing of its own. It only reads what your notes already say, so deleting one loses nothing. Change its columns, sorting or filters in Obsidian as you like. The tools write the files once and never touch them again, and a file you delete stays deleted. They sit in `notes/obsidian/`, not in `people/`, `sources/` or `places/`. To bring one back, copy it from `.fha/tools/templates/obsidian/`. To draw the places on a map, install Obsidian's Maps plugin and add a view of type `map` with `coordinates: note.location` to `Places.base`.
 
+## Family canvases
+
+With `links: obsidian`, `fha views canvas` draws each direct-line family as an Obsidian canvas, a board you can read and click through. It writes one file per couple folder into `notes/obsidian/canvas/`, for example `040 Thomas Edward Hartley.canvas`: the couple in the middle, their parents above, their children below, and each card is that person's own note. Open the file in Obsidian and click a card to open the person. A line runs from each parent down to each child, and a line joins the couple. A tie that is not by birth, such as an adoption, is coloured and labelled. `fha views refresh` keeps the canvases up to date too. To see one family alone, give a person: `fha views canvas p-…`.
+
+A canvas holds nothing of its own, so it is rebuilt every time: a card you drag somewhere is put back on the next run, and deleting a canvas loses nothing. To make a board of your own, copy the file to another folder or make a new canvas in Obsidian; the tools never touch a canvas that is not theirs. Like the tables, canvases name living people too, so keep the vault private (see "Syncing the vault shares everything" below).
+
 ## Searching your archive
 
 Each person's frontmatter holds what the person record itself says: the names, `living:`, `sex:`, `gender:`, `restricted:`, `tags:`, `tier:` and the `relationships:` block, plus any estimated `birth:` and `death:` (with `birth_place:` and `death_place:`): the dates you jotted before you had a record, or the ones a GEDCOM import brought in. Dataview and Obsidian's Bases read these directly, so "everyone whose living status is unknown" or "every stub" is a plain frontmatter search. Sourced birth and death dates are not in frontmatter: they live in the claims (below), so a frontmatter search on `birth:` finds the estimates, not what a record proved.

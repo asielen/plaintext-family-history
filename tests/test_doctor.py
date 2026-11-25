@@ -386,6 +386,22 @@ class MediaOptionalDependencyTests(unittest.TestCase):
         check = self._check(result, 'pyav')
         self.assertIn(check['status'], ('ok', 'info'))   # 'ok' when PyAV is actually installed here
 
+    def test_ffmpeg_absent_is_info_and_says_recordings_need_it(self) -> None:
+        # Without ffmpeg the shared site plays no recordings (TOOLING §12).
+        with unittest.mock.patch(
+                'doctor.shutil.which',
+                side_effect=lambda name: None if name == 'ffmpeg' else '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        check = self._check(result, 'ffmpeg')
+        self.assertEqual(check['status'], 'info')
+        self.assertIn('recordings', '\n'.join(result.data['lines']))
+
+    def test_ffmpeg_present_is_ok(self) -> None:
+        with unittest.mock.patch('doctor.shutil.which',
+                                 side_effect=lambda name: '/usr/bin/%s' % name):
+            result = doctor.run_doctor(self.root, {})
+        self.assertEqual(self._check(result, 'ffmpeg')['status'], 'ok')
+
     def test_pdftotext_absent_is_info_not_warning(self) -> None:
         # #281: pdftotext is `fha source extract`'s optional third reader.
         with unittest.mock.patch(

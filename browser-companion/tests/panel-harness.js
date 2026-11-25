@@ -491,6 +491,8 @@ async function openPanel({ url, respond, host, seenIt, fullPage, fetch, storage,
   new Function('window', read('lib/findagrave.js'))(window);
   window.FHA.findagrave.pauseMs = () => 0;
   new Function('window', read('lib/wvculture.js'))(window);
+  new Function('window', 'module', read('lib/wikitree-record.js'))(window, undefined);
+  window.FHA.wikitree.pauseMs = () => 0;
   new Function('window', read('lib/archiveorg-record.js'))(window);
   window.FHA.archiveorg.pauseMs = () => 0;
   new Function('window', 'OffscreenCanvas', read('lib/newspapers.js'))(window, FakeCanvas);

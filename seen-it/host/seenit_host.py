@@ -56,6 +56,9 @@ Likewise a Find a Grave memorial is fag: (captured) only when its photos are
 saved, each one fagphoto:{photoId} from its saved file; a memorial's address
 alone - a capture's page address, an inbox stub, a source that cites it - is
 fagidx: (known, photos still to come) (_holds_saved_file).
+A bare FamilySearch film image is also known by where it sits on its film,
+fsfilm:{DGS}:{image number}, so the capture add-on can offer to add a
+neighbouring image of the same deed to the source that holds this one.
 
 Roots resolve exactly as the archive's own tools do (tools/_lib.py
 `resolve_path`): an absolute value is used as-is, a relative one is joined to
@@ -680,6 +683,11 @@ def _keys_from_site_data(data, image_saved=None, file_saved=None):
     come). Each photo saved here is also fagphoto:{photoId}, so a later
     capture does not download it again. Without `file_saved`, a `file` the
     data names counts.
+
+    A bare FamilySearch film image (`image`, with its film's DGS number and
+    its image number) is fsfilm:{DGS}:{n}: where it sits on its film, so the
+    capture add-on can ask which source holds the images next to the one
+    being captured. It says nothing about whether the picture saved.
     """
     keys = []
     if not isinstance(data, dict):
@@ -693,6 +701,19 @@ def _keys_from_site_data(data, image_saved=None, file_saved=None):
         if rec.get('same_image_as') or listed:
             return False
         return check(roles)
+
+    # A bare FamilySearch film image (a deed or will found by paging a film)
+    # is known by where it sits: its film's DGS number and its image number
+    # there. The capture add-on asks for the images either side of the one
+    # being captured, so a deed that runs onto the next image can be offered
+    # to the source that already holds the first. Only the numbers the
+    # capture found count: a missing one is null there, never a guess.
+    image = data.get('image')
+    if isinstance(image, dict):
+        dgs = str(image.get('dgs') or '')
+        number = image.get('imageNumber')
+        if re.fullmatch(r'[0-9]+', dgs) and isinstance(number, int) and not isinstance(number, bool) and number > 0:
+            keys.append('fsfilm:%s:%d' % (dgs.lstrip('0') or '0', number))
 
     clip = data.get('clipping')
     if isinstance(clip, dict) and clip.get('id'):
