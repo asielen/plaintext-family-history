@@ -66,7 +66,7 @@ library (the project adds no dependency before Jinja2 in M8).
 #    _unique_stub_stem         - collision-free {stem} for the stub (+ its asset)
 #
 #  Research log
-#    _render_log_entry         - one SPEC §17c research-log entry (list item + fields)
+#    (the research-log writer lives in _lib: append_research_log_entry)
 #    _write_capture_log        - append it to notes/research-log.md (+ search_log row if indexed)
 #
 #  Top-level + CLI
@@ -117,6 +117,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from _lib import (
     EXIT_CLEAN,
+    SEARCH_LOG_DDL,
+    append_research_log_entry,
     SOURCE_CLASS_VALUES,
     EXIT_ERRORS,
     EXIT_FAILURE,
@@ -129,15 +131,13 @@ from _lib import (
     configure_utf8_stdout,
     format_edtf_error,
     format_source_type_error,
-    index_manifest_path,
-    read_path_manifest,
+    id_type_of,
     is_valid_edtf,
     load_fha_yaml,
     normalize_date,
     read_record,
     resolve_path,
     resolve_root_arg,
-    update_path_manifest,
     write_text_exact_atomic,
     yaml_inline,
 )
@@ -626,57 +626,10 @@ def _unique_stub_stem(inbox: Path, slug: str, asset_suffix: str | None = None) -
 
 
 # ── Research log ──────────────────────────────────────────────────────────────
+# The writer lives in `_lib` (shared with `fha confirm search`); these are the
+# names capture and its tests have always used.
 
-_SEARCH_LOG_DDL = '''CREATE TABLE IF NOT EXISTS search_log(
-  date TEXT, person_id TEXT, question TEXT, repository TEXT, collection TEXT,
-  years TEXT, terms TEXT, result TEXT, source_id TEXT, path TEXT
-)'''
-
-
-_RESEARCH_LOG_HEADER = (
-    '# Research log\n'
-    '\n'
-    'Every search run, by hand or by `fha capture`, one entry per search, so no '
-    'collection is searched twice by accident.\n'
-)
-
-
-def _research_log_path(archive_root: Path) -> Path:
-    """The one search log (SPEC §17c): `notes/research-log.md`."""
-    return archive_root / 'notes' / 'research-log.md'
-
-
-def _log_value(value: str, *, quote: bool) -> str:
-    """One research-log field value on one line.
-
-    The index reads each field as the text after `field:` with one layer of
-    matching quotes stripped, so a free-text value (a page title, a
-    collection) is wrapped in double quotes and any double quote inside it
-    becomes a single one - a title like `Say "hi": a page` then reads back
-    whole. Line breaks fold to spaces: one field is one line.
-    """
-    v = ' '.join(str(value or '').split())
-    if quote or v[:1] in ('"', "'") or ': ' in v or ' #' in v:
-        return '"' + v.replace('"', "'") + '"'
-    return v
-
-
-def _render_log_entry(*, date: str, question: str, repository: str,
-                      collection: str, terms: str, result: str) -> str:
-    """One SPEC §17c entry: a list item, its other fields indented below it.
-
-    `collection` and `terms` are left out when the page did not give them;
-    `date`, `question`, `repository` and `result` are always written.
-    """
-    lines = [f'- date: {date}',
-             f'  question: {_log_value(question, quote=True)}',
-             f'  repository: {_log_value(repository, quote=False)}']
-    if (collection or '').strip():
-        lines.append(f'  collection: {_log_value(collection, quote=True)}')
-    if (terms or '').strip():
-        lines.append(f'  terms: {_log_value(terms, quote=True)}')
-    lines.append(f'  result: {result}')
-    return '\n'.join(lines) + '\n'
+_SEARCH_LOG_DDL = SEARCH_LOG_DDL
 
 
 def _write_capture_log(
@@ -689,143 +642,13 @@ def _write_capture_log(
     terms: str,
     result: str,
 ) -> str:
-    """Record the capture as a search in the research log (SPEC §17c).
-
-    Capture is itself a logged search, so `fha report`'s "already searched"
-    can see it. The entry is appended to `notes/research-log.md` - the one
-    search log, the same file hand searches go in - creating the file with a
-    short purpose line when it is absent. That file is the durable record:
-    `fha index` rebuilds `search_log` from it every time, and it lives under
-    notes/ so backups and git keep it.
-
-    When `.cache/index.sqlite` already exists, the row is *also* written
-    straight into its `search_log` table (`person_id`/`source_id` are null -
-    a stub has no resolved person and no S-id yet) so `fha report` sees it at
-    once, without waiting for the next rebuild. Returns 'index' or 'log' for
-    the caller's status line (favoring 'index' when both succeed), 'none' when
-    neither landed; a logging failure is reported but never fails the capture
-    (the stub is already safely written).
-    """
-    db_path = archive_root / '.cache' / 'index.sqlite'
-    log_path = _research_log_path(archive_root)
-    log_rel = str(log_path.relative_to(archive_root))   # the index's own path form
-
-    # Was the index up to date with the log BEFORE this capture touched it?
-    # Only then may the capture mark the log as read afterwards: an entry
-    # typed by hand or synced in from another machine must keep the index
-    # stale until `fha index` replays it (#304 review).
-    log_was_indexed = db_path.exists() and _research_log_is_indexed(archive_root, log_path)
-
-    entry = _render_log_entry(date=date, question=question, repository=repository,
-                              collection=collection, terms=terms, result=result)
-    log_ok = False
-    try:
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        # A file last saved by hand or by a git merge may not end in a
-        # newline; appending straight on would glue this entry onto the last
-        # one and the index would read neither (#304 review). Entries are
-        # kept apart by a blank line.
-        try:
-            size = log_path.stat().st_size
-        except FileNotFoundError:
-            size = None
-        if size is None:
-            prefix = _RESEARCH_LOG_HEADER + '\n'
-        elif size == 0:
-            prefix = ''
-        else:
-            with open(log_path, 'rb') as tail:
-                tail.seek(-1, os.SEEK_END)
-                prefix = '\n' if tail.read(1) == b'\n' else '\n\n'
-        with open(log_path, 'a', encoding='utf-8', newline='') as f:
-            f.write(prefix + entry)
-        log_ok = True
-    except OSError as e:
-        print(f'WARNING: could not write {_rel(log_path, archive_root)}: {e}', file=sys.stderr)
-
-    if db_path.exists():
-        try:
-            conn = sqlite3.connect(str(db_path))
-            try:
-                conn.execute(_SEARCH_LOG_DDL)
-                conn.execute(
-                    '''INSERT INTO search_log
-                       (date, person_id, question, repository, collection, terms,
-                        result, source_id, path)
-                       VALUES (?,?,?,?,?,?,?,?,?)''',
-                    (date, None, question, repository, collection, terms, result,
-                     None, log_rel),
-                )
-                if log_ok:
-                    _refresh_log_text(conn, log_path, log_rel)
-                conn.commit()
-            finally:
-                conn.close()
-            # The research log is a freshness input (an index that has not
-            # read it is missing searches). This capture just put its own row
-            # in the index, so record the log as read - otherwise every
-            # capture would make `fha doctor` call a correct index stale.
-            if log_ok and log_was_indexed:
-                _mark_research_log_indexed(archive_root, log_path)
-            return 'index'
-        except Exception as e:  # noqa: BLE001
-            print(f'WARNING: could not write search_log row ({e})'
-                  + (' (still logged in the research log)' if log_ok else ''),
-                  file=sys.stderr)
-
-    return 'log' if log_ok else 'none'
-
-
-def _refresh_log_text(conn: sqlite3.Connection, log_path: Path, log_rel: str) -> None:
-    """Keep `fha find --text` in step: the research log is a note, and the
-    index holds its text in `notes_fts`. Replaced whole, as a rebuild would.
-    An index without that table (an old or partial one) is left alone."""
-    try:
-        content = log_path.read_text(encoding='utf-8')
-        conn.execute('DELETE FROM notes_fts WHERE path=?', (log_rel,))
-        conn.execute('INSERT INTO notes_fts(path, content) VALUES (?,?)', (log_rel, content))
-    except (sqlite3.Error, OSError, UnicodeDecodeError):
-        pass
-
-
-def _research_log_is_indexed(archive_root: Path, log_path: Path) -> bool:
-    """True when the index's stored manifest records the research log exactly
-    as it is on disk now (same mtime, or absent on both sides) - i.e. every
-    entry in it is already in `search_log`. A missing or unreadable manifest
-    is False: nothing proves the index read the log."""
-    stored = read_path_manifest(index_manifest_path(archive_root))
-    if stored is None:
-        return False
-    try:
-        current = log_path.stat().st_mtime
-    except OSError:
-        current = None
-    return stored.get(_rel(log_path, archive_root)) == current
-
-
-def _mark_research_log_indexed(archive_root: Path, log_path: Path) -> None:
-    """Patch the index's path manifest for the research log this run just wrote.
-
-    `fha index` lists every notes/ file among the ones it read, so a log
-    changed behind its back reads as stale. A capture that also wrote its row
-    straight into `search_log` has kept the index exactly as current as the
-    file, the same contract `index.upsert_source` keeps for one source.
-    Called only when `_research_log_is_indexed` held before this capture's
-    append - so the one new entry is the capture's own, never a hand-typed or
-    synced one the index has not seen. Best effort: a failure here only
-    costs one "run fha index" suggestion.
-    """
-    paths = [log_path]
-    updates: dict[str, float | None] = {}
-    for path in paths:
-        try:
-            updates[_rel(path, archive_root)] = path.stat().st_mtime
-        except OSError:
-            updates[_rel(path, archive_root)] = None
-    try:
-        update_path_manifest(index_manifest_path(archive_root), updates)
-    except Exception:  # noqa: BLE001 - never fail a capture over cache bookkeeping
-        pass
+    """Record the capture as a search in the research log (SPEC §17c), so
+    `fha report`'s "already searched" can see it. Returns 'index', 'log' or
+    'none' for the status line; a logging failure never fails the capture
+    (the stub is already safely written)."""
+    return append_research_log_entry(
+        archive_root, date=date, question=question, repository=repository,
+        collection=collection, terms=terms, result=result)
 
 
 # ── Top-level ─────────────────────────────────────────────────────────────────
@@ -1263,8 +1086,15 @@ def _render_bundle_notes(
     accessed: str,
     assets: list[tuple[str, str]],
     primary: str | None = None,
+    attach_to: str | None = None,
 ) -> str:
     """Render a §12.1 bundle `notes.md`: light hint frontmatter + per-file roles + prose.
+
+    `attach_to` is the source he said these files belong to (a neighbouring
+    FamilySearch film image of a deed he already holds): written as
+    `attach_to: s-…`, which `fha process` reads to add the files to that
+    source instead of minting a new one. Deleting the line files them as a
+    new source, so the comment beside it says so.
 
     `primary` names the one file the capture marked as the source's main file
     (capture.json `is_primary`, e.g. a Find a Grave memorial's gravestone): it
@@ -1280,6 +1110,9 @@ def _render_bundle_notes(
     lines = ['---']
     if result.title:
         lines.append(f'title: {_yaml_inline(result.title)}')
+    if attach_to:
+        lines.append(f'attach_to: {attach_to}   # add these files to that source; '
+                     'delete this line to file them as a new source')
     lines.append(f'source_type: {result.source_type}')
     if result.citation:
         lines.append('citation: >')
@@ -1341,6 +1174,7 @@ def _ingest_bundle_folder(
     source_class: str | None = None,
     dry_run: bool = False,
     primary: str | None = None,
+    attach_to: str | None = None,
 ) -> Result:
     """File a multi-asset capture as a §12.1 inbox BUNDLE FOLDER (the "both" case).
 
@@ -1383,7 +1217,8 @@ def _ingest_bundle_folder(
         planned.append((src, dest_name, role))
 
     asset_hints = [(dest_name, role) for _, dest_name, role in planned]
-    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints, primary=primary)
+    notes_text = _render_bundle_notes(result, accessed=accessed, assets=asset_hints, primary=primary,
+                                      attach_to=attach_to)
 
     matched = 'generic recipe' if recipe_name == 'generic' else f'{recipe_name} recipe'
     notes_rel = _rel(folder / 'notes.md', archive_root)
@@ -1425,6 +1260,8 @@ def _ingest_bundle_folder(
 
     print(f'Captured via {matched} ({result.source_type})')
     print(f'Staged bundle folder {_rel(folder, archive_root)}/')
+    if attach_to:
+        print(f'  (its files go into the source you already have, {attach_to}, when you process it)')
     print(f'  notes.md')
     for _, dest_name, role in planned:
         print(f'  {dest_name}  (role: {role})')
@@ -1681,6 +1518,20 @@ def _read_bundle(bundle: Path) -> tuple[dict, str, list[tuple[Path, str]]]:
         cap['people'] = [str(x) for x in people
                          if x is not None and not isinstance(x, (list, dict))]
 
+    # `attach_to`: the source he said this capture's files belong to (the
+    # panel asks when a FamilySearch film image sits next to one the archive
+    # holds). Anything but a source id is dropped: a new source is the safe
+    # answer, and he is told.
+    attach = cap.pop('attach_to', None)
+    if attach is not None:
+        sid = attach.strip().lower() if isinstance(attach, str) else ''
+        if id_type_of(sid) == 'S':
+            cap['attach_to'] = sid
+        else:
+            print(f'WARNING: bundle {bundle.name} asked to add its files to {attach!r}, which is not '
+                  'a source id (one looks like s-0a1b2c3d4e), so it is filed as a new source.',
+                  file=sys.stderr)
+
     assets = _resolve_bundle_assets(bundle, cap)
 
     # Scrape source: the raw page.html when shipped, else the webpage-role HTML
@@ -1933,8 +1784,16 @@ def run_ingest(
                     assets=assets,
                     dry_run=dry_run,
                     primary=_bundle_primary(cap, assets),
+                    attach_to=cap.get('attach_to'),
                 )
             else:
+                if cap.get('attach_to'):
+                    # Only a bundle folder's notes say where its files go; a
+                    # lone file is filed as its own source, and he is told.
+                    print(f'WARNING: {name} asked to add its file to {cap["attach_to"]}, but it holds '
+                          'only one file, so it is filed as a new source. To add it to that source '
+                          'instead, attach it with `fha process <a file of that source> --more <this file> record`.',
+                          file=sys.stderr)
                 result = run_capture(
                     archive_root, fha_config,
                     url=cap.get('url'),

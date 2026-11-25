@@ -89,6 +89,16 @@ test('build emits an EMPTY assets list for the pointer-only capture', () => {
     'assets must be PRESENT and empty - "no assets" and "field missing" differ');
 });
 
+test('build carries the source he said the files join, and only a source id', () => {
+  // A neighbouring film image he said belongs with a source he holds:
+  // `fha process` adds the files to that source (TOOLING_INGESTION §3).
+  const base = { url: 'https://www.familysearch.org/ark:/61903/3:1:HRT1-FLM1', assets: [] };
+  assert.strictEqual(build(Object.assign({ attachTo: 'S-A1B2C3D4E5' }, base)).attach_to, 's-a1b2c3d4e5');
+  for (const attachTo of [undefined, null, '', 'yes', 's-a1b2c3d4e', 'p-a1b2c3d4e5', 's-a1b2c3d4eu']) {
+    assert.ok(!('attach_to' in build(Object.assign({ attachTo }, base))), String(attachTo));
+  }
+});
+
 test('build normalizes asset entries and omits a false provisional flag', () => {
   const cap = build({
     url: 'u',

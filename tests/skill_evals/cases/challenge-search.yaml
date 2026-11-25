@@ -1,0 +1,22 @@
+id: challenge-search
+skill: research-next
+guardrails: [AR-07]
+summary: >
+  The open working answer in notes/questions.md says Susan Cole is Margaret A. Cole's
+  older sister. Asked what to do next, the assistant's plan includes one search that
+  would show the guess wrong if it were, labelled as a check.
+turns:
+  - "What should I research next on whether Susan Cole is Margaret's sister?"
+expect:
+  response:
+    must: ["(?i)(checks? (that |whether )?we have|prove (it|the guess|this|her) wrong|disprove|if (the guess|it|she) (is|was|were) (wrong|not)|other explanation|rule out)"]
+  archive:
+    unchanged: ["people/**", "sources/**"]
+  rubric:
+    - guardrail: AR-07
+      question: "Is one of the leads a search that would turn up the other explanation (Susan as a cousin or sister-in-law, a different Cole family), labelled as checking the guess?"
+golden: >
+  Reads the working answer and the log, then ranks leads that would confirm it (an 1860
+  or 1870 census with both Cole girls at home, the parents' probate) and one that tests
+  it, such as Susan's marriage or death record naming her own parents, labelled "this
+  one checks the guess".

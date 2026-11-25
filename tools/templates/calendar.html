@@ -1,0 +1,14 @@
+{% extends "base.html" %}
+{% block title %}Family calendar {{ year }}: {{ site_title }}{% endblock %}
+{% block content %}
+{#- The whole year, month by month (fha.yaml `site: calendar: true`, TOOLING
+    §12). Each month is laid out by the same code as the private printed
+    calendar (`fha calendar --format html`); the site only passes in the
+    events its own privacy rules allow. -#}
+<article class="wall-calendar">
+  <h1>Family calendar {{ year }}</h1>
+  <p class="note">Births, marriages, deaths and other dated events in the lives of the family's ancestors, by the day of the year. Only dates recorded to the month or the day appear; a year alone cannot be placed. <a href="index.html">Back to the home page</a>.</p>
+  {% for m in months %}{{ m }}
+  {% endfor %}
+</article>
+{% endblock %}

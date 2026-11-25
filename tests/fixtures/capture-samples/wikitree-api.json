@@ -1,0 +1,219 @@
+{
+ "_note": "WikiTree's public API answers as they were shaped on 2026-11-24 (getProfile with bioFormat=wiki on a public profile and on a free-space page, getPhotos), with the example-archive's people, dates and places swapped in. 'refused' is the shape of an answer for a page WikiTree does not share.",
+ "profile": [
+  {
+   "page_name": "Hartley-6084",
+   "profile": {
+    "Id": 900001,
+    "PageId": 900101,
+    "Name": "Hartley-6084",
+    "FirstName": "Calvin",
+    "MiddleName": "",
+    "LastNameAtBirth": "Hartley",
+    "LastNameCurrent": "Hartley",
+    "Nicknames": "",
+    "Suffix": "",
+    "Prefix": "",
+    "RealName": "Calvin",
+    "BirthDate": "1842-03-12",
+    "DeathDate": "1918-01-04",
+    "BirthLocation": "Fairview",
+    "DeathLocation": "Fairview",
+    "BirthDateDecade": "1840s",
+    "Gender": "Male",
+    "IsLiving": 0,
+    "Privacy": 60,
+    "Touched": "20230526144512",
+    "Privacy_IsPrivate": false,
+    "Privacy_IsPublic": false,
+    "Privacy_IsOpen": true,
+    "Privacy_IsAtLeastPublic": true,
+    "Privacy_IsSemiPrivate": false,
+    "Privacy_IsSemiPrivateBio": false,
+    "bio": "==Biography==\n\n    * There is no evidence presented by the family historian that he and his wife are related on this side of the Atlantic.\n\n      According to the family history, \"He was a carpenter, or 'housewright,' and lived at Fairview on the paternal homestead on South street.\" His reference here is to the History of Fairview (2.476). [1]\n\n \n== Sources ==\n<references/>\t\n\n   1. [S362] History of the Hartley Family: An Account of the Descendants of Caleb Hartley of Fairview, 1837-1920., Hartley Society, (Worcester: Commonwealth Press, 1923), 10.\n\n   2. [S366] History of the Town of Fairview, George Hartley, et al., (Fairview: Town of Fairview, 1893), 2.476-77.\n\n   3. [S366] History of the Town of Fairview, George Hartley, et al., (Fairview: Town of Fairview, 1893), 2.476.\n\n   4. [S366] History of the Town of Fairview, George Hartley, et al., (Fairview: Town of Fairview, 1893), 2.460, 2.476.",
+    "Father": 900002,
+    "Mother": 900003,
+    "Parents": {
+     "900002": {
+      "Id": 900002,
+      "Name": "Hartley-6083",
+      "FirstName": "Caleb",
+      "LastNameAtBirth": "Hartley",
+      "LastNameCurrent": "Hartley",
+      "RealName": "Caleb",
+      "BirthDate": "1815-00-00",
+      "DeathDate": "1870-09-17",
+      "BirthLocation": "Fairview",
+      "Gender": "Male",
+      "IsLiving": 0,
+      "Privacy": 60,
+      "Father": 0,
+      "Mother": 0
+     },
+     "900003": {
+      "Id": 900003,
+      "Name": "Webb-3",
+      "FirstName": "Harriet",
+      "LastNameAtBirth": "Webb",
+      "LastNameCurrent": "Hartley",
+      "RealName": "Harriet",
+      "BirthDate": "1819-07-14",
+      "DeathDate": "1890-11-04",
+      "BirthLocation": "Fairview",
+      "Gender": "Female",
+      "IsLiving": 0,
+      "Privacy": 60,
+      "Father": 0,
+      "Mother": 0
+     }
+    },
+    "Children": {
+     "900010": {
+      "Id": 900010,
+      "Name": "Hartley-6090",
+      "FirstName": "Edith",
+      "LastNameAtBirth": "Hartley",
+      "LastNameCurrent": "Hartley",
+      "RealName": "Edith",
+      "BirthDate": "1868-00-00",
+      "DeathDate": "0000-00-00",
+      "BirthLocation": "Fairview",
+      "Gender": "Female",
+      "IsLiving": 0,
+      "Privacy": 60
+     }
+    },
+    "Spouses": {
+     "0": {
+      "Id": "900004",
+      "Name": "Cole-1234",
+      "FirstName": "Ethel",
+      "LastNameAtBirth": "Cole",
+      "LastNameCurrent": "Hartley",
+      "RealName": "Ethel",
+      "BirthDate": "1845-06-15",
+      "DeathDate": "1872-11-25",
+      "BirthLocation": "Fairview",
+      "Gender": "Female",
+      "IsLiving": 0,
+      "Privacy": 60,
+      "marriage_location": "Fairview",
+      "marriage_date": "1866-06-10",
+      "marriage_end_date": "0000-00-00",
+      "MarriageLocation": "Fairview",
+      "MarriageDate": "1866-06-10",
+      "MarriageEndDate": "0000-00-00"
+     },
+     "1": {
+      "Id": "900005",
+      "Name": "Reed-12",
+      "FirstName": "Frances",
+      "LastNameAtBirth": "Reed",
+      "LastNameCurrent": "Hartley",
+      "RealName": "Frances",
+      "BirthDate": "1849-03-29",
+      "DeathDate": "1925-01-04",
+      "BirthLocation": "Fairview",
+      "Gender": "Female",
+      "IsLiving": 0,
+      "Privacy": 60,
+      "marriage_location": "",
+      "marriage_date": "1874-00-00",
+      "marriage_end_date": "0000-00-00",
+      "MarriageLocation": "",
+      "MarriageDate": "1874-00-00",
+      "MarriageEndDate": "0000-00-00"
+     }
+    },
+    "Created": "20090921020209"
+   },
+   "status": 0
+  }
+ ],
+ "space": [
+  {
+   "page_name": "Space:Hartley_Family_Bible",
+   "profile": {
+    "PageId": 900200,
+    "Title": {
+     "Id": "900200",
+     "Text": "Hartley Family Bible",
+     "PrefixedText": "Space:Hartley Family Bible",
+     "FullText": "Space:Hartley Family Bible",
+     "PartialURL": "Hartley_Family_Bible",
+     "PrefixedURL": "Space:Hartley_Family_Bible",
+     "FullURL": "https://api.wikitree.com/wiki/Space:Hartley_Family_Bible",
+     "LocalURL": "/wiki/Space:Hartley_Family_Bible",
+     "DBkey": "Hartley_Family_Bible",
+     "PrefixedDBkey": "Space:Hartley_Family_Bible"
+    },
+    "Privacy": 50,
+    "Privacy_IsPrivate": false,
+    "Privacy_IsPublic": true,
+    "Privacy_IsOpen": false,
+    "Privacy_IsAtLeastPublic": true,
+    "bio": "A transcription of the family record pages in the Hartley family Bible, held by Edith Louise Hartley in 1950.\n\n== Births ==\n* '''Calvin Hartley''' born 12 March 1842\n* Edith Louise Hartley born 1868\n\n== Marriages ==\n* Calvin Hartley and Ethel Cole, 10 June 1866<ref>Bible page 2.</ref>\n\n[[Category: Hartley Family Bibles]]",
+    "Created": "20210522221815",
+    "Touched": "20241117034307"
+   },
+   "status": 0
+  }
+ ],
+ "photos": [
+  {
+   "page_name": "Hartley-6084",
+   "limit": 20,
+   "start": 0,
+   "order": "PageId",
+   "status": 0,
+   "photos": [
+    {
+     "PageId": "4871100",
+     "ImageName": "Hartley-6084.jpg",
+     "Title": "Calvin Hartley about 1900",
+     "Location": "Fairview",
+     "Date": "0000-00-00",
+     "Type": "photo",
+     "Size": "190432",
+     "Width": "452",
+     "Height": "255",
+     "Uploaded": "2012-11-27 01:37:31",
+     "URL": "/photo/jpg/Hartley-6084",
+     "URL_300": "/photo.php/thumb/5/5c/Hartley-6084.jpg/300px-Hartley-6084.jpg",
+     "URL_75": "/photo.php/thumb/5/5c/Hartley-6084.jpg/75px-Hartley-6084.jpg"
+    },
+    {
+     "PageId": "6116255",
+     "ImageName": "Hartley-6084-1.jpg",
+     "Title": "Hartley homestead, South street",
+     "Location": "Fairview",
+     "Date": "0000-00-00",
+     "Type": "photo",
+     "Size": "190432",
+     "Width": "452",
+     "Height": "255",
+     "Uploaded": "2012-11-27 01:37:31",
+     "URL": "/photo/jpg/Hartley-6084-1",
+     "URL_300": "/photo.php/thumb/4/47/Hartley-6084-1.jpg/300px-Hartley-6084-1.jpg",
+     "URL_75": "/photo.php/thumb/4/47/Hartley-6084-1.jpg/75px-Hartley-6084-1.jpg"
+    }
+   ]
+  }
+ ],
+ "noPhotos": [
+  {
+   "page_name": "Hartley-6084",
+   "limit": 20,
+   "start": 0,
+   "order": "PageId",
+   "photos": [],
+   "status": 0
+  }
+ ],
+ "refused": [
+  {
+   "page_name": "Hartley-9999",
+   "status": "Permission denied."
+  }
+ ]
+}

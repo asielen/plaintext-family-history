@@ -1767,8 +1767,13 @@ def _dest_example(file_path: Path, inbox_root: Path, fha_config: dict | None = N
     return '1880s'
 
 
-def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
+def _read_sidecar(sidecar: Path, *, bundle: bool = False) -> tuple[dict, str]:
     """Parse a stub sidecar into (hint frontmatter, prose body).
+
+    `attach_to:` (add these files to an existing source) is read only from a
+    bundle folder's `notes.md` (`bundle=True`, `process_bundle`). In a lone
+    sidecar it is refused rather than ignored: he would expect the file in
+    that source and find a new one instead.
 
     The stub's optional frontmatter seeds record fields (title/source_type/
     repository hints); its prose body flows into the record's `## Notes`, since
@@ -1803,6 +1808,13 @@ def _read_sidecar(sidecar: Path) -> tuple[dict, str]:
         errors = '; '.join(msg for _, msg in rec['parse_errors'])
         raise ProcessError(f'{sidecar.name} has malformed frontmatter: {errors}')
     meta = rec.get('meta') or {}
+    if not bundle and str(meta.get('attach_to') or '').strip():
+        target = str(meta['attach_to']).strip()
+        raise ProcessError(
+            f'{sidecar.name} says to add its file to {target} (attach_to), which works only in a '
+            "bundle folder's notes.md. To add this one file to that source, run `fha process "
+            f'<a file of {target}> --more <this file> ROLE`; to file it as a new source, delete '
+            'the attach_to line. Nothing was changed.')
     # Strip the frontmatter off the body; keep the prose the human wrote.
     body = (rec.get('body') or '').strip()
     names = [str(n) for n in (meta.get('people') or []) if str(n).strip()]
@@ -3374,6 +3386,185 @@ def _photo_already_filed_message(archive_root: Path, fha_config: dict, dest: Pat
             f'{rename}and process it again.')
 
 
+_ATTACH_SPAN = 2  # how far apart two film images of one record may be (the panel's question)
+
+
+def _film_positions(data_files) -> list[tuple[str, int]]:
+    """The (DGS, image number) pairs a set of site-data files say they show.
+
+    For him: a FamilySearch film image capture saves where it sits on its
+    film (`image: {dgs, imageNumber}` in its site data). Only numbers the
+    capture found count; anything unreadable or missing gives nothing, never
+    a guess. The DGS is compared unpadded, as Seen It keys it.
+    """
+    out = []
+    for path in data_files:
+        try:
+            data = json.loads(Path(path).read_text(encoding='utf-8-sig'))
+        except (OSError, UnicodeDecodeError, ValueError):
+            continue
+        image = data.get('image') if isinstance(data, dict) else None
+        if not isinstance(image, dict):
+            continue
+        dgs = str(image.get('dgs') or '')
+        number = image.get('imageNumber')
+        if re.fullmatch(r'[0-9]+', dgs) and isinstance(number, int) \
+                and not isinstance(number, bool) and number > 0:
+            out.append((dgs.lstrip('0') or '0', number))
+    return out
+
+
+def _bundle_attach_target(
+    archive_root: Path, sidecar_meta: dict, folder: Path, *,
+    source_type: str | None, source_date: str | None,
+    fha_config: dict | None = None, assets=(),
+) -> dict | None:
+    """The existing source a bundle's notes say its files join, or None.
+
+    For him: when he captures the next FamilySearch film image of a deed he
+    already holds, the capture panel asks whether it belongs with that
+    source, and on his yes the bundle's notes carry `attach_to: s-…`
+    (TOOLING_INGESTION §1.2). Filed as a new source, the one deed would be
+    two sources.
+
+    Everything that could stop the attach is checked here, before anything
+    moves: the value must be a source id, the source must exist and read
+    cleanly, `--type` and `--date` (which describe a new source) must not be
+    given, a bundle marked `restricted` may join only a source that is
+    restricted too, so a privacy mark is never dropped on the way in, and
+    the bundle's site data must name a FamilySearch film image within two
+    of one the source already holds on the same film (`_film_positions`),
+    so a mistyped or hand-edited s-id cannot fold a different record in.
+    Returns {sid, record_path, old_text, source_type}.
+    """
+    raw = sidecar_meta.get('attach_to')
+    if raw is None or str(raw).strip() == '':
+        return None
+    shown = str(raw).strip()
+    instead = (f'delete the attach_to line from {folder.name}/notes.md to file these files as a '
+               'new source instead, then process the folder again. Nothing was changed.')
+    if id_type_of(shown) != 'S':
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files to "{shown}", which is not a '
+            f'source id (one looks like s-0a1b2c3d4e). Correct it, or {instead}')
+    sid = fmt_id_display(shown)
+    if source_type is not None or source_date is not None:
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files to {sid} (attach_to), which '
+            'already has its own type and date, so --type and --date do not apply. Drop them, '
+            f'or {instead}')
+    record_path = _find_record_for_sid(archive_root, sid)
+    if record_path is None:
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files to {sid} (attach_to), but there '
+            f'is no source {sid} in sources/. Run `fha find {sid}` to see where it went (a '
+            f'source merged into another is found under the one it joined), or {instead}')
+    try:
+        old_text = read_text_exact(record_path)
+    except (OSError, UnicodeDecodeError) as e:
+        raise ProcessError(
+            f'{_rel(record_path, archive_root)} could not be read ({e}), so nothing was added '
+            f'to it. Run `fha lint` to see what is wrong with it, or {instead}') from e
+    meta = parse_frontmatter_strict(old_text)
+    if not isinstance(meta, dict):
+        raise ProcessError(
+            f'the details at the top of {_rel(record_path, archive_root)} cannot be read, so '
+            f'nothing was added to it. Run `fha lint` to see what is wrong, or {instead}')
+    if _sidecar_flag(sidecar_meta, 'restricted') and meta.get('restricted') in (None, False, '', 'false'):
+        raise ProcessError(
+            f'the notes in {folder.name} mark these files restricted, and {sid} is not, so they '
+            f'would lose that mark. Mark {sid} restricted first, or {instead}')
+    # The one-event-one-source guard: the panel only offers a source that
+    # holds an image of the same film within two of this one, and the notes
+    # line can be edited by hand, so the same is checked here against the
+    # files themselves. A wrong yes would merge two records into one source.
+    here = _film_positions(a for a in assets if a.suffix.lower() == '.json')
+    if not here:
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files to {sid} (attach_to), but they '
+            'carry no FamilySearch film and image number, and attach_to is only for the next '
+            'image of a film record you already hold. To add files to a source by hand, use '
+            f'`fha process <a file of {sid}> --more <file> <role>`, or {instead}')
+    held = []
+    for entry in meta.get('files') or []:
+        name = str(entry.get('file') or '') if isinstance(entry, dict) else ''
+        if name.lower().endswith('.json'):
+            held.append(resolve_path(name, fha_config or {}, archive_root))
+    there = _film_positions(held)
+    if not any(d == hd and abs(n - hn) <= _ATTACH_SPAN for d, n in here for hd, hn in there):
+        shown_here = ', '.join(f'film {d} image {n}' for d, n in here)
+        shown_there = (', '.join(f'film {d} image {n}' for d, n in there)
+                       or 'no FamilySearch film image')
+        raise ProcessError(
+            f'the notes in {folder.name} say to add these files ({shown_here}) to {sid} '
+            f'(attach_to), but {sid} holds {shown_there}, not an image of the same film within '
+            f'{_ATTACH_SPAN} of this one, so they may be a different record. Check the s-id, or '
+            f'{instead}')
+    rtype = str(meta.get('source_type') or '')
+    return {'sid': sid, 'record_path': record_path, 'old_text': old_text,
+            'source_type': rtype if rtype in SOURCE_TYPES else None}
+
+
+def _attached_record_text(
+    old_text: str, entries: list[dict], *, record_label: str,
+    bundle_title: str, citation: str | None, notes_body: str,
+) -> str:
+    """An existing source record with a bundle's files and notes added.
+
+    For him: the record still says everything it said, its main file stays
+    its main file, and its Notes gain one dated line saying which capture
+    these files came from, that capture's citation and its notes, so the
+    second image of a deed is cited in the same record as the first.
+
+    Text surgery, never a YAML round-trip (`_append_file_entry`), so his
+    comments and field order survive. Checked before anything is written:
+    the frontmatter must read back with exactly these entries added and
+    nothing else changed, and the `## Claims` block must be as sound as it
+    was; else ProcessError, and the bundle is left as it is.
+    """
+    text = old_text
+    try:
+        for entry in entries:
+            text = _append_file_entry(text, _render_file_entry(entry))
+    except ValueError as e:
+        raise ProcessError(
+            f'the files could not be listed in {record_label} ({e}), so nothing was moved. Run '
+            '`fha lint` to see what is wrong with that record, then process the folder again.') from e
+    lines = text.split('\n')
+    span = frontmatter_fence_span(lines)
+    body_start = (span[1] + 1) if span is not None else 0
+    cr = '\r' if '\r\n' in old_text else ''
+    pieces = [f'Added {_today()} from the capture "{bundle_title}" ({len(entries)} files), '
+              'which you said belongs with this source.']
+    if citation and citation.strip() not in (notes_body or ''):
+        pieces.append(f'Its citation: {citation.strip()}')
+    if (notes_body or '').strip():
+        pieces.append(notes_body.strip())
+    for piece in pieces:
+        lines, _, _ = append_paragraph_to_section(
+            lines, body_start, 'Notes', piece, cr, is_placeholder=source_notes_is_unfilled)
+    new_text = '\n'.join(lines)
+
+    before = parse_frontmatter_strict(old_text) or {}
+    after = parse_frontmatter_strict(new_text) or {}
+    old_files = before.get('files') if isinstance(before.get('files'), list) else []
+    new_files = after.get('files') if isinstance(after.get('files'), list) else []
+    rest_kept = ({k: v for k, v in before.items() if k != 'files'}
+                 == {k: v for k, v in after.items() if k != 'files'})
+    added = [str(f.get('file')) if isinstance(f, dict) else None for f in new_files[len(old_files):]]
+    if (not rest_kept or new_files[:len(old_files)] != old_files
+            or added != [str(e['file']) for e in entries]):
+        raise ProcessError(
+            f'the files could not be listed in {record_label} safely (the details at its top '
+            'would not read back as planned), so nothing was moved. Run `fha lint --format-write` '
+            'to tidy it, then process the folder again.')
+    if claims_edit_problem(old_text) is None and claims_edit_problem(new_text) is not None:
+        raise ProcessError(
+            f'adding the notes would leave the Claims block of {record_label} broken, so nothing '
+            'was moved. Open the record and check it by hand, then process the folder again.')
+    return new_text
+
+
 def process_bundle(
     archive_root: Path,
     fha_config: dict,
@@ -3415,9 +3606,18 @@ def process_bundle(
     Transactional: every move/rename/keyword-embed registers an undo and the
     record write is last; any failure unwinds everything so a failed dissolution
     leaves the bundle exactly as it was.
+
+    `attach_to: s-…` in the notes (TOOLING_INGESTION §1.2) files the bundle
+    into that existing source instead of minting one: he captured the next
+    image of a deed he already holds and said it belongs there. The files
+    are filed and named exactly as for a new source but under that s-id,
+    none of them becomes the main file, the record gains one `files:` entry
+    each, and the notes are added to its `## Notes`. Everything else the
+    record says is left as it is (`_bundle_attach_target`,
+    `_attached_record_text`).
     """
     notes_path = folder / 'notes.md'
-    sidecar_meta, notes_body = _read_sidecar(notes_path)
+    sidecar_meta, notes_body = _read_sidecar(notes_path, bundle=True)
 
     unsupported = sorted(
         p.name for p in folder.iterdir()
@@ -3447,6 +3647,10 @@ def process_bundle(
             'nothing left to file: delete it. If you renamed it, change the name in the folder\'s '
             'notes.md to match, then process the folder again. Nothing was changed.')
 
+    attach = _bundle_attach_target(archive_root, sidecar_meta, folder,
+                                   source_type=source_type, source_date=source_date,
+                                   fha_config=fha_config, assets=assets)
+
     final_title = str(sidecar_meta['title']) if sidecar_meta.get('title') \
         else _slugify(folder.name).replace('-', ' ')
     final_slug = _derive_slug(None, final_title, folder)
@@ -3459,6 +3663,9 @@ def process_bundle(
     # path uses, so a bundle of census page scans does not land in the photo
     # library on the strength of their .jpg suffix (#59).
     stated_type = source_type
+    if attach is not None:
+        # The files join a source that already has its type.
+        stated_type = attach['source_type']
     if stated_type is None:
         hinted_type = sidecar_meta.get('source_type')
         if hinted_type:
@@ -3513,16 +3720,23 @@ def process_bundle(
         raise ProcessError(f'bundle notes mark multiple primary files: {names}.')
 
     # Primary: honor an explicit stub hint, else prefer the plain photo scan,
-    # otherwise the first asset (sorted).
+    # otherwise the first asset (sorted). Files joining a source keep its main
+    # file: none of them becomes one.
     photo_assets = [a for a in assets if asset_kinds[a] == 'photo']
-    if hinted_primary:
+    if attach is not None:
+        primary = None
+    elif hinted_primary:
         primary = hinted_primary[0]
     elif photo_assets:
         primary = select_variation_primary(photo_assets, lambda p: parse_media_filename(p.stem))
     else:
         primary = assets[0]
 
-    sid = _mint_one_source_id(archive_root)
+    sid = attach['sid'] if attach is not None else _mint_one_source_id(archive_root)
+    # Documents file into the drawer of the source they belong to: its own
+    # record folder's name for a source that already exists.
+    doc_dir = documents_root / (attach['record_path'].parent.name if attach is not None
+                                else _record_subdir(source_type))
 
     # Plan every asset's destination + inventory entry before touching disk, so a
     # collision is caught (and previewed) before any move happens.
@@ -3560,15 +3774,16 @@ def process_bundle(
             # whose own name is the title slug, or two generic names of one
             # role, would otherwise land on the same destination and the
             # second move would overwrite the first scan. Compared without
-            # case, as Windows and macOS see names.
+            # case, as Windows and macOS see names. Files joining a source
+            # also never land on a name it already has on disk.
             taken = {item['dest'].name.lower() for item in plan
                      if item['kind'] == 'document'}
             new_name = f'{base}{suffix}_{sid}{asset.suffix}'
             n = 2
-            while new_name.lower() in taken:
+            while new_name.lower() in taken or (attach is not None and (doc_dir / new_name).exists()):
                 new_name = f'{base}-{n}{suffix}_{sid}{asset.suffix}'
                 n += 1
-            dest = documents_root / _record_subdir(source_type) / new_name
+            dest = doc_dir / new_name
             entry = {'file': path_to_alias(dest, 'documents', fha_config, archive_root),
                      'role': role, 'original_filename': asset.name}
             if copy:
@@ -3605,12 +3820,20 @@ def process_bundle(
                     'or remove the stale bundle before processing.'
                 )
 
-    record_dir = archive_root / 'sources' / _record_subdir(source_type)
-    record_path = record_dir / f'{final_slug}_{sid}.md'
-    if record_path.exists():
-        raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
+    if attach is not None:
+        record_path = attach['record_path']
+        record_dir = record_path.parent
+    else:
+        record_dir = archive_root / 'sources' / _record_subdir(source_type)
+        record_path = record_dir / f'{final_slug}_{sid}.md'
+        if record_path.exists():
+            raise ProcessError(f'record already exists: {_rel(record_path, archive_root)}')
 
-    text = _scaffold_text(
+    text = _attached_record_text(
+        attach['old_text'], [item['entry'] for item in plan],
+        record_label=_rel(record_path, archive_root), bundle_title=final_title,
+        citation=_sidecar_str(sidecar_meta, 'citation'), notes_body=notes_body,
+    ) if attach is not None else _scaffold_text(
         sid, final_title, source_type, [item['entry'] for item in plan],
         notes_body=notes_body,
         restricted=source_type == 'dna' or _sidecar_flag(sidecar_meta, 'restricted'),
@@ -3632,7 +3855,11 @@ def process_bundle(
     if dry_run:
         if any(item['embed'] for item in plan):
             _open_backup(archive_root, fha_config, backup, embed_targets)
-        print(f'[dry-run] Would mint {sid} for bundle {folder.name} ({len(assets)} files)')
+        if attach is not None:
+            print(f'[dry-run] Would add {len(assets)} files from bundle {folder.name} to {sid}, '
+                  'the source you said they belong with')
+        else:
+            print(f'[dry-run] Would mint {sid} for bundle {folder.name} ({len(assets)} files)')
         for item in plan:
             if item['kind'] == 'photo':
                 verb = 'move + embed SOURCE in'
@@ -3646,7 +3873,11 @@ def process_bundle(
                          'a folder instead)' if offer_dest else ' (the top of your photo library)')
             print(f'[dry-run] Would {verb} {item["src"].name} -> '
                   f'{_rel(item["dest"], archive_root)}{where}')
-        print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
+        if attach is not None:
+            print(f'[dry-run] Would list them in {_rel(record_path, archive_root)} and add their '
+                  'notes to its Notes')
+        else:
+            print(f'[dry-run] Would scaffold {_rel(record_path, archive_root)}')
         print(f'[dry-run] Would delete the dissolved bundle folder {folder.name}')
         return EXIT_CLEAN
 
@@ -3691,10 +3922,18 @@ def process_bundle(
                 if err is not None:
                     raise RuntimeError(f'exiftool could not embed SOURCE keyword in {dest.name}: {err}')
                 embedded.append((dest, sid))
-        record_dir.mkdir(parents=True, exist_ok=True)
-        record_path.write_text(text, encoding='utf-8')
-        undo.append((f'delete the half-written record {record_path.name}',
-                     lambda: record_path.unlink(missing_ok=True)))
+        if attach is not None:
+            # Atomic: this REPLACES a complete record, so a failed write must
+            # never leave a fragment where it was.
+            old_record_text = attach['old_text']
+            write_text_exact_atomic(record_path, reapply_newline(text, old_record_text))
+            undo.append((f'put {record_path.name} back as it was',
+                         lambda: write_text_exact_atomic(record_path, old_record_text)))
+        else:
+            record_dir.mkdir(parents=True, exist_ok=True)
+            record_path.write_text(text, encoding='utf-8')
+            undo.append((f'delete the half-written record {record_path.name}',
+                         lambda: record_path.unlink(missing_ok=True)))
 
         # Dissolve the now-asset-free folder: remove the notes stub, then rmdir.
         notes_path.unlink()
@@ -3735,7 +3974,11 @@ def process_bundle(
     _discard_undo_copies(undo_copies)
     if backup is not None:
         _flush_backup_messages(backup)
-    print(f'Minted {sid} for bundle {folder.name}')
+    if attach is not None:
+        print(f'Added {len(assets)} files from bundle {folder.name} to {sid}, '
+              'the source you said they belong with')
+    else:
+        print(f'Minted {sid} for bundle {folder.name}')
     for item in plan:
         if item['kind'] == 'photo':
             print(f'Filed {item["src"].name} -> {_rel(item["dest"], archive_root)} '
@@ -3753,7 +3996,10 @@ def process_bundle(
                  'of the library.' if offer_dest else ''))
     for warning in keyword_warnings:
         print(warning, file=sys.stderr)
-    print(f'Scaffolded {_rel(record_path, archive_root)} with {len(assets)} files')
+    if attach is not None:
+        print(f'Listed them in {_rel(record_path, archive_root)} and added their notes to its Notes')
+    else:
+        print(f'Scaffolded {_rel(record_path, archive_root)} with {len(assets)} files')
     print(f'Dissolved bundle folder {folder.name}')
     return EXIT_CLEAN
 
