@@ -30,6 +30,15 @@
  * Past FAINT_MAX journeys the faint lines are left out (too many to read,
  * and slow); the picked one still draws.
  *
+ * Years: when there are lines, a slider under the map runs from the first
+ * year on any line to the last. Dragging it back shows where the family
+ * had got to by then: each move once the year it was made by is reached,
+ * each pin from the first year a line reaches it. "Play the years" steps a
+ * decade a second (any click stops it) and "Show all" puts everything
+ * back, pins no line reaches included. The slider is a plain range input
+ * with its year written beside it, so the keyboard and a screen reader
+ * can use it.
+ *
  * Text from the data goes in as text nodes and attributes, never as HTML.
  * Also loadable from node (module.exports), so the build's tests can check
  * the projection maths against the real D3. */
@@ -150,6 +159,68 @@
     return order.map(function (id) { return {place: id, label: numbers[id].join(', ')}; });
   }
 
+  /* The year slider. A cousin drags it back to see where the family had
+   * got to by then: a move shows once its year (the later stop's) is at or
+   * before the slider, a pin from the first year any line reaches it. The
+   * years come only from the lines, which fha site has already cleared of
+   * anyone the build hides. `upTo` null means every year: the slider at
+   * its last year, or "Show all", which also brings back the pins no line
+   * reaches. */
+
+  /* {place id: the first year a line's stop there starts}. */
+  function pinYears(journeys) {
+    var first = {};
+    (journeys || []).forEach(function (j) {
+      j.stops.forEach(function (stop) {
+        if (!(stop.place in first) || stop.year_from < first[stop.place]) {
+          first[stop.place] = stop.year_from;
+        }
+      });
+    });
+    return first;
+  }
+
+  /* Whether something from `year` shows with the slider at `upTo`. Every
+   * year shows everything; a year that is not known waits for that. */
+  function shownBy(year, upTo) {
+    if (upTo === null || upTo === undefined) return true;
+    return year !== undefined && year !== null && year <= upTo;
+  }
+
+  /* The words beside the slider, also its aria-valuetext. */
+  function yearText(upTo, years) {
+    if (upTo === null || upTo === undefined || upTo >= years[1]) {
+      return 'Every year, up to ' + years[1];
+    }
+    return 'Up to ' + upTo;
+  }
+
+  var PLAY_STEP = 10;      // years per step of "Play the years"
+  var PLAY_MS = 1000;      // ms per step
+
+  /* True when the viewer has asked their system for less motion. Playing
+   * the years steps the map on its own, so then it is left out and the
+   * slider and "Show all" do the work. */
+  function motionReduced(win) {
+    try {
+      return !!(win && win.matchMedia &&
+                win.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    } catch (e) { return false; }
+  }
+
+  /* Where "Play the years" begins: from the slider's year, or from the
+   * first year when the slider is at the end. */
+  function playStart(current, years) {
+    return current >= years[1] ? years[0] : current;
+  }
+
+  /* The next year Play moves to: a decade on, never past the last year;
+   * null once it is there. */
+  function nextPlayYear(current, years) {
+    if (current >= years[1]) return null;
+    return Math.min(years[1], current + PLAY_STEP);
+  }
+
   /* What a journey's line leaves out, as a sentence, or ''. */
   function leftOutText(journey) {
     var parts = [];
@@ -233,7 +304,86 @@
     panel.appendChild(p);
   }
 
-  function draw(d3, topojson, world, data, box, panel, reset, picker) {
+  /* The controls under the map: the slider, its year in words, "Play the
+   * years" and "Show all". Returns {start(onYear)}, which shows the controls
+   * and calls onYear(year or null) whenever the year changes; null when the
+   * page has no slider (no lines) or the data has no years. */
+  function yearSlider(doc, years) {
+    var box = doc.getElementById('fha-map-years');
+    var input = doc.getElementById('fha-map-year');
+    var text = doc.getElementById('fha-map-year-text');
+    var play = doc.getElementById('fha-map-play');
+    var all = doc.getElementById('fha-map-all');
+    if (!box || !input || !years || years.length !== 2) return null;
+    var onYear = function () {};
+    var timer = null;
+
+    function set(year) {
+      input.value = String(year);
+      var upTo = year >= years[1] ? null : year;
+      var words = yearText(upTo, years);
+      input.setAttribute('aria-valuetext', words);
+      if (text) text.textContent = words;
+      onYear(upTo);
+    }
+
+    function stop() {
+      if (timer === null) return;
+      clearInterval(timer);
+      timer = null;
+      doc.removeEventListener('click', stopOnClick, true);
+      if (play) {
+        play.textContent = 'Play the years';
+        play.setAttribute('aria-pressed', 'false');
+      }
+    }
+
+    // Any click on the page stops the playing; the Play button's own click
+    // is left to the button, which stops it too.
+    function stopOnClick(event) {
+      if (event.target !== play) stop();
+    }
+
+    function start() {
+      set(playStart(Number(input.value), years));
+      timer = setInterval(function () {
+        var next = nextPlayYear(Number(input.value), years);
+        if (next === null) stop();
+        else set(next);
+      }, PLAY_MS);
+      doc.addEventListener('click', stopOnClick, true);
+      if (play) {
+        play.textContent = 'Stop';
+        play.setAttribute('aria-pressed', 'true');
+      }
+    }
+
+    return {start: function (callback) {
+      onYear = callback;
+      input.addEventListener('input', function () {
+        stop();
+        set(Number(input.value));
+      });
+      if (play && motionReduced(doc.defaultView)) {
+        play.hidden = true;
+      } else if (play) {
+        play.setAttribute('aria-pressed', 'false');
+        play.addEventListener('click', function () {
+          if (timer === null) start();
+          else stop();
+        });
+      }
+      if (all) {
+        all.addEventListener('click', function () {
+          stop();
+          set(years[1]);
+        });
+      }
+      box.hidden = false;
+    }};
+  }
+
+  function draw(d3, topojson, world, data, box, panel, reset, picker, years) {
     var places = data.places.slice().sort(function (a, b) { return b.events - a.events; });
     var journeys = data.journeys || [];
     var byId = {};
@@ -260,18 +410,20 @@
     layer.append('path').attr('class', 'map-borders')
       .attr('d', path(topojson.mesh(world, world.objects.countries, function (a, b) { return a !== b; })));
 
-    // Everyone's journeys, faint, under the pins.
+    // Everyone's journeys, faint, under the pins: one path per move, so
+    // the year slider can hide the moves that come later.
     var faint = layer.append('g').attr('class', 'map-journeys');
     if (journeys.length <= FAINT_MAX) {
       journeys.forEach(function (j) {
-        var segs = journeySegments(j, byId);
-        if (!segs.length) return;
-        faint.append('path').attr('class', 'map-journey')
-          .attr('stroke-width', FAINT_WIDTH)
-          .attr('d', path({type: 'MultiLineString',
-                           coordinates: segs.map(function (s) { return [s.from, s.to]; })}));
+        journeySegments(j, byId).forEach(function (s) {
+          faint.append('path').datum(s).attr('class', 'map-journey')
+            .attr('stroke-width', FAINT_WIDTH)
+            .attr('d', path({type: 'LineString', coordinates: [s.from, s.to]}));
+        });
       });
     }
+    var upTo = null;   // the year slider's year; null is every year
+    var firstYear = pinYears(journeys);
     var focus = layer.append('g').attr('class', 'map-journey-focus');
 
     // Biggest first, so a small pin is never hidden under a big one.
@@ -304,10 +456,9 @@
     function follow(index) {
       var was = followed;
       followed = index;
-      focus.selectAll('*').remove();
-      numbers.selectAll('*').remove();
       svg.classed('map-following', index >= 0);
       if (picker) picker.value = index >= 0 ? String(index) : '';
+      drawFollowed();
       if (index < 0) {
         if (was >= 0) {   // the journey's text goes with its line
           clear(panel);
@@ -315,8 +466,18 @@
         }
         return;
       }
-      var j = journeys[index];
       pins.classed('is-active', false);
+      showJourney(panel, journeys[index], byId);
+    }
+
+    /* The followed journey's line and numbers, as far as the year slider
+     * goes (the panel still lists every stop). */
+    function drawFollowed() {
+      focus.selectAll('*').remove();
+      numbers.selectAll('*').remove();
+      if (followed < 0) return;
+      var all = journeys[followed];
+      var j = {stops: all.stops.filter(function (s) { return shownBy(s.year_from, upTo); })};
       // Each move in two halves, the first ending in an arrow, so the
       // arrow sits halfway along the route and not under a pin.
       journeySegments(j, byId).forEach(function (s) {
@@ -336,7 +497,15 @@
           .attr('y', -(pinRadius(p.events) + 4))
           .text(n.label);
       });
-      showJourney(panel, j, byId);
+    }
+
+    /* Show what had happened by the slider's year. A hidden pin is not
+     * drawn at all, so the keyboard skips it too. */
+    function showYear(year) {
+      upTo = year;
+      pins.classed('is-later', function (d) { return !shownBy(firstYear[d.id], upTo); });
+      faint.selectAll('path').classed('is-later', function (s) { return !shownBy(s.year, upTo); });
+      drawFollowed();
     }
 
     // Who has a journey, by the href their name links to.
@@ -385,6 +554,7 @@
       focus.selectAll('path').attr('stroke-width', FOCUS_WIDTH / k);
     });
     svg.call(zoom);
+    if (years) years.start(showYear);
     if (reset) {
       reset.hidden = false;
       reset.addEventListener('click', function () {
@@ -397,7 +567,10 @@
     module.exports = {bounds: bounds, projectionKind: projectionKind, fitTarget: fitTarget,
                       makeProjection: makeProjection, pinRadius: pinRadius,
                       stopYears: stopYears, stopText: stopText, journeySegments: journeySegments,
-                      stopNumbers: stopNumbers, leftOutText: leftOutText};
+                      stopNumbers: stopNumbers, leftOutText: leftOutText,
+                      pinYears: pinYears, shownBy: shownBy, yearText: yearText,
+                      playStart: playStart, nextPlayYear: nextPlayYear,
+                      motionReduced: motionReduced};
     return;
   }
 
@@ -418,6 +591,7 @@
     box.hidden = false;
     panel.hidden = false;
     draw(window.d3, window.topojson, window.FHA_WORLD, data, box, panel,
-         document.getElementById('fha-map-reset'), document.getElementById('fha-map-journey'));
+         document.getElementById('fha-map-reset'), document.getElementById('fha-map-journey'),
+         data.journeys && data.journeys.length ? yearSlider(document, data.years) : null);
   });
 })();

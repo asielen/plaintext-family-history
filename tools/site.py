@@ -189,6 +189,7 @@ CODE MAP
     _page_filename             - id → 'p-xxx.html' / 's-xxx.html'
     _json_for_script           - JSON serialized safe for inline <script> embedding
     _journey_when              - a family-map stop's year and sort key: the middle of its date
+    _journey_years             - the map's year slider ends, from the stops
     _journey_note              - the map's "Not on the lines: ..." sentence
 
   Site search (the spelling rule; the builder's search methods are below)
@@ -4877,6 +4878,21 @@ def _journey_when(date_edtf, date_min, date_max) -> tuple[int, int] | None:
     return (lo.year + hi.year + 1) // 2, lo.toordinal() + hi.toordinal()
 
 
+def _journey_years(journeys: list[dict]) -> list[int] | None:
+    """The family map's year slider runs from the first year on any line to
+    the last, so a cousin can step through where the family had got to by
+    each year. [first, last] from the journeys' stops (a stop over several
+    records counts to its last year), or None when no line is drawn and
+    there is no slider. Only journeys feed it, and a shared build's journeys
+    already leave out every living, unknown, restricted and by-request
+    person, so nobody hidden moves either end."""
+    starts = [s['year_from'] for j in journeys for s in j['stops']]
+    ends = [s['year_to'] for j in journeys for s in j['stops']]
+    if not starts:
+        return None
+    return [min(starts), max(ends)]
+
+
 def _journey_note(undated: int, unplaced: int) -> str:
     """The family map's plain line for the records its journey lines leave
     out, or '' when there are none: "Not on the lines: 2 events with no date
@@ -8896,13 +8912,17 @@ class _SiteBuilder:
         payload = {'version': 1, 'places': data['places'], 'journeys': data['journeys'],
                    'undated_total': data['undated_total'],
                    'unplaced_total': data['unplaced_total']}
+        years = _journey_years(data['journeys'])
+        if years:
+            payload['years'] = years
         note = (_journey_note(data['undated_total'], data['unplaced_total'])
                 if data['journeys'] else '')
         self._write_page(self.out_dir / 'map.html', 'map.html', {
             'root_prefix': '.',
             'map': {'data_json': self._markup(_json_for_script(payload)),
                     'groups': ordered, 'unmapped': data['unmapped'],
-                    'has_journeys': bool(data['journeys']), 'journey_note': note},
+                    'has_journeys': bool(data['journeys']), 'journey_note': note,
+                    'years': years},
         })
 
     def _provisional_vital(self, pid: str, field: str) -> str | None:
