@@ -361,6 +361,10 @@ ul.files li.recording-item { width: 100%; }
 mark      { background: color-mix(in srgb, var(--ochre) 32%, transparent); color: var(--ink); padding: 0 0.12em; }
 
 .timeline ul { margin: var(--space-1) 0 var(--space-4); }
+/* Family rows (her father's death, her children's births) read lighter than
+   her own records, with a hollow bullet so colour is not the only signal. */
+.timeline li.tl-family { color: var(--ink-soft); font-size: var(--text-sm); list-style-type: circle; }
+.timeline .tl-age { color: var(--muted); font-size: var(--text-xs); white-space: nowrap; }
 /* "Tell me what you know" at the foot of a shared person page (site: contact_email). */
 .contribute { margin-top: var(--space-6); padding-top: var(--space-3); border-top: var(--border); font-size: var(--text-sm); }
 .timeline li.tl-context { color: var(--muted); font-size: var(--text-sm); font-style: italic; list-style-type: none; }
