@@ -261,6 +261,8 @@ CODE MAP
       .build_search_page: data/search-data.js and search.html
       ._graves / .build_graves_page: graves.html, every family grave by
           burial place with map and directions links
+      ._whats_new / .build_whats_new_page: whats-new.html (site.whats_new),
+          what was accepted each month, shown facts only
       ._surname_groups / .build_surname_pages: surnames/*.html, one page per
           family name the build shows a person for
       ._page_count: the page count `run` and --dry-run both report
@@ -305,6 +307,8 @@ from _lib import (
     _chart_year, _chart_bare_year,
     claim_date_order_sql,
     place_hierarchy_at,
+    _place_country,
+    census_country_key,
     COMPLETENESS_CHECK_LABELS,
     COMPLETENESS_STATE_WORDS,
     completeness_context,
@@ -338,9 +342,15 @@ from _lib import (
     EXIT_FAILURE,
     EXIT_WARNINGS,
     extract_bare_ids,
+    build_ahnentafel_map,
     FhaConfigError,
     place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
+    kin_graph,
+    kin_relationship,
+    person_life_dates,
+    resolve_root_generation,
+    root_generation_seed_position,
     humanize_edtf as _humanize_edtf,
     id_type_of,
     is_genetic_parent_subtype,
@@ -3402,6 +3412,107 @@ def _fan_fit_radial(name: str, surname: str | None, years: str, g: int, r_in: fl
     return {'fs': fs, 'lines': lines, 'fy': fy, 'years': years if kept else ''}
 
 
+# Heritage chart (`_render_heritage_svg`): the two buckets that are not a
+# country. "Birthplace unknown" is a person the tree shows whose birthplace is
+# not recorded or not registered; "Not traced" is a place in the tree nobody
+# fills (no parents recorded, or a person the page may not show).
+_HERITAGE_UNKNOWN = 'Birthplace unknown'
+_HERITAGE_UNTRACED = 'Not traced'
+_HERITAGE_BAR_X = 150.0
+_HERITAGE_BAR_W = 470.0
+_HERITAGE_BAR_H = 24.0
+_HERITAGE_ROW_STEP = 36.0
+
+
+def _heritage_generation_label(gen: int) -> str:
+    """"Parents", "Grandparents", "Great-grandparents", "2x great-grandparents"."""
+    if gen <= 1:
+        return 'Parents'
+    if gen == 2:
+        return 'Grandparents'
+    if gen == 3:
+        return 'Great-grandparents'
+    return f'{gen - 2}x great-grandparents'
+
+
+def _heritage_country_order(rows: list[dict]) -> list[str]:
+    """Every country in the rows, the biggest share of all the family first,
+    ties by name, so the same family always draws in the same order."""
+    total: dict[str, float] = {}
+    for row in rows:
+        for name, n in row['counts'].items():
+            if name not in (_HERITAGE_UNKNOWN, _HERITAGE_UNTRACED):
+                total[name] = total.get(name, 0.0) + n / row['slots']
+    return sorted(total, key=lambda name: (-total[name], name))
+
+
+def _render_heritage_svg(rows: list[dict]) -> str:
+    """"Where the family came from": one bar per generation back, each
+    country's share of that generation's places drawn as a segment, so he
+    sees at a glance that most of his mother's side was born in Ireland and a
+    third of the great-grandparents are not traced at all. Returns the chart
+    plus a plain-text legend (the colours are never the only clue: every wide
+    segment carries its own name, every segment a tooltip, and the legend
+    lists each country with its count).
+
+    `rows` is [{'label', 'slots', 'counts': {bucket: n}}], one per generation,
+    `slots` the 2^g places in that generation and `counts` summing to it. A
+    person who is two of the places (cousins who married) is counted in both.
+    Countries take `--branch-1..7`, cycling; "Birthplace unknown" is a plain
+    outline and "Not traced" a dotted one. The idea is WikiTree's heritage
+    page (https://www.wikitree.com); nothing is copied."""
+    countries = _heritage_country_order(rows)
+    order = countries + [_HERITAGE_UNKNOWN, _HERITAGE_UNTRACED]
+    colour = {name: f'var(--branch-{i % 7 + 1})' for i, name in enumerate(countries)}
+    width = _HERITAGE_BAR_X + _HERITAGE_BAR_W + 10
+    height = len(rows) * _HERITAGE_ROW_STEP + 6
+    summary = '; '.join(
+        f"{r['label']}: " + ', '.join(
+            f"{r['counts'][name]} {name}" for name in order if r['counts'].get(name))
+        for r in rows)
+    aria = html.escape('Where the family came from. ' + summary, quote=True)
+    out = [f'<svg class="heritage-chart" viewBox="0 0 {width:.1f} {height:.1f}" role="img" '
+           f'aria-label="{aria}" xmlns="http://www.w3.org/2000/svg">']
+    for i, row in enumerate(rows):
+        y = 3.0 + i * _HERITAGE_ROW_STEP
+        out.append(f'<text class="heritage-row-label" x="{_HERITAGE_BAR_X - 8:.1f}" '
+                   f'y="{y + _HERITAGE_BAR_H / 2:.1f}">{html.escape(row["label"])}</text>')
+        x = _HERITAGE_BAR_X
+        unit = _HERITAGE_BAR_W / row['slots']
+        for name in order:
+            n = row['counts'].get(name, 0)
+            if not n:
+                continue
+            w = n * unit
+            kind = ('heritage-seg-untraced' if name == _HERITAGE_UNTRACED
+                    else 'heritage-seg-unknown' if name == _HERITAGE_UNKNOWN else '')
+            style = f' style="--seg-color:{colour[name]}"' if name in colour else ''
+            tip = f'{name}: {n} of {row["slots"]} {row["label"].lower()}'
+            cls = f'heritage-seg {kind}'.strip()
+            out.append(f'<g class="heritage-seg-group"><rect class="{cls}"{style} '
+                       f'x="{x:.1f}" y="{y:.1f}" width="{w:.1f}" height="{_HERITAGE_BAR_H:.1f}">'
+                       f'<title>{html.escape(tip)}</title></rect>')
+            text = name if w >= len(name) * 6.4 + 10 else (str(n) if w >= 22 else '')
+            if text:
+                out.append(f'<text class="heritage-seg-label" x="{x + w / 2:.1f}" '
+                           f'y="{y + _HERITAGE_BAR_H / 2:.1f}">{html.escape(text)}</text>')
+            out.append('</g>')
+            x += w
+    out.append('</svg>')
+    places = sum(r['slots'] for r in rows)
+    items = []
+    for name in order:
+        n = sum(r['counts'].get(name, 0) for r in rows)
+        if not n:
+            continue
+        cls = ('heritage-seg-untraced' if name == _HERITAGE_UNTRACED
+               else 'heritage-seg-unknown' if name == _HERITAGE_UNKNOWN else '')
+        style = f' style="--seg-color:{colour[name]}"' if name in colour else ''
+        items.append(f'<li><span class="heritage-swatch {cls}"{style} aria-hidden="true"></span>'
+                     f'{html.escape(name)} ({n} of {places})</li>')
+    return ''.join(out) + '<ul class="heritage-legend">' + ''.join(items) + '</ul>'
+
+
 # A person is drawn faded when the only parent ties linking them to the chart's
 # subject are rated "low" (SPEC §8.5, chart plan 08-7). The same plain sentence
 # sits under every chart that fades someone, so a reader is never left guessing.
@@ -4835,13 +4946,16 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "What's new" page: off unless fha.yaml says `whats_new: true`.
+        self.show_whats_new, whats_new_warning = _site_switch(site_cfg, 'whats_new')
+        self._whats_new_cache: tuple[list[dict], bool] | None = None
         # A page for each family name: on unless fha.yaml says
         # `surname_pages: false` (TOOLING §12, "Surname pages").
         self.show_surnames, surname_warning = _site_switch(site_cfg, 'surname_pages', default=True)
         # The statistics page: off unless asked for (TOOLING §12).
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
-                                             surname_warning, statistics_warning) if w]
+                                             surname_warning, statistics_warning, whats_new_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -4852,6 +4966,8 @@ class _SiteBuilder:
         # The completeness engine's read of the index, made once on the first
         # person page that shows a ring (`_completeness_context`).
         self._completeness_ctx: dict | None = None
+        # Built on first use by `_kinship_context` (relationship line + number).
+        self._kinship: dict | None = None
         if self.derivative_cache is not None:
             workers, self._picture_setting_warning = _picture_workers_setting(site_cfg)
             if picture_pool and workers > 1:
@@ -5009,6 +5125,9 @@ class _SiteBuilder:
         # discoveries.md is read for both the discoveries page and the home
         # teaser; memoize so the file is parsed once per build.
         self._discoveries: tuple[str, list[str]] | None = None
+        # Every entry of the same file (not just the last five), which the
+        # "What's new" page files by month.
+        self._discovery_entries: list[str] = []
         # A person's profile photo is resolved once (front-matter read + photo
         # lookup + derivative) and reused across their page and every tree node
         # they appear in. Value: the publishable image file, or None.
@@ -6996,6 +7115,14 @@ class _SiteBuilder:
         fan = (self._markup(_tag_chart(_render_fan_svg(ahnen, self.fan_generations, span_deg=self.fan_degrees),
                                        _chart_name(name, 'ancestor-fan')))
                if len(ahnen) > 1 else None)
+        # "Where the family came from" (chart plan 08-12): only when at least
+        # one ancestor's birth country is known.
+        heritage_rows = self._heritage_rows(ahnen, max(self.fan_generations, 2)) if len(ahnen) > 1 else []
+        has_heritage = any(name not in (_HERITAGE_UNKNOWN, _HERITAGE_UNTRACED)
+                           for r in heritage_rows for name in r['counts'])
+        heritage = self._markup(_tag_chart(_render_heritage_svg(heritage_rows), _chart_name(name, 'heritage'))) if has_heritage else None
+        shown_pids = [e['pid'] for n, e in ahnen.items() if n > 1 and e.get('pid')]
+        heritage_repeats = len(set(shown_pids)) < len(shown_pids)
         # "Who overlapped": a bar per relative on one time line, drawn only
         # when at least two people have dates to compare.
         lifespan_rows, lifespan_omitted = self._build_lifespan_rows(pid, wings, page_dir)
@@ -7031,11 +7158,14 @@ class _SiteBuilder:
             'alt_names': alt_names, 'tags': tags,
             'portrait': self._profile_photo_href(pid, page_dir),
             'family_strip': self._person_family_strip(pid, page_dir),
+            'kinship': self._person_kinship(pid),
             'pedigree': pedigree,
             'pedigree_chart': _chart_name(name, 'family-chart') if pedigree else None,
             'chart_title': chart_title,
             'chart_weak_key': chart_weak_key,
             'fan': fan,
+            'heritage': heritage, 'heritage_repeats': heritage_repeats,
+            'heritage_chart': _chart_name(name, 'heritage') if heritage else None,
             'lifespan': lifespan,
             'fan_weak_key': fan_weak_key,
             'fan_chart': _chart_name(name, 'ancestor-fan') if fan else None,
@@ -9826,7 +9956,172 @@ class _SiteBuilder:
         else:
             chunks = [ln.strip() for ln in lines if _LIST_RE.match(ln)]
         self._discoveries = (body, chunks[-5:])
+        # "What's new" shows each entry whole, as the discoveries page does:
+        # a top-level bullet keeps its sub-bullets and continuation lines, so
+        # a date quoted in a sub-bullet never becomes an entry of its own.
+        if section_starts:
+            self._discovery_entries = chunks
+        else:
+            # The top level is the shallowest bullet in the file (a log may be
+            # written with every bullet a space or tab in). As in Markdown, a
+            # bullet is a sub-bullet only when it sits two or more columns
+            # deeper; one stray space still makes a sibling entry.
+            def indent_of(ln: str) -> int:
+                return len(ln) - len(ln.lstrip(' \t'))
+
+            top = min((indent_of(ln) for ln in lines if _LIST_RE.match(ln)), default=0)
+            entries: list[list[str]] = []
+            open_entry = False
+            for ln in lines:
+                bullet = _LIST_RE.match(ln)
+                indent = indent_of(ln)
+                if bullet and (not open_entry or indent < top + 2):
+                    entries.append([ln])
+                    open_entry = True
+                elif open_entry and (indent > top or not ln.strip()
+                                     or entries[-1][-1].strip()):
+                    entries[-1].append(ln)    # indented, blank, or a lazy continuation
+                else:
+                    open_entry = False        # unindented text after a blank line
+            self._discovery_entries = ['\n'.join(e).strip() for e in entries]
         return self._discoveries
+
+    # - what's new -
+
+    def _whats_new(self, page_dir: Path) -> tuple[list[dict], bool]:
+        """What a returning relative can read as new, month by month, newest
+        first: (the 12 most recent months that have anything, whether older
+        months were left off).
+
+        Cousin Ann sees only changes to things the shared pages already show.
+        A fact is listed when a person page's timeline shows it
+        (`_person_timeline`'s own rules: accepted, nobody living, unknown or
+        restricted on the claim, not a restricted claim, not a private
+        source) and it then passes the shared export reader a second time
+        (`export_privacy`, `person_withheld`), so one slip in either cannot
+        list a hidden change. Nothing counts or hints at what was left out,
+        and a month exists only because something shown happened in it.
+
+        The month is the one in the claim's `reviewed:` date, the day the
+        owner accepted it, so the page reads the same whenever it is built;
+        the build date is never used. A claim with no `reviewed:` is left
+        out. Linked and workbench builds list accepted claims too, so there
+        is one rule."""
+        if self._whats_new_cache is not None:
+            return self._whats_new_cache
+        shared = not self.linked
+        privacy = export_privacy(self.conn, self.archive_root) if shared else None
+        carried = living_carried_to_survivors(self.conn) if shared else {}
+        self._footnotes = None            # sources here are named links, not footnotes
+        month_re = re.compile(r'^(\d{4})-(\d{2})')
+
+        def month_of(value) -> str | None:
+            m = month_re.match(str(value or '').strip())
+            return f'{m.group(1)}-{m.group(2)}' if m and 1 <= int(m.group(2)) <= 12 else None
+
+        def type_word(ctype) -> str:
+            ctype = (ctype or '').strip()
+            if ctype in _VITAL_LABELS:
+                return _VITAL_LABELS[ctype].lower()
+            return ctype.replace('_', ' ').replace('-', ' ') or 'fact'
+
+        living_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        facts: dict[str, dict[str, list]] = {}    # month -> pid -> [(reviewed, cid, word)]
+        first_seen: dict[str, str] = {}           # pid -> earliest reviewed
+        source_first: dict[str, str] = {}         # sid -> earliest reviewed
+        for pid in sorted(self.person_pages):
+            meta = self.person_meta[pid]
+            if meta['merged_into']:
+                continue
+            if shared and person_withheld(self.conn, meta, privacy, self.person_meta.get,
+                                          carried=carried):
+                continue
+            rows = self.conn.execute(
+                "SELECT DISTINCT c.id, c.type, c.source_id, c.reviewed "
+                "FROM claim_persons cp JOIN claims c ON cp.claim_id = c.id "
+                f"WHERE cp.person_id = ? AND c.status = 'accepted' {living_filter} "
+                "AND c.reviewed IS NOT NULL ORDER BY c.reviewed, c.id", (pid,)).fetchall()
+            for r in rows:
+                month = month_of(r['reviewed'])
+                if month is None:
+                    continue
+                cid = normalize_id(str(r['id']))
+                if self._claim_verdicts.get(r['id']) is not None:
+                    continue          # names someone withheld: not listed, even reworded
+                if shared and (cid in self.restricted_claims
+                               or cid in privacy.restricted_claims
+                               or self._source_hard_restricted(r['source_id'])):
+                    continue
+                when = str(r['reviewed']).strip()
+                facts.setdefault(month, {}).setdefault(pid, []).append(
+                    (when, r['id'], type_word(r['type'])))
+                if pid not in first_seen or when < first_seen[pid]:
+                    first_seen[pid] = when
+                sid = normalize_id(r['source_id']) if r['source_id'] else None
+                if sid and sid in self.source_pages and (
+                        sid not in source_first or when < source_first[sid]):
+                    source_first[sid] = when
+
+        render = lambda tok, disp=None: self.render_token(tok, page_dir, disp)  # noqa: E731
+        embed = lambda t, c: self._render_embed(t, c, page_dir)  # noqa: E731
+        # An entry's month is the date it starts with (`- 2026-10-02: ...`, the
+        # shape `fha confirm discovery` writes, or a `## 2026-10-02` heading);
+        # a date quoted later in its text (a baptism of 1847) is not its month.
+        date_re = re.compile(r'^(?:#{2,3}\s+|[-*]\s+)\W*(\d{4}-\d{2}-\d{2})\b')
+        discoveries: dict[str, list] = {}
+        self._read_discoveries()
+        for chunk in self._discovery_entries:
+            m = date_re.match(chunk)
+            month = month_of(m.group(1)) if m else None
+            if month is not None:
+                discoveries.setdefault(month, []).append(self._markup(
+                    _prose_to_html(chunk, render, embed, drop_private=not self.linked)))
+
+        def by_name(pid: str):
+            return (fold_accents(self.person_meta[pid]['name'] or '').lower(), pid)
+
+        def by_title(sid: str):
+            return (fold_accents(self.source_meta[sid]['title'] or '').lower(), sid)
+
+        all_months = sorted(
+            {m for m in (set(facts) | set(discoveries)
+                         | {month_of(v) for v in first_seen.values()}
+                         | {month_of(v) for v in source_first.values()}) if m},
+            reverse=True)
+        months: list[dict] = []
+        for key in all_months[:12]:
+            people = []
+            for pid in sorted(facts.get(key, {}), key=by_name):
+                items = sorted(facts[key][pid])
+                words: list[str] = []
+                for _when, _cid, word in items:
+                    if word not in words:
+                        words.append(word)
+                shown = ', '.join(words[:5]) + (', and more' if len(words) > 5 else '')
+                n = len(items)
+                people.append(self._markup(
+                    f'{self._person_link(pid, page_dir)}: {n} fact{"" if n == 1 else "s"} '
+                    f'added ({_escape(shown)})'))
+            months.append({
+                'key': key,
+                'label': f'{_MONTH_NAMES[int(key[5:7]) - 1]} {key[:4]}',
+                'people': people,
+                'new_pages': [self._markup(self._person_link(pid, page_dir))
+                              for pid in sorted(first_seen, key=by_name)
+                              if month_of(first_seen[pid]) == key],
+                'new_records': [self._markup(self._source_link(sid, page_dir))
+                                for sid in sorted(source_first, key=by_title)
+                                if month_of(source_first[sid]) == key],
+                'discoveries': discoveries.get(key, []),
+            })
+        self._whats_new_cache = (months, len(all_months) > 12)
+        return self._whats_new_cache
+
+    def build_whats_new_page(self) -> None:
+        """Write whats-new.html (fha.yaml `site: whats_new: true`)."""
+        months, older_not_listed = self._whats_new(self.out_dir)
+        self._write_page(self.out_dir / 'whats-new.html', 'whats-new.html', {
+            'months': months, 'older_not_listed': older_not_listed, 'root_prefix': '.'})
 
     # - interactive tree -
 
@@ -9849,8 +10144,21 @@ class _SiteBuilder:
         is the last tie-break, which keeps the committed example fixtures
         from churning between rebuilds."""
         vitals = {'birth': None, 'death': None}
+        for r in self._vital_claim_rows(pid):
+            if vitals.get(r['type']) is None:
+                vitals[r['type']] = r['date_edtf'] or None
+        return vitals
+
+    def _vital_claim_rows(self, pid: str) -> list:
+        """The birth and death claims a chart may label `pid` with, best pick
+        first: the one list `_person_vitals` (the dates) and
+        `_person_birth_place_id` (the heritage chart's birthplace) both read,
+        so a node's dates and its birthplace never come from two different
+        claims. Every filter documented on `_person_vitals` is applied here."""
+        out = []
         for r in sorted(self.conn.execute(
-            "SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence, c.source_id "
+            "SELECT c.id, c.type, c.date_edtf, c.date_min, c.date_max, c.confidence, c.source_id, "
+            "c.place_id "
             "FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
             "WHERE cp.person_id = ? AND c.type IN ('birth','death') AND c.status = 'accepted' "
             "AND COALESCE(c.negated, 0) = 0 ORDER BY c.id",
@@ -9870,9 +10178,16 @@ class _SiteBuilder:
             # the node leaves it off as her summary box does (`_claim_verdicts`).
             if self._claim_verdicts.get(r['id']) == CLAIM_WITHHELD:
                 continue
-            if vitals.get(r['type']) is None:
-                vitals[r['type']] = r['date_edtf'] or None
-        return vitals
+            out.append(r)
+        return out
+
+    def _person_birth_place_id(self, pid: str) -> str | None:
+        """The registered place of the birth claim `_person_vitals` dates the
+        person by (the first usable birth claim that carries a date, else the
+        first usable one), or None when it names no registered place."""
+        births = [r for r in self._vital_claim_rows(pid) if r['type'] == 'birth']
+        pick = next((r for r in births if r['date_edtf']), births[0] if births else None)
+        return (pick['place_id'] or None) if pick is not None else None
 
     def _tree_card_kind(self, pid: str) -> str:
         """How the shared site's home family tree draws one person: 'shown'
@@ -9965,6 +10280,118 @@ class _SiteBuilder:
         if kind == 'private':
             blank['private'] = True
         return blank
+
+    # - relationship line and family-tree number (under the person's name) -
+
+    def _kinship_edge_ok(self, row: dict) -> bool:
+        """Which parent, spouse and sibling ties the relationship line and
+        the family-tree number may be worked out through.
+
+        A cousin reading a shared page is told "great-grandmother" and a
+        number, and neither may rest on a tie the site will not show. Linked
+        and workbench builds are private previews: every tie counts. A shared
+        build uses a tie only when its own claim may be shown, and never
+        through a restricted or by-request person (their edges are dropped).
+        Living and unknown people are fine to pass through (owner decision
+        D16): the words never name them."""
+        if self.linked:
+            return True
+        if not self._claim_row_is_publishable(
+                row.get('claim_id'), row.get('source_id'), row.get('status')):
+            return False
+        for key in ('person_id', 'other_id'):
+            meta = self.person_meta.get(row.get(key))
+            if meta is not None and any(r['id'] in self.restricted_persons
+                                        for r in self._merge_chain(meta)):
+                return False
+        return True
+
+    def _kinship_anchor(self) -> str | None:
+        """Whose relative each page says the person is: the person the home
+        page is centred on (`site.home_person`, else `root_person`), and in
+        the workbench the owner, as "Your ...". A shared build never names a
+        living person, so a hub who would be hidden hands off to the closest
+        ancestor who may be shown, as the home pedigree's fallback does."""
+        site_cfg = self.fha_config.get('site') or {}
+        root = normalize_id(str(self.fha_config.get('root_person', '')))
+        home = (normalize_id(str(site_cfg.get('home_person') or ''))
+                if isinstance(site_cfg, dict) else '')
+        if self.workbench and root in self.person_meta:
+            return root
+        seed = home if home in self.person_meta else (root if root in self.person_meta else '')
+        if not seed:
+            return None
+        if self.linked:
+            return seed
+        return self._apex_ancestor(seed)
+
+    def _kinship_context(self) -> dict:
+        """Once per build: the anchor, the filtered kinship graph and the
+        family-tree numbers.
+
+        The number and the sentence never disagree: "Frank Hartley's
+        grandmother" carries Frank's number for her (5), not one counted from
+        somebody else. When the anchor is `root_person` the numbers are the
+        folders' own (`root_generation` sets where the root sits); when the
+        home page is centred on someone else, or a hidden living hub has
+        handed off to an ancestor, they count from that person as no. 1."""
+        if self._kinship is not None:
+            return self._kinship
+        ok = None if self.linked else self._kinship_edge_ok
+        numbers: dict[str, int] = {}
+        root = normalize_id(str(self.fha_config.get('root_person', '')))
+        anchor = self._kinship_anchor()
+        if anchor and anchor == root:
+            try:
+                seed_pos = root_generation_seed_position(resolve_root_generation(self.fha_config))
+                numbers = build_ahnentafel_map(self.conn, root, root_position=seed_pos, edge_ok=ok)
+            except FhaConfigError as exc:
+                self.messages.append(
+                    f'WARNING: {exc} Person pages show no family-tree numbers until it is fixed.')
+        elif anchor:
+            numbers = build_ahnentafel_map(self.conn, anchor, edge_ok=ok)
+        self._kinship = {
+            'anchor': anchor, 'root': root, 'numbers': numbers,
+            'graph': kin_graph(self.conn, ok) if anchor else None,
+            'life_cache': {},
+        }
+        return self._kinship
+
+    def _person_kinship(self, pid: str) -> dict | None:
+        """The line under a person's name: how they are related to the home
+        person ("Thomas Hartley's great-grandmother", "Your grandmother" in
+        the workbench) and, for a direct-line ancestor, their number in the
+        family numbering the folders use. None when there is nothing to say.
+
+        A step tie the dates cannot settle reads as its chain ("father's
+        wife"), never as "stepmother". The note ("other parent not recorded")
+        is printed only in the private builds."""
+        kc = self._kinship_context()
+        number = kc['numbers'].get(pid) if pid != kc['anchor'] else None
+        lead = None
+        note = None
+        anchor = kc['anchor']
+        if anchor and pid != anchor:
+            rel = kin_relationship(
+                kc['graph'], anchor, pid,
+                life=lambda p: person_life_dates(self.conn, p, kc['life_cache']))
+            if rel['kind'] != 'none':
+                words = rel['path'] if (rel['kind'] == 'step' and rel['note']) else rel['words']
+                if self.workbench and anchor == kc['root']:
+                    lead = f'Your {_escape(words)}'
+                else:
+                    meta = self.person_meta[anchor]
+                    name = self._shown_row(meta)['name'] or fmt_id_display(anchor)
+                    if anchor in self.person_pages:
+                        name_html = f'<a href="{_page_filename(anchor)}">{_escape(name)}</a>'
+                    else:
+                        name_html = _escape(name)
+                    lead = f"{name_html}'s {_escape(words)}"
+                note = rel['note'] if self.linked else None
+        if lead is None and number is None:
+            return None
+        return {'lead_html': self._markup(lead) if lead else None,
+                'note': note, 'ahnentafel': number}
 
     def _apex_ancestor(self, root_pid: str) -> str | None:
         """Walk `parent` edges up from `root_pid` and return the CLOSEST
@@ -10521,6 +10948,8 @@ class _SiteBuilder:
         can be drawn faded. The subject has neither."""
         entry_for = self._tree_card_entry if private_cards else self._chart_entry
         labels: dict[int, dict] = {1: entry_for(seed, page_dir)}
+        if not labels[1].get('redacted'):
+            labels[1]['pid'] = seed       # the heritage chart reads birthplaces by id
         missing_parent_of: dict[int, str] = {}
         queue: deque[tuple[int, str]] = deque([(1, seed)])
         seen = {seed}
@@ -10610,6 +11039,8 @@ class _SiteBuilder:
                     missing_parent_of[slot_num] = pid
                     continue
                 labels[slot_num] = entry_for(ppid, page_dir)
+                if not labels[slot_num].get('redacted'):
+                    labels[slot_num]['pid'] = ppid     # never set on a withheld person
                 # How well this ancestor is tied to the subject (chart plan
                 # 08-6): the slot tree is a tree, so the weakest tie along
                 # the slot's own chain is exact. A hypothesis parent has no
@@ -10648,6 +11079,77 @@ class _SiteBuilder:
                 if evidence:
                     labels[num]['parents_married'] = evidence
         return labels, missing_parent_of
+
+    def _heritage_bucket(self, pid: str) -> str:
+        """Where one ancestor the page may show was born, for the heritage
+        chart: a country, or "Birthplace unknown". "Not traced" for a living or
+        unknown person (their birthplace is a living person's data, in the
+        preview as in the shared site, the rule the completeness ring follows)
+        and for a restricted one.
+
+        The country is today's: the last part of the registered place's
+        `hierarchy:` (`_lib._place_country`), with a U.S. state or Canadian
+        province folded to its country, anything else as written. Wales stays
+        Wales and a town in 1850 Prussia reads as the country it is in now,
+        so one family's chart does not split by who ruled a village in a given
+        year. A person with no birth place, a place that is not registered
+        and a registered place with no hierarchy are all "Birthplace unknown":
+        never guessed from a child or a spouse."""
+        meta = self.person_meta.get(pid)
+        if meta is None:
+            return _HERITAGE_UNKNOWN          # a bare-id stub: nothing to read
+        if self._person_is_redacted(meta):
+            return _HERITAGE_UNTRACED
+        meta = self._shown_row(meta)
+        place_id = self._person_birth_place_id(meta['id'])
+        if not place_id:
+            return _HERITAGE_UNKNOWN
+        raw = _place_country(
+            {k: {'hierarchy': v['hierarchy'], 'within': v['within']}
+             for k, v in self.place_meta.items()}, place_id)
+        if not raw:
+            return _HERITAGE_UNKNOWN
+        folded = census_country_key(raw)
+        return folded if folded in ('United States', 'Canada') else raw
+
+    def _heritage_rows(self, ahnen: dict, max_gen: int) -> list[dict]:
+        """The heritage chart's rows from the Ahnentafel walk: for generation
+        g, 2^g places, each counted in one bucket (`_heritage_bucket`, or "Not
+        traced" for an empty place or one a person we may not show would
+        fill). Rows stop at the last generation with any person in it.
+
+        PEDIGREE COLLAPSE. The walk shows a repeated ancestor in every place
+        but climbs above them once. Here each repeat is expanded to the same
+        parents as its first place, so cousins who married count their shared
+        grandparents twice: ancestry adds up that way (that is two of the
+        four grandparent places, not one). No share is handed down from a
+        child to an unknown parent."""
+        parents_of: dict[str, tuple] = {}
+        for num in sorted(ahnen):
+            pid = ahnen[num].get('pid')
+            if pid and pid not in parents_of:
+                parents_of[pid] = (ahnen.get(2 * num, {}).get('pid'),
+                                   ahnen.get(2 * num + 1, {}).get('pid'))
+        level: list = [ahnen.get(1, {}).get('pid')]
+        cache: dict[str, str] = {}
+        rows: list[dict] = []
+        for gen in range(1, max_gen + 1):
+            level = [p for pid in level
+                     for p in (parents_of.get(pid, (None, None)) if pid else (None, None))]
+            counts: dict[str, int] = {}
+            for pid in level:
+                if pid is None:
+                    bucket = _HERITAGE_UNTRACED
+                else:
+                    if pid not in cache:
+                        cache[pid] = self._heritage_bucket(pid)
+                    bucket = cache[pid]
+                counts[bucket] = counts.get(bucket, 0) + 1
+            rows.append({'label': _heritage_generation_label(gen), 'slots': len(level),
+                         'counts': counts})
+        while rows and set(rows[-1]['counts']) == {_HERITAGE_UNTRACED}:
+            rows.pop()
+        return rows
 
     def _build_family_wings(self, pid: str, page_dir: Path, *,
                             include_siblings: bool = False,
@@ -11373,6 +11875,7 @@ class _SiteBuilder:
             'surnames': surnames, 'discoveries': discoveries, 'source_groups': source_groups,
             'places': places, 'intro': intro, 'intro_raw': intro_raw, 'pedigree': pedigree,
             'hero': hero, 'root_prefix': '.', 'has_graves': bool(self._graves()),
+            'has_whats_new': self.show_whats_new,
             'statistics': self.show_statistics,
             # The workbench shows this week instead of the shared site's month
             # panel: it is the owner's daily view, as `fha report`'s is.
@@ -12329,6 +12832,7 @@ class _SiteBuilder:
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
+                + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
@@ -12398,6 +12902,8 @@ class _SiteBuilder:
             self.build_place_page(lid)
         self.build_graves_page()
         self.build_discoveries_page()
+        if self.show_whats_new:
+            self.build_whats_new_page()
         self.build_surname_pages()
         self.build_index_page()
         if self.show_search:
@@ -12421,6 +12927,9 @@ class _SiteBuilder:
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
                 self.out_dir / 'graves.html',
+                # Listed whether "What's new" is on or off, so switching it off
+                # removes the old page.
+                self.out_dir / 'whats-new.html',
                 # Listed whether surname pages are on or off, so switching
                 # them off, or the last person carrying a name becoming
                 # private, never leaves an old page naming that family.

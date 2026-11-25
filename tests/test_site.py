@@ -13505,6 +13505,456 @@ class GravesTests(_Base):
         self.assertNotIn('buried Ada Hartley', graves)
 
 
+class PersonKinshipLineTests(_Base):
+    """Under each person's name: how they are related to the home person
+    ("Thomas Hartley's great-grandmother") and, for a direct-line ancestor,
+    their family-tree number. A shared page never rests either on a tie the
+    site may not show, and never names a person it hides (owner decision D16)."""
+
+    H, F, GF, GGM = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-cccccccccc', 'p-dddddddddd'
+
+    def _seed_line(self, *, gf_ggm_source=None, gf_ggm_status='accepted',
+                   hub_living='false', father_extra='', father_living='false'):
+        """H -> F -> GF -> GGM, each edge on its own claim and source.
+        GGM is H's father's father's mother: number 9."""
+        self._seed_person(self.H, 'Hubert Hartley', living=hub_living, surname='Hartley')
+        self._seed_person(self.F, 'Frank Hartley', living=father_living, surname='Hartley',
+                          frontmatter_extra=father_extra)
+        self._seed_person(self.GF, 'George Hartley', surname='Hartley')
+        self._seed_person(self.GGM, 'Gertrude Hartley', surname='Hartley', sex='F')
+        edges = [(self.H, self.F, 'c-1111111111', 's-1111111111'),
+                 (self.F, self.GF, 'c-2222222222', 's-2222222222'),
+                 (self.GF, self.GGM, 'c-3333333333', 's-3333333333')]
+        for child, parent, cid, sid in edges:
+            kwargs = {}
+            status = 'accepted'
+            if (child, parent) == (self.GF, self.GGM):
+                kwargs = gf_ggm_source or {}
+                status = gf_ggm_status
+            self._seed_source(sid, f'Source {sid}', **kwargs)
+            self._seed_claim(cid, sid, 'relationship', 'parent', status=status,
+                             persons=(child, parent),
+                             reviewed='2026-01-01' if status != 'accepted' else None)
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+            self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _fha(self, *, home=None, extra=''):
+        home_line = f'site:\n  home_person: {home}\n' if home else ''
+        (self.archive_root / 'fha.yaml').write_text(
+            f'roots: {{}}\nroot_person: P-aaaaaaaaaa\n{extra}{home_line}', encoding='utf-8')
+
+    def _page(self, pid):
+        return self._read(f'persons/{pid}.html')
+
+    def _assert_nowhere(self, needle):
+        for p in self.out_dir.rglob('*'):
+            if p.is_file():
+                self.assertNotIn(needle, p.read_bytes(), p.name)
+
+    def _kin(self, pid):
+        m = re.search(r'<p class="kin-line">(.*?)</p>', self._page(pid), re.S)
+        return m.group(1) if m else None
+
+    def test_great_grandmother_line_and_number(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("great-grandmother", kin)
+        self.assertIn('<a href="p-aaaaaaaaaa.html">Hubert Hartley</a>', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_the_home_person_gets_no_line(self):
+        self._seed_line()
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.H))
+
+    def test_root_generation_children_shifts_the_number(self):
+        self._seed_line()
+        self._fha(extra='root_generation: children\n')
+        self._run()
+        self.assertIn('ancestor no. 17', self._kin(self.GGM))
+
+    def test_home_person_sets_both_the_words_and_the_number(self):
+        # The sentence and the number must not disagree: "Frank Hartley's
+        # grandmother" is Frank's no. 5, not the root person's no. 9.
+        self._seed_line()
+        self._fha(home='P-bbbbbbbbbb')
+        self._run()
+        kin = self._kin(self.GGM)
+        self.assertIn("Frank Hartley</a>'s grandmother", kin)
+        self.assertIn('ancestor no. 5', kin)
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
+        self.assertIsNone(self._kin(self.F))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+
+    def test_workbench_names_the_anchor_when_root_person_is_missing(self):
+        # A mistyped root_person: the line is relative to the home person,
+        # so it must name them, not say "Your".
+        self._seed_line()
+        (self.archive_root / 'fha.yaml').write_text(
+            'roots: {}\nroot_person: P-zzzzzzzzzz\nsite:\n  home_person: P-bbbbbbbbbb\n',
+            encoding='utf-8')
+        self._run(linked=True, workbench=True)
+        kin = self._kin(self.GGM)
+        self.assertNotIn('Your', kin)
+        self.assertIn('grandmother', kin)
+        self.assertIn('Frank Hartley', kin)
+
+    def test_workbench_says_your(self):
+        self._seed_line()
+        self._fha()
+        self._run(linked=True, workbench=True)
+        self.assertIn('Your great-grandmother', self._kin(self.GGM))
+
+    def test_living_hub_hands_off_and_is_never_named(self):
+        self._seed_line(hub_living='true')
+        self._fha()
+        self._run()
+        self.assertIn("Frank Hartley</a>'s grandmother", self._kin(self.GGM))
+        self.assertIn("Frank Hartley</a>'s father", self._kin(self.GF))
+        # The number follows the person the sentence names, so it never
+        # counts generations from the hidden living hub.
+        self.assertIn('ancestor no. 5', self._kin(self.GGM))
+        self.assertIn('ancestor no. 2', self._kin(self.GF))
+        self._assert_nowhere(b'Hubert')
+
+    def test_a_living_person_on_the_walk_is_passed_through_never_named(self):
+        # D16: the tie runs through a living father; his name stays off the site.
+        self._seed_line(father_living='true')
+        self._fha(home='P-aaaaaaaaaa')
+        self._run()
+        self.assertIn("great-grandmother", self._kin(self.GGM))
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+        self._assert_nowhere(b'Frank')
+
+    def test_a_by_request_person_on_the_walk_cuts_the_tie(self):
+        self._seed_line(father_extra='restricted: by-request')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GF))
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('ancestor no. 9', self._kin(self.GGM))
+
+    def test_restricted_source_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_source={'restricted': 1})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        kin = self._kin(self.GGM)
+        self.assertIn('great-grandmother', kin)
+        self.assertIn('ancestor no. 9', kin)
+
+    def test_dna_source_tie_is_not_used(self):
+        self._seed_line(gf_ggm_source={'source_type': 'dna'})
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+
+    def test_unaccepted_tie_is_not_used_but_linked_shows_it(self):
+        self._seed_line(gf_ggm_status='suggested')
+        self._fha()
+        self._run()
+        self.assertIsNone(self._kin(self.GGM))
+        self._run(linked=True)
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+    def test_unrelated_person_has_no_line(self):
+        self._seed_line()
+        self._seed_person('p-eeeeeeeeee', 'Ellis Elsewhere', surname='Elsewhere')
+        self._fha()
+        self._run()
+        self.assertNotIn('kin-line', self._page('p-eeeeeeeeee'))
+
+    def test_bad_root_generation_warns_once_and_drops_numbers_only(self):
+        self._seed_line()
+        self._fha(extra='root_generation: child\n')
+        res = self._run()
+        warned = [m for m in res['messages'] if 'family-tree numbers' in m]
+        self.assertEqual(len(warned), 1)
+        self.assertNotIn('ancestor no.', self._page(self.GGM))
+        self.assertIn('great-grandmother', self._kin(self.GGM))
+
+
+class AhnentafelEdgeFilterTests(_Base):
+    """build_ahnentafel_map(edge_ok=...): a tie the caller refuses is not
+    walked, so a number is never worked out through it."""
+
+    def _chain(self):
+        from _lib import build_ahnentafel_map
+        self.build = build_ahnentafel_map
+        for pid, sex in (('p-aaaaaaaaaa', 'M'), ('p-bbbbbbbbbb', 'M'), ('p-cccccccccc', 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-bbbbbbbbbb', 'p-cccccccccc')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+
+    def test_allow_everything_matches_the_unfiltered_map(self):
+        self._chain()
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa', edge_ok=lambda r: True),
+                         self.build(self.conn, 'p-aaaaaaaaaa'))
+        self.assertEqual(self.build(self.conn, 'p-aaaaaaaaaa'),
+                         {'p-aaaaaaaaaa': 1, 'p-bbbbbbbbbb': 2, 'p-cccccccccc': 5})
+
+    def test_a_refused_tie_drops_that_parent_and_everyone_above(self):
+        self._chain()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1})
+
+    def test_refusing_the_father_leaves_an_unsexed_mother_in_her_own_slot(self):
+        # The shared site must give her the same number as the folders (3),
+        # not the father's number (2) just because his tie is hidden.
+        from _lib import build_ahnentafel_map
+        self._seed_person('p-aaaaaaaaaa', 'p-aaaaaaaaaa', sex='M')
+        self._seed_person('p-bbbbbbbbbb', 'p-bbbbbbbbbb', sex='M')
+        self._seed_person('p-cccccccccc', 'p-cccccccccc', sex='U')
+        self._seed_person('p-dddddddddd', 'p-dddddddddd', sex='F')
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', 'p-aaaaaaaaaa', 'p-bbbbbbbbbb'),
+                                   ('c-2222222222', 'p-aaaaaaaaaa', 'p-cccccccccc'),
+                                   ('c-3333333333', 'p-cccccccccc', 'p-dddddddddd')):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        full = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa')
+        got = build_ahnentafel_map(self.conn, 'p-aaaaaaaaaa',
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(full['p-cccccccccc'], 3)
+        self.assertEqual(got, {'p-aaaaaaaaaa': 1, 'p-cccccccccc': 3, 'p-dddddddddd': 7})
+
+    def test_a_hidden_second_father_does_not_take_the_shown_fathers_number(self):
+        # A DNA-only second father must not cost the legal father (and his
+        # whole line) their numbers on the shared site.
+        from _lib import build_ahnentafel_map
+        H, DAN, FRANK, MARY, GRETA = ('p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-ffffffffff',
+                                      'p-gggggggggg', 'p-hhhhhhhhhh')
+        for pid, sex in ((H, 'M'), (DAN, 'M'), (FRANK, 'M'), (MARY, 'F'), (GRETA, 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', H, DAN), ('c-2222222222', H, FRANK),
+                                   ('c-3333333333', H, MARY), ('c-4444444444', FRANK, GRETA)):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        got = build_ahnentafel_map(self.conn, H,
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {H: 1, FRANK: 2, MARY: 3, GRETA: 5})
+
+    def test_a_hidden_second_father_does_not_push_the_shown_father_to_a_mothers_number(self):
+        # No mother recorded: the legal father must still read no. 2, not 3,
+        # or the number hints that a hidden father holds no. 2.
+        from _lib import build_ahnentafel_map
+        H, DAN, FRANK, GRETA = 'p-aaaaaaaaaa', 'p-bbbbbbbbbb', 'p-ffffffffff', 'p-hhhhhhhhhh'
+        for pid, sex in ((H, 'M'), (DAN, 'M'), (FRANK, 'M'), (GRETA, 'F')):
+            self._seed_person(pid, pid, sex=sex)
+        self._seed_source('s-1111111111')
+        for cid, child, parent in (('c-1111111111', H, DAN), ('c-2222222222', H, FRANK),
+                                   ('c-4444444444', FRANK, GRETA)):
+            self._seed_claim(cid, 's-1111111111', 'relationship', 'parent',
+                             persons=(child, parent))
+            self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self.conn.commit()
+        got = build_ahnentafel_map(self.conn, H,
+                                   edge_ok=lambda r: r['claim_id'] != 'c-1111111111')
+        self.assertEqual(got, {H: 1, FRANK: 2, GRETA: 5})
+
+    def test_one_allowed_claim_keeps_the_parent(self):
+        self._chain()
+        self._seed_claim('c-9999999999', 's-1111111111', 'relationship', 'parent',
+                         persons=('p-aaaaaaaaaa', 'p-bbbbbbbbbb'))
+        self._seed_rel('p-aaaaaaaaaa', 'parent', 'p-bbbbbbbbbb', claim_id='c-9999999999')
+        self.conn.commit()
+        got = self.build(self.conn, 'p-aaaaaaaaaa',
+                         edge_ok=lambda r: r['claim_id'] == 'c-9999999999')
+        self.assertEqual(got['p-bbbbbbbbbb'], 2)
+
+class HeritageChartTests(_Base):
+    """"Where the family came from" on a person page (chart plan 08-12): for
+    each generation back, which countries the ancestors were born in, from
+    accepted birth claims and registered places only. Someone whose birthplace
+    is not recorded is "Birthplace unknown", an empty place is "Not traced",
+    and a living parent adds no country in any build."""
+
+    TODAY = '2026-06-01'
+
+    def setUp(self):
+        super().setUp()
+        patcher = unittest.mock.patch.object(site, '_today', return_value=self.TODAY)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self._seed_source('s-1111111111', 'Family record', source_type='vital')
+        self._n = 0
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-eng0000000', 'Dunmow', 'Dunmow, Essex, England')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-wal0000000', 'Brecon', 'Brecon, Powys, Wales')")
+        self.conn.execute("INSERT INTO places(id, name, hierarchy) VALUES "
+                          "('l-kan0000000', 'Topeka', 'Topeka, Shawnee County, Kansas')")
+        self.conn.execute("INSERT INTO places(id, name) VALUES ('l-nohier0000', 'Nowhere')")
+
+    def _person(self, pid, name, *, born_at=None, living='false', sex='M', year='1850'):
+        self._seed_person(pid, name, surname=name.split()[-1], living=living, sex=sex)
+        if born_at:
+            self._n += 1
+            cid = f'c-b{self._n:09d}'
+            self._seed_claim(cid, 's-1111111111', 'birth', 'born', date_edtf=year,
+                             persons=(pid,), roles={pid: 'child'})
+            self.conn.execute('UPDATE claims SET place_id = ? WHERE id = ?', (born_at, cid))
+
+    def _parent(self, child, parent):
+        self._n += 1
+        cid = f'c-p{self._n:09d}'
+        self._seed_claim(cid, 's-1111111111', 'relationship', 'parent of',
+                         persons=(child, parent), roles={child: 'child', parent: 'parent'})
+        self._seed_rel(child, 'parent', parent, claim_id=cid)
+        self._seed_rel(parent, 'child', child, claim_id=cid)
+
+    def _rows(self, seed, linked=False):
+        self.conn.commit()
+        builder = site._SiteBuilder(self.conn, self.archive_root, {}, self.out_dir, linked=linked)
+        builder.prepare()
+        ahnen, _ = builder._build_ahnentafel(seed, 5, self.out_dir / 'persons',
+                                             private_cards=True)
+        return builder._heritage_rows(ahnen, 5)
+
+    def _family(self):
+        # Kit's father Hugh (England) and mother Kate (Kansas). Hugh's father
+        # Abel was born in a registered place with no country, his mother
+        # Bea in Wales; Kate's parents are not recorded.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-hugh000000', 'Hugh Hartley', born_at='l-eng0000000')
+        self._person('p-kate000000', 'Kate Cole', born_at='l-kan0000000', sex='F')
+        self._person('p-abel000000', 'Abel Hartley', born_at='l-nohier0000')
+        self._person('p-bea0000000', 'Bea Reed', born_at='l-wal0000000', sex='F')
+        self._parent('p-kit0000000', 'p-hugh000000')
+        self._parent('p-kit0000000', 'p-kate000000')
+        self._parent('p-hugh000000', 'p-abel000000')
+        self._parent('p-hugh000000', 'p-bea0000000')
+
+    def _hugh_birth_claims(self):
+        return ("SELECT c.id FROM claims c JOIN claim_persons cp ON c.id = cp.claim_id "
+                "WHERE cp.person_id = 'p-hugh000000' AND c.type = 'birth'")
+
+    def test_each_generation_counts_its_countries_and_every_row_adds_up(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual([r['label'] for r in rows], ['Parents', 'Grandparents'])
+        self.assertEqual(rows[0]['counts'], {'England': 1, 'United States': 1})
+        self.assertEqual(rows[1]['counts'], {
+            'Birthplace unknown': 1, 'Wales': 1, 'Not traced': 2})
+        for row in rows:
+            self.assertAlmostEqual(
+                sum(n / row['slots'] for n in row['counts'].values()), 1.0, places=9)
+
+    def test_a_us_state_folds_to_the_country_and_a_place_with_no_country_is_unknown(self):
+        self._family()
+        rows = self._rows('p-kit0000000')
+        self.assertIn('United States', rows[0]['counts'])
+        self.assertNotIn('Kansas', rows[0]['counts'])
+        self.assertEqual(rows[1]['counts']['Birthplace unknown'], 1)
+
+    def test_a_person_with_no_birthplace_is_unknown_never_guessed(self):
+        self._family()
+        self.conn.execute(f'UPDATE claims SET place_id = NULL WHERE id IN ({self._hugh_birth_claims()})')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[0]['counts'], {'Birthplace unknown': 1, 'United States': 1})
+
+    def test_a_suggested_birthplace_is_not_used(self):
+        self._family()
+        self.conn.execute(f"UPDATE claims SET status = 'suggested' WHERE id IN ({self._hugh_birth_claims()})")
+        self.assertEqual(self._rows('p-kit0000000')[0]['counts'],
+                         {'Birthplace unknown': 1, 'United States': 1})
+
+    def _siblings_who_married(self):
+        # Alan and Dora are brother and sister, children of Calvin (England)
+        # and Edith (Wales); Kit is their child, so Kit's four grandparent
+        # places are Calvin, Edith, Calvin, Edith.
+        self._person('p-kit0000000', 'Kit Hartley', year='1900')
+        self._person('p-alan000000', 'Alan Hartley', born_at='l-eng0000000')
+        self._person('p-dora000000', 'Dora Hartley', born_at='l-eng0000000', sex='F')
+        self._person('p-calv000000', 'Calvin Hartley', born_at='l-eng0000000')
+        self._person('p-edit000000', 'Edith Cole', born_at='l-wal0000000', sex='F')
+        for child in ('p-alan000000', 'p-dora000000'):
+            self._parent(child, 'p-calv000000')
+            self._parent(child, 'p-edit000000')
+        self._parent('p-kit0000000', 'p-alan000000')
+        self._parent('p-kit0000000', 'p-dora000000')
+
+    def test_a_repeated_ancestor_counts_in_every_place_they_fill(self):
+        self._siblings_who_married()
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[1]['slots'], 4)
+        self.assertEqual(rows[1]['counts'], {'England': 2, 'Wales': 2})
+
+    def test_a_repeat_also_brings_its_own_parents_into_the_next_row(self):
+        self._siblings_who_married()
+        self._person('p-greg000000', 'Greg Hartley', born_at='l-kan0000000')
+        self._parent('p-calv000000', 'p-greg000000')
+        rows = self._rows('p-kit0000000')
+        self.assertEqual(rows[2]['slots'], 8)
+        self.assertEqual(rows[2]['counts']['United States'], 2)
+
+    def test_a_living_parent_is_not_traced_in_the_site_and_the_preview(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        for linked in (False, True):
+            rows = self._rows('p-kit0000000', linked=linked)
+            self.assertEqual(rows[0]['counts'], {'England': 1, 'Not traced': 1}, linked)
+
+    def test_the_shared_page_never_names_a_living_parents_country(self):
+        self._family()
+        self.conn.execute("UPDATE persons SET living = 'true' WHERE id = 'p-kate000000'")
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn('Where the family came from', page)
+        self.assertNotIn('United States', page)
+        self.assertNotIn('Kansas', page)
+
+    def test_the_section_is_left_off_when_no_country_is_known(self):
+        self._family()
+        self.conn.execute('UPDATE claims SET place_id = NULL')
+        self._run()
+        self.assertNotIn('Where the family came from', self._read('persons/p-kit0000000.html'))
+
+    def test_the_chart_is_text_labelled_deterministic_and_dash_free(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        svg = re.search(r'<svg class="heritage-chart.*?</svg>', page, re.S).group(0)
+        self.assertIn('<title>England: 1 of 2 parents</title>', svg)
+        self.assertIn('role="img"', svg)
+        self.assertIn('aria-label="Where the family came from.', svg)
+        legend = re.search(r'<ul class="heritage-legend">.*?</ul>', page, re.S).group(0)
+        for name in ('England', 'United States', 'Wales', 'Birthplace unknown', 'Not traced'):
+            self.assertIn(name, legend)
+        self.assertNotIn('–', svg + legend)
+        self.assertNotIn('—', svg + legend)
+        self.assertIn(' data-fha-chart="kit-hartley-heritage"', svg)   # a reader can save it
+        self.assertEqual(svg.replace(' data-fha-chart="kit-hartley-heritage"', '') + legend,
+                         site._render_heritage_svg(self._rows('p-kit0000000')))
+
+    def test_the_chart_says_countries_are_todays_borders(self):
+        self._family()
+        self._run()
+        page = self._read('persons/p-kit0000000.html')
+        self.assertIn("by today's borders", page)
+
+    def test_countries_draw_biggest_share_first_then_by_name(self):
+        rows = [{'label': 'Parents', 'slots': 2, 'counts': {'Wales': 1, 'England': 1}},
+                {'label': 'Grandparents', 'slots': 4, 'counts': {'Wales': 2, 'Ireland': 1,
+                                                                 'Not traced': 1}}]
+        self.assertEqual(site._heritage_country_order(rows), ['Wales', 'England', 'Ireland'])
 def _lifespan_row(name, role, birth=None, death=None, *, first=None, last=None,
                   living=False, years=''):
     return {'name': name, 'role': role, 'birth': birth, 'death': death,
