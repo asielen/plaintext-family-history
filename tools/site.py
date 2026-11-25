@@ -252,6 +252,8 @@ CODE MAP
                                  home page's "This month in the family"
       ._calendar_event_is_shown - the site's own privacy rules, per event
       ._calendar_event_entry   - one calendar line, people linked
+      .build_wall_calendar_page - site.calendar: calendar.html, the whole year
+          as a wall calendar, a small face beside each name
       ._workbench_week         - workbench only: "This week in the family",
                                  the next seven days, everyone named
       ._vitals_cached: `_person_vitals`, once per person per build
@@ -317,6 +319,8 @@ from _lib import (
     calendar_years_ago_phrase,
     family_calendar_events,
     family_calendar_week,
+    family_calendar_year,
+    wall_month_html,
     person_completeness,
     PARKED_CLAIM_SQL,
     CLAIM_UNWORDED,
@@ -12088,6 +12092,7 @@ class _SiteBuilder:
             # panel: it is the owner's daily view, as `fha report`'s is.
             'calendar': (self._family_calendar(page_dir)
                          if self.show_calendar and not self.workbench else None),
+            'wall_calendar': self._wall_calendar_on(),
             'week_calendar': self._workbench_week(page_dir) if self.workbench else None,
         })
 
@@ -12116,6 +12121,49 @@ class _SiteBuilder:
                     events.append(self._calendar_event_entry(ev, page_dir))
             months.append({'num': month, 'name': _MONTH_NAMES[month - 1], 'events': events})
         return {'months': months, 'current': months[build_month - 1]}
+
+    def build_wall_calendar_page(self) -> None:
+        """Write calendar.html: a relative can see the whole year of family
+        birthdays, weddings and deaths on one page, each name linked, with
+        the person's chosen portrait beside it. Only people who have died
+        and whose records are open are on it, and a month with nothing to
+        show says so without hinting that anything was left off.
+
+        Built when `site: calendar` is on, in shared and linked builds (the
+        workbench keeps its own week panel). The events are
+        `_lib.family_calendar_year`'s (accepted claims, dates recorded to the
+        month or day), each held to `_calendar_event_is_shown` like the home
+        page's month panel, and the months are laid out by the same
+        `_lib.wall_month_html` as the private printed calendar. The year
+        is the build's own (`_today`): the site is a snapshot, and a rebuild
+        next January makes next year's. A 29 February moves to the 28th in a
+        year without one, as on the printed calendar."""
+        try:
+            year = int(_today()[:4])
+        except ValueError:
+            year = datetime.date.today().year
+        page_dir = self.out_dir
+
+        def person(p: dict) -> str:
+            link = self._person_link(p['id'], page_dir)
+            href = self._profile_photo_href(p['id'], page_dir)
+            if not href:
+                return link
+            return (f'<img class="wall-face" src="{_escape(href)}" alt="" '
+                    f'width="28" height="28" loading="lazy"> {link}')
+
+        months = []
+        for entry in family_calendar_year(self.conn, year):
+            days = {d: [ev for ev in evs if self._calendar_event_is_shown(ev)]
+                    for d, evs in entry['days'].items()}
+            months.append({
+                'month': entry['month'],
+                'days': {d: evs for d, evs in days.items() if evs},
+                'month_only': [ev for ev in entry['month_only']
+                               if self._calendar_event_is_shown(ev)]})
+        self._write_page(self.out_dir / 'calendar.html', 'calendar.html', {
+            'root_prefix': '.', 'year': year,
+            'months': [self._markup(wall_month_html(year, m, person)) for m in months]})
 
     def _calendar_event_is_shown(self, ev: dict) -> bool:
         """May this calendar event appear on this build's home page?
@@ -13035,15 +13083,22 @@ class _SiteBuilder:
         """How many pages a build writes: one per source, person and place
         page, plus discoveries.html and index.html, plus search.html when
         search is on, plus graves.html when anyone has a grave to list, plus
+        calendar.html when the calendar is on (not in the workbench), plus
         statistics.html when statistics are on, plus questions.html when the
         questions page is on. `run()` and `--dry-run` both
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
+                + (1 if self._wall_calendar_on() else 0)
                 + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
                 + (1 if self.show_questions else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
+
+    def _wall_calendar_on(self) -> bool:
+        """Does this build write calendar.html? With `site: calendar` on, yes,
+        except in the workbench, which shows the week instead."""
+        return bool(self.show_calendar and not self.workbench)
 
     def _write_page(self, path: Path, template: str, ctx: dict) -> None:
         """Render `template` with shared context and write it. Per-page failures
@@ -13120,6 +13175,8 @@ class _SiteBuilder:
             self.build_questions_page()
         self.build_surname_pages()
         self.build_index_page()
+        if self._wall_calendar_on():
+            self.build_wall_calendar_page()
         if self.show_search:
             self.build_search_page()
         if self.show_statistics:
@@ -13142,6 +13199,9 @@ class _SiteBuilder:
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
                 self.out_dir / 'graves.html', self.out_dir / 'questions.html',
                 self.out_dir / 'graves.html',
+                # Listed whether the calendar is on or off, so switching it
+                # off, or a person becoming private, removes the old page.
+                self.out_dir / 'calendar.html',
                 # Listed whether "What's new" is on or off, so switching it off
                 # removes the old page.
                 self.out_dir / 'whats-new.html',

@@ -672,7 +672,7 @@
     {
       "path": ".fha/design/styles.css",
       "category": "operating",
-      "sha256": "b9f9b2e8f43f63fd502982a913f97b6bb61cec64688634479343371deb85ab6b",
+      "sha256": "ba181c92b4a855cd7ae3422e8076d179b223e53e48c55020e3a2dc4f25a589c4",
       "spec_version": "2.43",
       "src": "design/styles.css"
     },
@@ -700,14 +700,14 @@
     {
       "path": ".fha/tools/_lib.py",
       "category": "operating",
-      "sha256": "9cb1a32828c8c227226e67b73f288c1969582f4f363c12d4b0c8c6b0619efed5",
+      "sha256": "988cacbe1ee0bd2e04f68d7842ea5a19e0e6fab6d98a0f31564e1a87ec886322",
       "spec_version": "2.43",
       "src": "tools/_lib.py"
     },
     {
       "path": ".fha/tools/anniversaries.py",
       "category": "operating",
-      "sha256": "49ccbc7e7c50f598a9604556e2a87c13617cfb31de28f9307434e65092116b4f",
+      "sha256": "d4c9c4b92c78c7760ed83929903dbc6f83f922e9e54815c00e9d31ec7aa047be",
       "spec_version": "2.43",
       "src": "tools/anniversaries.py"
     },
@@ -861,7 +861,7 @@
     {
       "path": ".fha/tools/gedcom_import.py",
       "category": "operating",
-      "sha256": "44edbfe11566d0b3388d6694b368379e468ce13bd9223fda5edd785fbfa307e4",
+      "sha256": "fde046c49847584711c65f0c8e5cafca7db6ef130d424d69acf4e9f32e0c0c6c",
       "spec_version": "2.43",
       "src": "tools/gedcom_import.py"
     },
@@ -1197,7 +1197,7 @@
     {
       "path": ".fha/tools/site.py",
       "category": "operating",
-      "sha256": "d9023a0e94a94f4b72b5d0bee7ae8f3b4b5a6f986e5fae7e530bbb44b9d8450b",
+      "sha256": "d77a0fed1c9ae3a3c7bba7c860c2ed91d6f695b7a522ce2bb0ae5039ebec0be0",
       "spec_version": "2.43",
       "src": "tools/site.py"
     },
@@ -1237,6 +1237,13 @@
       "src": "tools/templates/base.html"
     },
     {
+      "path": ".fha/tools/templates/calendar.html",
+      "category": "operating",
+      "sha256": "3dc472a61967ad425c33023a3e25cfeb916b92c7acbbeabcaa8410ccc39fa0d9",
+      "spec_version": "2.43",
+      "src": "tools/templates/calendar.html"
+    },
+    {
       "path": ".fha/tools/templates/discoveries.html",
       "category": "operating",
       "sha256": "aa1fada1d0d37e4b5cfc975e371bd6f8030ff9339b264ce45f84d9692df622db",
@@ -1267,7 +1274,7 @@
     {
       "path": ".fha/tools/templates/index.html",
       "category": "operating",
-      "sha256": "5e6838721fb41bfb7e05789a0966b5e1c407d8a6c61a8c5656254c63ba93b3b9",
+      "sha256": "be0dafadcee170344d9160a9e0ddbcf5efd97bdf2afde528178b66015fdf611a",
       "spec_version": "2.43",
       "src": "tools/templates/index.html"
     },
@@ -1542,7 +1549,7 @@
     {
       "path": "docs/CUSTOMIZING_SITE.md",
       "category": "operating",
-      "sha256": "6a7ffa7c35a01cb1aff0e58cb43a7226d336cf2625a8ab5181fb2ded84d548a3",
+      "sha256": "5ba178bebf66847b7648f2e8fb271e3fe20006813fd27520d4fff229da716121",
       "spec_version": "2.43"
     },
     {
@@ -1597,7 +1604,7 @@
     {
       "path": "docs/TOOLING.md",
       "category": "operating",
-      "sha256": "8443729dca25f7ab654ef40828a0720e970bc8ccc5191493e6f9cd3aa73ac61c",
+      "sha256": "296b4b374b943d387eda1a286284279db00244a79b5f7d58c62e51a5683a90e0",
       "spec_version": "2.43",
       "src": "TOOLING.md"
     },
