@@ -11588,6 +11588,32 @@ def link_field_refs(value: Any) -> list[str]:
     return refs
 
 
+# A claim's `anchor:` on a recording's transcript says the minute it was said
+# (SPEC §8.4): "00:14:32", "14:32", or "cars-whisper, 00:14:32" when the
+# source has several transcripts. "page 3" or "line 40" give no time.
+_ANCHOR_TIME_RE = re.compile(
+    r'^\s*(?:(?P<label>[^,]+?)\s*,\s*)?(?:(?P<h>\d{1,2}):)?(?P<m>\d{1,2}):(?P<s>\d{2})\s*$')
+
+
+def anchor_seconds(anchor: object) -> tuple[str | None, int] | None:
+    """So a family member can hear the very minute a fact was said, the time
+    in a claim's `anchor:` as (label or None, seconds from the start).
+
+    None when the anchor gives no time in a recording (a page or line
+    anchor, or a time that cannot be one, such as 14:75)."""
+    if not isinstance(anchor, str):
+        return None
+    m = _ANCHOR_TIME_RE.match(anchor)
+    if not m:
+        return None
+    hours = int(m['h'] or 0)
+    minutes, seconds = int(m['m']), int(m['s'])
+    if seconds >= 60 or (m['h'] is not None and minutes >= 60):
+        return None
+    label = m['label'].strip() if m['label'] else None
+    return (label or None), hours * 3600 + minutes * 60 + seconds
+
+
 # ── relationships: entries - one per person and role (SPEC §9) ────────────────
 #
 # A person's `relationships:` entry names one other person in one role and
