@@ -150,6 +150,8 @@ CODE MAP
     _site_switch               - an on/off fha.yaml `site:` setting (the two
                                  optional panels, off unless it says yes; search,
                                  on unless it says no)
+    _site_contact_email        - fha.yaml `site: contact_email`: the address behind
+                                 each person page's "Tell me what you know" link
     _PicturePool               - the worker processes: start lazily, fall back to
                                  in-process if they cannot run, stop on Ctrl+C
     _DerivativeCache           - saved copies of those derivatives in
@@ -263,6 +265,9 @@ CODE MAP
       .build_search_page: data/search-data.js and search.html
       ._graves / .build_graves_page: graves.html, every family grave by
           burial place with map and directions links
+      ._map_data / .build_map_page: map.html, a pin at each place with a
+          map position where the records put family, drawn offline by
+          vendor/fha-map.js over the vendored world outline
       ._whats_new / .build_whats_new_page: whats-new.html (site.whats_new),
           what was accepted each month, shown facts only
       ._surname_groups / .build_surname_pages: surnames/*.html, one page per
@@ -357,6 +362,7 @@ from _lib import (
     FhaConfigError,
     place_history_context, place_history_phrase, place_visits_from_rows, insert_context_rows,
     fmt_id_display,
+    contribution_mailto,
     kin_graph,
     kin_relationship,
     person_life_dates,
@@ -654,6 +660,10 @@ _HOME_PEDIGREE_GENERATIONS_MAX = 8
 # (never silently) if a walk ever actually hits it. See `build_person_page`'s
 # `descendants_tree` context and `_build_tree_data`'s `truncated` handling.
 _DESCENDANT_TREE_MAX_HOPS = 500
+
+# The family map's panel names this many people per pin, most placed there
+# first, and counts the rest; the place page lists everyone.
+_MAP_PEOPLE_PER_PIN = 12
 
 # Redaction display strings (M8 UX bar: redacted content is named, never a blank).
 _LIVING_LABEL = 'Living Person'
@@ -2625,6 +2635,24 @@ def _site_switch(site_cfg: dict, key: str, default: bool = False) -> tuple[bool,
         return False, None
     return False, (f'WARNING: fha.yaml site.{key} {raw!r} is not true or false; '
                    f'leaving it off. Write `{key}: true` to turn it on.')
+
+
+def _site_contact_email(site_cfg: dict) -> tuple[str | None, str | None]:
+    """fha.yaml `site: contact_email`: the address a relative's "Tell me what
+    you know" email goes to. Left out means no link and no warning. Something
+    that does not look like an address leaves the link off with a warning,
+    because a link that opens a mail to nowhere is worse than none.
+
+    Returns (address or None, warning or None)."""
+    raw = site_cfg.get('contact_email')
+    if raw is None:
+        return None, None
+    value = str(raw).strip() if isinstance(raw, str) else ''
+    if re.fullmatch(r'[^@\s<>"]+@[^@\s<>"]+\.[^@\s<>"]+', value):
+        return value, None
+    return None, (f'WARNING: fha.yaml site.contact_email {raw!r} does not look like an email '
+                  f'address, so the "Tell me what you know" link is left off. '
+                  f'Write it like  contact_email: name@example.com')
 
 
 def _settled_and_unchanged(src: Path, st: os.stat_result) -> bool:
@@ -5041,6 +5069,9 @@ class _SiteBuilder:
         # The search box at the top of every page: on unless fha.yaml says
         # `search: false` (TOOLING §12, "Search").
         self.show_search, search_warning = _site_switch(site_cfg, 'search', default=True)
+        # The "Tell me what you know" mailto at the foot of each person page of
+        # the shared build; never the linked preview or the workbench.
+        self.contact_email, contact_warning = _site_contact_email(site_cfg)
         # The "Questions for the family" page: off unless fha.yaml says
         # `questions_page: true`, and only in a shared (standalone) build -
         # the working views already show open questions on person pages.
@@ -5056,7 +5087,7 @@ class _SiteBuilder:
         self.show_statistics, statistics_warning = _site_switch(site_cfg, 'statistics')
         self._switch_warnings = [w for w in (ring_warning, calendar_warning, search_warning,
                                              surname_warning, statistics_warning, whats_new_warning,
-                                             questions_warning) if w]
+                                             questions_warning, contact_warning) if w]
         self._surname_cache: list[dict] | None = None
         # The person page's ancestor fan: its angle and how many generations.
         self.fan_degrees, self.fan_generations, fan_warnings = _fan_settings(site_cfg)
@@ -5200,6 +5231,8 @@ class _SiteBuilder:
         self.restricted_names: dict[str, set[str]] = {}   # pid → lowercased restricted variant values
         self._living_carried: set[str] | None = None      # survivors a living tombstone holds back
         self._graves_cache: list[dict] | None = None      # graves.html groups, built once per build
+        self._map_cache: dict | None = None               # map.html pins, built once per build
+        self._map_done = False                            # (None is a real answer: no map)
         # Opened once in prepare() when the photo index is fresh, reused across
         # every person page, closed by run_site - so the photos-root freshness
         # walk happens once per build, not once per curated person.
@@ -7630,6 +7663,8 @@ class _SiteBuilder:
                 (pid,)
             ).fetchone()[0] if self.workbench else 0),
             'is_stub': (row['tier'] or '') == 'stub',
+            'contribute_href': (contribution_mailto(self.contact_email, name, pid)
+                                if self.contact_email and not self.linked else None),
             **self._person_research_ctx(pid, name),
         }
         self._write_page(self.persons_dir / _page_filename(pid), 'person.html',
@@ -8463,6 +8498,133 @@ class _SiteBuilder:
             return
         self._write_page(self.out_dir / 'graves.html', 'graves.html',
                          {'root_prefix': '.', 'groups': groups})
+
+    # - family map -
+
+    def _map_data(self) -> dict | None:
+        """The family map's pins: where the family's records put people,
+        at the places that have a map position. None when no pin would
+        show (then there is no page and no link). Worked out once per build.
+
+        Returns {'places': [...], 'unmapped': [...]}. A pin is a registered
+        place with its own coordinates; a claim at a place without any (a
+        cemetery nobody pinned) counts on the first place it sits `within:`
+        that has some, the rule the graves list uses, so nothing is placed
+        by a guess. Places with records but no position on their chain go in
+        `unmapped`, listed under the map.
+
+        A claim places only the people it is about (`_lib.claim_subjects`:
+        its own person on a birth or burial, the people under `subject`,
+        `head` or `household_member` on anything else), so a child named on
+        his father's census line gets no pin from it. A claim counts when it
+        places at least one person this build shows. Accepted claims only, in
+        every build: a pin reads as settled fact. A shared build also applies
+        the place page's filters (no claim withheld for who it names, no
+        restricted claim, no hard-restricted source) and never places a
+        hidden person, so a place whose records are all about hidden people
+        has no pin, and a count is the same as if they were not on the
+        records at all. People are listed only when they have a page."""
+        if self._map_done:
+            return self._map_cache
+        self._map_done = True
+        hidden_filter = '' if self.linked else _NO_REDACTED_PERSON_SQL
+        rows = self.conn.execute(
+            "SELECT c.id, c.type, c.place_id, c.source_id FROM claims c "
+            "WHERE c.place_id IS NOT NULL AND c.place_id != '' "
+            "AND COALESCE(c.negated, 0) = 0 AND c.status = 'accepted' "
+            f"{hidden_filter} ORDER BY c.id").fetchall()
+        pins: dict[str, dict] = {}
+        unmapped: dict[str, int] = {}
+        for c in rows:
+            if c['place_id'] not in self.place_meta:
+                continue
+            if not self.linked and (self._source_hard_restricted(c['source_id'])
+                                    or normalize_id(str(c['id'])) in self.restricted_claims):
+                continue
+            pairs = claim_role_pairs(
+                (r['person_id'], r['role']) for r in self.conn.execute(
+                    'SELECT person_id, role FROM claim_persons WHERE claim_id = ? '
+                    'ORDER BY position', (c['id'],)))
+            placed: list[str] = []
+            for pid in claim_subjects(c['type'], pairs):
+                meta = self.person_meta.get(pid)
+                if meta is None or (not self.linked and self._person_is_redacted(meta)):
+                    continue
+                placed.append(self._shown_row(meta)['id'])
+            if not placed:
+                continue
+            coords = self._place_coords(c['place_id'])
+            if coords is None:
+                unmapped[c['place_id']] = unmapped.get(c['place_id'], 0) + 1
+                continue
+            pin = pins.setdefault(coords[2], {'events': 0, 'people': {}})
+            pin['events'] += 1
+            for pid in dict.fromkeys(placed):
+                if pid in self.person_pages:
+                    pin['people'][pid] = pin['people'].get(pid, 0) + 1
+        if not pins:
+            self._map_cache = None
+            return None
+
+        def place_name(lid: str) -> str:
+            return self.place_names.get(lid) or fmt_id_display(lid)
+
+        def by_name(lid: str):
+            return (fold_accents(place_name(lid)).lower(), lid)
+
+        def href(target: Path) -> str:
+            return _rel_href(target, self.out_dir)
+
+        places = []
+        for lid in sorted(pins, key=by_name):
+            meta = self.place_meta[lid]
+            pin = pins[lid]
+            people = sorted(
+                pin['people'].items(),
+                key=lambda kv: (-kv[1], fold_accents(self.person_meta[kv[0]]['name'] or '').lower(),
+                                kv[0]))
+            places.append({
+                'id': lid, 'name': place_name(lid),
+                'label': meta['hierarchy'] or place_name(lid),
+                'lat': meta['lat'], 'lon': meta['lon'],
+                'href': href(self.places_dir / _page_filename(lid)),
+                'events': pin['events'],
+                'people': [{'name': self.person_meta[pid]['name'] or fmt_id_display(pid),
+                            'href': href(self.persons_dir / _page_filename(pid))}
+                           for pid, _n in people[:_MAP_PEOPLE_PER_PIN]],
+                'more_people': max(0, len(people) - _MAP_PEOPLE_PER_PIN),
+            })
+        self._map_cache = {
+            'places': places,
+            'unmapped': [{'id': lid, 'name': place_name(lid),
+                          'href': href(self.places_dir / _page_filename(lid)),
+                          'events': unmapped[lid]}
+                         for lid in sorted(unmapped, key=by_name)],
+        }
+        return self._map_cache
+
+    def build_map_page(self) -> None:
+        """Write map.html when at least one place has a pin. The pins go into
+        the page as inline JSON (`_json_for_script`), which vendor/fha-map.js
+        draws over the vendored world outline; the same places are listed as
+        plain links, grouped by country (the last part of the place's full
+        name), for a reader without script and for printing."""
+        data = self._map_data()
+        if data is None:
+            return
+        groups: dict[str, list[dict]] = {}
+        for p in data['places']:
+            parts = [x.strip() for x in p['label'].split(',')]
+            country = parts[-1] if len(parts) > 1 and parts[-1] else ''
+            groups.setdefault(country, []).append(p)
+        ordered = [{'country': k or 'Other places', 'places': groups[k]}
+                   for k in sorted(groups, key=lambda k: (k == '', fold_accents(k).lower()))]
+        payload = {'version': 1, 'places': data['places']}
+        self._write_page(self.out_dir / 'map.html', 'map.html', {
+            'root_prefix': '.',
+            'map': {'data_json': self._markup(_json_for_script(payload)),
+                    'groups': ordered, 'unmapped': data['unmapped']},
+        })
 
     def _provisional_vital(self, pid: str, field: str) -> str | None:
         """Read one provisional (unsourced) `birth:`/`death:` estimate from a
@@ -13580,7 +13742,7 @@ class _SiteBuilder:
         search is on, plus graves.html when anyone has a grave to list, plus
         calendar.html when the calendar is on (not in the workbench), plus
         statistics.html when statistics are on, plus questions.html when the
-        questions page is on. `run()` and `--dry-run` both
+        questions page is on, plus map.html when a place has a pin. `run()` and `--dry-run` both
         report this one number."""
         return (len(self.source_pages) + len(self.person_pages) + len(self.place_pages)
                 + 2 + (1 if self.show_search else 0) + (1 if self._graves() else 0)
@@ -13588,6 +13750,7 @@ class _SiteBuilder:
                 + (1 if self.show_whats_new else 0)
                 + (1 if self.show_statistics else 0)
                 + (1 if self.show_questions else 0)
+                + (1 if self._map_data() else 0)
                 + (len(self._surname_groups()) + 1 if self._surname_groups() else 0))
 
     def _wall_calendar_on(self) -> bool:
@@ -13614,6 +13777,8 @@ class _SiteBuilder:
                 ),
                 # The search box in every page's header (base.html).
                 'show_search': self.show_search,
+                # The "Map" item in every page's menu, only when map.html is built.
+                'has_map': self._map_data() is not None,
                 # Nav link to questions.html (base.html): only when this
                 # build writes that page, so the link never points nowhere.
                 'questions_page_built': self.show_questions,
@@ -13668,6 +13833,7 @@ class _SiteBuilder:
         for lid in sorted(self.place_pages):
             self.build_place_page(lid)
         self.build_graves_page()
+        self.build_map_page()
         self.build_discoveries_page()
         if self.show_whats_new:
             self.build_whats_new_page()
@@ -13697,8 +13863,8 @@ class _SiteBuilder:
         return [self.persons_dir, self.sources_dir, self.places_dir,
                 self.media_dir, self.data_dir, self.vendor_dir, self.assets_dir,
                 self.out_dir / 'index.html', self.out_dir / 'discoveries.html',
-                self.out_dir / 'graves.html', self.out_dir / 'questions.html',
-                self.out_dir / 'graves.html',
+                self.out_dir / 'graves.html', self.out_dir / 'map.html',
+                self.out_dir / 'questions.html',
                 # Listed whether the calendar is on or off, so switching it
                 # off, or a person becoming private, removes the old page.
                 self.out_dir / 'calendar.html',

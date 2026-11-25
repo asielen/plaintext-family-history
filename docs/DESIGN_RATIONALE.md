@@ -29,7 +29,9 @@ Contents:
 19. Calendar conversion is a tool
 20. The tree fades a weak line, from the tie outward
 21. Importing a newer download of the same tree
-22. A recording plays on the shared site only on an explicit yes
+22. Surname pages: feminine forms join only when the masculine form is there
+23. A recording plays on the shared site only on an explicit yes
+24. The family map draws its own outline
 
 ---
 
@@ -518,3 +520,16 @@ The D-M coder is written from Gary Mokotoff's published chart, and its tests pin
 - **Always merging by ending.** A tree with only Kowalska would get a Kowalski page.
 - **Sound-alike merging.** It joins names a family would keep apart; the search box already finds those.
 - **"N more people with this name are not shown".** It tells a visitor that living people carry the name.
+
+## 24. The family map draws its own outline
+
+**The rule.** The family map (`map.html`) draws Natural Earth's 1:110m country outline, shipped with the tools as `vendor/fha-world.js`, with the vendored D3 and topojson-client. It fetches nothing, so it works from a USB stick. Pins go only where a registered place has coordinates, its own or those of the place it is `within:`; a place without them is listed under the map. A claim places only the people it is about.
+
+**Why.** The site's promise is that it opens from a disk with no internet, and a map that goes blank offline breaks it. Street detail is one click away: each pin's panel links to the place page, which has the OpenStreetMap link. A guessed position (the middle of a county, a geocoder's best match) looks exactly like a checked one once it is a dot on a map, so the map shows only what was registered. A child named on his father's census line is not placed there by that line in his own right.
+
+**Rejected.**
+
+- **Map tiles (Leaflet with OpenStreetMap).** They need the network, and OpenStreetMap's tile policy expects a referring web address that a page opened from disk does not send.
+- **The 1:50m outline.** Seven times the size in every copy of the site, for a coastline sharper than pins placed by town need.
+- **US state outlines.** A second data file, left until a family needs it.
+- **The outline as a separate JSON file.** Browsers refuse to fetch a file from disk, so it ships as a script.
